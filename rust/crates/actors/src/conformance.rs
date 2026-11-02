@@ -283,6 +283,17 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     /// creates its inbox with the first command, as a spawn does; the host
     /// discovers it from the activation log without placement.
     async fn create(target: &'a T, run: &str, case: &'static str) -> Result<Self, Failure> {
+        Self::spawn(target, run, case, None).await
+    }
+
+    /// [`Self::create`] from a `template`'s exact cut: the creation overlay
+    /// gives the new actor its own ledger and inbox over the template's fork.
+    async fn spawn(
+        target: &'a T,
+        run: &str,
+        case: &'static str,
+        template: Option<&crate::local::Snapshot>,
+    ) -> Result<Self, Failure> {
         let actor = ActorReference::new(
             b"conformance",
             b"actors",
@@ -298,22 +309,29 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
             published: 0,
             reservations: None,
         };
-        let creation = target.store().create(
-            &actor,
-            BTreeMap::from([(
-                "inbox".into(),
-                Subscription {
-                    path: inbox.clone(),
-                    cursor: 0,
+        let creation = [
+            target.store().create(
+                template,
+                &actor,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".into(),
+                        Subscription {
+                            path: inbox.clone(),
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: Some(Checkpoint {
+                        codec: codec(),
+                        bytes: serde_json::to_vec(&ledger)
+                            .map_err(|_| Error::Invalid("conformance ledger does not encode"))?
+                            .into(),
+                    }),
+                    escrow: None,
                 },
-            )]),
-            Some(Checkpoint {
-                codec: codec(),
-                bytes: serde_json::to_vec(&ledger)
-                    .map_err(|_| Error::Invalid("conformance ledger does not encode"))?
-                    .into(),
-            }),
-        )?;
+            )?,
+            target.store().activation(&actor),
+        ];
         Ok(Self {
             target,
             case,
@@ -433,6 +451,32 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         Ok(records)
     }
 
+    /// Waits on the state commit that applied this fixture's latest input.
+    async fn applied(&self) -> Result<crate::local::Applied, Failure> {
+        let store = self.target.store();
+        let input = store
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: self.inbox.clone(),
+                from: self.sent.saturating_sub(1),
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::from)?
+            .next()
+            .await
+            .ok_or(Error::Invalid("conformance input is missing"))?
+            .map_err(Error::from)?;
+        Ok(store
+            .wait_applied(
+                &self.actor,
+                AppliedCut::through("inbox".into(), self.inbox.clone(), &input)?,
+            )
+            .await?)
+    }
+
     async fn cursor(&self) -> Result<Option<u64>, Failure> {
         let snapshot = self.target.store().load(&self.actor).await?;
         Ok(snapshot.state().and_then(|state| state.cursor("inbox")))
@@ -468,6 +512,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     paused(target, run).await?;
     interrupted(target, run).await?;
     forked(target, run).await?;
+    lineage(target, run).await?;
     restarted(target, run).await
 }
 
@@ -496,7 +541,18 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     let forked = actor(b"forked")?;
     for target in [&parent, &created] {
         let mut publication = PreparedPublish::foreign(key(target.id())?);
-        for effect in store.create(target, BTreeMap::new(), None)? {
+        for effect in [
+            store.create(
+                None,
+                target,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::new(),
+                    checkpoint: None,
+                    escrow: None,
+                },
+            )?,
+            store.activation(target),
+        ] {
             publication.join(effect)?;
         }
         store.submit(publication).await?;
@@ -508,9 +564,12 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         .await?;
     let parent_cut = store.load(&parent).await?;
     let mut publication = PreparedPublish::foreign(key("fork")?);
-    for effect in store.fork(&parent_cut, &forked, BTreeMap::new())? {
-        publication.join(effect)?;
-    }
+    publication.join(store.branch(
+        &parent_cut,
+        &forked,
+        crate::local::Branch::unfunded(BTreeMap::new()),
+    )?)?;
+    publication.join(store.activation(&forked))?;
     store.submit(publication).await?;
 
     let created_cut = store.load(&created).await?;
@@ -527,8 +586,25 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     };
     require(
         created_cut.state().is_some_and(|state| state.epoch() == 0)
-            && forked_cut.state() == parent_cut.state(),
+            && forked_cut
+                .state()
+                .zip(parent_cut.state())
+                .is_some_and(|(branch, parent)| {
+                    branch.epoch() == parent.epoch()
+                        && branch.checkpoint() == parent.checkpoint()
+                        && branch.alarm() == parent.alarm()
+                        && branch.subscriptions() == parent.subscriptions()
+                }),
         "fork changed the inherited placement before dispatch",
+    )?;
+    require(
+        forked_cut.state().is_some_and(|branch| {
+            branch.paused()
+                && branch
+                    .escrow()
+                    .is_some_and(|escrow| escrow.remaining() == Some(0))
+        }),
+        "a branch was not born paused with escrow zero",
     )?;
     require(
         created_cut.provenance().is_none()
@@ -656,6 +732,9 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     {
         return parent.violation("fork did not start from the parent's exact cut".into());
     }
+    if !child_state.paused() {
+        return parent.violation("a counterfactual branch was not born paused".into());
+    }
     // The same child under another key, or a fork of a cut the parent has
     // left, is refused.
     if !matches!(
@@ -673,31 +752,13 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         creation: None,
         sent: 0,
     };
+    // The branch runs only once its forker resumes it.
+    target.pause(&child.actor, false).await?;
     // Each actor changes its own state: the child arms an alarm, the parent emits.
     child.send("set 600000").await?;
     parent.send("emit").await?;
     parent.expect(&["r0", "r1"]).await?;
-    let input = store
-        .provider()
-        .read(acyclic_stream::ReadRequest {
-            key: None,
-            path: child.inbox.clone(),
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(Error::from)?
-        .next()
-        .await
-        .ok_or(Error::Invalid("fork child input is missing"))?
-        .map_err(Error::from)?;
-    let applied = store
-        .wait_applied(
-            &child.actor,
-            AppliedCut::through("inbox".into(), child.inbox.clone(), &input)?,
-        )
-        .await?;
+    let applied = child.applied().await?;
     let child_state = applied
         .snapshot()
         .state()
@@ -722,13 +783,166 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         format!("{run}-forked-stale").as_bytes(),
     )
     .map_err(|_| Error::Invalid("conformance fork id"))?;
-    for effect in store.fork(&cut, &other, bindings(&child.inbox))? {
-        stale.join(effect)?;
-    }
+    stale.join(store.branch(
+        &cut,
+        &other,
+        crate::local::Branch::unfunded(bindings(&child.inbox)),
+    )?)?;
     if !matches!(store.submit(stale).await, Err(Error::Conflict)) {
         return parent.violation("fork accepted a cut the parent had left".into());
     }
     Ok(())
+}
+
+/// A swarm's lineage through the served entry points, on the backend's own
+/// host: a creation from a running template, sibling branches and a fork of a
+/// fork, taken while the template's call is in flight and across a host crash.
+/// Every member runs only its own input from its own exact cut; branches are
+/// born paused with escrow 0; an unresumed branch stays a pinned cut; the
+/// in-flight call completes once, unaffected by the forks.
+async fn lineage<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let store = target.store();
+    let mut parent = Fixture::create(target, run, "lineage").await?;
+    parent.send("emit").await?;
+    parent.send("set 600000").await?;
+    let armed = parent.applied().await?;
+    let template = armed
+        .snapshot()
+        .state()
+        .ok_or(Error::Invalid("lineage template state is missing"))?;
+    // Creation forks the armed template; its first input carries the overlay
+    // and the wake, as a spawn does.
+    let mut created =
+        Fixture::spawn(target, run, "lineage-created", Some(armed.snapshot())).await?;
+    created.send("emit").await?;
+    created.expect(&["r0"]).await?;
+    let applied = created.applied().await?;
+    let state = applied
+        .snapshot()
+        .state()
+        .ok_or(Error::Invalid("lineage creation state is missing"))?;
+    if state.alarm().pending().is_some()
+        || state.alarm().generation() <= template.alarm().generation()
+        || state.metadata().len() != 0
+        || state.cursor("inbox") != Some(1)
+        || applied.snapshot().provenance().map(|origin| &origin.source)
+            != Some(armed.snapshot().path())
+    {
+        return created.violation(format!(
+            "creation inherited the template's run state: {state:?}"
+        ));
+    }
+
+    // The template's call is in flight: "wait" completes only on "cancel".
+    parent.send("wait").await?;
+    let member = |name: &str| -> Result<(ActorReference, StreamPath), Error> {
+        Ok((
+            ActorReference::new(
+                b"conformance",
+                b"actors",
+                format!("{run}-{name}").as_bytes(),
+            )
+            .map_err(|_| Error::Invalid("conformance lineage id"))?,
+            StreamPath::new(format!("conformance/{run}/{name}/inbox"))?,
+        ))
+    };
+    let fork = |source: &ActorReference, child: &ActorReference, inbox: &StreamPath, name: &str| {
+        crate::wire::ForkActorRequest {
+            actor_id: source.id().to_owned(),
+            child_actor_id: child.id().to_owned(),
+            subscriptions: vec![crate::wire::SubscriptionSpec {
+                subscription_id: "inbox".into(),
+                stream_path: inbox.as_str().to_owned(),
+                start: Some(crate::wire::SubscriptionStart {
+                    start: Some(crate::wire::subscription_start::Start::CurrentHead(true)),
+                }),
+                placement_anchor: false,
+            }],
+            idempotency_key: format!("{run}/lineage/{name}"),
+            namespace: Some(source.namespace().as_str().to_owned()),
+            account_id: source.account().as_bytes().to_vec(),
+        }
+    };
+    let (pin, pin_inbox) = member("lineage-pin")?;
+    let (sibling, sibling_inbox) = member("lineage-sibling")?;
+    store
+        .fork_actor(&[], &fork(&parent.actor, &pin, &pin_inbox, "pin"))
+        .await?;
+    store
+        .fork_actor(
+            &[],
+            &fork(&parent.actor, &sibling, &sibling_inbox, "sibling"),
+        )
+        .await?;
+    // Crash with the call in flight and no branch resumed yet.
+    target.restart().await?;
+    let (grandchild, grandchild_inbox) = member("lineage-grandchild")?;
+    store
+        .fork_actor(
+            &[],
+            &fork(&pin, &grandchild, &grandchild_inbox, "grandchild"),
+        )
+        .await?;
+    let pinned = store.load(&pin).await?;
+
+    let mut resumed = Vec::new();
+    for (actor, inbox, case, source) in [
+        (
+            sibling,
+            sibling_inbox,
+            "lineage-sibling",
+            armed.snapshot().path(),
+        ),
+        (
+            grandchild,
+            grandchild_inbox,
+            "lineage-grandchild",
+            pinned.path(),
+        ),
+    ] {
+        target.pause(&actor, false).await?;
+        let mut member = Fixture {
+            target,
+            case,
+            actor,
+            inbox,
+            outbox: parent.outbox.clone(),
+            creation: None,
+            sent: 0,
+        };
+        member.send("clear").await?;
+        resumed.push((member.applied().await?, member, source));
+    }
+    for (applied, member, source) in &resumed {
+        let state = applied
+            .snapshot()
+            .state()
+            .ok_or(Error::Invalid("lineage member state is missing"))?;
+        if state.paused()
+            || state.alarm().pending().is_some()
+            || state.cursor("inbox") != Some(1)
+            || state.checkpoint() != template.checkpoint()
+            || state.escrow().map(crate::escrow::Escrow::remaining) != Some(Some(0))
+            || applied.snapshot().provenance().map(|origin| &origin.source) != Some(*source)
+        {
+            return member.violation(format!(
+                "branch did not run alone from its exact cut: {state:?}"
+            ));
+        }
+    }
+    // The pin was never resumed: still paused at its fork cut, unspent.
+    let still = store.load(&pin).await?;
+    match still.state() {
+        Some(state)
+            if state.paused()
+                && state.cursor("inbox") == Some(0)
+                && state.alarm() == template.alarm()
+                && state.escrow().map(crate::escrow::Escrow::remaining) == Some(Some(0)) => {}
+        state => return parent.violation(format!("the pinned branch moved: {state:?}")),
+    }
+    // The template's in-flight call survived the forks and the crash, once.
+    parent.send("cancel").await?;
+    parent.expect(&["r0", "c2"]).await
 }
 
 /// One operation survives queued retries, pause, restart and a lost response.
@@ -929,20 +1143,27 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
             )
         })
         .collect();
-    for effect in store.create(
-        &observer.actor,
-        subscriptions,
-        Some(Checkpoint {
-            codec: codec(),
-            bytes: serde_json::to_vec(&Ledger {
-                outbox: observer.outbox.clone(),
-                published: 0,
-                reservations: None,
-            })
-            .map_err(|_| Error::Invalid("shared ledger does not encode"))?
-            .into(),
-        }),
-    )? {
+    for effect in [
+        store.create(
+            None,
+            &observer.actor,
+            crate::local::Creation {
+                subscriptions: subscriptions,
+                checkpoint: Some(Checkpoint {
+                    codec: codec(),
+                    bytes: serde_json::to_vec(&Ledger {
+                        outbox: observer.outbox.clone(),
+                        published: 0,
+                        reservations: None,
+                    })
+                    .map_err(|_| Error::Invalid("shared ledger does not encode"))?
+                    .into(),
+                }),
+                escrow: None,
+            },
+        )?,
+        store.activation(&observer.actor),
+    ] {
         prepared.join(effect)?;
     }
     prepared.join(Effect {
@@ -1322,11 +1543,21 @@ async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     alarm.send(&format!("set {ALARM_MS}")).await?;
     alarm.expect(&["a1"]).await?;
 
+    // The armed deadline cannot pass before the clear applies, so the
+    // outcome depends on Clear alone, not on how fast the host commits.
     let mut cleared = Fixture::create(target, run, "cleared").await?;
-    cleared.send(&format!("set {ALARM_MS}")).await?;
+    cleared.send("set 600000").await?;
     cleared.send("clear").await?;
     cleared.send("emit").await?;
     cleared.expect(&["r2"]).await?;
+    let applied = cleared.applied().await?;
+    if applied
+        .snapshot()
+        .state()
+        .is_none_or(|state| state.alarm().pending().is_some())
+    {
+        return cleared.violation("clear left the armed generation pending".into());
+    }
 
     let mut replaced = Fixture::create(target, run, "replaced").await?;
     replaced.send(&format!("set {}", 10 * ALARM_MS)).await?;

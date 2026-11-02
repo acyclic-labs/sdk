@@ -47,17 +47,24 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let input = StreamPath::new("terminal-failure/inbox")?;
     let checkpoint = ledger("terminal-failure/outbox")?;
     let mut create = PreparedPublish::foreign(key("terminal-failure/create")?);
-    for effect in store.create(
-        &address,
-        BTreeMap::from([(
-            "inbox".into(),
-            Subscription {
-                path: input,
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: input,
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(checkpoint.clone()),
+                escrow: None,
             },
-        )]),
-        Some(checkpoint.clone()),
-    )? {
+        )?,
+        store.activation(&address),
+    ] {
         create.join(effect)?;
     }
     store.submit(create).await?;
@@ -207,17 +214,24 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let input = StreamPath::new("inline-cancel/inbox")?;
     let output = StreamPath::new("inline-cancel/outbox")?;
     let mut create = PreparedPublish::foreign(key("inline-cancel/create")?);
-    for effect in store.create(
-        &cancelled_actor,
-        BTreeMap::from([(
-            "inbox".into(),
-            Subscription {
-                path: input,
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &cancelled_actor,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: input,
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(ledger(output.as_str())?),
+                escrow: None,
             },
-        )]),
-        Some(ledger(output.as_str())?),
-    )? {
+        )?,
+        store.activation(&cancelled_actor),
+    ] {
         create.join(effect)?;
     }
     store.submit(create).await?;

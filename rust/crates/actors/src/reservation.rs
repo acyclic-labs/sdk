@@ -25,17 +25,24 @@ pub fn create<P: acyclic_stream::StreamProvider + ?Sized>(
     capacity: u64,
 ) -> Result<[crate::guest::Effect; 3], crate::local::Error> {
     use acyclic_stream::{CommitCondition, CommitMutation};
-    let [state, activation] = store.create(
-        actor,
-        BTreeMap::from([(
-            "inbox".into(),
-            crate::guest::Subscription {
-                path: inbox.clone(),
-                cursor: 0,
+    let [state, activation] = [
+        store.create(
+            None,
+            actor,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    crate::guest::Subscription {
+                        path: inbox.clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(initial_checkpoint(capacity)?),
+                escrow: None,
             },
-        )]),
-        Some(initial_checkpoint(capacity)?),
-    )?;
+        )?,
+        store.activation(actor),
+    ];
     Ok([
         state,
         activation,

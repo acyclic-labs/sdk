@@ -362,13 +362,35 @@ async fn restoration_returns_a_changed_page_cut_without_restarting() -> TestResu
     // The first page has 256 children. A real new child between the captured
     // first page and the second must invalidate the original traversal.
     for index in 0..257 {
-        for effect in store.create(&actor(&format!("restore-{index}"))?, BTreeMap::new(), None)? {
+        for effect in [
+            store.create(
+                None,
+                &actor(&format!("restore-{index}"))?,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::new(),
+                    checkpoint: None,
+                    escrow: None,
+                },
+            )?,
+            store.activation(&actor(&format!("restore-{index}"))?),
+        ] {
             initial.join(effect)?;
         }
     }
     store.submit(initial).await?;
     let mut competing = PreparedPublish::foreign(key("restore/competing")?);
-    for effect in store.create(&actor("restore-new")?, BTreeMap::new(), None)? {
+    for effect in [
+        store.create(
+            None,
+            &actor("restore-new")?,
+            crate::local::Creation {
+                subscriptions: BTreeMap::new(),
+                checkpoint: None,
+                escrow: None,
+            },
+        )?,
+        store.activation(&actor("restore-new")?),
+    ] {
         competing.join(effect)?;
     }
     *provider.inner().after_page.lock().unwrap() = Some(competing.into_request()?);

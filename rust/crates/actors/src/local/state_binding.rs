@@ -50,6 +50,16 @@ impl ActorStateTransaction<'_> {
         self.state.escrow = Some(escrow);
         Ok(())
     }
+    /// Stage an allocation from this balance and return the funding for a
+    /// creation or branch overlay joined to the same publication, so the
+    /// debit and the new actor's balance commit together or not at all.
+    /// Refusal stages nothing (see [`crate::escrow::Escrow::allocate`]).
+    pub fn allocate_escrow(&mut self, amount: Option<u64>) -> Result<crate::escrow::Escrow, Error> {
+        let mut escrow = self.escrow()?;
+        let allocated = escrow.allocate(amount)?;
+        self.state.escrow = Some(escrow);
+        Ok(allocated)
+    }
     /// Read this transaction's own writes and its original committed cut.
     pub fn get(&self, key: &str) -> Option<&Bytes> {
         self.state.metadata.get(key)

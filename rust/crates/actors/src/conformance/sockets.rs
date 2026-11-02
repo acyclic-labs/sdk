@@ -243,22 +243,29 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
         };
         let store = target.store();
         let mut prepared = PreparedPublish::foreign(key(&format!("{outbox}/create"))?);
-        for effect in store.create(
-            &actor,
-            BTreeMap::from([(
-                "inbox".into(),
-                Subscription {
-                    path: inbox.clone(),
-                    cursor: 0,
+        for effect in [
+            store.create(
+                None,
+                &actor,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".into(),
+                        Subscription {
+                            path: inbox.clone(),
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: Some(Checkpoint {
+                        codec: codec(),
+                        bytes: serde_json::to_vec(&journal)
+                            .map_err(|_| Error::Invalid("conformance journal does not encode"))?
+                            .into(),
+                    }),
+                    escrow: None,
                 },
-            )]),
-            Some(Checkpoint {
-                codec: codec(),
-                bytes: serde_json::to_vec(&journal)
-                    .map_err(|_| Error::Invalid("conformance journal does not encode"))?
-                    .into(),
-            }),
-        )? {
+            )?,
+            store.activation(&actor),
+        ] {
             prepared.join(effect)?;
         }
         prepared.join(Effect {

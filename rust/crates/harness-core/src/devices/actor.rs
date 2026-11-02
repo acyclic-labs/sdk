@@ -25,7 +25,7 @@ use acyclic_actors::{
         GuestError, GuestEventResult, GuestFuture, GuestSocketEvent, Handler, Manifest,
         Participant, SocketHost, SocketPayload, Transition, WebSocketId,
     },
-    local::{PreparedPublish, Store, Subscription},
+    local::{Creation, PreparedPublish, Store, Subscription},
     sockets::socket_reply,
 };
 use acyclic_stream::{
@@ -641,35 +641,34 @@ pub async fn attach<P: StreamProvider + ?Sized>(
     )
     .map_err(Error::from)?;
     let mut prepared = PreparedPublish::foreign(key);
-    for effect in store
-        .create(
-            &actor,
-            BTreeMap::from([
-                (
-                    INBOX.into(),
-                    Subscription {
-                        path: paths.inbox(&state.target.name)?,
-                        cursor: 0,
-                    },
-                ),
-                (
-                    QUEUE.into(),
-                    Subscription {
-                        path: paths.queue(&state.target.name)?,
-                        cursor: 0,
-                    },
-                ),
-            ]),
-            Some(
-                state
-                    .checkpoint()
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
+    let creation = Creation {
+        subscriptions: BTreeMap::from([
+            (
+                INBOX.into(),
+                Subscription {
+                    path: paths.inbox(&state.target.name)?,
+                    cursor: 0,
+                },
             ),
-        )
-        .map_err(actors)?
-    {
-        prepared.join(effect).map_err(actors)?;
-    }
+            (
+                QUEUE.into(),
+                Subscription {
+                    path: paths.queue(&state.target.name)?,
+                    cursor: 0,
+                },
+            ),
+        ]),
+        checkpoint: Some(
+            state
+                .checkpoint()
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        ),
+        escrow: None,
+    };
+    prepared
+        .join(store.create(None, &actor, creation).map_err(actors)?)
+        .map_err(actors)?;
+    prepared.join(store.activation(&actor)).map_err(actors)?;
     prepared.join(state.status()?).map_err(actors)?;
     let outcome = store
         .provider()

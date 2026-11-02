@@ -867,17 +867,24 @@ async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
     let actor = ActorReference::new(b"account", b"sockets", label.as_bytes())?;
     let inbox = StreamPath::new(format!("close/{label}"))?;
     let mut publication = PreparedPublish::foreign(IdempotencyKey::new(label.as_bytes().to_vec())?);
-    for effect in shared.store.create(
-        &actor,
-        BTreeMap::from([(
-            "inbox".into(),
-            super::super::Subscription {
-                path: inbox.clone(),
-                cursor: 0,
+    for effect in [
+        shared.store.create(
+            None,
+            &actor,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    super::super::Subscription {
+                        path: inbox.clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: None,
+                escrow: None,
             },
-        )]),
-        None,
-    )? {
+        )?,
+        shared.store.activation(&actor),
+    ] {
         publication.join(effect)?;
     }
     PreparedPublish::settle(

@@ -62,6 +62,23 @@ impl Escrow {
         Ok(())
     }
 
+    /// Move `amount` of this balance into new funding for another actor (a
+    /// creation or branch overlay in the same commit). Conservation: a finite
+    /// balance loses exactly what the allocation holds, so the two together
+    /// never exceed the original; an unbounded balance can fund anything; a
+    /// finite one cannot fund an unbounded allocation. A refusal changes
+    /// nothing. The allocation belongs to whichever branch its overlay starts.
+    pub fn allocate(&mut self, amount: Option<u64>) -> Result<Self, Error> {
+        match (self.remaining, amount) {
+            (None, _) => {}
+            (Some(_), None) => return Err(Error::Exhausted),
+            (Some(remaining), Some(amount)) => {
+                self.remaining = Some(remaining.checked_sub(amount).ok_or(Error::Exhausted)?);
+            }
+        }
+        Ok(Self::new(amount))
+    }
+
     /// Encode one bounded record, independent of other agents and history.
     pub fn encode(self) -> Bytes {
         let mut record = Vec::with_capacity(
@@ -117,5 +134,38 @@ impl Escrow {
             return Err(Error::ForeignBranch);
         }
         Ok(self)
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::{Error, Escrow};
+
+    /// No double spend: an allocation never creates units. For every
+    /// balance and request, a finite source keeps `remaining - amount` and
+    /// the allocation holds `amount`; a refusal leaves the source unchanged.
+    #[kani::proof]
+    fn allocation_conserves_funding() {
+        let remaining: Option<u64> = kani::any();
+        let amount: Option<u64> = kani::any();
+        let mut source = Escrow::new(remaining);
+        let before = source;
+        match source.allocate(amount) {
+            Ok(allocated) => {
+                assert_eq!(allocated.remaining(), amount);
+                assert_eq!(allocated.branch, None);
+                match (before.remaining(), source.remaining(), amount) {
+                    (None, None, _) => {}
+                    (Some(original), Some(left), Some(moved)) => {
+                        assert_eq!(u128::from(left) + u128::from(moved), u128::from(original));
+                    }
+                    _ => panic!("finite funding became unbounded or funded an unbounded child"),
+                }
+            }
+            Err(error) => {
+                assert_eq!(error, Error::Exhausted);
+                assert_eq!(source, before);
+            }
+        }
     }
 }

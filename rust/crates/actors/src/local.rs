@@ -6,6 +6,8 @@ mod invoke;
 pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
+mod overlay;
+pub use overlay::{Branch, Creation};
 mod record;
 pub use applied::{Applied, AppliedCut};
 pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
@@ -196,6 +198,11 @@ impl State {
     pub const fn alarm(&self) -> &Alarm {
         &self.alarm
     }
+    /// The spend balance this state carries, possibly foreign to the branch
+    /// that reads it (an inherited copy cannot spend).
+    pub const fn escrow(&self) -> Option<crate::escrow::Escrow> {
+        self.escrow
+    }
     /// Whether execution is durably paused.
     pub const fn paused(&self) -> bool {
         self.paused
@@ -222,6 +229,16 @@ impl Snapshot {
         self.provenance
             .as_ref()
             .map(|origin| origin.inherited.commit_id)
+    }
+
+    /// Whether the last state record was written by the fork commit itself:
+    /// a fork overlay, whose funding the forker allocated for this branch.
+    /// An inherited record (a copy, including any actor inside an
+    /// actor-blind subtree fork) is not, so its funding stays foreign.
+    fn overlaid(&self) -> bool {
+        self.provenance
+            .as_ref()
+            .is_some_and(|origin| self.anchor == Some(origin.inherited.commit_id))
     }
 
     fn owns_epoch(&self, epoch: u64) -> bool {
@@ -584,108 +601,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         ActorReference::decode(&bytes).map_err(|_| Error::Invalid("undecodable actor reference"))
     }
 
-    /// The companion effects that create an unplaced (epoch 0) actor inside a
-    /// caller-built commit, such as a spawn: its state stream and its
-    /// activation-log entry. Its cursors are the first records the actor will
-    /// consume; a later `claim` preserves them. Create each subscribed stream
-    /// in the same commit (or earlier): an absent stream is no input.
-    pub fn create(
-        &self,
-        actor: &ActorReference,
-        subscriptions: BTreeMap<String, Subscription>,
-        checkpoint: Option<Checkpoint>,
-    ) -> Result<[Effect; 2], Error> {
-        let path = self.path(actor)?;
-        if subscriptions.values().any(|value| value.path == path) {
-            return Err(Error::Invalid("actor subscribes to its own state"));
-        }
-        let state = State {
-            epoch: 0,
-            placement_branch: None,
-            escrow: None,
-            checkpoint,
-            subscriptions,
-            alarm: Alarm::default(),
-            paused: false,
-            metadata: BTreeMap::new(),
-            journal_tail: 0,
-        };
-        Ok([
-            Effect {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
-                    path,
-                    records: vec![state.encode().into()],
-                },
-            },
-            self.activation(actor),
-        ])
-    }
-
-    /// The companion effects that fork `parent`'s exact state cut into a new
-    /// lazily placed `child` inside a caller-built commit: a Streams fork of the parent's state
-    /// subtree, so its checkpoint, metadata, journal, alarm and pause state are
-    /// shared rather than copied, plus the child's activation-log entry.
-    /// `subscriptions` binds the child's own inputs under the parent's exact
-    /// subscription ids, as create binds a new actor's. The commit conflicts
-    /// if the parent moved past `parent`'s cut or `child` already exists. The
-    /// inherited placement cannot publish in the new branch. Its first actual
-    /// dispatch claims a newer epoch against that branch's original fork fact.
-    pub fn fork(
-        &self,
-        parent: &Snapshot,
-        child: &ActorReference,
-        subscriptions: BTreeMap<String, Subscription>,
-    ) -> Result<[Effect; 2], Error> {
-        let (Some(state), Some(commit_id)) = (&parent.state, parent.anchor) else {
-            return Err(Error::Invalid("actor state was never created"));
-        };
-        let path = self.path(child)?;
-        if path == parent.path {
-            return Err(Error::Invalid("actor cannot fork into itself"));
-        }
-        if !subscriptions.keys().eq(state.subscriptions.keys()) {
-            return Err(Error::Invalid("fork changes the actor's subscriptions"));
-        }
-        if subscriptions.values().any(|value| value.path == path) {
-            return Err(Error::Invalid("actor subscribes to its own state"));
-        }
-        let records = if subscriptions == state.subscriptions {
-            Vec::new()
-        } else {
-            vec![
-                State {
-                    subscriptions,
-                    ..state.clone()
-                }
-                .encode()
-                .into(),
-            ]
-        };
-        Ok([
-            Effect {
-                conditions: vec![
-                    CommitCondition::Head {
-                        path: parent.path.clone(),
-                        expected: parent.tail,
-                        commit_id,
-                    },
-                    CommitCondition::Absent { path: path.clone() },
-                ],
-                mutation: CommitMutation::Fork {
-                    exclude: Vec::new(),
-                    source: parent.path.clone(),
-                    destination: path,
-                    at_tail: parent.tail,
-                    records,
-                },
-            },
-            self.activation(child),
-        ])
-    }
-
-    /// Serve one `ForkActor` request: fork its parent's current committed
-    /// state into its child as one commit of [`Self::fork`]'s effects. Every
+    /// Serve one `ForkActor` request: branch its parent's current committed
+    /// state into its child ([`Self::branch`], born paused with escrow zero)
+    /// plus the child's activation, as one commit. Every
     /// server answers the RPC with this one composition (the local host and a
     /// hosted platform alike); `account` is the caller's authenticated
     /// account, used when the request names none. The commit key binds the
@@ -729,9 +647,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         let cut = self.load(&parent).await?;
         let mut commit = PreparedPublish::foreign(key.clone());
-        for effect in self.fork(&cut, &child, subscriptions)? {
-            commit.join(effect)?;
-        }
+        commit.join(self.branch(&cut, &child, Branch::unfunded(subscriptions))?)?;
+        commit.join(self.activation(&child))?;
         match self.submit(commit).await {
             Ok(()) => {}
             Err(
@@ -849,6 +766,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 }
                 state.epoch = epoch;
                 state.placement_branch = previous.placement_branch();
+                if previous.overlaid() {
+                    state.escrow = state
+                        .escrow
+                        .map(|escrow| escrow.in_branch(state.placement_branch));
+                }
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }

@@ -286,17 +286,24 @@ async fn placed(
         .with_composer(Arc::new(Participants(counts)));
     let actor = ActorReference::new(b"account", b"agents", b"participant")?;
     let mut create = PreparedPublish::foreign(key("create-participant")?);
-    for effect in store.create(
-        &actor,
-        BTreeMap::from([(
-            "inbox".to_owned(),
-            Subscription {
-                path: path("participant/inbox")?,
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &actor,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".to_owned(),
+                    Subscription {
+                        path: path("participant/inbox")?,
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: None,
+                escrow: None,
             },
-        )]),
-        None,
-    )? {
+        )?,
+        store.activation(&actor),
+    ] {
         create.join(effect)?;
     }
     store.submit(create).await?;

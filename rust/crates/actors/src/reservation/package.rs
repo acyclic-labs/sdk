@@ -15,7 +15,7 @@ pub fn codec() -> CodecIdentity {
     }
 }
 
-/// Initial explicit capacity for Store::create's original companion checkpoint.
+/// Initial explicit capacity for the creation overlay's companion checkpoint.
 pub fn initial_checkpoint(capacity: u64) -> Result<Checkpoint, crate::guest::GuestError> {
     Ok(Checkpoint {
         codec: codec(),

@@ -365,7 +365,18 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
             serde_json::json!({"actor": format!("{actor:?}"), "key_hex": hex::encode(creation_key.as_bytes())}),
             async {
                 let mut creation = PreparedPublish::foreign(creation_key);
-                for effect in store.create(&actor, BTreeMap::new(), None)? {
+                for effect in [
+                    store.create(
+                        None,
+                        &actor,
+                        acyclic_actors::local::Creation {
+                            subscriptions: BTreeMap::new(),
+                            checkpoint: None,
+                            escrow: None,
+                        },
+                    )?,
+                    store.activation(&actor),
+                ] {
                     creation.join(effect)?;
                 }
                 store.submit(creation).await
@@ -392,17 +403,24 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
     let address = ActorReference::new(b"benchmark", b"measure", b"durable")?;
     let inbox = Stream::new(fixture.stream.clone(), "benchmark/actor-input")?;
     let mut creation = PreparedPublish::foreign(key("durable-create")?);
-    for effect in store.create(
-        &address,
-        BTreeMap::from([(
-            "inbox".into(),
-            Subscription {
-                path: inbox.path().clone(),
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &address,
+            acyclic_actors::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: inbox.path().clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: None,
+                escrow: None,
             },
-        )]),
-        None,
-    )? {
+        )?,
+        store.activation(&address),
+    ] {
         creation.join(effect)?;
     }
     store.submit(creation).await?;

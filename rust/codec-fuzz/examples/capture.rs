@@ -923,7 +923,18 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         StreamPath::new("codec/actors")?,
     );
     let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
-    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
+    let effects = [
+        store.create(
+            None,
+            &actor,
+            acyclic_actors::local::Creation {
+                subscriptions: BTreeMap::new(),
+                checkpoint: Some(checkpoint.clone()),
+                escrow: None,
+            },
+        )?,
+        store.activation(&actor),
+    ];
     if let CommitMutation::Append { records, .. } = &effects[0].mutation {
         let record = records.first().ok_or("actor creation emitted no state")?;
         save(

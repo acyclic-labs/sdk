@@ -70,7 +70,18 @@ async fn publication_and_reopen() -> TestResult {
         ));
         let store = Store::new(Arc::clone(&provider), state_root()?);
         let mut create = PreparedPublish::foreign(key("hot/create")?);
-        for effect in store.create(&address, inbox(&address)?, None)? {
+        for effect in [
+            store.create(
+                None,
+                &address,
+                crate::local::Creation {
+                    subscriptions: inbox(&address)?,
+                    checkpoint: None,
+                    escrow: None,
+                },
+            )?,
+            store.activation(&address),
+        ] {
             create.join(effect)?;
         }
         assert_requests!(provider, store.submit(create).await, control = 0, data = 1)?;
@@ -242,31 +253,33 @@ async fn publication_and_reopen() -> TestResult {
             [3, 3, 3],
             "split publication adds two durable frames"
         );
-        // The original fork carries bytes but cannot duplicate their funding.
-        // Even a new placement in that fork cannot spend the parent's balance.
+        // A branch shares the parent's bytes but not its funding: it is born
+        // with escrow zero, so even its own placement spends nothing.
         let parent_cut = store.load(&address).await?;
         let child = actor("escrow-branch")?;
         let mut fork = PreparedPublish::foreign(key("hot/escrow-fork")?);
-        for effect in store.fork(
-            &parent_cut,
-            &child,
-            parent_cut
-                .state()
-                .ok_or("missing parent state")?
-                .subscriptions()
-                .clone(),
-        )? {
-            fork.join(effect)?;
-        }
+        fork.join(
+            store.branch(
+                &parent_cut,
+                &child,
+                Branch::unfunded(
+                    parent_cut
+                        .state()
+                        .ok_or("missing parent state")?
+                        .subscriptions()
+                        .clone(),
+                ),
+            )?,
+        )?;
         store.submit(fork).await?;
         let child_cut = store.load(&child).await?;
         let placed = store
-            .claim(&child_cut, 2, key("hot/escrow-branch-claim")?)
+            .claim_with_pause(&child_cut, 2, Some(false), key("hot/escrow-branch-claim")?)
             .await?;
         let mut child_binding = store.bind_state(placed, 2)?;
         assert!(matches!(
             child_binding.transaction(|state| state.debit_escrow(1)),
-            Err(Error::Escrow(crate::escrow::Error::ForeignBranch))
+            Err(Error::Escrow(crate::escrow::Error::Exhausted))
         ));
     }
     let store = Store::new(

@@ -19,7 +19,7 @@ use acyclic_actors::{
         AlarmChange, Checkpoint, Delivery, Effect, GuestError, GuestFuture, Handler, Manifest,
         Transition, Trigger,
     },
-    local::{PreparedPublish, Store, Subscription},
+    local::{Creation, PreparedPublish, Store, Subscription},
 };
 use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
@@ -124,24 +124,31 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         self.store.activation(actor)
     }
 
-    /// The effects that create `agent`'s actor, first consuming inbox record `cursor`.
-    /// They ride in the commit that creates the agent: a spawn or a root creation.
+    /// The effects that create `agent`'s actor, dormant until its trigger:
+    /// the inbox read registered at `cursor`, where the creating commit
+    /// appends `ForkAdopted`, and that trigger's activation. They ride in the
+    /// commit that creates the agent: a spawn or a root creation.
     pub(super) fn create(
         &self,
         actor: &ActorReference,
         agent: &AgentPath,
         cursor: u64,
     ) -> Result<[Effect; 2], Error> {
-        let subscriptions = BTreeMap::from([(
-            INBOX.to_owned(),
-            Subscription {
-                path: agent.inbox()?,
-                cursor,
-            },
-        )]);
-        self.store
-            .create(actor, subscriptions, None)
-            .map_err(|_| Error::Record("agent actor state cannot be created"))
+        let creation = Creation {
+            subscriptions: BTreeMap::from([(
+                INBOX.to_owned(),
+                Subscription {
+                    path: agent.inbox()?,
+                    cursor,
+                },
+            )]),
+            ..Creation::default()
+        };
+        let state = self
+            .store
+            .create(None, actor, creation)
+            .map_err(|_| Error::Record("agent actor state cannot be created"))?;
+        Ok([state, self.wake(actor)])
     }
 
     /// One commit creating root agent `adopted.agent` as an actor in `within`'s

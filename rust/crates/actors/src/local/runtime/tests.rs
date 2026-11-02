@@ -1,7 +1,7 @@
 use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
-use crate::local::{PreparedPublish, Subscription};
+use crate::local::{Branch, PreparedPublish, Subscription};
 use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, LocalStream, MemoryStream,
@@ -375,11 +375,18 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
         let store = Store::new(Arc::clone(&provider), root()?);
         let address = actor("changed-alarm")?;
         let mut create = PreparedPublish::foreign(key("idle/create")?);
-        for effect in store.create(
-            &address,
-            BTreeMap::new(),
-            Some(ledger("out/changed-alarm")?),
-        )? {
+        for effect in [
+            store.create(
+                None,
+                &address,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::new(),
+                    checkpoint: Some(ledger("out/changed-alarm")?),
+                    escrow: None,
+                },
+            )?,
+            store.activation(&address),
+        ] {
             create.join(effect)?;
         }
         store.submit(create).await?;
@@ -818,7 +825,18 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
         (&first, "agents/first", 5, "out/first"),
         (&second, "agents/second", 0, "out/second"),
     ] {
-        for effect in store.create(address, bind(inbox, cursor)?, Some(ledger(outbox)?))? {
+        for effect in [
+            store.create(
+                None,
+                address,
+                crate::local::Creation {
+                    subscriptions: bind(inbox, cursor)?,
+                    checkpoint: Some(ledger(outbox)?),
+                    escrow: None,
+                },
+            )?,
+            store.activation(address),
+        ] {
             prepared.join(effect)?;
         }
     }
@@ -938,17 +956,24 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
         let address = actor(&format!("a{index}"))?;
         let inbox = StreamPath::new(format!("agents/a{index}"))?;
         let mut prepared = PreparedPublish::foreign(key(&format!("create-{index}"))?);
-        for effect in store.create(
-            &address,
-            BTreeMap::from([(
-                "inbox".to_owned(),
-                Subscription {
-                    path: inbox.clone(),
-                    cursor: 0,
+        for effect in [
+            store.create(
+                None,
+                &address,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".to_owned(),
+                        Subscription {
+                            path: inbox.clone(),
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: Some(ledger(&format!("out/a{index}"))?),
+                    escrow: None,
                 },
-            )]),
-            Some(ledger(&format!("out/a{index}"))?),
-        )? {
+            )?,
+            store.activation(&address),
+        ] {
             prepared.join(effect)?;
         }
         // The first input rides in the same commit as the creation.
@@ -1013,17 +1038,24 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let address = actor("paused")?;
     let inbox = StreamPath::new("agents/paused")?;
     let mut prepared = PreparedPublish::foreign(key("create")?);
-    for effect in store.create(
-        &address,
-        BTreeMap::from([(
-            "inbox".to_owned(),
-            Subscription {
-                path: inbox.clone(),
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".to_owned(),
+                    Subscription {
+                        path: inbox.clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(ledger("out/paused")?),
+                escrow: None,
             },
-        )]),
-        Some(ledger("out/paused")?),
-    )? {
+        )?,
+        store.activation(&address),
+    ] {
         prepared.join(effect)?;
     }
     prepared.join(Effect {
@@ -1054,16 +1086,19 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let cut = store.load(&address).await?;
     let child = actor("paused-child-zero")?;
     let mut fork = PreparedPublish::foreign(key("paused-child-zero")?);
-    for effect in store.fork(
-        &cut,
-        &child,
-        cut.state()
-            .ok_or("missing paused parent")?
-            .subscriptions()
-            .clone(),
-    )? {
-        fork.join(effect)?;
-    }
+    fork.join(
+        store.branch(
+            &cut,
+            &child,
+            Branch::unfunded(
+                cut.state()
+                    .ok_or("missing paused parent")?
+                    .subscriptions()
+                    .clone(),
+            ),
+        )?,
+    )?;
+    fork.join(store.activation(&child))?;
     store.submit(fork).await?;
     let inherited = store.load(&child).await?;
     assert!(matches!(
@@ -1097,16 +1132,19 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let parent_epoch = cut.state().ok_or("missing paused parent")?.epoch();
     let child = actor("paused-child-placed")?;
     let mut fork = PreparedPublish::foreign(key("paused-child-placed")?);
-    for effect in store.fork(
-        &cut,
-        &child,
-        cut.state()
-            .ok_or("missing paused parent")?
-            .subscriptions()
-            .clone(),
-    )? {
-        fork.join(effect)?;
-    }
+    fork.join(
+        store.branch(
+            &cut,
+            &child,
+            Branch::unfunded(
+                cut.state()
+                    .ok_or("missing paused parent")?
+                    .subscriptions()
+                    .clone(),
+            ),
+        )?,
+    )?;
+    fork.join(store.activation(&child))?;
     store.submit(fork).await?;
     let inherited = store.load(&child).await?;
     assert!(matches!(
@@ -1168,17 +1206,24 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     let address = actor(name)?;
     let inbox = StreamPath::new(format!("agents/{name}"))?;
     let mut prepared = PreparedPublish::foreign(key(&format!("spawn-{name}"))?);
-    for effect in store.create(
-        &address,
-        BTreeMap::from([(
-            "inbox".to_owned(),
-            Subscription {
-                path: inbox.clone(),
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".to_owned(),
+                    Subscription {
+                        path: inbox.clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(ledger(&format!("out/{name}"))?),
+                escrow: None,
             },
-        )]),
-        Some(ledger(&format!("out/{name}"))?),
-    )? {
+        )?,
+        store.activation(&address),
+    ] {
         prepared.join(effect)?;
     }
     prepared.join(Effect {
@@ -1388,7 +1433,18 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
             },
         })?;
     }
-    for effect in store.create(&address, subscriptions, Some(ledger("out/rotation")?))? {
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions: subscriptions,
+                checkpoint: Some(ledger("out/rotation")?),
+                escrow: None,
+            },
+        )?,
+        store.activation(&address),
+    ] {
         create.join(effect)?;
     }
     store.submit(create).await?;

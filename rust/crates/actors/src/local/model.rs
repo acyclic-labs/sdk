@@ -271,17 +271,24 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
     // Setup is fault-free: the inbox, the companion create, the placement.
     let setup = Store::new(Arc::new(provider.inner.clone()), path("model/actors")?);
     let mut create = PreparedPublish::foreign(IdempotencyKey::new(b"setup".to_vec())?);
-    for effect in setup.create(
-        &actor,
-        BTreeMap::from([(
-            "inbox".to_owned(),
-            Subscription {
-                path: path("model/inbox")?,
-                cursor: 0,
+    for effect in [
+        setup.create(
+            None,
+            &actor,
+            crate::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".to_owned(),
+                    Subscription {
+                        path: path("model/inbox")?,
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: None,
+                escrow: None,
             },
-        )]),
-        None,
-    )? {
+        )?,
+        setup.activation(&actor),
+    ] {
         create.join(effect)?;
     }
     create.join(Effect {
