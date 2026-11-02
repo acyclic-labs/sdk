@@ -52,6 +52,10 @@ pub mod inspect;
 #[cfg(feature = "research")]
 pub mod stream_records;
 
+/// Original settled logical Machine placement, without current configuration.
+#[cfg(all(feature = "research", feature = "machines"))]
+pub mod placement;
+
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -113,9 +117,25 @@ impl Table {
             Field::new("source_account", Utf8, true),
             Field::new("source_origin", Utf8, true),
             Field::new("source_commit_id", Utf8, true),
+            Field::new("source_committed_at_micros", UInt64, true),
         ];
         let columns = match self {
-            Self::Agents => vec![("parent", Utf8), ("role", Utf8), ("profile_digest", Utf8)],
+            Self::Agents => vec![
+                ("parent", Utf8),
+                ("role", Utf8),
+                ("profile_digest", Utf8),
+                ("binding_version", UInt32),
+                ("target", Utf8),
+                ("machine", Utf8),
+                ("provider", Utf8),
+                ("forked_from", Utf8),
+                ("physical_host", Utf8),
+                ("region", Utf8),
+                ("core", UInt32),
+                ("numa", UInt32),
+                ("memory_bytes", UInt64),
+                ("coverage", Utf8),
+            ],
             Self::Turns => vec![
                 ("inbox", UInt64),
                 ("request_digest", Utf8),
@@ -255,10 +275,11 @@ macro_rules! columns {
 
 columns! {
     typed {
-    UInt32Array: u32 => [step, max_output_tokens];
+    UInt32Array: u32 => [step, max_output_tokens, binding_version, core, numa];
     UInt64Array: u64 => [inbox, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
         latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages,
-        logical_value_bytes, physical_copied_bytes, physical_shared_bytes];
+        logical_value_bytes, physical_copied_bytes, physical_shared_bytes,
+        source_committed_at_micros, memory_bytes];
     Int64Array: i64 => [seed];
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
@@ -266,10 +287,28 @@ columns! {
     strings => [parent, role, profile_digest, artifact, request_digest, replay_key, provider, model, provider_request_id,
         system_fingerprint, price_revision, currency, call_id, source, target, credential_scope,
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
-        source_account, source_origin, source_commit_id, coverage]
+        source_account, source_origin, source_commit_id, coverage,
+        machine, forked_from, physical_host, region]
 }
 
 impl<'a> Row<'a> {
+    #[cfg(feature = "research")]
+    fn stream(
+        agent: &str,
+        account: &acyclic_auth::addressing::AccountId,
+        selected: &'a acyclic_stream::StreamPath,
+        record: &acyclic_stream::Record,
+        kind: &str,
+    ) -> Self {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        let mut row = Self::new(agent, None, record.sequence, selected.as_str(), kind);
+        row.source_account = Some(URL_SAFE_NO_PAD.encode(account.as_bytes()));
+        row.source_origin = Some(record.origin.as_str().into());
+        row.source_commit_id = Some(digest(*record.commit_id.as_bytes()));
+        row.source_committed_at_micros = Some(record.committed_at_micros);
+        row
+    }
+
     fn new(
         agent: &str,
         operation: Option<OperationId>,

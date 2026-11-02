@@ -182,15 +182,17 @@ remain separate from this offline codec:
 
 | Table / kind | Original authority and coverage |
 | --- | --- |
-| `agents` / `placement` | Original immutable placement fact on initial observation or change, joined by its original digest. Unknown location stays unknown. |
+| `agents` / `placement` | `metrics::placement::project` consumes the original settled `MachineBinding` v2 and stream envelope. Coverage is logical provider placement; physical location and resource measurements stay unknown. Requires `machines`. |
 | `edges` / `stream_record_shared` | `metrics::stream_records::project` preserves an authorized original record's account, origin, sequence and commit ID, separately from the selected destination. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
 
-Placement and interval integration remain reserved. The stream projection
+Interval integration remains reserved. The stream projection
 accepts the original `Record`, selected `StreamPath` and authenticated
 `AccountId`; it makes no read or provider request. Common nullable
 `source_account` (URL-safe base64 without padding), `source_origin` and
-`source_commit_id` retain exact original source fields. Stream sequences are
+`source_commit_id` retain exact original source fields. The common nullable
+`source_committed_at_micros` preserves replicated stream commit time; it is not
+an execution start or a provider latency. Stream sequences are
 zero-based; journal completion sequences use their separate one-based contract.
 The `source` edge endpoint is the JSON tuple `[account, origin, sequence, commit]`,
 and `target` is `[account, selected_path]`. An observation at its original path
@@ -207,6 +209,29 @@ metadata into the existing Arrow columns. Borrowing dynamic source paths removes
 an intermediate owned path. Added execution reads, allocations, provider calls,
 commits, barriers and flushes remain 0. An exact logical union is an offline
 query, never a growing capture-side seen-content map.
+
+Placement reads the fixed settled position at `AgentPath::machine(target)`
+(`from=1, limit=1`), then projects that already-authorized record synchronously.
+Position 0 is the provisioning plan. A foreign selected agent/target, wrong
+position, malformed binding or unsupported version refuses instead of producing
+an empty placement. The selected source path is separate from the original
+record origin, sequence and commit, including a shared source record.
+
+The `agents` row contains `binding_version`, original `target`, `machine` (the
+complete typed `SandboxRef` as JSON), `provider` (its complete `ProviderRef` as
+JSON), and nullable `forked_from` (the original logical Machine ID). These opaque
+references are authority identities, not physical locations or credentials.
+`coverage` is `logical_provider_binding`; `physical_host`, `region`, `core`,
+`numa` and `memory_bytes` stay null. No current configuration, provider usage or
+machine inspection is consulted. The RDF projection retains those original
+facts without inferring a provisioning activity, clock interval or measurement.
+
+Both stream projections share one original-envelope encoder: account and commit
+are encoded once per row. Placement additionally decodes one binding, checks
+its selected source, encodes two typed references and formats at most one parent
+ID. It retains one row and one binding, with work proportional to their selected
+bytes rather than history or agent count. It adds no execution reads, provider
+requests, publication commits, durability barriers, flushes or waits.
 
 Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added

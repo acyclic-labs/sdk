@@ -1,6 +1,8 @@
+use super::super::digest;
 use super::*;
 use acyclic_stream::{IdempotencyKey, MemoryStream, Stream};
 use arrow_array::{Array, StringArray, UInt64Array};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt;
 use std::sync::Arc;
 

@@ -195,6 +195,14 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 out.text(&observation, predicate, value)?;
             }
         }
+        let committed_at = column::<UInt64Array>(batch, "source_committed_at_micros")?;
+        if !committed_at.is_null(row) {
+            out.unsigned(
+                &observation,
+                "urn:acyclic:research:sourceCommittedAtMicros",
+                committed_at.value(row),
+            )?;
+        }
         let turn = if let Some(operation) = operation {
             let turn = id("turn", &[path.as_bytes(), operation.as_bytes()]);
             out.class(&turn, "http://www.w3.org/ns/prov#Activity")?;
@@ -287,22 +295,44 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 }
             }
         }
-        if batch.table == Table::Agents
-            && let Some(profile) = text(batch, "profile_digest", row)?
-        {
-            let profile_id = id("profile", &[profile.as_bytes()]);
-            out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
-            out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
-            out.relation(
-                &agent,
-                "http://www.w3.org/ns/prov#wasInfluencedBy",
-                &profile_id,
-            )?;
+        if batch.table == Table::Agents {
+            if let Some(profile) = text(batch, "profile_digest", row)? {
+                let profile_id = id("profile", &[profile.as_bytes()]);
+                out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
+                out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
+                out.relation(
+                    &agent,
+                    "http://www.w3.org/ns/prov#wasInfluencedBy",
+                    &profile_id,
+                )?;
+            }
+            if kind == "placement" {
+                for (field, predicate) in [
+                    ("target", "urn:acyclic:research:placementTarget"),
+                    ("machine", "urn:acyclic:research:machineReference"),
+                    ("provider", "urn:acyclic:research:providerReference"),
+                    ("forked_from", "urn:acyclic:research:forkedFromMachine"),
+                ] {
+                    if let Some(value) = text(batch, field, row)? {
+                        out.text(&observation, predicate, value)?;
+                    }
+                }
+                let version = column::<UInt32Array>(batch, "binding_version")?;
+                if !version.is_null(row) {
+                    out.unsigned(
+                        &observation,
+                        "urn:acyclic:research:bindingVersion",
+                        version.value(row).into(),
+                    )?;
+                }
+            }
         }
-        if batch.table == Table::Edges {
+        if matches!(batch.table, Table::Agents | Table::Edges) {
             if let Some(coverage) = text(batch, "coverage", row)? {
                 out.text(&observation, "urn:acyclic:research:coverage", coverage)?;
             }
+        }
+        if batch.table == Table::Edges {
             let logical = column::<UInt64Array>(batch, "logical_value_bytes")?;
             if !logical.is_null(row) {
                 out.unsigned(
