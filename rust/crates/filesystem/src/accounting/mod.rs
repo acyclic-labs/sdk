@@ -46,7 +46,12 @@ impl AccountingCursor {
 }
 
 /// Semantic transition proven by one durable FS record.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "transition",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AccountingTransition {
     /// A generation became the initial or later published workspace version.
     Published {
@@ -78,7 +83,8 @@ pub enum AccountingTransition {
 }
 
 /// Whether a durable fact can represent one customer operation after regional top-level product attribution.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountingOperationClass {
     /// One successful durable FS mutation candidate.
     CustomerMutation,
@@ -87,8 +93,16 @@ pub enum AccountingOperationClass {
 }
 
 /// One authenticated authority fact.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Retains the authority selected by the original proven page. A generation
+/// can be published and retained by distinct authorities; neither its root nor
+/// its volume identifies the authority that produced this fact. Logical file
+/// bytes do not establish physical allocation custody or deduplication savings.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountingFact {
+    /// Original authority whose hash chain authenticated this record.
+    pub authority_id: AuthorityId,
     /// Dense sequence within the authority.
     pub sequence: Sequence,
     /// Stable retry identity.

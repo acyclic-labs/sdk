@@ -363,6 +363,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
             }
         };
         facts.push(AccountingFact {
+            authority_id,
             sequence: record.sequence,
             operation_id: record.operation_id,
             commit_digest: record.digest,

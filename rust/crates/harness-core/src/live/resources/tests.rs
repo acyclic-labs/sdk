@@ -79,6 +79,80 @@ fn usage() -> ModelUsageRecord {
     }
 }
 
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn storage_file_borrows_the_proven_authority_fact_without_physical_inference() {
+    use acyclic_fs::accounting::{AccountingCursor, AccountingTransition, accounting_page};
+    use acyclic_fs::kernel::volume_authority_id;
+
+    let stream = std::sync::Arc::new(MemoryStream::default());
+    let objects = std::sync::Arc::new(acyclic_objects::MemoryObjects::memory());
+    let fs = acyclic_fs::Fs::from_memory_providers(stream.clone(), objects.clone());
+    let authority = acyclic_fs::distributed::StreamAuthorityStore::new(stream);
+    let objects = acyclic_fs::LogicalObjectStore::new(objects);
+    let cancel = acyclic_fs::CancellationToken::new();
+    let workspace = fs
+        .create_workspace(
+            "resource-storage",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .value;
+    let authority_id = volume_authority_id(workspace.id().volume_id());
+    let page = accounting_page(
+        &authority,
+        &objects,
+        authority_id,
+        AccountingCursor::genesis(),
+        1,
+        acyclic_fs::performance::work_budget(4096, 16 * 1024 * 1024),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert!(page.complete);
+    let fact = &page.facts[0];
+    let account = AccountId::new(&[0xff, 3]).unwrap();
+    let measured = acyclic_test_support::measure(|| {
+        std::hint::black_box(Storage::project(&account, fact));
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    let file = Storage::project(&account, fact);
+    assert!(std::ptr::eq(file.fact, fact));
+    assert_eq!(file.fact.authority_id, authority_id);
+    let foreign = AccountId::new(&[0xff, 4]).unwrap();
+    assert_ne!(file.account, Storage::project(&foreign, fact).account);
+    assert!(matches!(
+        file.fact.transition,
+        AccountingTransition::Published {
+            logical_regular_file_bytes: 0,
+            ..
+        }
+    ));
+    let wire = serde_json::to_value(&file).unwrap();
+    assert_eq!(wire["account"], serde_json::json!([255, 3]));
+    assert_eq!(wire["fact"]["transition"]["transition"], "published");
+    assert_eq!(wire["fact"]["transition"]["logicalRegularFileBytes"], 0);
+    if let AccountingTransition::Published {
+        generation_root, ..
+    } = fact.transition
+    {
+        assert_eq!(
+            wire["fact"]["transition"]["generationRoot"],
+            serde_json::to_value(generation_root.to_bytes().as_slice()).unwrap()
+        );
+    }
+    // A known logical zero cannot substitute for absent physical coverage.
+    assert!(wire["physicalSharedBytes"].is_null());
+    assert!(wire["physicalCopiedBytes"].is_null());
+    assert_eq!(
+        wire["fact"]["commitDigest"],
+        serde_json::to_value(fact.commit_digest).unwrap()
+    );
+}
+
 #[test]
 fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
     futures::executor::block_on(async {

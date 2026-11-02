@@ -56,6 +56,7 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
     for ((fact, record), (generation_root, logical_regular_file_bytes)) in
         facts.iter().zip(&original).zip(expected)
     {
+        assert_eq!(fact.authority_id, id);
         assert_eq!(fact.sequence, record.sequence);
         assert_eq!(fact.operation_id, record.operation_id);
         assert_eq!(fact.commit_digest, record.digest);
@@ -118,12 +119,8 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
         }
     );
     assert_eq!(terminal.facts[1].operation_id, deletion.operation_id());
-    assert!(
-        terminal
-            .facts
-            .iter()
-            .all(|fact| fact.operation_class == AccountingOperationClass::CustomerMutation)
-    );
+    assert!(terminal.facts.iter().all(|fact| fact.authority_id == id
+        && fact.operation_class == AccountingOperationClass::CustomerMutation));
     assert_eq!(terminal.next.digest, terminal.facts[1].commit_digest);
     let empty = authority
         .accounting_page(&objects, id, terminal.next, 2, BUDGET, &cancel)
@@ -207,6 +204,12 @@ async fn retention_pages_distinguish_customer_pins_and_internal_fork_retention()
         let retained = page(&authority, &objects, id, AccountingCursor::genesis(), 1).await?;
         assert!(retained.complete);
         assert_eq!(retained.facts.len(), 1);
+        assert_eq!(retained.facts[0].authority_id, id);
+        // The same generation's volume publication is a different source.
+        assert_ne!(
+            retained.facts[0].authority_id,
+            volume_authority_id(workspace.id().volume_id())
+        );
         assert_eq!(
             retained.facts[0].transition,
             AccountingTransition::Retained {
