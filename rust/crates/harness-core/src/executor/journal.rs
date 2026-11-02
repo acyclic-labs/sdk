@@ -93,6 +93,15 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// The latest response admitted by ModelStarted, independent of replay and
+    /// cancellation. Prepared but undispatched candidates are excluded.
+    fn steering_snapshot(
+        &self,
+        _operation: OperationId,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::agent::SteeringSnapshot>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Authenticates private working cuts issued by this journal binding.
     /// Without this capability the original journal's content and compaction
     /// proof validation still bind its working cut; no signature is claimed.

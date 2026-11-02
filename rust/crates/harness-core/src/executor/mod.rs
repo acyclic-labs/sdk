@@ -636,6 +636,8 @@ pub struct StockExecutor {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjection {
     pub(crate) context: crate::context::Context,
+    /// Exact steering before compaction or transforms, covered by this projection.
+    pub(crate) steering: Option<crate::agent::SteeringSnapshot>,
     pub(crate) canonical: Option<FileRef>,
     pub(crate) checkpoint: Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]

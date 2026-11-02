@@ -552,8 +552,129 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             if notices.len() == 1
                 && notices[0].body == serde_json::json!({"name": "later", "paths": ["c"]})
     ));
-    boundary.admitted(operation, 2).await?;
-    assert!(boundary.messages(operation, 3, None).await?.is_empty());
+    // Commit the original prepared candidate and actual model admission. A
+    // later prepared range has no ModelStarted and must not become visible.
+    use acyclic_harness_core::executor::{ExecutionEvent, ModelPurpose};
+    use acyclic_harness_core::model::{ModelMessage, PreparedModelRequest};
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            compose_tools: false,
+            model: Model::new("test".into(), "text".into(), "1".into())?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("initial".into()),
+            }],
+            tools: Vec::new(),
+            sampling: Default::default(),
+            max_output_tokens: None,
+        },
+        Default::default(),
+        None,
+    )?;
+    open.journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: request.request_digest(),
+            },
+            None,
+        )?
+        .await?;
+    // This uses the same private staging and authenticated observation writer
+    // as dispatch; no provider response or boundary replay supplies recovery.
+    let bytes = acyclic_harness_core::contract::canonical_json_bytes(request.request())?;
+    let request_file = open
+        .journal
+        .stage(operation, "request", &bytes, "application/json", None)?
+        .await?;
+    for step in [1, 2] {
+        let snapshot = if step == 1 {
+            // The prior exact snapshot, already staged for this boundary.
+            let bytes = open.journal.load(&transcript.file, None)?.await?;
+            Some(SteeringSnapshot {
+                through: cut.through,
+                messages: acyclic_harness_core::contract::json_from_slice(&bytes)?,
+            })
+        } else {
+            boundary.prepared_snapshot(operation, step)?
+        };
+        let projection = serde_json::json!({
+            "context": {"messages": request.request().messages, "metadata": {}, "current_input_index": 0},
+            "canonical": null, "checkpoint": null, "working": null, "accounting": null,
+            "steering": snapshot,
+        });
+        let bytes = acyclic_harness_core::contract::canonical_json_bytes(&projection)?;
+        let key = format!("prepared:{step}");
+        let file = open
+            .journal
+            .stage(operation, &key, &bytes, "application/json", None)?
+            .await?;
+        let selected = if step == 1 {
+            cut
+        } else {
+            boundary.selection(operation, step)?
+        };
+        open.journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::ContextPrepared {
+                    step,
+                    projection: file,
+                    steering: Some(selected),
+                },
+                None,
+            )?
+            .await?;
+        if step == 1 {
+            open.journal
+                .append(
+                    operation,
+                    "model:1:started",
+                    &ExecutionEvent::ModelStarted {
+                        step,
+                        purpose: ModelPurpose::Response,
+                        request_digest: request.request_digest(),
+                        request: request_file.clone(),
+                    },
+                    None,
+                )?
+                .await?;
+        }
+    }
+    drop(open);
+    let reopened = host
+        .open(
+            &state,
+            operation,
+            0,
+            1,
+            &ModelContent::Text("initial".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let restored = reopened
+        .journal
+        .model_boundary()
+        .ok_or("no recovered boundary")?;
+    assert!(restored.transcript(operation).await?.is_none());
+    // Cancellation during prefix replay must restore the later durable admission.
+    restored.messages(operation, 0, None).await?;
+    restored.admitted(operation, 0).await?;
+    let snapshot = reopened.journal.steering_snapshot(operation).await?;
+    restored.restore_snapshot(operation, snapshot)?;
+    let recovered = restored
+        .transcript(operation)
+        .await?
+        .ok_or("lost admitted steering")?;
+    assert_eq!(
+        recovered, transcript,
+        "unadmitted later preparation is excluded"
+    );
+    let bytes = reopened.journal.load(&recovered.file, None)?.await?;
+    let recovered: Vec<ModelMessage> = acyclic_harness_core::contract::json_from_slice(&bytes)?;
+    assert_eq!(recovered, messages);
     assert!(
         model.requests().is_empty(),
         "boundary observation never dispatches"

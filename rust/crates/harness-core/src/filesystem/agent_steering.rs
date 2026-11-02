@@ -362,6 +362,52 @@ where
         })
     }
 
+    fn prepared_snapshot(
+        &self,
+        operation: OperationId,
+        step: u32,
+    ) -> Result<Option<crate::agent::SteeringSnapshot>> {
+        self.require_operation(operation)?;
+        let admitted = self
+            .admitted
+            .lock()
+            .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+        let selected = admitted
+            .selected
+            .as_ref()
+            .filter(|selected| selected.step == step)
+            .ok_or_else(|| Error::Storage("request has no selected steering range".into()))?;
+        let mut messages = admitted.messages.clone();
+        if admitted.step.is_none_or(|previous| previous < step) {
+            messages.extend_from_slice(&selected.messages);
+        }
+        Ok(Some(crate::agent::SteeringSnapshot {
+            through: selected.cut.through,
+            messages,
+        }))
+    }
+
+    fn restore_snapshot(
+        &self,
+        operation: OperationId,
+        snapshot: Option<crate::agent::SteeringSnapshot>,
+    ) -> Result<()> {
+        self.require_operation(operation)?;
+        let mut admitted = self
+            .admitted
+            .lock()
+            .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+        // The journal is authoritative even if replay restored only a prefix.
+        // A prepared but unadmitted candidate cannot survive cancellation.
+        let (through, messages) = snapshot.map_or((None, Vec::new()), |value| {
+            (Some(value.through), value.messages)
+        });
+        admitted.messages = messages;
+        admitted.through = through;
+        admitted.selected = None;
+        Ok(())
+    }
+
     fn transcript(
         &self,
         operation: OperationId,

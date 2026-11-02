@@ -25,6 +25,7 @@ impl StockExecution<'_> {
         Ok((
             ResponseProjection {
                 context,
+                steering: None,
                 canonical: None,
                 checkpoint: None,
                 working,
@@ -47,7 +48,7 @@ impl StockExecution<'_> {
         Option<ContextAccounting>,
         crate::model::PreparedModelRequest,
     )> {
-        let (projection, prepared) = self
+        let (mut projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
@@ -61,6 +62,10 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
+        projection.steering = boundary
+            .map(|boundary| boundary.prepared_snapshot(input.operation_id, step))
+            .transpose()?
+            .flatten();
         let reference = transcript::stage_projection(
             journal,
             input.operation_id,

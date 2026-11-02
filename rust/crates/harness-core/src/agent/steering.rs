@@ -109,6 +109,16 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     Ok(selection)
 }
 
+/// Exact cumulative steering retained in the existing prepared projection.
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct SteeringSnapshot {
+    /// Exclusive source cursor of the retained messages.
+    pub through: u64,
+    /// Messages as rendered at their original boundaries, before transformation.
+    pub messages: Vec<crate::model::ModelMessage>,
+}
+
 /// A journal's model-boundary binding. The executor freezes the selected range
 /// with ContextPrepared; replay must reconstruct only that immutable range.
 pub trait ModelBoundary: acyclic_stream::ProviderPlatform {
@@ -130,6 +140,25 @@ pub trait ModelBoundary: acyclic_stream::ProviderPlatform {
         operation: crate::OperationId,
         step: u32,
     ) -> acyclic_stream::BoxProviderFuture<'_, crate::Result<()>>;
+
+    /// Snapshot the candidate before ContextPrepared is published. Only a later
+    /// durable ModelStarted admits it; preparation alone grants no visibility.
+    fn prepared_snapshot(
+        &self,
+        _operation: crate::OperationId,
+        _step: u32,
+    ) -> crate::Result<Option<SteeringSnapshot>> {
+        Ok(None)
+    }
+
+    /// Restore the original journal's admitted snapshot before cancellation settles.
+    fn restore_snapshot(
+        &self,
+        _operation: crate::OperationId,
+        _snapshot: Option<SteeringSnapshot>,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 
     /// Retain this turn's admitted boundary messages in its inherited history.
     fn transcript(

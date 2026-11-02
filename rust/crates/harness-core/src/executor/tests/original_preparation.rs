@@ -97,6 +97,7 @@ impl StockExecution<'_> {
         };
         let projection = ResponseProjection {
             context: projection,
+            steering: None,
             canonical,
             checkpoint: None,
             working: None,

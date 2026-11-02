@@ -46,7 +46,8 @@ mod slots;
 mod steering;
 pub use messaging::{MessageDelivery, peer_send_allowed};
 pub use steering::{
-    BoundaryCut, BoundarySelection, ModelBoundary, SteeringTranscript, select_boundary,
+    BoundaryCut, BoundarySelection, ModelBoundary, SteeringSnapshot, SteeringTranscript,
+    select_boundary,
 };
 mod targets;
 pub use targets::{

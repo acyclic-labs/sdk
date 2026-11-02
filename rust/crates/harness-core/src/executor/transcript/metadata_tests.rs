@@ -382,6 +382,7 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
                     .collect(),
                 current_input_index: Some(0),
             },
+            steering: None,
             canonical: Some(reference.clone()),
             checkpoint: Some(reference.clone()),
             working: Some(reference.clone()),

@@ -803,7 +803,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     targets: announced(&open),
                     tool_results: open.outputs.tool_results(turn),
                     steering: match open.journal.model_boundary() {
-                        Some(boundary) => boundary.transcript(turn).await.map_err(host_error)?,
+                        Some(boundary) => {
+                            let snapshot = open
+                                .journal
+                                .steering_snapshot(turn)
+                                .await
+                                .map_err(host_error)?;
+                            boundary
+                                .restore_snapshot(turn, snapshot)
+                                .map_err(host_error)?;
+                            boundary.transcript(turn).await.map_err(host_error)?
+                        }
                         None => None,
                     },
                     notices: notices.clone(),
