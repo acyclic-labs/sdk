@@ -182,11 +182,11 @@ impl WasmAgentControls {
         conversation_from: u64,
         status_from: u64,
     ) -> Result<super::agent_client::WasmAgentClient, JsValue> {
-        let selection = acyclic_harness_client::AgentSelection {
-            agent: super::agent_client::agent_path(agent)?,
+        let selection = acyclic_harness_client::AgentSelection::new(
+            super::agent_client::agent_path(agent)?,
             conversation_from,
             status_from,
-        };
+        );
         let client = self
             .controls
             .observe(selection)

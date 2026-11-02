@@ -695,9 +695,26 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     // Mutate only the real export's saved continuation. A refused resume must
     // leave its input identity unused, even if model dispatch would race exit.
     let checkpoint = std::fs::read(&cursor).unwrap();
-    for (field, value) in [("input", u64::MAX), ("after", 1)] {
-        let mut invalid: Value = serde_json::from_slice(&checkpoint).unwrap();
-        invalid["execution"]["position"][field] = json!(value);
+    let saved: Value = serde_json::from_slice(&checkpoint).unwrap();
+    let invalid_execution =
+        [("input", u64::MAX), ("after", 1)]
+            .into_iter()
+            .map(|(field, value)| {
+                let mut invalid = saved.clone();
+                invalid["execution"]["position"][field] = json!(value);
+                invalid
+            });
+    let invalid_sources = saved["resources"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|resource| {
+            let mut invalid = saved.clone();
+            // Mutate the actual saved cursor into invalid input for its follow.
+            invalid["resources"][resource]["opaque"] = json!("AA==");
+            invalid
+        });
+    for invalid in invalid_execution.chain(invalid_sources) {
         let bytes = serde_json::to_vec(&invalid).unwrap();
         std::fs::write(&cursor, &bytes).unwrap();
         let refused = graphcoder(
