@@ -534,6 +534,48 @@ fn grpc_timeouts_parse_exactly() {
 }
 
 #[tokio::test]
+async fn server_retains_the_transport_deadline_before_effects() -> TestResult {
+    use wire::blobs_service_server::BlobsService as _;
+
+    let store = Arc::new(MemoryObjects::memory());
+    let resolve: AccountResolver = {
+        let store = Arc::clone(&store);
+        Arc::new(move |_| Ok(store.clone()))
+    };
+    let server = BlobsServer::new(resolve);
+    let body = b"original transport budget";
+    let digest = Digest::hash(body);
+    let mut request = Request::new(wire::PutBlobRequest {
+        digest: Some(digest.into()),
+        body: body.to_vec(),
+        references: Vec::new(),
+    });
+    // Use tonic's emitted timeout and the transport's original arrival,
+    // exactly as an ingress layer retains them through decoding/admission.
+    request.set_timeout(Duration::from_secs(1));
+    request
+        .extensions_mut()
+        .insert(std::time::Instant::now() - Duration::from_secs(2));
+    let reply = server.put_blob(request).await;
+    assert_eq!(reply.unwrap_err().code(), tonic::Code::DeadlineExceeded);
+    assert_eq!(
+        store.head(digest).await.unwrap_err().code,
+        wire::ErrorCode::NotFound
+    );
+
+    // The same public route with a live original budget publishes once.
+    let mut request = Request::new(wire::PutBlobRequest {
+        digest: Some(digest.into()),
+        body: body.to_vec(),
+        references: Vec::new(),
+    });
+    request.set_timeout(Duration::from_secs(60));
+    server.put_blob(request).await?;
+    assert_eq!(store.head(digest).await?.digest, digest);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_refused_wait_keeps_its_own_failure() -> TestResult {
     let replica = Replica::new().await?;
     let (digest, committed) = written(&client(&replica), b"pending").await?;
