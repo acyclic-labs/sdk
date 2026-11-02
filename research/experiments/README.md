@@ -70,6 +70,11 @@ second arm from the first arm's result. Retain the assigned order even when the
 first arm fails. This counterbalances order within a cut without a history
 scan or an adaptive stopping rule; it does not make the replicates independent.
 
+Retain the original paired keys before execution as version-1
+`plan::PairAssignment` objects, separate from outcomes. The file analyzer matches
+each observed pair against this declaration. An equal number of rows cannot
+replace an omitted failed trial with another population or replicate.
+
 Every arm/replicate forks the same saved cut within its source cluster. Use the
 shared scope-fork entrance, admit configuration and grants while dormant, bind
 the actual model/provider and independent replay cursor, then trigger. Until

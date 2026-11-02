@@ -3,6 +3,7 @@
 
 use super::{
     Error, Observation,
+    plan::PairAssignment,
     reports::{CostReport, Costs},
     stats::{Cluster, Estimate, PairedStats},
 };
@@ -132,28 +133,36 @@ impl Contrast {
     /// repeated closed clusters are refused with one retained key, without a map.
     /// Original independent grouping, provider/cut evidence and numeric-score
     /// semantics remain caller-owned. No input row or partial report escapes on error.
-    /// Supply the predeclared number of assigned pairs, including failed trials;
-    /// missing or surplus assignments are refused, even if whole pairs are omitted.
+    /// Supply the original, ordered assignment stream, declared before outcomes.
+    /// Match every key exactly: equal row counts cannot hide a replaced pair.
+    /// Failed trials still need rows with unknown values. Missing, surplus and
+    /// substituted assignments are refused, including entirely omitted pairs.
     /// Work is O(1) per row and retained space is O(1) for the entire input.
     pub fn analyze(
         &self,
         rows: impl IntoIterator<Item = Result<Observation, Error>>,
-        expected_pairs: u64,
+        expected: impl IntoIterator<Item = Result<PairAssignment, Error>>,
     ) -> Result<AnalysisReport, Error> {
         let Self {
             baseline_arm,
             treatment_arm,
         } = *self;
         let mut rows = rows.into_iter();
+        let mut expected = expected.into_iter();
         let mut last: Option<([u8; 32], u64)> = None;
         let (mut assigned_pairs, mut assigned_clusters) = (0u64, 0u64);
         let (mut score, mut cost) = (Metric::default(), Metric::default());
         let (mut baseline_cost, mut treatment_cost) = (Costs::default(), Costs::default());
         while let Some(baseline) = rows.next() {
             let baseline = baseline?;
-            if assigned_pairs == expected_pairs {
+            let assignment = expected
+                .next()
+                .ok_or(Error::Analysis("input exceeds the declared assignments"))??;
+            if baseline.0.population != assignment.population
+                || baseline.0.replicate != assignment.replicate
+            {
                 return Err(Error::Analysis(
-                    "input exceeds the declared assignment count",
+                    "input differs from the declared assignment",
                 ));
             }
             let next_assigned = assigned_pairs.checked_add(1).ok_or(Error::Overflow)?;
@@ -178,7 +187,7 @@ impl Contrast {
             treatment_cost.push_admitted(treatment.0.cost_usd)?;
             assigned_pairs = next_assigned;
         }
-        if assigned_pairs != expected_pairs {
+        if expected.next().transpose()?.is_some() {
             return Err(Error::Analysis("input omits declared assignments"));
         }
         score.finish_cluster()?;
@@ -199,6 +208,27 @@ impl Contrast {
 
 #[cfg(kani)]
 mod proofs {
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn a_complete_pair_is_accepted_only_for_its_declared_assignment() {
+        let declared_cut: u8 = kani::any();
+        let actual_cut: u8 = kani::any();
+        let declared_replicate: u64 = kani::any();
+        let actual_replicate: u64 = kani::any();
+        let rows = [0, 1].map(|arm| {
+            super::Observation::new([actual_cut; 32], actual_replicate, arm, None, None)
+        });
+        let expected = [Ok(super::PairAssignment::new(
+            [declared_cut; 32],
+            declared_replicate,
+        ))];
+        let result = super::Contrast::new(0, 1).unwrap().analyze(rows, expected);
+        assert_eq!(
+            result.is_ok(),
+            declared_cut == actual_cut && declared_replicate == actual_replicate
+        );
+    }
+
     #[kani::proof]
     #[kani::unwind(33)]
     fn ordered_pair_admission_rejects_reuse_without_changing_the_last_key() {
@@ -231,9 +261,14 @@ mod tests {
         rows: impl IntoIterator<Item = Result<Observation, Error>>,
         baseline: u64,
         treatment: u64,
-        expected_pairs: u64,
+        expected: impl IntoIterator<Item = (u8, u64)>,
     ) -> Result<AnalysisReport, Error> {
-        Contrast::new(baseline, treatment)?.analyze(rows, expected_pairs)
+        Contrast::new(baseline, treatment)?.analyze(
+            rows,
+            expected
+                .into_iter()
+                .map(|(cut, replicate)| Ok(PairAssignment::new([cut; 32], replicate))),
+        )
     }
 
     #[test]
@@ -257,7 +292,7 @@ mod tests {
         let rows = serde_json::Deserializer::from_slice(&bytes)
             .into_iter::<Observation>()
             .map(|row| row.map_err(Error::Json));
-        let report = analyze(rows, 0, 1, 5)?;
+        let report = analyze(rows, 0, 1, [(1, 0), (2, 0), (2, 1), (3, 0), (3, 1)])?;
         assert_eq!((report.assigned_pairs, report.assigned_clusters), (5, 3));
         assert_eq!((report.score.pairs, report.score.clusters), (2, 2));
         assert_eq!(
@@ -287,7 +322,7 @@ mod tests {
             ],
             0,
             1,
-            2,
+            [(1, 0), (2, 0)],
         )?;
         assert_eq!((report.assigned_pairs, report.assigned_clusters), (2, 2));
         assert_eq!((report.score.pairs, report.score.clusters), (0, 0));
@@ -312,7 +347,7 @@ mod tests {
             ],
             0,
             1,
-            3,
+            [(1, 0), (1, 1), (2, 0)],
         )?;
         assert_eq!((report.assigned_pairs, report.assigned_clusters), (3, 2));
         assert_eq!((report.score.pairs, report.cost_usd.pairs), (0, 2));
@@ -329,7 +364,7 @@ mod tests {
         assert_eq!(report.treatment_cost.total_cost_usd, Some(6.0));
         assert_eq!(report.treatment_cost.cost_per_assigned_usd, Some(2.0));
 
-        let empty = analyze([], 0, 1, 0)?;
+        let empty = analyze([], 0, 1, [])?;
         assert_eq!(empty.baseline_cost.total_cost_usd, Some(0.0));
         assert_eq!(empty.baseline_cost.cost_per_assigned_usd, None);
         Ok(())
@@ -338,12 +373,12 @@ mod tests {
     #[test]
     fn incomplete_reordered_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
         let row = |cut, replicate, arm| Observation::new([cut; 32], replicate, arm, None, None);
-        assert!(analyze([row(1, 0, 0)], 0, 1, 1).is_err());
-        assert!(analyze([row(1, 0, 1), row(1, 0, 0)], 0, 1, 1).is_err());
-        assert!(analyze([row(1, 0, 0), row(2, 0, 1)], 0, 1, 1).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 1, 1)], 0, 1, 1).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, 2).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, 0).is_err());
+        assert!(analyze([row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
+        assert!(analyze([row(1, 0, 1), row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
+        assert!(analyze([row(1, 0, 0), row(2, 0, 1)], 0, 1, [(1, 0)]).is_err());
+        assert!(analyze([row(1, 0, 0), row(1, 1, 1)], 0, 1, [(1, 0)]).is_err());
+        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, [(1, 0), (2, 0)]).is_err());
+        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, []).is_err());
         for (cut, replicate) in [(1, 0), (0, 1)] {
             assert!(
                 analyze(
@@ -355,23 +390,65 @@ mod tests {
                     ],
                     0,
                     1,
-                    2,
+                    [(1, 0), (cut, replicate)],
                 )
                 .is_err()
             );
         }
-        assert!(analyze([], 0, 0, 0).is_err());
+        assert!(analyze([], 0, 0, []).is_err());
         let baseline = row(1, 0, 0)?;
         let mut bytes = serde_json::to_vec(&baseline)?;
         bytes.extend_from_slice(b"\n{\"version\":");
         let rows = serde_json::Deserializer::from_slice(&bytes)
             .into_iter::<Observation>()
             .map(|row| row.map_err(Error::Json));
-        assert!(matches!(analyze(rows, 0, 1, 1), Err(Error::Json(_))));
+        assert!(matches!(analyze(rows, 0, 1, [(1, 0)]), Err(Error::Json(_))));
         let rows = (0..2).flat_map(|replicate| {
             (0..2).map(move |arm| Observation::new([1; 32], replicate, arm, None, Some(f64::MAX)))
         });
-        assert!(matches!(analyze(rows, 0, 1, 2), Err(Error::Statistics(_))));
+        assert!(matches!(
+            analyze(rows, 0, 1, [(1, 0), (1, 1)]),
+            Err(Error::Statistics(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn declared_keys_refuse_equal_count_substitution_and_failed_sources() -> Result<(), Error> {
+        let rows = |second_cut, second_replicate| {
+            [(1, 0), (second_cut, second_replicate)]
+                .into_iter()
+                .flat_map(|(cut, replicate)| {
+                    [0, 1].map(move |arm| Observation::new([cut; 32], replicate, arm, None, None))
+                })
+        };
+        let declaration = [(1, 0), (1, 1)];
+        assert_eq!(analyze(rows(1, 1), 0, 1, declaration)?.assigned_pairs, 2);
+        for (cut, replicate) in [(1, 99), (2, 1)] {
+            // Negative control: counting alone accepts the replaced assignment.
+            assert_eq!(rows(cut, replicate).count() / 2, declaration.len());
+            assert!(matches!(
+                analyze(rows(cut, replicate), 0, 1, declaration),
+                Err(Error::Analysis(_))
+            ));
+        }
+        let contrast = Contrast::new(0, 1)?;
+        let declared = PairAssignment::new([1; 32], 0);
+        let mut bytes = serde_json::to_vec(&declared)?;
+        bytes.extend_from_slice(b"\n{\"version\":");
+        let expected = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter::<PairAssignment>()
+            .map(|entry| entry.map_err(Error::AssignmentJson));
+        let rows = [0, 1].map(|arm| Observation::new([1; 32], 0, arm, None, None));
+        assert!(matches!(
+            contrast.analyze(rows, expected),
+            Err(Error::AssignmentJson(_))
+        ));
+        let expected = [Err(Error::Analysis("original declaration unavailable"))];
+        assert!(matches!(
+            contrast.analyze([], expected),
+            Err(Error::Analysis("original declaration unavailable"))
+        ));
         Ok(())
     }
 
@@ -387,7 +464,10 @@ mod tests {
             })
         };
         let mut result = None;
-        let measured = acyclic_test_support::measure(|| result = Some(analyze(rows(), 0, 1, 64)));
+        let measured = acyclic_test_support::measure(|| {
+            let expected = (0u8..32).flat_map(|cut| (0..2).map(move |replicate| (cut, replicate)));
+            result = Some(analyze(rows(), 0, 1, expected));
+        });
         let report = result.ok_or(Error::Analysis("allocation control did not run"))??;
         assert_eq!((report.assigned_pairs, report.assigned_clusters), (64, 32));
         assert_eq!(measured.count_total, 0);

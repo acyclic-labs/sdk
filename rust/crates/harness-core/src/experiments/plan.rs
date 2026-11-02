@@ -2,7 +2,48 @@
 //! indices only; actual source cuts, configuration and execution stay external.
 
 use super::Error;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
+
+/// One predeclared pair, emitted before outcomes in version-1 assignment files.
+/// Population identity and replicate refer to the original experimental design;
+/// declaring them does not itself prove source-cut or provider comparability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct PairAssignment {
+    version: u32,
+    /// The comparison and common source cut selected before execution.
+    pub population: [u8; 32],
+    /// Replicate selected before execution, including future failed work.
+    pub replicate: u64,
+}
+
+impl PairAssignment {
+    /// Declare one pair without a heap allocation or numerical validation.
+    pub fn new(population: [u8; 32], replicate: u64) -> Self {
+        Self {
+            version: 1,
+            population,
+            replicate,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PairAssignment {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct File {
+            version: u32,
+            population: [u8; 32],
+            replicate: u64,
+        }
+        let file: File = crate::executor::json::deserialize_object(decoder)?;
+        if file.version != 1 {
+            return Err(serde::de::Error::custom("assignment version must be 1"));
+        }
+        Ok(Self::new(file.population, file.replicate))
+    }
+}
 
 /// One assigned arm, independent of whether its execution later succeeds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +138,25 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assignment_files_reject_ambiguous_or_changed_declarations() -> Result<(), serde_json::Error>
+    {
+        // Authored declaration data, not a provider or tool fixture.
+        let declared = PairAssignment::new([3; 32], 8);
+        let object = serde_json::to_string(&declared)?;
+        assert_eq!(serde_json::from_str::<PairAssignment>(&object)?, declared);
+        for malformed in [
+            object.replacen("\"version\":1", "\"version\":2", 1),
+            format!("{{\"version\":1,{}", &object[1..]),
+            format!("{{\"unknown\":0,{}", &object[1..]),
+            format!("{object} null"),
+            serde_json::json!([1, declared.population, declared.replicate]).to_string(),
+        ] {
+            assert!(serde_json::from_str::<PairAssignment>(&malformed).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn complete_blocks_balance_positions_in_the_predeclared_order() -> Result<(), Error> {

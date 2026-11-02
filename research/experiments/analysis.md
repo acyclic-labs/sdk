@@ -1,7 +1,7 @@
 # Offline paired experiment analysis
 
 `acyclic_harness::experiments` analyzes trial observations independently of the
-execution engine. Observation rows and paired analysis reports are version 2;
+execution engine. Pair assignments are version 1. Observation rows and paired analysis reports are version 2;
 assigned-trial reports, arm cost summaries, scorers and decisions remain version 1.
 The module provides paired differences, ordinary paired
 standard errors, intercept-only CR1
@@ -30,6 +30,14 @@ or replaces the ordinary fork/replay entrance. Configuration remains in operator
 files. Execution order differs from analysis row order: emit each matched pair
 baseline first even when treatment executed first.
 
+Declare every paired key before outcomes with
+`plan::PairAssignment::new(population, replicate)`. Serialize these as version-1
+objects containing `version`, the 32-byte `population` array and `replicate`.
+The shared strict object decoder rejects changed versions, unknown or duplicate
+fields and positional arrays. Keep this original declaration independently of
+result collection; rebuilding it from completed rows would hide omitted work.
+It declares identities, not proof that the cuts or providers actually match.
+
 An observation binds a 32-byte population identity, replicate number, numeric
 arm, optional finite score and optional complete measured cost. The population
 identity names the admitted comparison and common source cut; keep its arm-name
@@ -57,7 +65,7 @@ map and does not detect submitting the same cluster twice.
 For example:
 
 ```rust
-use acyclic_harness::experiments::{Observation, analysis::Contrast};
+use acyclic_harness::experiments::{Observation, analysis::Contrast, plan::PairAssignment};
 
 # fn example() -> Result<(), acyclic_harness::experiments::Error> {
 let rows = [
@@ -68,7 +76,8 @@ let rows = [
     Observation::new([source; 32], 0, 0, baseline, None),
     Observation::new([source; 32], 0, 1, treatment, None),
 ]);
-let report = Contrast::new(0, 1)?.analyze(rows, 3)?;
+let expected = (1..=3).map(|source| Ok(PairAssignment::new([source; 32], 0)));
+let report = Contrast::new(0, 1)?.analyze(rows, expected)?;
 assert_eq!(report.assigned_pairs, 3);
 assert_eq!(report.assigned_clusters, 3);
 assert_eq!(report.score.pairs, 2);
@@ -140,16 +149,18 @@ The `experiment-analysis` contributor program reads version-2 observation object
 from one file, accepting JSONL without retaining its rows:
 
 ```sh
-cargo run --locked -p acyclic-harness-core --example experiment-analysis -- 0 1 20 observations.jsonl > analysis.json
+cargo run --locked -p acyclic-harness-core --example experiment-analysis -- 0 1 assignments.jsonl observations.jsonl > analysis.json
 ```
 
 For each assigned `(population, replicate)` write the declared baseline arm first
 and treatment arm second. Pair keys must strictly increase lexicographically;
 this catches duplicate assignments and a closed cut appearing again using one
 retained key. The input producer supplies that order. No sorting or history scan
-is performed. Supply the predeclared assigned-pair count (20 in this example),
-not a count reconstructed from completed rows. All assigned pairs need rows even
-when both values are unknown. A missing whole pair or surplus row is refused.
+is performed. Supply the original version-1 assignment file declared before
+outcomes, independently of the version-2 observation file. Each assignment needs
+its exact population and replicate, not merely an equal row count. All assigned
+pairs need rows even when both values are unknown. Missing, surplus or replaced
+pairs are refused. A declaration rebuilt from completed rows proves no coverage.
 Original source independence, fork/provider evidence and numeric-score semantics
 remain the producer's responsibility. A population digest alone proves none of
 those facts. For primary correctness, predeclare unscored outputs as failures;
@@ -180,7 +191,7 @@ instead of publishing a nonfinite total or silently treating it as missing.
 `Contrast::analyze` shares the pipeline with other callers. It checks a pair once
 for both contrasts and reuses `Cluster`/`PairedStats`. It returns no partial report
 on a malformed row, missing partner, changed arm, duplicate or decreasing key,
-declared assignment-count mismatch or numerical refusal. The program buffers
+declared assignment-key mismatch or numerical refusal. The program buffers
 input and output, writes one report at the end and flushes once. It adds no model
 call, executor, replay or scheduling.
 
@@ -211,13 +222,17 @@ Trial summaries retain six scalar fields, with no rows, maps or repeated scoring
 
 The shared file pipeline reduces two identity checks per score/cost pair to one.
 Its numeric state allocates nothing and retains two observations, one ordering
-key and fixed accumulators. The key copies 32 population bytes only when a new
-cut starts; later replicates update one integer. The contributor program opens
-one input file, reads through one buffer and writes through one output buffer,
+key, the current assignment and fixed accumulators. Each pair consumes one
+declared key and compares its fixed-width identity once; EOF checks for one
+leftover declaration. The ordering key copies 32 population bytes only when a
+new cut starts; later replicates update one integer. The contributor program
+opens two input files, reads each through one buffer and writes through one output buffer,
 with one final flush and zero durability barriers or network round trips. Read
 syscalls depend on input bytes; JSON decoding can reuse scratch space for the
 current token. Neither buffer nor parser retains earlier rows. EOF with a partial
-row or pair is an error, and a complete stream must match the declared count.
+row or pair is an error. Every observed key must match the original declaration,
+and both inputs must finish together. The extra open and input buffer buy exact
+assignment coverage: counts alone cannot reject a substituted failed trial.
 
 Each arm summary adds only a priced count and known-cost sum: four scalar fields
 for the comparison, independent of trial count. It reuses the checked assignment
@@ -245,4 +260,5 @@ cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_
 cargo kani -p acyclic-harness-core --harness ordered_pair_admission_rejects_reuse_without_changing_the_last_key
 cargo kani -p acyclic-harness-core --harness incomplete_cost_coverage_never_claims_a_full_total_or_mean
 cargo kani -p acyclic-harness-core --harness assignment_indices_are_bijective_within_the_declared_population
+cargo kani -p acyclic-harness-core --harness a_complete_pair_is_accepted_only_for_its_declared_assignment
 ```
