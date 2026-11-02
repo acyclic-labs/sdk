@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "experiment": "error-propagation",
+  "cut": {
+    "agent": "harness/agents/00000000000000000000000000000000",
+    "turn": 0
+  },
+  "replicates": 20,
+  "arms": [
+    {
+      "name": "correct-seed",
+      "topology": "fork_join",
+      "role": "probe-coordinator",
+      "model": "openai/gpt-6-luna",
+      "prompt": "Run the bound diamond graph on task.json. Publish the selected seed payload once. Return the join assessor decision unchanged."
+    },
+    {
+      "name": "wrong-seed",
+      "topology": "fork_join",
+      "role": "probe-coordinator",
+      "model": "openai/gpt-6-luna",
+      "prompt": "Run the bound diamond graph on task.json. Publish the selected seed payload once. Return the join assessor decision unchanged."
+    }
+  ]
+}
