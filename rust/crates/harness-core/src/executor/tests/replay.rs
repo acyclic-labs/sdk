@@ -1,6 +1,157 @@
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn recorded_tool_settlement_absence_refuses_before_intent_or_execution() -> Result<()> {
+    use crate::model::{
+        Divergence, DivergenceSink, RecordedCall, RecordedModel, RecordedToolOutcome, Recording,
+    };
+    use futures::TryStreamExt as _;
+
+    struct Sink;
+    impl DivergenceSink for Sink {
+        fn diverged(&self, _: Divergence) {}
+    }
+
+    // Generated canonical requests/events exercise the shared executor and
+    // journal; these are not external provider-output fixtures.
+    for recorded in [false, true] {
+        let operation = OperationId::new();
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "call-1".into(),
+            "example.echo".into(),
+            json!({"value":"source"}),
+            None,
+        )?;
+        let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let tools = echo_tools(
+            adapter.clone(),
+            json!({"type":"object"}),
+            json!({"type":"object"}),
+            crate::tool::json_projection_schema(json!({"type":"object"})),
+        )?;
+        let model = Model::new("test".into(), "recorded-tool".into(), "1".into())?;
+        let request = crate::model::PreparedModelRequest::prepare(
+            ModelRequest {
+                model: model.clone(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("source".into()),
+                }],
+                compose_tools: false,
+                tools: vec![
+                    tools
+                        .get("example.echo", None, None)?
+                        .unwrap()
+                        .definition
+                        .clone(),
+                ],
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            Limits::default(),
+            None,
+        )?;
+        let mut recording = Recording::default();
+        recording.insert(
+            crate::model::replay_key(request.bytes())?,
+            RecordedCall {
+                events: [
+                    echo_call(&invocation.call_id, invocation.arguments.clone()),
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]
+                .iter()
+                .map(crate::contract::canonical_json_bytes)
+                .collect::<Result<_>>()?,
+                tools: if recorded {
+                    vec![(
+                        invocation.call_id.clone(),
+                        RecordedToolOutcome::Completed(ToolResult {
+                            value: invocation.arguments.clone(),
+                        }),
+                    )]
+                } else {
+                    Vec::new()
+                },
+            },
+        );
+        let provider = Arc::new(RecordedModel::new(
+            Arc::new(scripted_model()),
+            recording,
+            Arc::new(Sink),
+        ));
+        provider
+            .generate(
+                &request,
+                crate::model::ModelDispatch {
+                    operation_id: operation,
+                    step: 0,
+                    request_digest: request.request_digest(),
+                },
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+        let executor =
+            uncompacted_executor(model, provider.clone(), ContextPipeline::default(), tools)
+                .with_tool_authority(
+                    RuntimeScope::new(
+                        Capabilities::new(["tool:call:example.echo"]),
+                        Limits::default(),
+                    )?,
+                    allowed()?,
+                )?;
+        let journal = Journal::default();
+        let mut messages = vec![call_message(&invocation)];
+        let before = messages.clone();
+        let result = StockExecution::ordinary(&executor)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut messages,
+                &mut Vec::new(),
+            )
+            .await;
+        assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
+        if recorded {
+            assert!(matches!(result?, ExecutionProgress::Ready(_)));
+            assert!(
+                journal
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+            );
+            assert!(
+                provider
+                    .recorded_tool_result(operation, &invocation.call_id)
+                    .is_err(),
+                "a consumed settlement cannot become a live execution"
+            );
+        } else {
+            assert!(matches!(result, Err(Error::Storage(_))));
+            assert!(
+                journal.0.lock().unwrap().is_empty(),
+                "no tool intent may be published"
+            );
+            assert!(
+                journal.1.lock().unwrap().is_empty(),
+                "no invocation or result may be staged"
+            );
+            assert_eq!(messages, before);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
     for bytes in [

@@ -252,13 +252,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// A recorded settlement standing in for tool call `call_id` of
     /// `operation`, taken once. Only a replaying provider
     /// ([`super::RecordedModel`]) has one, for calls made by an answer it
-    /// served from its recording.
+    /// served from its recording. `Ok(None)` permits live execution; a missing,
+    /// unreadable or already consumed recorded settlement must return an error
+    /// instead. The executor propagates that error before dispatch or intent.
     fn recorded_tool_result(
         &self,
         _operation: OperationId,
         _call_id: &str,
-    ) -> Option<super::RecordedToolOutcome> {
-        None
+    ) -> Result<Option<super::RecordedToolOutcome>> {
+        Ok(None)
     }
     /// Pure native capability query.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

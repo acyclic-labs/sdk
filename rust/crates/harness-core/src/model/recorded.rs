@@ -241,7 +241,7 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
 #[derive(Default)]
 struct Replay {
     recording: Recording,
-    tools: HashMap<(OperationId, String), RecordedToolOutcome>,
+    tools: HashMap<OperationId, HashMap<String, RecordedToolOutcome>>,
     /// Turns that went live; each stays live.
     live: std::collections::HashSet<OperationId>,
     diverged: bool,
@@ -301,6 +301,7 @@ impl RecordedModel {
         }
         let Some(call) = replay.recording.take(&key) else {
             replay.live.insert(dispatch.operation_id);
+            replay.tools.remove(&dispatch.operation_id);
             let first = !std::mem::replace(&mut replay.diverged, true);
             drop(replay);
             if first {
@@ -308,10 +309,12 @@ impl RecordedModel {
             }
             return Ok(None);
         };
-        for (call_id, result) in call.tools {
+        if !call.tools.is_empty() {
             replay
                 .tools
-                .insert((dispatch.operation_id, call_id), result);
+                .entry(dispatch.operation_id)
+                .or_default()
+                .extend(call.tools);
         }
         Ok(Some(call.events))
     }
@@ -327,6 +330,105 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::{Value, json};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recorded_tool_lookup_borrows_keys_and_retires_consumed_operation_storage() -> Result<()> {
+        struct Sink;
+        impl DivergenceSink for Sink {
+            fn diverged(&self, _: Divergence) {}
+        }
+        let first = OperationId::from_bytes([1; 16]);
+        let other = OperationId::from_bytes([2; 16]);
+        for count in [1, 64, 1024] {
+            let model = RecordedModel::new(
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                Recording::default(),
+                Arc::new(Sink),
+            );
+            let keys: Vec<_> = (0..count).map(|index| format!("call-{index}")).collect();
+            let outcome =
+                || RecordedToolOutcome::Completed(crate::tool::ToolResult { value: Value::Null });
+            for operation in [first, other] {
+                model.lock().tools.insert(
+                    operation,
+                    keys.iter().map(|key| (key.clone(), outcome())).collect(),
+                );
+            }
+            for key in &keys {
+                let measured = acyclic_test_support::measure(|| {
+                    assert_eq!(
+                        model.recorded_tool_result(first, key).unwrap(),
+                        Some(outcome())
+                    );
+                });
+                assert_eq!(
+                    measured.count_total, 0,
+                    "lookup borrows the original call id"
+                );
+            }
+            assert!(
+                !model.lock().tools.contains_key(&first),
+                "last consumption retires its map"
+            );
+            assert_eq!(
+                model.lock().tools[&other].len(),
+                count,
+                "operation identity isolates equal call ids"
+            );
+            assert!(matches!(
+                model.recorded_tool_result(first, &keys[0]),
+                Err(Error::Storage(_))
+            ));
+            // The old owned-key lookup is the allocation negative control.
+            let measured = acyclic_test_support::measure(|| {
+                let owned = keys[0].to_owned();
+                std::hint::black_box(&owned);
+                assert_eq!(
+                    model.recorded_tool_result(other, &owned).unwrap(),
+                    Some(outcome())
+                );
+            });
+            assert!(measured.count_total > 0);
+            let request = PreparedModelRequest::prepare(
+                ModelRequest {
+                    model: Model::new("test".into(), "replay".into(), "1".into())?,
+                    messages: vec![ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("different request".into()),
+                    }],
+                    compose_tools: false,
+                    tools: Vec::new(),
+                    sampling: Default::default(),
+                    max_output_tokens: None,
+                },
+                Limits::default(),
+                None,
+            )?;
+            assert!(
+                model
+                    .take(
+                        &request,
+                        ModelDispatch {
+                            operation_id: other,
+                            step: 1,
+                            request_digest: request.request_digest(),
+                        }
+                    )?
+                    .is_none()
+            );
+            assert!(
+                model.lock().tools.is_empty(),
+                "divergence retires unconsumed results"
+            );
+            assert_eq!(
+                model.recorded_tool_result(other, &keys[0])?,
+                None,
+                "only an actually divergent operation permits live execution"
+            );
+        }
+        Ok(())
+    }
 
     proptest! {
         #[test]
@@ -529,8 +631,21 @@ impl ModelProvider for RecordedModel {
         &self,
         operation: OperationId,
         call_id: &str,
-    ) -> Option<RecordedToolOutcome> {
-        self.lock().tools.remove(&(operation, call_id.to_owned()))
+    ) -> Result<Option<RecordedToolOutcome>> {
+        let mut replay = self.lock();
+        if replay.live.contains(&operation) {
+            return Ok(None);
+        }
+        let (result, empty) = match replay.tools.get_mut(&operation) {
+            Some(tools) => (tools.remove(call_id), tools.is_empty()),
+            None => (None, false),
+        };
+        if empty {
+            replay.tools.remove(&operation);
+        }
+        result.map(Some).ok_or_else(|| {
+            Error::Storage("recorded tool settlement is missing or already consumed".into())
+        })
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {

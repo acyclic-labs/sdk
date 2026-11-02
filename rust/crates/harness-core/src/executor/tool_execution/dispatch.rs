@@ -23,7 +23,7 @@ impl<'io> StockExecution<'io> {
         } else {
             self.stock
                 .provider
-                .recorded_tool_result(operation_id, &invocation.call_id)
+                .recorded_tool_result(operation_id, &invocation.call_id)?
         };
         let dispatch = if started || replayed.is_some() {
             None
