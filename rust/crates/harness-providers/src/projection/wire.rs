@@ -1,5 +1,5 @@
 use super::call::Call;
-use super::fields::{Field, Fields};
+use super::fields::Fields;
 use acyclic_model_render::ToolDeclarations;
 use serde::{Serialize, ser::SerializeMap};
 use serde_json::{Value, value::RawValue};
@@ -7,19 +7,6 @@ use serde_json::{Value, value::RawValue};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "trailer_tests.rs"]
 mod tests;
-
-// One call-control order for every request purpose, independent of map features.
-const CALL_FIELDS: [Field; 9] = [
-    Field::MaxCompletionTokens,
-    Field::MaxOutputTokens,
-    Field::MaxTokens,
-    Field::Temperature,
-    Field::TopP,
-    Field::Seed,
-    Field::GenerationConfig,
-    Field::ToolChoice,
-    Field::ToolConfig,
-];
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
 #[derive(Serialize)]
@@ -95,10 +82,9 @@ impl Body<'_> {
         messages: impl Serialize,
     ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
-        for (name, value) in self.fields.iter() {
+        for (name, value) in self.fields.header() {
             if include.is_none_or(|fields| fields.contains(&name))
                 && !(name == "model" && model.is_some())
-                && !CALL_FIELDS.iter().any(|field| field.name() == name)
             {
                 map.serialize_entry(name, value)?;
             }
@@ -124,11 +110,8 @@ impl Body<'_> {
         map: &mut M,
         include: Option<&[&str]>,
     ) -> Result<(), M::Error> {
-        for field in CALL_FIELDS {
-            let name = field.name();
-            if include.is_none_or(|fields| fields.contains(&name))
-                && let Some(value) = self.fields.get(field)
-            {
+        for (name, value) in self.fields.call_controls() {
+            if include.is_none_or(|fields| fields.contains(&name)) {
                 map.serialize_entry(name, value)?;
             }
         }

@@ -6,9 +6,6 @@ macro_rules! fields {
         #[derive(Clone, Copy)]
         pub(super) enum Field { $($field),+ }
         const NAMES: &[(Field, &str)] = &[$((Field::$field, $name)),+];
-        impl Field {
-            pub(super) fn name(self) -> &'static str { NAMES[self as usize].1 }
-        }
     };
 }
 
@@ -35,6 +32,7 @@ fields! {
     Truncation => "truncation",
     AddGenerationPrompt => "add_generation_prompt",
     Tools => "tools",
+    // Call controls occupy the final slots and share one encoder.
     MaxCompletionTokens => "max_completion_tokens",
     MaxOutputTokens => "max_output_tokens",
     MaxTokens => "max_tokens",
@@ -58,9 +56,6 @@ impl Default for Fields {
 }
 
 impl Fields {
-    pub(super) fn get(&self, field: Field) -> Option<&Value> {
-        self.0[field as usize].as_ref()
-    }
     pub(super) fn insert(&mut self, field: Field, value: Value) {
         self.0[field as usize] = Some(value);
     }
@@ -70,10 +65,20 @@ impl Fields {
     pub(super) fn get_mut(&mut self, field: Field) -> Option<&mut Value> {
         self.0[field as usize].as_mut()
     }
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&'static str, &Value)> {
-        NAMES.iter().filter_map(|(field, name)| {
+    fn entries(&self, start: usize, end: usize) -> impl Iterator<Item = (&'static str, &Value)> {
+        NAMES[start..end].iter().filter_map(|(field, name)| {
             self.0[*field as usize].as_ref().map(|value| (*name, value))
         })
+    }
+    pub(super) fn header(&self) -> impl Iterator<Item = (&'static str, &Value)> {
+        self.entries(0, Field::MaxCompletionTokens as usize)
+    }
+    pub(super) fn call_controls(&self) -> impl Iterator<Item = (&'static str, &Value)> {
+        self.entries(Field::MaxCompletionTokens as usize, NAMES.len())
+    }
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&'static str, &Value)> {
+        self.entries(0, NAMES.len())
     }
     /// Freeze nested configuration ordering once at projection admission. No
     /// request-sized buffer or second encoding is constructed. Without

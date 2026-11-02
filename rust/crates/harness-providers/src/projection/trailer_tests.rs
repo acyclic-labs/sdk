@@ -6,6 +6,7 @@ use acyclic_harness_core::{
     profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
 };
 use proptest::prelude::*;
+use serde::Serializer as _;
 use serde::de::{MapAccess, Visitor};
 use serde_json::{Map, json};
 use std::{
@@ -111,6 +112,13 @@ fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields) {
 // Empty conversation arrays isolate configuration from native replay bytes,
 // which remain owned byte-for-byte by their original producers.
 fn configuration_pin() {
+    let probe: Map<String, Value> = [("z".into(), Value::Null), ("a".into(), Value::Null)]
+        .into_iter()
+        .collect();
+    println!(
+        "configuration_map_preserves_order={}",
+        probe.keys().next().unwrap() == "z"
+    );
     struct Configuration<'a, 'body>(&'a Body<'body>);
     impl Serialize for Configuration<'_, '_> {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -145,6 +153,10 @@ fn configuration_pin() {
         .unwrap();
         freeze_effort(&provider, &mut body.fields);
         let bytes = serde_json::to_vec(&Configuration(&body)).unwrap();
+        println!(
+            "configuration_wire={}",
+            std::str::from_utf8(&bytes).unwrap()
+        );
         digest.update(&(bytes.len() as u64).to_be_bytes());
         digest.update(&bytes);
     }
