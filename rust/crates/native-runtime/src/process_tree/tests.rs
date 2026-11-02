@@ -60,9 +60,9 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
     }
 }
 /// The child exits after a write found its stdin full, and the same capture
-/// pass sees its output end and its exit before any later write could meet
-/// the closed pipe. The exchange still fails: its input never reached the
-/// child.
+/// pass sees its output end before any later write could meet the closed pipe.
+/// EOF must fail the incomplete exchange without waiting for an exit status;
+/// the original cleanup still reaps the child.
 #[cfg(unix)]
 #[test]
 fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
@@ -107,8 +107,8 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
         )
         .expect_err("undelivered exchange input must fail");
     assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
-    assert!(failure.status.is_some());
     assert!(failure.cleanup_completed);
+    assert!(tree.is_reaped());
     Ok(())
 }
 
