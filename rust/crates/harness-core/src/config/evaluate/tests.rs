@@ -86,11 +86,11 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         ("while (true) {}\nexport default 1;", "instruction budget"),
         (
             "export default () => () => 1;",
-            "is a function, not plain data",
+            "returned a function, not plain data",
         ),
         (
-            "export default { a: [1, () => 2] };",
-            "the default export.a[1]",
+            "export default { a: [1, Symbol()] };",
+            "the default export.a[1] is a symbol",
         ),
         ("export default new Map();", "not a plain object"),
         ("export default NaN;", "finite"),
@@ -126,6 +126,12 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         ),
         other => panic!("{other:?}"),
     }
+    // Plain data means no function at any depth.
+    let message = error("export default { deny: [], x: () => 1 };", Surface::Data).await;
+    assert!(
+        message.contains("the default export.x must be plain data"),
+        "{message}"
+    );
     // Negative control: the same data is accepted on both surfaces.
     for surface in [Surface::Compose, Surface::Data] {
         let ok = evaluate(
@@ -153,4 +159,37 @@ fn imports_resolve_like_the_engine_and_stay_in_the_tree() {
     for specifier in ["../a.ts", "x.ts", "/etc/passwd", "./a/../../b.ts", "sys//x"] {
         assert!(resolve("agent.ts", specifier).is_err(), "{specifier}");
     }
+}
+
+// plugins.ts: an entry may be a function of the entry below it, and its
+// `config` a function of the plugin's defaults; both fold to data.
+#[tokio::test]
+async fn nested_functions_fold_over_the_base_at_their_path() -> Result<()> {
+    let base = json!({
+        "compaction": {"enabled": true, "config": {"notify": 0.75, "reuse": "ancestors"}},
+        "goal": {"enabled": true, "config": {"maxLoops": 3}},
+    });
+    let source = "export default (base) => ({
+        ...base,
+        compaction: { ...base.compaction, config: (c) => ({ ...c, notify: 0.7 }) },
+        goal: (entry) => ({ ...entry, enabled: false }),
+        extra: { config: (c) => ({ seen: c === undefined }) },
+    });";
+    let evaluated = evaluate(
+        "plugins.ts",
+        source.as_bytes(),
+        &TREE,
+        &base,
+        Surface::Compose,
+    )
+    .await?;
+    assert_eq!(
+        evaluated.value,
+        json!({
+            "compaction": {"enabled": true, "config": {"notify": 0.7, "reuse": "ancestors"}},
+            "goal": {"enabled": false, "config": {"maxLoops": 3}},
+            "extra": {"config": {"seen": true}},
+        })
+    );
+    Ok(())
 }
