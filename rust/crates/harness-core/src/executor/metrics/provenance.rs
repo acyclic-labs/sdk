@@ -315,13 +315,22 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
         }
         if matches!(
             batch.table,
-            Table::Turns | Table::ToolCalls | Table::Edges | Table::Outcomes
+            Table::Agents | Table::Turns | Table::ToolCalls | Table::Edges | Table::Outcomes
         ) && let Some(reference) = text(batch, "artifact", row)?
         {
             let file = id("file-reference", &[reference.as_bytes()]);
             out.class(&file, "http://www.w3.org/ns/prov#Entity")?;
             out.text(&file, "urn:acyclic:research:fileReference", reference)?;
             out.relation(&observation, "urn:acyclic:research:artifact", &file)?;
+            if batch.table == Table::Agents {
+                out.relation(
+                    agent
+                        .as_ref()
+                        .ok_or_else(|| export_error("PROV template has no original agent"))?,
+                    "http://www.w3.org/ns/prov#wasInfluencedBy",
+                    &file,
+                )?;
+            }
             if let Some(activity) = activity {
                 if batch.table == Table::ToolCalls && kind == "admitted" {
                     out.relation(activity, "http://www.w3.org/ns/prov#used", &file)?;
@@ -329,16 +338,11 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
             }
         }
         if batch.table == Table::Agents {
-            if let Some(profile) = text(batch, "profile_digest", row)? {
-                let profile_id = id("profile", &[profile.as_bytes()]);
-                out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
-                out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
-                out.relation(
-                    agent
-                        .as_ref()
-                        .ok_or_else(|| export_error("PROV profile has no original agent"))?,
-                    "http://www.w3.org/ns/prov#wasInfluencedBy",
-                    &profile_id,
+            if let Some(context) = text(batch, "creation_context", row)? {
+                out.text(
+                    &observation,
+                    "urn:acyclic:research:creationContext",
+                    context,
                 )?;
             }
             if kind == "placement" {
@@ -443,6 +447,102 @@ mod tests {
             .for_reader(bytes)
             .map(|triple| triple.map_err(export_error))
             .collect()
+    }
+
+    #[test]
+    fn adopted_templates_preserve_the_original_creation_pin() -> Result<()> {
+        use crate::{
+            AgentId,
+            agent::{CreationConfig, ForkAdopted, InboxRecord, SpawnContext},
+            conversation::{
+                FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef,
+            },
+            executor::metrics::inbox,
+        };
+
+        let agent = AgentId::from_bytes([3; 16]);
+        let volume = VolumeRef::new(
+            ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?,
+            "creation-test".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let template = |version: &str| {
+            FileRef::new(
+                volume.clone(),
+                "templates/reviewer/AGENT.md".into(),
+                version.into(),
+                FileDescriptor::from_bytes(b"Review the diff.", "text/markdown", &mut None)?,
+                "template".into(),
+                &mut None,
+            )
+        };
+        let original = template("generation-1")?;
+        let later = template("generation-2")?;
+        let original_reference = serde_json::to_string(&original).map_err(export_error)?;
+        let later_reference = serde_json::to_string(&later).map_err(export_error)?;
+        let project = |profile: Option<CreationConfig>| -> Result<Batch> {
+            let record = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                agent,
+                parent: None,
+                profile,
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            }));
+            let encoded = record.encode().map_err(export_error)?;
+            let decoded = InboxRecord::decode(&encoded).map_err(export_error)?;
+            Ok(inbox("agent", 0, &decoded)?.remove(0))
+        };
+        for (context, expected) in [
+            (SpawnContext::TopLevel, "top_level"),
+            (SpawnContext::Fresh, "fresh"),
+            (SpawnContext::Fork, "fork"),
+        ] {
+            let batch = project(Some(CreationConfig {
+                context,
+                template: Some(original.clone()),
+            }))?;
+            assert_eq!(text(&batch, "creation_context", 0)?, Some(expected));
+            assert_eq!(
+                text(&batch, "artifact", 0)?,
+                Some(original_reference.as_str())
+            );
+            let mut bytes = Vec::new();
+            write(&batch, &mut bytes)?;
+            let triples = graph(&bytes)?;
+            let file = id("file-reference", &[original_reference.as_bytes()]);
+            let later_file = id("file-reference", &[later_reference.as_bytes()]);
+            assert!(triples.iter().any(|triple| triple.predicate.as_str()
+                == "http://www.w3.org/ns/prov#wasInfluencedBy"
+                && triple.object.as_ref() == node(&file).into()));
+            assert!(
+                !triples
+                    .iter()
+                    .any(|triple| triple.object.as_ref() == node(&later_file).into()),
+                "a later file at the same path is not the admitted template"
+            );
+            assert!(
+                !triples
+                    .iter()
+                    .any(|triple| triple.subject.as_ref() == node(&file).into()
+                        && triple.predicate.as_str() == "http://www.w3.org/ns/prov#wasGeneratedBy")
+            );
+        }
+        let root = project(Some(CreationConfig {
+            context: SpawnContext::TopLevel,
+            template: None,
+        }))?;
+        assert_eq!(text(&root, "creation_context", 0)?, Some("top_level"));
+        assert_eq!(text(&root, "artifact", 0)?, None);
+        let external = project(None)?;
+        assert_eq!(text(&external, "creation_context", 0)?, None);
+        assert_eq!(text(&external, "artifact", 0)?, None);
+        Ok(())
     }
 
     proptest! {
