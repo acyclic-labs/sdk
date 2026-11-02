@@ -54,7 +54,15 @@ impl InputBuffers<'_, '_> {
         let mut owned = self.vec(names.len())?;
         for name in names {
             self.items(1)?;
-            owned.push(copy_name(name, limits, self)?);
+            let bytes = self.copy_bytes(name.as_bytes())?;
+            if name.as_bytes().len() as u64 > u64::from(limits.maximum_component_bytes) {
+                return Err(MountSourceError::NamespacePath(
+                    crate::kernel::NamespacePathError::Name(
+                        crate::kernel::TreePageError::NameTooLarge,
+                    ),
+                ));
+            }
+            owned.push(LogicalName::from_validated_bytes(name.encoding(), bytes));
         }
         NamespacePath::new(owned, limits).map_err(MountSourceError::NamespacePath)
     }
