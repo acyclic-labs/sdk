@@ -16,12 +16,23 @@ per-thread mutex remains the same across successive scopes, including surviving
 observer futures. No independent clock producer can disappear behind a wait.
 
 The previous wall-sampling control is replaced by an original timer lifecycle
-control: poll the advancing future once, require its actual deadline already
-advanced, cancel that same future before the scheduler yield finishes, then pause
-and resume time and await a timer whose deadline passed before observation.
-Removing same-path advancement fails the first deadline assertion immediately;
-removing cancellation resume makes the next pause fail immediately. These controls
-and existing real HTTP/slow-down/cancellation controls remain unexecuted here.
+control: poll the advancing future once and require its actual deadline already
+advanced. Queue another observer behind that original clock lock, explicitly
+advance its deadline while it remains queued, then cancel the first observer
+before its scheduler yield finishes. A direct lock assertion after resuming the
+queued observer detects a retained guard before awaiting its timer. Paused time
+must stay exactly unchanged while both the queued observer and a late observer
+complete. Removing same-path advancement fails the first deadline assertion;
+removing cancellation resume makes the next pause fail. A retained clock lock
+fails the one lock assertion, and redundant expired-timer advancement fails the
+paused-clock control. These source negatives and existing real
+HTTP/slow-down/cancellation controls remain unexecuted here. This extends the
+original control for the deferred queued-observer review finding in #2219.
+
+The extended control adds one original Sleep, one explicit mock-clock advance,
+two direct future polls and one lock inspection; it adds no background task,
+readiness loop, wall delay or product work. Production operation counts remain
+unchanged. Exact allocation and scheduler costs remain unmeasured.
 
 Background clock tasks change from one to zero, queued duration storage from one
 queue to zero, and periodic wall samples/readiness yields from unbounded to zero.

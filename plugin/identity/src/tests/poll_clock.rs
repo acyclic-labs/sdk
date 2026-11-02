@@ -70,7 +70,7 @@ impl Drop for Clock {
 }
 
 #[tokio::test]
-async fn cancelled_advancement_resumes_time_and_preserves_late_timer_entry() {
+async fn cancelled_advancement_releases_queued_and_late_timer_observers() {
     use std::future::Future as _;
     use std::task::Poll;
     let _clock = Clock::start();
@@ -78,6 +78,9 @@ async fn cancelled_advancement_resumes_time_and_preserves_late_timer_entry() {
     let interval = Duration::from_secs(1);
     let started = tokio::time::Instant::now();
     let late = tokio::time::sleep(interval);
+    let queued_deadline = started + interval * 2;
+    let queued = observe(tokio::time::sleep_until(queued_deadline));
+    tokio::pin!(queued);
     {
         let advancing = observe(tokio::time::sleep(interval));
         tokio::pin!(advancing);
@@ -87,9 +90,35 @@ async fn cancelled_advancement_resumes_time_and_preserves_late_timer_entry() {
             started.elapsed() >= interval,
             "registered deadline advanced"
         );
+        let result = std::future::poll_fn(|cx| Poll::Ready(queued.as_mut().poll(cx))).await;
+        assert!(
+            result.is_pending(),
+            "second observer queues behind advancement"
+        );
+        // Expire the queued observer while the first still owns the clock cut.
+        tokio::time::advance(
+            queued_deadline.saturating_duration_since(tokio::time::Instant::now())
+                + Duration::from_millis(1),
+        )
+        .await;
     }
     // A canceled advancement must already have resumed time: pause would panic.
     tokio::time::pause();
-    tokio::time::resume();
+    let resume = Resume;
+    let settled = tokio::time::Instant::now();
+    let result = std::future::poll_fn(|cx| Poll::Ready(queued.as_mut().poll(cx))).await;
+    assert!(
+        ADVANCING.with(|advancing| advancing.try_lock().is_ok()),
+        "cancelled owner releases the clock and queued observer retires its guard"
+    );
+    if result.is_pending() {
+        queued.await;
+    }
     observe(late).await;
+    assert_eq!(
+        tokio::time::Instant::now(),
+        settled,
+        "expired observers add no clock jump"
+    );
+    drop(resume);
 }
