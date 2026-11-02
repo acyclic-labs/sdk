@@ -8,7 +8,8 @@ use std::num::NonZeroU32;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MergeDirectoryPlan {
-    /// Persisted format version.
+    /// Persisted format version; unsupported versions fail at decoding.
+    #[serde(deserialize_with = "merge_file_version")]
     pub version: u8,
     /// Original common ancestor, target and source; never reopened from HEAD.
     pub base: GenerationId,
@@ -50,7 +51,8 @@ pub struct MergeCleanFile {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MergeConflictFile {
-    /// Persisted format version.
+    /// Persisted format version; unsupported versions fail at decoding.
+    #[serde(deserialize_with = "merge_file_version")]
     pub version: u8,
     /// Non-text resolution category; the original key remains authoritative.
     pub kind: MergeConflictFileKind,
@@ -70,6 +72,13 @@ pub enum MergeConflictFileKind {
     Type,
     /// Metadata, including executable mode, differs.
     Mode,
+}
+
+fn merge_file_version<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<u8, D::Error> {
+    match u8::deserialize(decoder)? {
+        1 => Ok(1),
+        _ => Err(serde::de::Error::custom("unsupported merge file version")),
+    }
 }
 
 /// A directory page selects one independently advancing cursor.
