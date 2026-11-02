@@ -54,8 +54,8 @@ impl transport::Transport for HeldInputTerminal {
     }
 }
 impl CallProvider for InputCalls {
-    fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
-        Ok("actors:/fixture".into())
+    fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
+        CallTarget::new("actors:/fixture".into(), "actors/invoke")
     }
     fn call(
         &self,
@@ -313,8 +313,8 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     Ok(())
 }
 impl CallProvider for Calls {
-    fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
-        Ok("actors:/fixture".into())
+    fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
+        CallTarget::new("actors:/fixture".into(), "actors/invoke")
     }
     fn call(
         &self,

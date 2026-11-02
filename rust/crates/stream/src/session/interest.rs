@@ -212,14 +212,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 let Some(provider) = self.calls.as_ref() else {
                     return Ok(Admission::Failed(identity, StreamError::Unsupported));
                 };
-                let resource = match provider.resource(&invocation.invocation) {
-                    Ok(resource) => resource,
+                let target = match provider.target(&invocation.invocation) {
+                    Ok(target) => target,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };
                 let (authorization, context) = match self.authority.bind_call(
                     &self.slots,
                     subscription.credential,
-                    resource,
+                    target,
                     channels,
                 ) {
                     Ok(binding) => binding,
@@ -256,10 +256,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };
                 // A socket is admitted exactly as a call to the same actor.
+                let target = match CallTarget::new(prepared.resource().to_owned(), "actors/invoke")
+                {
+                    Ok(target) => target,
+                    Err(error) => return Ok(Admission::Failed(identity, error)),
+                };
                 let (authorization, context) = match self.authority.bind_call(
                     &self.slots,
                     subscription.credential,
-                    prepared.resource().to_owned(),
+                    target,
                     channels,
                 ) {
                     Ok(binding) => binding,
