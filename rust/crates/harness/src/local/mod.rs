@@ -111,6 +111,10 @@ pub struct LocalHarness {
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
+    /// The before-hook rules of the plugins `plugins.ts` enabled at session
+    /// start, judged after the imported host hooks.
+    #[cfg(any(test, feature = "hooks"))]
+    plugin_hooks: Vec<crate::hooks::HookRule>,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,

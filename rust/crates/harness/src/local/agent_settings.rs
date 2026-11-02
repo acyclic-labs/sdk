@@ -93,16 +93,7 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree {
-        volumes,
-        read: ContentGrant::verify_directory_read(
-            volumes.verifier,
-            volumes.signed,
-            volumes.home,
-            "",
-            &mut None,
-        )?,
-    };
+    let tree = Tree::new(volumes)?;
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -143,16 +134,44 @@ pub(super) async fn admit(
                 Some(error),
             ),
         };
+    record(volumes, agent, (config::AGENT, &version), (status, error), clock).await?;
+    Ok(settings)
+}
+
+impl<'a> Tree<'a> {
+    fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+        Ok(Self {
+            volumes,
+            read: ContentGrant::verify_directory_read(
+                volumes.verifier,
+                volumes.signed,
+                volumes.home,
+                "",
+                &mut None,
+            )?,
+        })
+    }
+}
+
+/// Records the outcome of the home's `path` at `version` in the journal,
+/// once per version.
+async fn record(
+    volumes: &Volumes<'_>,
+    agent: AgentId,
+    (path, version): (&str, &str),
+    (status, error): (AdmissionStatus, Option<String>),
+    clock: &dyn acyclic_stream::UnixMillisClock,
+) -> Result<()> {
     let admission = Admission {
-        path: config::AGENT.to_owned(),
-        version: version.clone(),
+        path: path.to_owned(),
+        version: version.to_owned(),
         status,
         error,
         at: config::utc(clock.now_unix_millis()),
     };
     let bytes =
         serde_json::to_vec(&admission).map_err(|error| Error::Invalid(error.to_string()))?;
-    let path = format!("live/agents/{agent}/admissions/{version}.json");
+    let record = format!("live/agents/{agent}/admissions/{version}.json");
     volumes
         .files
         .put_content(
@@ -165,7 +184,7 @@ pub(super) async fn admit(
                 u64::MAX,
                 &mut None,
             )?,
-            &path,
+            &record,
             &bytes,
             "application/json",
             "admission",
@@ -178,7 +197,49 @@ pub(super) async fn admit(
             ContentAccess::default(),
         )
         .await?;
-    Ok(settings)
+    Ok(())
+}
+
+/// The before-hook rules of the plugins `plugins.ts` enables, read as the
+/// session starts, recording the home module's admission. An invalid home
+/// `plugins.ts` leaves the seed's set in force.
+#[cfg(any(test, feature = "hooks"))]
+pub(super) async fn plugins(
+    volumes: &Volumes<'_>,
+    agent: AgentId,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+) -> Result<Vec<crate::hooks::HookRule>> {
+    use crate::plugins::{MANIFEST, load};
+    let tree = Tree::new(volumes)?;
+    let enabler = agent.to_string();
+    let seed = Layer {
+        name: "seed",
+        generation: "",
+        bytes: crate::seed::file(MANIFEST),
+    };
+    let seeded = |error: Error| {
+        Error::Invalid(format!("the seed's plugins are not admissible: {error}"))
+    };
+    let Some((version, bytes)) = tree.home(MANIFEST).await? else {
+        return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
+    };
+    let layers = [
+        seed,
+        Layer {
+            name: "home",
+            generation: &version,
+            bytes: Some(&bytes),
+        },
+    ];
+    let (rules, outcome) = match load(&tree, &layers, &enabler).await {
+        Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
+        Err(error) => (
+            load(&tree, &layers[..1], &enabler).await.map_err(seeded)?.rules,
+            (AdmissionStatus::Invalid, Some(error.to_string())),
+        ),
+    };
+    record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
+    Ok(rules)
 }
 
 /// Only configuration refusals permit fallback. Operation failures retain their

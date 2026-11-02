@@ -428,6 +428,18 @@ impl Opening {
             ..crate::runtime::Bindings::local()
         }
         .build()?;
+        let volumes = agent_settings::Volumes {
+            files: &files,
+            verifier: &verifier,
+            signed: &signed,
+            home: &scratch,
+            journal: &journal,
+            maximum_bytes: self.config.limits.file_bytes,
+        };
+        // `plugins.ts` selects the plugin hooks as the session starts.
+        #[cfg(any(test, feature = "hooks"))]
+        let plugin_hooks =
+            agent_settings::plugins(&volumes, owner.agent, self.config.clock.as_ref()).await?;
         // `agent.ts` selects the model and its sampling as the session starts.
         let (agent, sampling, compaction) = match self.config.model.clone() {
             Some(started) => {
@@ -448,14 +460,7 @@ impl Opening {
                 )))]
                 let resolve = None;
                 let settings = agent_settings::admit(
-                    &agent_settings::Volumes {
-                        files: &files,
-                        verifier: &verifier,
-                        signed: &signed,
-                        home: &scratch,
-                        journal: &journal,
-                        maximum_bytes: self.config.limits.file_bytes,
-                    },
+                    &volumes,
                     owner.agent,
                     started.clone(),
                     resolve,
@@ -502,6 +507,8 @@ impl Opening {
             checkout_context: matches!(self.config.project, LocalProject::Workspace(_)),
             #[cfg(any(test, feature = "hooks"))]
             settings: self.settings,
+            #[cfg(any(test, feature = "hooks"))]
+            plugin_hooks,
             limits: self.config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
