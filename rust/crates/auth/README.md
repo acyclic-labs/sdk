@@ -36,7 +36,9 @@ products authorize no secrets operation. Ancestor restrictions, attenuation and
 owner policy intersect exactly as for every other resource.
 
 Native callers construct `secrets::Client` with `HttpTransport::new(origin)` and
-an existing `credential::CredentialProvider`. Credentials resolve on every call.
+an existing `credential::CredentialProvider`, plus `Some(context)` carrying the
+original invocation's stop event and clock. Missing context refuses before
+credential resolution or network access. Credentials resolve on every call.
 Only HTTPS origins and loopback HTTP origins are admitted. Redirects are
 refused. A generation conflict requires a new list and an explicitly chosen new
 mutation; the client never retries an overwrite automatically.
@@ -57,6 +59,38 @@ After both delete receipts it lists the scope again, requiring no remaining rows
 and the final receipt's generation; receipts alone do not prove deletion.
 `conformance/secrets-v1.json` publishes the normative case inventory and vectors;
 these are contract examples, not captured external-provider fixtures.
+
+## Remote account-root certification
+
+`trust::issuance::Client` retains one original `operation::Context` and immutable
+`Request`. Supply the operation key, pinned account-root public key, environment
+and existing `CertifiedKeyProto` claims once. `issue` dispatches once; after an
+unknown result, `recover` looks up that same request without generating another
+operation or leaf key. A renewal uses a new operation key.
+
+The `Provider` adapter uses the issuer's authenticated transport and existing
+transaction. It retains current caller admission and custody through dispatch,
+deduplicates concurrent work under the original keyed owner, and atomically binds
+`(issuer, account, operation_key)`, request digest and terminal decision before
+disclosing a reply. An identical request returns its retained result without
+signing again; a different digest returns `Refusal::Conflict`. Recovery of an
+absent record returns `Decision::Unknown` and must not issue or reserve a key.
+`AccountRoot::certify_request` only signs the admitted public claims; the original
+serving transaction establishes acceptance.
+
+`Request::wire` borrows the retained canonical v1 protobuf envelope. Its digest
+is SHA256 of `b"acyclic.auth.v1/issuance\0"` followed by that complete envelope.
+`Request::decode`, `Reply::decode` and `Reply::into_wire` share the generated Auth
+contract. Decoders reject unsupported versions and noncanonical encodings.
+Public wire decoding supplies neither caller authority nor durable acceptance.
+
+The client admits an accepted certificate only against the exact request, pinned
+signer, current trust, revocation state and original clock. A refusal proves that
+this exact request did not commit. Transport loss, caller loss or a stop after
+dispatch leaves the result unknown. The provider must end source loss with a
+typed error, including before EOF. Neither issue nor recovery polls or retries
+automatically. This contract defines no HTTP route or new credential store;
+serving adapters attach it to their original admission and transaction owners.
 
 ## Secret references
 
