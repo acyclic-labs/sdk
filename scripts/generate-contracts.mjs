@@ -77,9 +77,9 @@ try {
   const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
   const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
   const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
-  const rawTargets = new Set(generators.filter(generator => generator.rustPayload === undefined)
-    .flatMap(generator => (generator.rust ?? []).map(target => targetIndex.get(JSON.stringify(target)))));
-  const outputFor = contractTargetOutputs(root, executables, rawTargets);
+  const consumers = generators.flatMap(generator => (generator.rust ?? [])
+    .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
+  const outputFor = contractTargetOutputs(root, executables, consumers);
 
   const stale = [];
   for (const [index, generator] of generators.entries()) {

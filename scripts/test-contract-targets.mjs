@@ -3,9 +3,76 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { buildContractTargets, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
+
+test("contract outputs retire at their selected last consumer without rerunning the producer", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-contract-consumers-"));
+  const previousOptions = process.env.NODE_OPTIONS;
+  const parse = JSON.parse;
+  try {
+    // Capture a real Node executable's stdout. This program owns the test
+    // protocol; it does not stand in for Cargo or a Rust artifact inventory.
+    const producer = join(root, "producer.mjs");
+    writeFileSync(producer, `import { appendFileSync } from "node:fs";
+      appendFileSync("starts", "x");
+      console.log(JSON.stringify({left: "λ".repeat(65537), right: "終", unused: "discard"}));
+    `);
+    process.env.NODE_OPTIONS = `--import=${pathToFileURL(producer).href}`;
+    const captured = runContractTarget(root, process.execPath);
+    const original = parse(captured);
+    const consumers = [
+      [0, undefined], [0, "left"], [0, "right"], [0, "left"],
+      [1, "left"], [1, undefined],
+    ];
+    const exercise = (keepDeleted) => {
+      const admitted = [];
+      let decodes = 0;
+      JSON.parse = (text, ...args) => {
+        const result = parse(text, ...args);
+        if (text !== captured) return result;
+        decodes += 1;
+        admitted.push(result);
+        // The negative control restores retention on the actual decoded
+        // object while allowing the exact same output and command lifecycle.
+        return keepDeleted ? new Proxy(result, { deleteProperty: () => true }) : result;
+      };
+      const outputFor = contractTargetOutputs(root, [process.execPath, process.execPath], consumers);
+      assert.equal(outputFor(0), captured); // Raw first must still permit one later decode.
+      assert.equal(outputFor(0, "left"), original.left);
+      const afterFirst = Object.keys(admitted[0]);
+      assert.equal(outputFor(0, "right"), original.right);
+      const afterRight = Object.keys(admitted[0]);
+      assert.equal(outputFor(0, "left"), original.left);
+      const afterLast = Object.keys(admitted[0]);
+      assert.throws(() => outputFor(0, "left"), /STEP_FAILED contract-consumption:.*recovery:/);
+      assert.throws(() => outputFor(2, "left"), /STEP_FAILED contract-consumption:.*recovery:/);
+      assert.equal(outputFor(1, "left"), original.left); // Bundle first must preserve raw bytes.
+      assert.equal(outputFor(1), captured);
+      assert.throws(() => outputFor(1), /STEP_FAILED contract-consumption:.*recovery:/);
+      assert.equal(decodes, 2);
+      assert.equal(readFileSync(join(root, "starts"), "utf8").length, keepDeleted ? 5 : 3);
+      return { afterFirst, afterRight, afterLast, afterSecond: Object.keys(admitted[1]) };
+    };
+    const expected = { afterFirst: ["left", "right"], afterRight: ["left"], afterLast: [], afterSecond: [] };
+    assert.deepEqual(exercise(false), expected);
+    assert.notDeepEqual(exercise(true), expected, "restored decoded-bundle retention must fail the independent custody counter");
+    JSON.parse = parse;
+
+    writeFileSync(producer, 'console.log("{malformed");\n');
+    const malformed = contractTargetOutputs(root, [process.execPath], [[0, "left"]]);
+    assert.throws(() => malformed(0, "left"), /STEP_FAILED contract-payload: malformed bundle.*recovery:/);
+    writeFileSync(producer, 'console.log(JSON.stringify("scalar"));\n');
+    const scalar = contractTargetOutputs(root, [process.execPath], [[0, "left"]]);
+    assert.throws(() => scalar(0, "left"), /STEP_FAILED contract-payload: missing left; recovery:/);
+  } finally {
+    JSON.parse = parse;
+    if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previousOptions;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("contract selection refuses every unknown family before Cargo or publication", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-selection-"));
@@ -102,7 +169,10 @@ test("contract binaries use exact Cargo identities and current source/configurat
       print!("{}", r#"${bundle}"#);
     }\n`);
     put("beta/src/main.rs", 'fn main() { println!("{{not JSON"); }\n');
-    const outputFor = contractTargetOutputs(root, build(), new Set([0]));
+    const outputFor = contractTargetOutputs(root, build(), [
+      [0, "left"], [0, "right"], [0, "left"], [0, undefined],
+      [0, "absent"], [0, "toString"], [0, "invalid"], [1, "left"],
+    ]);
     const parse = JSON.parse;
     let decodes = 0;
     JSON.parse = (text, ...args) => {

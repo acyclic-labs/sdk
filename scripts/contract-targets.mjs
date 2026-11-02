@@ -93,22 +93,54 @@ export function runContractTarget(root, executable) {
   return result.stdout;
 }
 
-// Slots identify executables admitted by the same Cargo build. Keep exact raw
-// output only for declared raw consumers; bundle consumers share one decode.
-export function contractTargetOutputs(root, executables, rawTargets) {
+// Slots identify executables admitted by the same Cargo build. The selected
+// consumers own output only until its last use; bundle consumers share one decode.
+export function contractTargetOutputs(root, executables, consumers) {
+  const remaining = new Map();
+  for (const [slot, payload] of consumers) {
+    if (!remaining.has(slot)) remaining.set(slot, new Map());
+    const counts = remaining.get(slot);
+    counts.set(payload, (counts.get(payload) ?? 0) + 1);
+  }
   const executed = new Map();
   return (slot, payload) => {
+    const counts = remaining.get(slot);
+    if (!counts?.has(payload)) {
+      throw new Error(`STEP_FAILED contract-consumption: undeclared or exhausted target ${slot}/${payload ?? "raw"}; recovery: bun scripts/generate-contracts.mjs check`);
+    }
     if (!executed.has(slot)) executed.set(slot, { stdout: runContractTarget(root, executables[slot]) });
     const output = executed.get(slot);
-    if (payload === undefined) return output.stdout;
-    if (!Object.hasOwn(output, "payloads")) {
-      try { output.payloads = JSON.parse(output.stdout); }
-      catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle from ${executables[slot]}; recovery: bun scripts/generate-contracts.mjs check`); }
-      if (!rawTargets.has(slot)) delete output.stdout;
+    let value;
+    if (payload === undefined) value = output.stdout;
+    else {
+      if (!Object.hasOwn(output, "payloads")) {
+        try { output.payloads = JSON.parse(output.stdout); }
+        catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle from ${executables[slot]}; recovery: bun scripts/generate-contracts.mjs check`); }
+        if (!counts.has(undefined)) delete output.stdout;
+        // No selected renderer owns an unrequested bundle member.
+        if (output.payloads && typeof output.payloads === "object") {
+          for (const key in output.payloads) {
+            if (Object.hasOwn(output.payloads, key) && !counts.has(key)) delete output.payloads[key];
+          }
+        }
+      }
+      if (!output.payloads || !Object.hasOwn(output.payloads, payload) || typeof output.payloads[payload] !== "string") {
+        throw new Error(`STEP_FAILED contract-payload: missing ${payload}; recovery: bun scripts/generate-contracts.mjs check`);
+      }
+      value = output.payloads[payload];
     }
-    if (!output.payloads || !Object.hasOwn(output.payloads, payload) || typeof output.payloads[payload] !== "string") {
-      throw new Error(`STEP_FAILED contract-payload: missing ${payload}; recovery: bun scripts/generate-contracts.mjs check`);
+    const count = counts.get(payload);
+    if (count > 1) counts.set(payload, count - 1);
+    else {
+      counts.delete(payload);
+      if (payload === undefined) {
+        if (Object.hasOwn(output, "payloads")) delete output.stdout;
+      } else delete output.payloads[payload];
     }
-    return output.payloads[payload];
+    if (counts.size === 0) {
+      executed.delete(slot);
+      remaining.delete(slot);
+    }
+    return value;
   };
 }
