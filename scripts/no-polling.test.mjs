@@ -327,6 +327,23 @@ test('host language sources cannot hide a wait behind non-comment syntax', () =>
 
 test('quoted host programs and native wait deadlines require exact review', () => {
  // Intentional policy mutations, not fabricated OS output or provider captures.
+ for (const source of [
+  'condition.wait_for(lock, duration);',
+  'condition.wait_until(lock, deadline);',
+  'SleepConditionVariableCS(condition, lock, duration);',
+  'SleepConditionVariableSRW(condition, lock, duration, flags);',
+ ]) {
+  const file = 'scripts/control.cpp';
+  const sites = pollingSites(file, source);
+  assert.ok(sites.some(site => site.kind === 'timer-or-readiness'), source);
+  assert.ok(pollingSites(script, 'runHost(' + JSON.stringify(source) + ')')
+   .some(site => site.kind === 'embedded-timer-or-retry'), source);
+  const accepted = sites.map(site => disposition(site, 'caller-deadline',
+   'original caller supplies deadline or duration', 'original condition notification or native wait failure',
+   'change the original caller duration to a readiness interval'));
+  assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+  assert.ok(newPollingSites(file, '', source.replace('lock', 'otherLock'), accepted).length);
+ }
  for (const [file, source] of [
   ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { Thread.Sleep(1); } }\''],
   ['scripts/control.ps1', 'Add-Type \'class Control { async Task Run() { await Task.Delay(1000); } }\''],
