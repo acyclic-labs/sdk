@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, ReadRequest,
-};
+use crate::{CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, ReadRequest};
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {
