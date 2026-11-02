@@ -91,33 +91,20 @@ pub(super) fn capture_demand_error(error: DemandError) -> CaptureError {
 
 pub(super) fn capture_sort_by<T>(
     values: &mut [T],
-    mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     meter
         .with_original_leaf(|work| work.check())
         .map_err(capture_demand_error)?;
-    crate::kernel::sort::heap_sort(
-        values,
-        &mut (),
-        |left, right, _| {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(2),
-            )?;
-            Ok(compare(left, right))
-        },
-        |values, left, right, _| {
-            values.swap(left, right);
-            Ok(())
-        },
-        |_| {
-            meter
-                .with_original_leaf(|work| work.check())
-                .map_err(capture_demand_error)
-        },
-    )
+    let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
+    crate::kernel::sort_by_with_accounting(values, &mut accounting, compare)
+        .map_err(CaptureError::from)
 }
+
+#[cfg(all(test, feature = "memory"))]
+#[path = "sort_properties.rs"]
+mod sort_properties;
 
 pub(super) fn capture_charge(
     meter: &NativeMaterializationWork,
