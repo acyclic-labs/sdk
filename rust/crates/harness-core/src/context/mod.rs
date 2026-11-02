@@ -43,7 +43,7 @@ pub mod native_skills;
 mod skill_materializer;
 pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;
-pub(crate) use compaction::{clone_context, compact_projection};
+pub(crate) use compaction::{clone_context, compact_projection, prefix_digest};
 mod snapshot;
 pub use snapshot::*;
 mod manifest;

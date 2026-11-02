@@ -186,7 +186,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     assert_eq!(counts.load(Ordering::SeqCst), 1);
     assert!(provider.requests().is_empty());
     let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(journal, &input, 0, &[], &mut DispatchPhase::new())
+        .prepared_response(journal, &input, 0, &[])
         .await?;
     assert_eq!(recovered.bytes(), prepared.bytes());
     assert_eq!(

@@ -287,7 +287,6 @@ impl StockExecution<'_> {
                     (projection, accounting),
                     (source, pre_stage),
                     policy,
-                    &mut DispatchPhase::new(),
                 )
                 .await
             }

@@ -1,4 +1,6 @@
-//! Primitive threshold compaction using provider-owned token accounting.
+//! The context window kernel: verified admission against the selected
+//! model's window and a mechanical overflow backstop that evicts the oldest
+//! whole dependency groups into one fixed marker, with no model call.
 
 use super::{Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
 use crate::{Error, Result, model::ModelContentPart};
@@ -11,7 +13,9 @@ use serde::{Deserialize, Serialize};
 pub struct ThresholdCompaction {
     /// Input headroom retained for each response.
     pub response_reserve_tokens: u32,
-    /// Minimum recent suffix token budget retained alongside mandatory content.
+    /// Recent suffix the backstop retains alongside the irreducible set: its
+    /// low-water mark, so one eviction leaves room for later steps instead of
+    /// evicting, and breaking the prefix cache, on each.
     pub recent_tokens: u32,
 }
 
@@ -90,9 +94,10 @@ impl ThresholdCompaction {
     rename_all = "snake_case"
 )]
 pub enum CompactionPolicy {
-    /// Preserve the installed context pipeline without automatic summarization.
+    /// Send the installed context pipeline's requests unchecked.
     Disabled,
-    /// Perform admitted threshold compaction under the selected model's capacities.
+    /// Admit each request against the selected model's window, evicting into
+    /// the backstop's marker at overflow.
     Threshold(ThresholdCompaction),
 }
 
@@ -124,4 +129,4 @@ mod tests;
 mod unknown_output_tests;
 
 mod projection;
-pub(crate) use projection::compact_projection;
+pub(crate) use projection::{compact_projection, prefix_digest};

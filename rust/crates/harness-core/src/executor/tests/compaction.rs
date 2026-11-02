@@ -83,18 +83,11 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
 }
 
 #[tokio::test]
-async fn default_threshold_compacts_through_ordinary_model_admission() -> Result<()> {
+async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> Result<()> {
     for output_capacity in [Some(4096), None] {
         let journal = Journal::default();
-        let (provider, _accounting_calls) = counted_model(
-            65_536,
-            None,
-            [
-                ScriptedTurn::Text("summary".into()),
-                ScriptedTurn::Text("answer".into()),
-            ],
-            [],
-        );
+        let (provider, _accounting_calls) =
+            counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
         let provider = Arc::new(
             Arc::into_inner(provider)
                 .expect("unique fixture model")
@@ -146,24 +139,28 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
         assert_eq!(output.text, "answer");
         assert_eq!(executor.execute(input, &journal).await?, output);
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].max_output_tokens, requested_output);
-        assert_eq!(requests[1].max_output_tokens, requested_output);
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
         );
-        assert_eq!(requests[1].messages.len(), 4);
-        assert!(matches!(
-            &requests[1].messages[0].content,
-            ModelContent::Part(ModelContentPart::File { .. })
-        ));
+        assert_eq!(requests[0].messages.len(), 4);
+        let ModelContent::Part(ModelContentPart::File { file, .. }) =
+            &requests[0].messages[0].content
+        else {
+            panic!("the backstop marker opens the request");
+        };
+        assert!(
+            journal.load(file, None)?.await?.as_ref()
+                == super::super::compaction::BACKSTOP_MARKER.as_bytes()
+        );
         assert_eq!(
-            requests[1].messages[1].content,
+            requests[0].messages[1].content,
             ModelContent::Text("keep".into())
         );
         assert_eq!(
-            requests[1].messages.last().map(|message| &message.content),
+            requests[0].messages.last().map(|message| &message.content),
             Some(&ModelContent::Text("c".repeat(5_000)))
         );
     }
@@ -173,8 +170,7 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
 #[tokio::test]
 async fn compacted_projection_recovers_before_response_admission() -> Result<()> {
     let journal = Journal::default();
-    let (provider, accounting_calls) =
-        counted_model(65_536, None, [ScriptedTurn::Text("summary".into())], []);
+    let (provider, accounting_calls) = counted_model(65_536, None, [], []);
     let source = crate::context::Context {
         messages: vec![
             ModelMessage {
@@ -209,15 +205,15 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         .ensure_started(&journal, &input)
         .await?;
     let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .prepared_response(&journal, &input, 0, &[])
         .await?;
     let counted = accounting_calls.load(Ordering::SeqCst);
     let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .prepared_response(&journal, &input, 0, &[])
         .await?;
     assert_eq!(original.bytes(), recovered.bytes());
     assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
-    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.requests().is_empty());
     let records = journal.0.lock().unwrap();
     assert_eq!(
         records
@@ -326,14 +322,10 @@ fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<
 }
 
 #[tokio::test]
-async fn actual_compacted_accounting_rejects_response_without_repeating_summary() -> Result<()> {
+async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() -> Result<()> {
     let journal = Journal::default();
-    let (provider, _accounting_calls) = counted_model(
-        65_536,
-        Some(AccountingFault::CompactedPressure),
-        [ScriptedTurn::Text("summary".into())],
-        [],
-    );
+    let (provider, _accounting_calls) =
+        counted_model(65_536, Some(AccountingFault::CompactedPressure), [], []);
     let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
         Model::new("synthetic".into(), "counter".into(), "1".into())?,
@@ -352,30 +344,22 @@ async fn actual_compacted_accounting_rejects_response_without_repeating_summary(
         selected_context: None,
         max_steps: 1,
     };
+    // The block is the turn's durable, visible outcome, the same on replay.
     for _ in 0..2 {
         assert!(
-            matches!(executor.execute_progress(input.clone(), &journal).await,
-                Err(Error::Invalid(message)) if message == "compacted mandatory content exceeds selected model capacity")
+            matches!(executor.execute_progress(input.clone(), &journal).await?,
+            ExecutionProgress::PreDispatchFailed(failure)
+                if failure.message().ends_with("context backstop: the irreducible set exceeds the model window"))
         );
     }
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 1);
-    assert_eq!(provider.reconciliations().len(), 0);
+    assert!(provider.requests().is_empty());
     let records = journal.0.lock().unwrap();
-    assert!(records.iter().any(|record| matches!(
-        record.event,
-        ExecutionEvent::ModelStarted {
-            purpose: ModelPurpose::Summary,
-            ..
-        }
-    )));
-    assert!(!records.iter().any(|record| matches!(
-        record.event,
-        ExecutionEvent::ModelStarted {
-            purpose: ModelPurpose::Response,
-            ..
-        }
-    )));
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+    );
     Ok(())
 }
 
@@ -449,68 +433,6 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
                 .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
         );
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn automatic_summary_reconciles_from_captured_context_without_rereading_sources() -> Result<()>
-{
-    let journal = Journal::default();
-    let (provider, _accounting_calls) = counted_model(
-        65_536,
-        None,
-        [
-            ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::Content {
-                    delta: "partial-".into(),
-                }),
-                ScriptedEvent::Error {
-                    error: "synthetic summary interruption".into(),
-                },
-            ]),
-            ScriptedTurn::Text("answer".into()),
-        ],
-        [ScriptedReconciliation {
-            orphan: false,
-            observed: vec![ModelEvent::Content {
-                delta: "partial-".into(),
-            }],
-            continuation: Some(vec![
-                ModelEvent::Content {
-                    delta: "summary".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: Value::Null,
-                },
-            ]),
-        }],
-    );
-    let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "changing-history",
-            "1",
-            source.clone(),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("c".repeat(5_000)),
-        selected_context: None,
-        max_steps: 1,
-    };
-    assert!(executor.execute(input.clone(), &journal).await.is_err());
-    assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    let output = executor.clone().execute(input.clone(), &journal).await?;
-    assert_eq!(output.text, "answer");
-    assert_eq!(executor.execute(input, &journal).await?, output);
-    assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 2);
-    assert_eq!(provider.reconciliations().len(), 1);
     Ok(())
 }
 

@@ -6,7 +6,7 @@ explicit model capacities and a Bedrock bearer API key. This uses AWS's first-pa
 OpenAI-compatible Chat route, with the same shared adapter as other Chat servers.
 It supports the models/features offered on that route in the selected region;
 Converse/EventStream and automatic IAM credential discovery are outside this
-configuration. Automatic compaction requires a verified counting endpoint.
+configuration. The context window check requires a verified counting endpoint.
 
 Live steps (coordinator only): select a Chat-compatible model in the target region
 and capture all common inference cases from

@@ -2,7 +2,7 @@ Use the existing Anthropic catalog entry and explicit API-key credentials. Its
 Messages adapter uses the shared request pipeline, bounded retries/deadlines,
 stream parsing, usage merge and paired tool-result projection. Register exact
 model capacity for a selection outside the shipped catalog. A verified token
-counter is required for automatic context admission and compaction.
+counter is required for the context window check and its backstop.
 
 Live steps (coordinator only): every live request must select `claude-haiku-5-5`.
 Capture the common text, echo(value1), paired result, context-overflow, invalid-auth

@@ -58,12 +58,14 @@ impl ExecutionSummary {
                         .models
                         .contains_key(&(*step, crate::executor::ModelPurpose::Response), io)?
             }
+            // The backstop evicts mechanically: no summary call, and none
+            // left in flight.
             ExecutionEvent::ContextCompacted { step, .. } => {
                 self.contexts.get(step, io)? == Some(&false)
-                    && matches!(
+                    && !matches!(
                         self.models
                             .get(&(*step, crate::executor::ModelPurpose::Summary), io)?,
-                        Some(None)
+                        Some(Some(_))
                     )
                     && !self
                         .models

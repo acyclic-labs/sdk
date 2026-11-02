@@ -12,12 +12,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         },
     );
     journal.8 = Some(issuer.verifier(&mut None)?);
-    let (provider, _) = counted_model(
-        65_536,
-        None,
-        [ScriptedTurn::Text("bounded summary".into())],
-        [],
-    );
+    let (provider, _) = counted_model(65_536, None, [], []);
     let instruction = ModelContent::Text("fresh stage instruction".into());
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
@@ -66,10 +61,10 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;
     let compacted = execution
-        .prepared_response(&journal, &input, 1, &prior, &mut DispatchPhase::new())
+        .prepared_response(&journal, &input, 1, &prior)
         .await?;
     assert!(compacted.bytes().len() < 2_000);
-    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.requests().is_empty());
     for step in 2..4 {
         prior.push(ModelMessage {
             role: ModelRole::Assistant,
@@ -177,13 +172,12 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             "working history retained stale stage output"
         );
         let response = session
-            .prepared_response(&journal, &input, step, &prior, &mut DispatchPhase::new())
+            .prepared_response(&journal, &input, step, &prior)
             .await?;
         assert!(response.bytes().len() < 2_000);
-        assert_eq!(
-            provider.requests().len(),
-            1,
-            "a consumed prefix was summarized again"
+        assert!(
+            provider.requests().is_empty(),
+            "the backstop called a model"
         );
         let mut changed = input.clone();
         changed.input = ModelContent::Text("different question".into());

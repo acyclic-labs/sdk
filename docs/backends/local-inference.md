@@ -4,7 +4,7 @@ and configured context/output capacities to `models`, and register the spec.
 Ollama and llama.cpp use the shared `Adapter::Chat` request pipeline. Anonymous
 local endpoints are supported; an explicit key adds standard bearer auth.
 The URL policy permits HTTP only on loopback. Servers lacking token counting
-can generate; automatic compaction requires a verified count endpoint.
+can generate; the context window check requires a verified count endpoint.
 
 The retained Linux fixture contains real Qwen3-0.6B-Q4_0 llama.cpp streams, tool
 calls/results, usage, auth and context errors. The rate response comes from an

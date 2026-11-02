@@ -59,7 +59,7 @@ Enable `acyclic-harness-providers/endpoint-presets` for `endpoints::{openrouter,
 bedrock,vertex,local}`. All use `Adapter::Chat`. Register exact model capacities
 in `ProviderSpec.models` and explicit credentials in `Credentials::explicit`.
 Resolution and streaming are available without a counting endpoint; automatic
-context admission/compaction still refuses without a verified token counter.
+context window check still refuses without a verified token counter.
 
 Model selection is a public harness component. A host composes a `Registry` with
 its protected credential source and `HttpTransport`, registers `ProviderSpec`
