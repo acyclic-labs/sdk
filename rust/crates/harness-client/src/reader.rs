@@ -18,6 +18,7 @@ mod cache;
 mod credential;
 mod demand;
 mod driver;
+mod requests;
 
 pub use backing::RecordBytes;
 pub use cache::{Listing, ListingProjection, ListingProjections, RecordCache, SnapshotError};
@@ -25,6 +26,7 @@ pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
 use demand::Demands;
 pub use driver::Driver;
+use requests::Requests;
 
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkCut, PathHead, Provenance, StreamError, StreamPath};
@@ -480,8 +482,7 @@ pub struct Reader {
     driver: Option<std::sync::Arc<()>>,
     demand: Demands,
     next_ticket: u64,
-    inflight: BTreeMap<u64, InFlight>,
-    keys: BTreeMap<OpKey, u64>,
+    inflight: Requests,
     cancelled: Vec<u64>,
     refused: BTreeSet<OpKey>,
     issues: BTreeMap<StreamPath, ReadIssue>,
@@ -523,8 +524,7 @@ impl Reader {
             driver: None,
             demand: Demands::default(),
             next_ticket: 0,
-            inflight: BTreeMap::new(),
-            keys: BTreeMap::new(),
+            inflight: Requests::default(),
             cancelled: Vec::new(),
             refused: BTreeSet::new(),
             issues: BTreeMap::new(),
@@ -564,9 +564,7 @@ impl Reader {
 
     fn reset_source(&mut self) {
         self.source_generation += 1;
-        self.cancelled.extend(self.inflight.keys().copied());
-        self.inflight.clear();
-        self.keys.clear();
+        self.cancelled.extend(self.inflight.drain());
         self.demand.clear();
         self.refused.clear();
         self.issues.clear();
@@ -818,27 +816,23 @@ impl Reader {
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
-            self.demand
-                .want(key, priority, paging, &mut self.next_ticket);
+            // Reclassify only the original request for this resolved intent.
+            // Multiple projections keep their strongest admitted priority.
+            let inflight = &mut self.inflight;
+            self.demand.want(
+                key,
+                priority,
+                paging,
+                &mut self.next_ticket,
+                |key, priority| {
+                    inflight.set_priority(key, priority);
+                },
+            );
         }
-        self.demand.finish_plan();
-        // A prefetch becoming visible counts as visible immediately, rather
-        // than occupying prefetch credit until its original request ends.
-        for flight in self.inflight.values_mut() {
-            if let Some(wanted) = self.demand.get(&flight.key) {
-                flight.priority = wanted.priority;
+        for key in self.demand.finish_plan() {
+            if let Some(id) = self.inflight.withdraw_prefetch(&key) {
+                self.cancelled.push(id);
             }
-        }
-        let stale: Vec<u64> = self
-            .inflight
-            .iter()
-            .filter(|(_, flight)| {
-                flight.priority == Priority::Prefetch && !self.demand.contains_key(&flight.key)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for id in stale {
-            self.cancel(id);
         }
     }
 
@@ -990,14 +984,9 @@ impl Reader {
         }
         let prefetch =
             self.policy.prefetch && self.since.is_none() && now >= self.prefetch_paused_until;
-        let mut prefetching = self
-            .inflight
-            .values()
-            .filter(|flight| flight.priority == Priority::Prefetch)
-            .count();
         let mut demand = self.demand.ordered();
         while let Some((key, pending)) = demand.next_admitted(
-            prefetch && prefetching < self.policy.prefetch_requests,
+            prefetch && self.inflight.prefetch() < self.policy.prefetch_requests,
             self.policy.requests,
         ) {
             let Demand {
@@ -1006,14 +995,11 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.keys.contains_key(key)
+            if self.inflight.contains_key(key)
                 || self.refused.contains(key)
                 || self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied)
             {
                 continue;
-            }
-            if *priority == Priority::Prefetch {
-                prefetching += 1;
             }
             let id = self.next_id;
             self.next_id += 1;
@@ -1049,7 +1035,6 @@ impl Reader {
                     observed: self.cache.observation(key.path()),
                 },
             );
-            self.keys.insert(key.clone(), id);
             self.issued += 1;
             ops.push(op);
         }
@@ -1073,7 +1058,6 @@ impl Reader {
         let Some(mut flight) = self.inflight.remove(&id) else {
             return;
         };
-        self.keys.remove(&flight.key);
         if !self.readable() {
             return;
         }
@@ -1096,12 +1080,7 @@ impl Reader {
                 self.demand.clear_children();
                 // Children is the final operation variant in the same key
                 // index used at admission. Earlier history work is untouched.
-                while let Some(entry) = self.keys.last_entry() {
-                    if !matches!(entry.key(), OpKey::Children(..)) {
-                        break;
-                    }
-                    let (_, id) = entry.remove_entry();
-                    self.inflight.remove(&id);
+                while let Some(id) = self.inflight.pop_children() {
                     self.cancelled.push(id);
                 }
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
@@ -1568,17 +1547,13 @@ impl Reader {
     /// both indexes together makes late completions inert before cancellation
     /// reaches the driver, without allocating an intermediate identity list.
     fn cancel_range(&mut self, range: impl std::ops::RangeBounds<OpKey>) {
-        for (_, id) in self.keys.extract_if(range, |_, _| true) {
-            self.inflight.remove(&id);
-            self.cancelled.push(id);
-        }
+        self.cancelled.extend(self.inflight.remove_range(range));
     }
 
     fn cancel(&mut self, id: u64) -> bool {
         let Some(flight) = self.inflight.remove(&id) else {
             return false;
         };
-        self.keys.remove(&flight.key);
         self.demand.restore_paging(&flight.key, flight.paging);
         self.cancelled.push(id);
         true
@@ -2158,7 +2133,6 @@ mod reader_tests {
                 observed: None,
             },
         );
-        reader.keys.insert(key.clone(), 7);
         reader.demand.insert(
             key,
             Demand {
@@ -2240,6 +2214,7 @@ mod reader_tests {
                 Priority::Prefetch,
                 Paging::default(),
                 &mut reader.next_ticket,
+                |_, _| {},
             );
         };
         // Invalidation must leave dormant history and its accumulated age
@@ -2422,6 +2397,111 @@ mod reader_tests {
                     .unwrap();
                 heads.insert(path.clone(), provider.head(path).await.unwrap());
             }
+            // Hold real provider replies while priorities, demand and authority
+            // change. Credit must follow each original live identity exactly
+            // once, even if its captured reply arrives after cancellation.
+            let paths: Vec<_> = heads.keys().take(4).cloned().collect();
+            let want = |index: usize, priority| {
+                (
+                    Want::Last {
+                        stream: paths[index].clone(),
+                        count: 1,
+                    },
+                    priority,
+                )
+            };
+            let credit_policy = ReaderPolicy {
+                requests: 4,
+                prefetch_requests: 2,
+                timeout_ms: 100,
+                ..ReaderPolicy::default()
+            };
+            let mut credit = Reader::new(credit_policy).unwrap();
+            credit.begin_frame(0);
+            credit.plan((0..3).map(|index| want(index, Priority::Prefetch)));
+            let opening = credit.poll(0);
+            assert_eq!(opening.len(), 2);
+            assert!(credit.poll(0).is_empty(), "prefetch escaped its credit");
+            credit.plan([
+                want(0, Priority::Visible),
+                (
+                    Want::Last {
+                        stream: paths[0].clone(),
+                        count: 2,
+                    },
+                    Priority::Prefetch,
+                ),
+                want(1, Priority::Prefetch),
+                want(2, Priority::Prefetch),
+            ]);
+            let promoted = credit.poll(0);
+            assert_eq!(
+                promoted.len(),
+                1,
+                "promotion did not release prefetch credit"
+            );
+            assert!(matches!(&promoted[0], Op::Head { stream, .. } if stream == &paths[2]));
+            credit.plan([
+                want(0, Priority::Visible),
+                want(2, Priority::Prefetch),
+                want(3, Priority::Prefetch),
+            ]);
+            assert_eq!(credit.take_cancelled(), vec![opening[1].id()]);
+            let replacement = credit.poll(0);
+            assert_eq!(replacement.len(), 1, "withdrawal stranded prefetch credit");
+            credit.complete(promoted[0].id(), Outcome::Head(heads[&paths[2]].clone()), 0);
+            // The same terminal event cannot release another request's credit.
+            credit.complete(promoted[0].id(), Outcome::Head(heads[&paths[2]].clone()), 0);
+            credit.plan([
+                want(0, Priority::Prefetch),
+                want(3, Priority::Prefetch),
+                want(1, Priority::Prefetch),
+            ]);
+            assert!(
+                credit.poll(0).is_empty(),
+                "demotion escaped prefetch credit"
+            );
+            credit.denied(&paths[0]);
+            assert_eq!(credit.take_cancelled(), vec![opening[0].id()]);
+            credit.complete(opening[0].id(), Outcome::Head(heads[&paths[0]].clone()), 0);
+            assert!(credit.cache.record(&paths[0], 0).is_none());
+            let after_denial = credit.poll(0);
+            assert_eq!(after_denial.len(), 1, "revocation stranded prefetch credit");
+            assert_eq!(credit.inflight.prefetch(), 2);
+            credit.begin_frame(100);
+            assert_eq!(
+                credit.inflight.prefetch(),
+                0,
+                "expiry retained prefetch credit"
+            );
+            assert_eq!(
+                credit.take_cancelled(),
+                vec![replacement[0].id(), after_denial[0].id()]
+            );
+            assert!(credit.inflight.is_empty());
+
+            let mut switched = Reader::new(credit_policy).unwrap();
+            switched.begin_frame(0);
+            switched.plan((0..3).map(|index| want(index, Priority::Prefetch)));
+            let previous_source = switched.poll(0);
+            switched.configure_source(&provider, 0);
+            assert_eq!(
+                switched.take_cancelled(),
+                previous_source.iter().map(Op::id).collect::<Vec<_>>()
+            );
+            switched.plan((0..3).map(|index| want(index, Priority::Prefetch)));
+            assert_eq!(
+                switched.poll(0).len(),
+                2,
+                "source replacement retained old credit"
+            );
+            for op in previous_source {
+                let Op::Head { id, stream } = op else {
+                    panic!("original head request")
+                };
+                switched.complete(id, Outcome::Head(heads[&stream].clone()), 0);
+            }
+            assert_eq!(switched.inflight.prefetch(), 2);
             let policy = ReaderPolicy {
                 requests: 64,
                 prefetch_requests: 0,
@@ -2496,7 +2576,6 @@ mod reader_tests {
                 "equal deadlines must retire at their original boundary"
             );
             assert!(deadlines.inflight.is_empty());
-            assert!(deadlines.keys.is_empty());
             deadlines.begin_frame(121);
             assert!(deadlines.take_cancelled().is_empty());
 
@@ -2584,7 +2663,6 @@ mod reader_tests {
             );
             assert_eq!(reader.take_cancelled(), vec![denied_id]);
             assert_eq!(reader.inflight.len(), heads.len() - 1);
-            assert_eq!(reader.keys.len(), reader.inflight.len());
             // The reply is from the original provider, already captured
             // before revocation. Its valid bytes cannot revive the old grant.
             for op in ops {
@@ -2603,7 +2681,6 @@ mod reader_tests {
                 }
             }
             assert!(reader.inflight.is_empty());
-            assert!(reader.keys.is_empty());
             assert!(reader.take_cancelled().is_empty());
             reader.begin_frame(2);
             assert!(reader.poll(2).is_empty());
