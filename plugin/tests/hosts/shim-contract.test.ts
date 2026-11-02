@@ -52,11 +52,11 @@ test("host manifests and shims fit the native hook budget without tool ledgers",
   assert(lines(source("../../claude/.claude-plugin/plugin.json")) <= 300);
   const claude = JSON.parse(source("../../claude/.claude-plugin/plugin.json"));
   assert.deepEqual(Object.keys(claude.hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
-  assert.equal(claude.hooks.PermissionRequest[0].matcher, "mcp__plugin_acyclic_acyclic-sessions__.*");
+  assert.equal(claude.hooks.PermissionRequest[0].matcher, "^mcp__plugin_acyclic_acyclic-sessions__spawn$");
   assert(claude.mcpServers["acyclic-sessions"]);
   const hooks = JSON.parse(codex).hooks;
   assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"]);
-  assert.equal(hooks.PermissionRequest[0].matcher, "^mcp__acyclic[-_]sessions__");
+  assert.equal(hooks.PermissionRequest[0].matcher, "^mcp__acyclic[-_]sessions__spawn$");
   assert(Object.values(hooks).every((groups: any) => groups.every((group: any) => group.hooks.every((hook: any) => hook.type === "command"))));
   const mcp = JSON.parse(source("../../.mcp.json"));
   assert.deepEqual(mcp.mcpServers["acyclic-sessions"].env_vars, ["CODEX_HOME", "ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
@@ -91,6 +91,17 @@ test("release packaging validates without state access or authentication", () =>
     const marketplace = JSON.parse(readFileSync(join(output, "marketplace.json"), "utf8"));
     assert.equal(marketplace.plugins[0].policy.authentication, undefined);
     assert.equal(run("validate-package.mjs", [output]).status, 0);
+    for (const relative of ["hooks/hooks.json", "claude/.claude-plugin/plugin.json"]) {
+      const path = join(output, "plugin", relative);
+      const original = readFileSync(path, "utf8");
+      const hooks = JSON.parse(original);
+      hooks.hooks.PermissionRequest[0].matcher = ".*";
+      writeFileSync(path, JSON.stringify(hooks));
+      const rejected = run("validate-package.mjs", [output]);
+      assert.notEqual(rejected.status, 0, "a broad permission hook must fail package admission");
+      assert.match(rejected.stderr, /exact spawn permission prompts/);
+      writeFileSync(path, original);
+    }
     const path = join(output, "plugin", ".mcp.json");
     const original = readFileSync(path, "utf8");
     const manifest = JSON.parse(original);
