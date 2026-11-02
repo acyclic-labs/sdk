@@ -111,7 +111,11 @@ export function toolResults(records) {
 // Evidence names a provider body, never an observer's path or diagnostic.
 // Each selected body is encoded once for all presence/absence queries.
 export function modelInputs(expected, generations) {
-  const inputs = generations.map(request => JSON.stringify(request.body));
+  const all = expected.model_contains?.length || expected.model_absent?.length
+    || expected.each_model_contains?.length || expected.each_model_absent?.length;
+  if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
+  const selected = all || generations.length === 0 ? generations : [generations.at(-1)];
+  const inputs = selected.map(request => JSON.stringify(request.body));
   const last = inputs.at(-1) ?? "";
   for (const text of expected.model_contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
   for (const text of expected.model_absent ?? []) assert.ok(inputs.every(input => !input.includes(text)), `model wire contains forbidden ${text}`);
