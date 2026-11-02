@@ -135,6 +135,8 @@ pub struct Probe {
     /// Decoded replies, including those received after the startup sentinel.
     pub replies: ProbeReplies,
     frame: Vec<u8>,
+    passthrough: Vec<u8>,
+    unwrapping: bool,
     state: u8,
     pub(crate) input: VecDeque<Vec<u8>>,
     discarding: bool,
@@ -174,7 +176,7 @@ impl Probe {
             } else if multiplexer != Multiplexer::Screen
                 || !query.windows(2).any(|x| x == b"\x1b\\")
             {
-                batch.extend_from_slice(&multiplexer.wrap(query));
+                multiplexer.wrap_into(query, &mut batch);
             }
         }
         batch.extend_from_slice(b"\x1b[c");
@@ -263,26 +265,37 @@ impl Probe {
             return;
         }
         if self.frame.starts_with(b"\x1bPtmux;") && parse {
-            let frame = std::mem::take(&mut self.frame);
+            if self.unwrapping {
+                self.frame.clear();
+                self.state = 0;
+                return;
+            }
+            let mut frame =
+                std::mem::replace(&mut self.frame, std::mem::take(&mut self.passthrough));
             self.state = 0;
-            let body = frame
-                .get(7..frame.len().saturating_sub(2))
-                .unwrap_or_default();
             let mut previous_escape = false;
-            let mut decoded = Vec::new();
-            for &byte in body {
+            let mut decoded = 0;
+            // Unescape into the original envelope allocation. The destination
+            // always precedes unread bytes; the same framer consumes the body
+            // using the buffer retained from the preceding envelope.
+            for at in 7..frame.len().saturating_sub(2) {
+                let byte = frame[at];
                 if byte == 0x1b && !previous_escape {
                     previous_escape = true;
                     continue;
                 }
-                decoded.push(byte);
+                frame[decoded] = byte;
+                decoded += 1;
                 previous_escape = false;
             }
-            // A tmux envelope is terminal traffic, never user input. One level
-            // is sufficient; nested envelopes are discarded without recursion.
-            if !decoded.starts_with(b"\x1bPtmux;") {
-                self.feed(&decoded);
-            }
+            frame.truncate(decoded);
+            // A tmux envelope is terminal traffic, never user input. Reject a
+            // nested envelope anywhere in this body, including after a reply.
+            self.unwrapping = true;
+            self.feed(&frame);
+            self.unwrapping = false;
+            frame.clear();
+            self.passthrough = frame;
             return;
         }
         let mut handler = ReplyHandler {
@@ -298,7 +311,7 @@ impl Probe {
                     && let Some((header, status)) = body.split_once(';')
                     && header
                         .split(',')
-                        .any(|field| field == format!("i={GRAPHICS_ID}"))
+                        .any(|field| field.strip_prefix("i=") == Some(GRAPHICS_ID))
                 {
                     handler.replies.graphics = Some(status == "OK");
                     handler.recognized = true;
@@ -339,20 +352,19 @@ impl vte::Perform for ReplyHandler<'_> {
         if params.iter().any(|parameter| parameter.len() != 1) {
             return;
         }
-        let values: Vec<_> = params
-            .iter()
-            .filter_map(|parameter| match parameter {
-                [value] => Some(*value),
-                _ => None,
-            })
-            .collect();
-        match (action, intermediates, values.as_slice()) {
-            ('c', b"?", [_, attributes @ ..]) => {
+        let mut values = params.iter();
+        match (action, intermediates, values.next(), values.next()) {
+            ('c', b"?", Some(_), first_attribute) => {
                 self.replies.sentinel = true;
-                self.replies.sixel = Some(attributes.contains(&4));
+                self.replies.sixel =
+                    Some(first_attribute.into_iter().chain(values).any(|a| a == [4]));
             }
-            ('u', b"?", [flags]) => self.replies.keyboard_flags = Some(*flags),
-            ('y', b"?$", [mode, value]) if modes().any(|known| known == *mode) && *value <= 4 => {
+            ('u', b"?", Some([flags]), None) => self.replies.keyboard_flags = Some(*flags),
+            ('y', b"?$", Some([mode]), Some([value]))
+                if values.next().is_none()
+                    && modes().any(|known| known == *mode)
+                    && *value <= 4 =>
+            {
                 let state = match value {
                     0 => ModeState::Unsupported,
                     1 => ModeState::Set,
@@ -458,7 +470,7 @@ pub fn detect(
         // including when the original startup deadline has already expired.
         let mut cancel = vec![0x18];
         if multiplexer != Multiplexer::None {
-            cancel.extend_from_slice(&multiplexer.wrap(b"\x18"));
+            multiplexer.wrap_into(b"\x18", &mut cancel);
         }
         let _ = io.send(&cancel, Instant::now() + Duration::from_millis(1));
         return Err(error);

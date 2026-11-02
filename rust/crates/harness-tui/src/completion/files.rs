@@ -8,6 +8,24 @@ pub(super) struct Entry {
     pub theme: bool,
 }
 
+impl Entry {
+    pub(super) fn rank(
+        &self,
+        request: Option<&super::CompletionRequest>,
+        order: u64,
+        index: usize,
+        work: &mut super::CompletionWork,
+    ) -> Option<super::Rank> {
+        super::rank(
+            request.filter(|request| request.kind == self.kind),
+            &self.item,
+            order,
+            index,
+            work,
+        )
+    }
+}
+
 impl CompletionMenu {
     /// Fold one command/workspace file from a snapshot or cursor-follow change.
     /// Paths are logical volume paths: commands/*.json, commands/**/*.md,
@@ -18,6 +36,7 @@ impl CompletionMenu {
             .transpose()?
             .unwrap_or_default();
         self.set_entries(path, bytes.is_some(), entries);
+        self.repair_selection();
         Ok(())
     }
 
@@ -40,6 +59,7 @@ impl CompletionMenu {
         for (path, present, entries) in decoded {
             self.set_entries(path, present, entries);
         }
+        self.repair_selection();
         Ok(())
     }
 
@@ -64,25 +84,8 @@ impl CompletionMenu {
                 }
             }
             for (index, entry) in old.iter().enumerate() {
-                if let Some(request) = &self.request {
-                    if request.kind != entry.kind {
-                        continue;
-                    }
-                    self.work.candidates += 1;
-                    let score = match request.kind {
-                        CompletionKind::Command => {
-                            super::prefix(&entry.item.value, &request.query).then_some(0)
-                        }
-                        CompletionKind::Theme => {
-                            super::theme_prefix(&entry.item.value, &request.query).then_some(0)
-                        }
-                        CompletionKind::Mention => {
-                            super::fuzzy_score(&request.query, &entry.item.value)
-                        }
-                    };
-                    if let Some(score) = score {
-                        self.items.remove(&(!entry.item.tool, score, order, index));
-                    }
+                if let Some(key) = entry.rank(self.request.as_ref(), order, index, &mut self.work) {
+                    self.items.remove(&key);
                 }
             }
         }
@@ -94,12 +97,13 @@ impl CompletionMenu {
                     .or_default() += 1;
                 self.version = None;
             }
-            self.rank_entry(order, index, entry);
+            if let Some(key) = entry.rank(self.request.as_ref(), order, index, &mut self.work) {
+                self.items.insert(key, Rc::clone(&entry.item));
+            }
         }
         if present {
             self.files.insert(path.to_owned(), (order, entries));
         }
-        self.selected = self.selected.min(self.items.len().saturating_sub(1));
     }
 
     /// Replace a lost query's disposable fold before applying its new snapshot.
@@ -109,7 +113,7 @@ impl CompletionMenu {
         self.version = None;
         self.next_file = 0;
         self.items.clear();
-        self.selected = 0;
+        self.selected = None;
     }
 }
 

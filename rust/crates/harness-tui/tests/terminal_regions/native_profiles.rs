@@ -221,6 +221,10 @@ pub(super) mod linux {
             assert_eq!(resized, *b"G", "screen resize command completed");
         }
         let mut output = io::stdout().lock();
+        // The test harness has already printed its preamble in this PTY.
+        // Both renderers diff against an initially blank, default-styled grid;
+        // establish that baseline once, before any original frame bytes.
+        output.write_all(b"\x1b[0m\x1b[2J\x1b[H")?;
         write_frame(&mut control, &mut output, length)?;
         let mut reply = Vec::new();
         stdin.lock().read_until(b'R', &mut reply)?;
@@ -442,6 +446,11 @@ pub(super) mod linux {
             frame_child(Path::new(&root)).unwrap();
             return;
         }
+        assert_eq!(
+            capture(tool, b""),
+            vec![" ".repeat(usize::from(WIDTH)); usize::from(HEIGHT)],
+            "the original harness preamble cannot become the renderer baseline"
+        );
         for (bytes, expected) in fixtures() {
             assert_eq!(capture(tool, &bytes), expected, "{tool} region screen");
             assert_ne!(
