@@ -139,6 +139,60 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
     assert!(merged.contains("main"));
     assert!(merged.contains("agent"));
+    // UTF-8 validity alone does not make a file text. The same binary gate
+    // applies to every side before a conflict can reach the text driver.
+    for (label, base, ours, theirs) in [
+        ("base", "base\0\n", "main\n", "agent\n"),
+        ("ours", "base\n", "main\0\n", "agent\n"),
+        ("theirs", "base\n", "main\n", "agent\0\n"),
+    ] {
+        main.write_text("/binary", base).await?;
+        let binary_agent = fork_workspace(
+            &main,
+            &format!("binary-driver-{label}"),
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        binary_agent.write_text("/binary", theirs).await?;
+        main.write_text("/binary", ours).await?;
+        let plan = unbounded!(binary_agent.join_into(&main), plan())?;
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = plan
+            .apply(
+                ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?
+        else {
+            return Err("binary join did not expose its conflict".into());
+        };
+        let described = plan.describe_conflicts(conflicts, truncated).await?;
+        assert_eq!(described.conflicts.len(), 1);
+        let view = &described.conflicts[0];
+        assert_eq!(view.path.as_deref(), Some("/binary"));
+        assert_eq!(view.kind, crate::ConflictKind::Binary);
+        for (value, expected) in [&view.base, &view.ours, &view.theirs]
+            .into_iter()
+            .zip([base, ours, theirs])
+        {
+            let crate::ConflictValue::Binary(bytes) = value else {
+                return Err("binary conflict became marker input".into());
+            };
+            assert_eq!(bytes, expected.as_bytes());
+        }
+        assert_eq!(
+            crate::MergeDriver::resolve(&crate::DefaultTextMergeDriver, view),
+            Err(crate::DriverError::Unsupported)
+        );
+        assert_eq!(unbounded!(main, head())?.id(), plan.target_head());
+        assert_eq!(unbounded!(binary_agent, head())?.id(), plan.source_head());
+    }
     Ok(())
 }
 

@@ -56,7 +56,12 @@ pub enum ByteMerge {
 
 const BINARY_PROBE_BYTES: usize = 8 * 1024;
 
-fn bounded_text(bytes: &[u8], limits: ByteMergeLimits) -> Result<&str, ByteMergeError> {
+/// Borrows UTF-8 content accepted by the shared text merge engine.
+///
+/// The byte bound is checked before validation. A NUL in the engine's binary
+/// probe window is binary even when the complete byte sequence is valid UTF-8.
+/// No content is copied or allocated.
+pub fn text_from_bytes(bytes: &[u8], limits: ByteMergeLimits) -> Result<&str, ByteMergeError> {
     if bytes.len() as u64 > limits.max_bytes {
         return Err(ByteMergeError::TooLarge);
     }
@@ -70,7 +75,9 @@ fn optional_text(
     bytes: Option<&[u8]>,
     limits: ByteMergeLimits,
 ) -> Result<Option<&str>, ByteMergeError> {
-    bytes.map(|bytes| bounded_text(bytes, limits)).transpose()
+    bytes
+        .map(|bytes| text_from_bytes(bytes, limits))
+        .transpose()
 }
 
 fn modify_delete(
