@@ -326,6 +326,45 @@ async fn machines_call_abandoned_preparation_keeps_unsubmitted_admission()
 async fn machines_call_has_one_terminal_and_never_reenters_accepted_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mut machine, streams, journal) = original_journal().await?;
+    // Native create settles the already enrolled workspace without another
+    // physical transition. Retain its real simulator observation through the
+    // original journal codec, then transfer that decoded storage to the caller.
+    let created = IdempotencyKey::new();
+    let Admission::Original(publication) =
+        journal.begin(created, [8; 32], None, || Ok(|| {})).await?
+    else {
+        panic!("original enrolled create");
+    };
+    journal
+        .finish(
+            created,
+            [8; 32],
+            publication,
+            &machine,
+            MutationOutcome::Created(machine.clone()),
+        )
+        .await?;
+    let original = journal.existing_call(&journal.call(created)?).await?;
+    let Some(MutationOutcome::Created(decoded)) = original.completed.as_ref() else {
+        panic!("original decoded create");
+    };
+    assert!(!decoded.endpoints.is_empty());
+    let endpoints = decoded.endpoints.as_ptr();
+    let uri = decoded.endpoints[0].uri.as_ptr();
+    // The former clone needs a second live buffer; it cannot reuse either.
+    let copied = decoded.clone();
+    assert_ne!(copied.endpoints.as_ptr(), endpoints);
+    assert_ne!(copied.endpoints[0].uri.as_ptr(), uri);
+    let MutationOutcome::Created(transferred) = original.outcome(created)? else {
+        panic!("original created outcome");
+    };
+    assert_eq!(transferred.endpoints.as_ptr(), endpoints);
+    assert_eq!(transferred.endpoints[0].uri.as_ptr(), uri);
+    assert_eq!(transferred, machine);
+    assert_eq!(
+        journal.recover(created).await?,
+        MutationOutcome::Created(machine.clone())
+    );
     let machine_path = journal.path(format_args!("machines/{}", machine.id))?;
     let entered = std::cell::Cell::new(0);
     let key = IdempotencyKey::new();
