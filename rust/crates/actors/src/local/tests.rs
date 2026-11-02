@@ -5,6 +5,7 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use proptest::prelude::*;
 
+mod disposition;
 mod hot_path;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
