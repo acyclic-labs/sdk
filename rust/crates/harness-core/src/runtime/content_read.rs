@@ -5,6 +5,12 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
+pub(super) enum ReadExtent {
+    Metadata,
+    Body,
+    Range(acyclic_fs::ByteRange),
+}
+
 // An admitted reader's grants can only be retained or narrowed. In particular,
 // range and full reads cannot pass an arbitrary replacement to authorization.
 pub(super) struct ReadGrants<'a> {
@@ -163,7 +169,7 @@ impl TaskContext {
         grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        let grants = self.authorize_file_read(file, scope, grants, Some(range), io)?;
+        let grants = self.authorize_file_read(file, scope, grants, ReadExtent::Range(range), io)?;
         let reader = self
             .content_binding(Some(file.volume()))
             .map(|content| content.reader.as_ref())
@@ -188,14 +194,17 @@ impl TaskContext {
         file: &FileRef,
         scope: &'a RuntimeScope,
         request: &'a crate::Capabilities,
-        range: Option<acyclic_fs::ByteRange>,
+        extent: ReadExtent,
         io: Option<&ContentIo>,
     ) -> Result<ReadGrants<'a>> {
         let grants = ReadGrants::bound(scope).intersect(Some(request), io)?;
         crate::executor::with_history_io(io, |work| {
-            match range {
-                Some(range) => grants.scope.limits.validate_file_range(file, range, work)?,
-                None => grants.scope.limits.validate_file(file, work)?,
+            match extent {
+                ReadExtent::Metadata => grants.scope.limits.validate_file_metadata(file, work)?,
+                ReadExtent::Body => grants.scope.limits.validate_file(file, work)?,
+                ReadExtent::Range(range) => {
+                    grants.scope.limits.validate_file_range(file, range, work)?
+                }
             }
             if !read_granted_with_work(grants.grants, file, work)? {
                 return Err(content_error(
@@ -432,8 +441,13 @@ impl TaskContext {
         ceiling: Option<&crate::Capabilities>,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        let grants =
-            self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), None, io)?;
+        let grants = self.authorize_file_read(
+            file,
+            scope,
+            ceiling.unwrap_or(scope.grants()),
+            ReadExtent::Body,
+            io,
+        )?;
         let reader = binding
             .map(|content| content.reader.as_ref())
             .ok_or_else(|| {

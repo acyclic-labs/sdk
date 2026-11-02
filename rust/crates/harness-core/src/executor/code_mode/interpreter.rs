@@ -354,6 +354,10 @@ mod tests {
             if (!latest.version.startsWith('authored-path-v1:')) throw new Error('removal control needs original namespace version');
             await remove('remove.txt', latest.version);
             if (await read('remove.txt') !== null || retained.text() !== 'old') throw new Error('versioned removal changed pinned content');
+            const contentVersion = await write('content-remove.txt', 'again'.repeat(400), 'any');
+            if (contentVersion.startsWith('authored-path-v1:')) throw new Error('content removal control needs original immutable reference');
+            await remove('content-remove.txt', contentVersion);
+            if (await read('content-remove.txt') !== null) throw new Error('content version removal kept current binding');
             await write('recovery.txt', 'original', 'any');
             await remove('recovery.txt', 'any');
             if ((await read('recovery.txt')).text() !== 'later') throw new Error('removal recovery deleted a later publication');
@@ -453,6 +457,9 @@ mod tests {
                         && invocation.arguments["ifVersion"]
                             .as_str()
                             .is_some_and(|version| version.starts_with("authored-path-v1:"));
+                    let bounded_removal = namespace_removal
+                        || (name == "remove"
+                            && invocation.arguments["path"] == "content-remove.txt");
                     let acting = if name == "remove" && invocation.arguments["path"] == "denied.txt"
                     {
                         Arc::new(
@@ -470,7 +477,7 @@ mod tests {
                                 task.scope().limits(),
                             )?,
                         )
-                    } else if namespace_removal {
+                    } else if bounded_removal {
                         // The original version is admitted, but the 2000-byte body
                         // cannot be read on this narrower operation's allowance.
                         Arc::new(task.scoped(
@@ -485,9 +492,13 @@ mod tests {
                     };
                     let context =
                         ToolContext::new(acting, invocation.operation_id, &invocation.call_id)?;
-                    if namespace_removal {
+                    if bounded_removal {
                         let refusal = context
-                            .read_tool_path("remove.txt", None, None)
+                            .read_tool_path(
+                                invocation.arguments["path"].as_str().unwrap(),
+                                None,
+                                None,
+                            )
                             .await
                             .unwrap_err();
                         assert!(refusal.to_string().contains("read bound"), "{refusal}");
@@ -587,7 +598,7 @@ mod tests {
         // One initial page, two resumed pages, one root page and three refusals.
         // Breaking after the first entry does not prefetch the next page.
         assert_eq!(directory_pages, 7);
-        assert_eq!(calls, 13 + 19 + 18 + large_pages + directory_pages);
+        assert_eq!(calls, 13 + 22 + 18 + large_pages + directory_pages);
         Ok(())
     }
 

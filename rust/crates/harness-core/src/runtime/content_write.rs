@@ -236,7 +236,13 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         if let Some(source) = source {
-            self.authorize_file_read(source, scope, scope.grants(), None, io)?;
+            self.authorize_file_read(
+                source,
+                scope,
+                scope.grants(),
+                super::content_read::ReadExtent::Metadata,
+                io,
+            )?;
         }
         let (binding, path) = match source {
             Some(source) => (self.tool_content(Some(source.volume())), path),
@@ -288,7 +294,13 @@ impl TaskContext {
         writer.supports_stage(io)?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, scope.grants(), None, io)?;
+                self.authorize_file_read(
+                    source,
+                    scope,
+                    scope.grants(),
+                    super::content_read::ReadExtent::Body,
+                    io,
+                )?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,

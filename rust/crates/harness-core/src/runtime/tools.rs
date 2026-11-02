@@ -455,7 +455,10 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                range,
+                range.map_or(
+                    super::content_read::ReadExtent::Body,
+                    super::content_read::ReadExtent::Range,
+                ),
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
@@ -599,7 +602,7 @@ impl ToolContext {
                     source,
                     self.effective_scope(),
                     self.effective_scope().grants(),
-                    None,
+                    super::content_read::ReadExtent::Metadata,
                     io,
                 )?;
                 if source.volume() != volume {

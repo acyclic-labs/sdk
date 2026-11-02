@@ -42,7 +42,7 @@ impl FileTool {
         self.public_path(file.path(), io)?;
         crate::executor::with_history_io(io, |history| {
             let limits = scope.limits();
-            if matches!(self, Self::Read) {
+            if matches!(self, Self::Read | Self::Remove) {
                 limits.validate_file_metadata(&file, history)
             } else {
                 limits.validate_file(&file, history)
