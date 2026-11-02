@@ -23,7 +23,7 @@ s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum
 # Drives a built `graphcoder` binary against the local harness, its
 # self-hosted endpoint, and the same server through injected seams
 # (`graphcoder-seams`; see tests/graphcoder_backends.rs).
-graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:graphcoder", "acyclic-harness/serve", "acyclic-native-runtime/test-support"]
+graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-harness/serve", "acyclic-native-runtime/test-support"]
 
 [dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
@@ -42,7 +42,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["confor
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
-graphcoder = { path = "../harness/src/bin/graphcoder", optional = true }
+acyclic-plugin = { path = "../../../plugin", optional = true }
 bytes.workspace = true
 futures.workspace = true
 blake3.workspace = true

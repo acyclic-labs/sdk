@@ -39,8 +39,8 @@ qualify harness-integration 'client_diff::' \
   cargo test --locked -p acyclic-harness --features "$features" --test main
 qualify search-library 'config:: web::executor::tests::' \
   cargo test --locked -p acyclic-harness-search --features filesystem,search-http,test-support --lib
-qualify graphcoder-library 'args::tests::' \
-  cargo test --locked -p graphcoder --features "$binary_features" --lib
+qualify graphcoder-library 'runner::args::tests::' \
+  cargo test --locked -p acyclic-plugin --features "$binary_features" --lib
 qualify graphcoder-cli 'a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly jsonl_prompts_share_one_conversation_and_exit_once_settled catalog_errors_fail_through_the_binary' \
   cargo test --locked -p graphcoder --features "$binary_features" --test cli
 if [ ${#artifact_args[@]} -ne 0 ]; then exit 0; fi

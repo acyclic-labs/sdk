@@ -32,8 +32,8 @@ impl Verifier for Witnessed {
     }
 }
 
-fn main() -> graphcoder::CliCompletion {
-    graphcoder::main_with(
+fn main() -> acyclic_plugin::CliCompletion {
+    acyclic_plugin::main_with(
         |config| ServerConfig {
             verifier: Arc::new(Witnessed),
             ..config
