@@ -1,4 +1,20 @@
 use ratatui::{style::Style, text::Span};
+use std::ops::Range;
+
+/// Resolve ordered cell offsets against disjoint source styles in one pass.
+/// Gaps and offsets after the final range use the default style.
+pub(crate) fn ordered_styles(
+    ranges: impl IntoIterator<Item = (Range<usize>, Style)>,
+) -> impl FnMut(usize) -> Style {
+    let mut ranges = ranges.into_iter().peekable();
+    move |offset| {
+        while ranges.next_if(|(range, _)| range.end <= offset).is_some() {}
+        ranges
+            .peek()
+            .filter(|(range, _)| range.start <= offset)
+            .map_or_else(Style::default, |(_, style)| *style)
+    }
+}
 
 /// Append wrapped cells, preserving the prefix and joining adjacent cell styles.
 pub(crate) fn append(

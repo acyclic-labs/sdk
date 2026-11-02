@@ -1,7 +1,7 @@
 //! Layout of one admitted live-query page. No I/O, source discovery or runtime
 //! logic lives here: callers supply rows and retain their source-owned cursor.
 use crate::{Editor, Layout};
-use ratatui::{style::Style, text::Line};
+use ratatui::text::Line;
 
 /// Presentation shared by paged file views. Retained work is proportional to
 /// one admitted page; resize only reflows that page and never reads its source.
@@ -49,19 +49,12 @@ impl<C> QueryPage<C> {
             }
             let text = line.to_string();
             let layout = Layout::new(&Editor::new(&text), usize::from(columns));
-            let mut source_spans = line.spans.iter();
             let mut end = 0;
-            let mut style = Style::default();
-            let mut style_at = |offset| {
-                while offset >= end {
-                    let Some(span) = source_spans.next() else {
-                        break;
-                    };
-                    end += span.content.len();
-                    style = span.style;
-                }
-                style
-            };
+            let mut style_at = crate::styled_cells::ordered_styles(line.spans.iter().map(|span| {
+                let start = end;
+                end += span.content.len();
+                (start..end, span.style)
+            }));
             for row in layout.rows {
                 // The editor reserves an insertion row after an exact-width
                 // final row. A read-only page has no insertion cursor.
@@ -113,7 +106,7 @@ mod tests {
         ratatui::{
             Terminal,
             backend::TestBackend,
-            style::{Color, Modifier},
+            style::{Color, Modifier, Style},
             text::Span,
         },
     };
@@ -258,6 +251,49 @@ mod tests {
         panel.wrap(0);
         assert!(panel.lines.is_empty());
         assert_eq!(panel.source.as_ptr(), original_source);
+
+        // Both projections use the same source-style walk. Unstyled gaps
+        // must reset emphasis, including after a wrapped row or a resize.
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let mut query = QueryPage::<()>::new(
+            vec![Line::from(vec![
+                Span::styled("bold", bold),
+                Span::raw(" gap "),
+                Span::styled("again", bold),
+                Span::raw(" end"),
+            ])],
+            None,
+            false,
+        );
+        let mut transcript = crate::TranscriptRows::default();
+        transcript.push(false, "**bold** gap **again** end");
+        let expected = [
+            ("bold", true),
+            ("gap", false),
+            ("again", true),
+            ("end", false),
+        ]
+        .into_iter()
+        .flat_map(|(text, bold)| text.chars().map(move |character| (character, bold)))
+        .collect::<Vec<_>>();
+        for width in [1, 2, 3, 7, 13, 20] {
+            query.wrap(width);
+            for rows in [query.lines.as_slice(), transcript.rows(width)] {
+                let actual = rows
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .flat_map(|span| {
+                        span.content.chars().filter_map(move |character| {
+                            (!character.is_whitespace()).then_some((
+                                character,
+                                span.style.add_modifier.contains(Modifier::BOLD),
+                            ))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected);
+            }
+        }
         Ok(())
     }
 }
