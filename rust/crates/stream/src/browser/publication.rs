@@ -214,11 +214,7 @@ impl BrowserStream {
         let mut dispatch = Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
         if !cache.valid {
-            dispatch.repair = true;
-            let result = self.refresh(&mut cache, &mut dispatch.keys).await;
-            dispatch.repair = false;
-            dispatch.failed = result.is_err();
-            result?;
+            self.refresh_observation(&mut cache, &mut dispatch).await?;
         }
         #[cfg(test)]
         self.inner

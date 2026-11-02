@@ -102,6 +102,7 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
     let cold = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
         .expect("cold opener");
+    let locks = cold.inner.observation_locks.get();
     assert_eq!(
         cold.read_commit(receipt.commit_id)
             .await
@@ -109,6 +110,7 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
         envelope
     );
     assert!(cold.inner.transactions.get() > 0);
+    assert_eq!(cold.inner.observation_locks.get() - locks, 1);
     let transactions = provider.inner.transactions.get();
     assert_eq!(
         provider
@@ -121,20 +123,24 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
     let transactions = provider.inner.transactions.get();
 
     // No immutable fact certifies absence, even when the local cache is valid.
+    let locks = provider.inner.observation_locks.get();
     let mut missing = Box::pin(provider.read_commit(CommitId::from_bytes([42; 32])));
     assert!(futures::poll!(missing.as_mut()).is_pending());
     assert!(provider.inner.transactions.get() > transactions);
     assert_eq!(missing.await, Err(StreamError::NotFound));
+    assert_eq!(provider.inner.observation_locks.get() - locks, 1);
 
     let mut absent = retained.clone();
     absent.retained[0].commit_id = CommitId::from_bytes([42; 32]);
     let transactions = provider.inner.transactions.get();
+    let locks = provider.inner.observation_locks.get();
     let mut missing = Box::pin(provider.heads(absent.clone()));
     assert!(futures::poll!(missing.as_mut()).is_pending());
     assert!(provider.inner.transactions.get() > transactions);
     let view = missing.await.expect("missing retained publication");
     view.validate_for(&absent).expect("absent selection");
     assert!(view.retained[0].record.is_none());
+    assert_eq!(provider.inner.observation_locks.get() - locks, 1);
 
     enum Lookup {
         Commit,
@@ -164,6 +170,7 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
             receipt
         };
         let transactions = provider.inner.transactions.get();
+        let locks = provider.inner.observation_locks.get();
         match lookup {
             Lookup::Key => assert_eq!(
                 provider
@@ -192,6 +199,7 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
             }
         }
         assert!(provider.inner.transactions.get() > transactions);
+        assert_eq!(provider.inner.observation_locks.get() - locks, 1);
         assert_eq!(
             provider
                 .read_commit(envelope.commit_id)
