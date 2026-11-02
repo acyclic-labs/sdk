@@ -1,5 +1,5 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crate::{Action, Binding, InputKeymap};
+use crate::{Action, InputKeymap};
 use std::fmt::Write as _;
 
 /// A decoded editing key, or committed text from a terminal character event.
@@ -18,24 +18,16 @@ pub enum DecodedKey {
 
 /// Resolve an already decoded key through the declarative editor bindings.
 /// Releases do not edit; repeats only invoke repeatable editing actions.
-pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKey> {
+pub fn decode_key(key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKey> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
-    if key.code == KeyCode::BackTab {
-        key.code = KeyCode::Tab;
-        key.modifiers.insert(KeyModifiers::SHIFT);
-    }
-    // macOS Cmd is the action modifier for character shortcuts. Keep Cmd
-    // arrows intact because those mean line/buffer motion in the keymap.
-    if matches!(key.code, KeyCode::Char(_)) && key.modifiers.contains(KeyModifiers::SUPER) {
-        key.modifiers.remove(KeyModifiers::SUPER);
-        key.modifiers.insert(KeyModifiers::CONTROL);
-    }
-    if event_chord(key).is_some_and(|chord| bindings.disabled(&chord)) {
+    let key = normalize_key(key);
+    let chord = normalized_chord(key);
+    if chord.as_ref().is_some_and(|chord| bindings.disabled(chord)) {
         return None;
     }
-    if let Some(binding) = find_binding(bindings, key) {
+    if let Some(binding) = chord.as_ref().and_then(|chord| bindings.resolve(chord)) {
         if key.kind == KeyEventKind::Repeat && !binding.repeat {
             return None;
         }
@@ -47,7 +39,9 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
     if key.modifiers.contains(KeyModifiers::SHIFT) {
         let mut unshifted = key;
         unshifted.modifiers.remove(KeyModifiers::SHIFT);
-        if let Some(binding) = find_binding(bindings, unshifted)
+        if let Some(binding) = normalized_chord(unshifted)
+            .as_ref()
+            .and_then(|chord| bindings.resolve(chord))
             && matches!(
                 binding.action,
                 Action::Move(_) | Action::Delete(_) | Action::DeleteWord(_)
@@ -71,27 +65,32 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
     None
 }
 
-fn find_binding(bindings: &InputKeymap, key: KeyEvent) -> Option<Binding<'_>> {
-    let chord = event_chord(key)?;
-    bindings.resolve(&chord)
-}
-
 /// Canonical chord spelling for user overrides and keymap help.
 pub fn key_chord(key: KeyEvent) -> Option<String> {
     event_chord(key).map(|chord| chord.as_str().to_owned())
 }
 
-// Four modifier labels (21 bytes), then at most three lowercased Unicode
-// scalars (12 bytes), or the longest named key (9 bytes), fit in 40 bytes.
-pub(crate) fn event_chord(mut key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
+fn normalize_key(mut key: KeyEvent) -> KeyEvent {
     if key.code == KeyCode::BackTab {
         key.code = KeyCode::Tab;
         key.modifiers.insert(KeyModifiers::SHIFT);
     }
+    // macOS Cmd is the action modifier for character shortcuts. Keep Cmd
+    // arrows intact because those mean line/buffer motion in the keymap.
     if matches!(key.code, KeyCode::Char(_)) && key.modifiers.contains(KeyModifiers::SUPER) {
         key.modifiers.remove(KeyModifiers::SUPER);
         key.modifiers.insert(KeyModifiers::CONTROL);
     }
+    key
+}
+
+pub(crate) fn event_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
+    normalized_chord(normalize_key(key))
+}
+
+// Four modifier labels (21 bytes), then at most three lowercased Unicode
+// scalars (12 bytes), or the longest named key (9 bytes), fit in 40 bytes.
+fn normalized_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
     let name = match key.code {
         KeyCode::Backspace => "Backspace",
         KeyCode::Enter => "Enter",
