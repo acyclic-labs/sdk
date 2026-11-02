@@ -761,17 +761,24 @@ pub(super) fn metadata_for_call<'a>(
     Ok(&call.metadata)
 }
 
-// This scope retires the invocation future before the caller publishes either
-// interruption or a terminal turn. It covers ordinary and native dispatch.
-async fn cancel_safe_call<T>(
+// Retire local I/O, or publish the independently owned call's fence and consume
+// its original result. The fence releases the reader without executor cleanup.
+async fn cancel_call<T>(
     execution: impl std::future::Future<Output = T>,
     cancellation: impl std::future::Future<Output = Result<()>>,
+    publication: Option<BoxFuture<'static, Result<()>>>,
 ) -> Result<Option<T>> {
     futures::pin_mut!(execution, cancellation);
     match futures::future::select(cancellation, execution).await {
-        futures::future::Either::Left((cancelled, _)) => {
+        futures::future::Either::Left((cancelled, execution)) => {
             cancelled?;
-            Ok(None)
+            match publication {
+                Some(publication) => {
+                    publication.await?;
+                    Ok(Some(execution.await))
+                }
+                None => Ok(None),
+            }
         }
         futures::future::Either::Right((result, _)) => Ok(Some(result)),
     }
@@ -842,13 +849,16 @@ mod cancellation_tests {
                 Ok(())
             };
             let result: Result<Option<u8>> = futures::executor::block_on(async {
-                match cancel_safe_call(Held(retired.clone()), futures::future::ready(cancellation))
-                    .await
+                match cancel_call(
+                    Held(retired.clone()),
+                    futures::future::ready(cancellation),
+                    None,
+                )
+                .await
                 {
                     Ok(None) => {
-                        // Match the dispatcher's await scrutinee: retirement
-                        // must precede settlement inside this very match arm,
-                        // while the outer caller future is still being polled.
+                        // Retirement must precede settlement in this match
+                        // arm, while the outer caller is still being polled.
                         assert!(retired.load(Ordering::SeqCst));
                         Ok(None)
                     }
@@ -866,11 +876,137 @@ mod cancellation_tests {
             }
         }
         assert!(matches!(
-            futures::executor::block_on(cancel_safe_call(
+            futures::executor::block_on(cancel_call(
                 futures::future::ready(7),
-                futures::future::pending()
+                futures::future::pending(),
+                None,
             )),
             Ok(Some(7))
         ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_fences_original_call_without_waiting_for_executor() -> Result<()> {
+        use acyclic_actors::call::{Accepted, CallPath, Entry, Journal, Outcome};
+        use acyclic_stream::{
+            FollowRequest, FollowUpdate, IdempotencyKey, MemoryStream, StreamPath,
+            StreamProvider as _, StreamProviderExt as _, WhenAbsent,
+        };
+        use futures::{FutureExt as _, StreamExt as _};
+        for (accepted, lost_stop) in [(false, false), (true, false), (false, true), (true, true)] {
+            let provider = Arc::new(MemoryStream::default());
+            let call = CallPath::new(&StreamPath::new("original-caller")?, "call")
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if accepted {
+                provider
+                    .commit(
+                        call.accept(
+                            &Accepted {
+                                executor: "original-executor".into(),
+                                fence: None,
+                            },
+                            false,
+                        )
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .request(IdempotencyKey::new(b"original-acceptance".to_vec())?),
+                    )
+                    .await?;
+            }
+            let mut request = FollowRequest::new(call.log().clone(), 0);
+            request.when_absent = WhenAbsent::Wait;
+            let mut execution = Box::pin(async {
+                let mut records = provider.follow(request).await?;
+                let mut journal = Journal::default();
+                while let Some(update) = records.next().await {
+                    let FollowUpdate::Record(record) = update? else {
+                        continue;
+                    };
+                    if let Entry::Terminal(outcome) = journal
+                        .apply(&record)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                    {
+                        return Ok::<_, Error>(outcome);
+                    }
+                }
+                Err(Error::Storage("original call producer ended".into()))
+            });
+            // The original journal stays live and pending without its
+            // cancellation publication; the fixture cannot finish on its own.
+            assert!(execution.as_mut().now_or_never().is_none());
+            let log = call.log().clone();
+            let publication = || -> BoxFuture<'static, Result<()>> {
+                let publisher = provider.clone();
+                let call = call.clone();
+                Box::pin(async move {
+                    publisher
+                        .commit(
+                            call.cancel("caller cancelled")
+                                .map_err(|error| Error::Invalid(error.to_string()))?
+                                .request(IdempotencyKey::new(b"original-cancellation".to_vec())?),
+                        )
+                        .await?;
+                    Ok(())
+                })
+            };
+            // A ready result never publishes a cancellation, and neither does
+            // loss of the stop producer. Both retain their original verdict.
+            assert_eq!(
+                cancel_call(
+                    futures::future::ready(7),
+                    futures::future::pending(),
+                    Some(publication())
+                )
+                .await?,
+                Some(7)
+            );
+            match provider.head(log.clone()).await {
+                Ok(head) => {
+                    assert!(accepted);
+                    assert_eq!(head.tail, 1);
+                }
+                Err(acyclic_stream::StreamError::NotFound) => assert!(!accepted),
+                Err(error) => return Err(error.into()),
+            }
+            if lost_stop {
+                let (producer, stopped) = futures::channel::oneshot::channel::<()>();
+                drop(producer);
+                let result = cancel_call(
+                    execution,
+                    async {
+                        stopped
+                            .await
+                            .map_err(|_| Error::Storage("original stop producer ended".into()))
+                    },
+                    Some(publication()),
+                )
+                .await;
+                assert!(
+                    matches!(result, Err(Error::Storage(ref cause)) if cause == "original stop producer ended")
+                );
+                match provider.head(log).await {
+                    Ok(head) => assert_eq!(head.tail, 1),
+                    Err(acyclic_stream::StreamError::NotFound) => assert!(!accepted),
+                    Err(error) => return Err(error.into()),
+                }
+                continue;
+            }
+            let stop = acyclic_actors::guest::CancellationToken::new();
+            stop.cancel();
+            let outcome = cancel_call(
+                execution,
+                async {
+                    stop.cancelled().await;
+                    Ok(())
+                },
+                Some(publication()),
+            )
+            .await?
+            .ok_or_else(|| Error::Storage("fenced call was dropped".into()))??;
+            assert!(matches!(
+                (&outcome, accepted),
+                (Outcome::Cancelled(_), false) | (Outcome::Indeterminate(_), true)
+            ));
+        }
+        Ok(())
     }
 }

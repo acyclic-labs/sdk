@@ -823,6 +823,143 @@ async fn committed_handover(refused_close: bool) -> Result {
             assert!(handover.settle(Ok(&unrelated)).await.is_err());
             assert_eq!(std::fs::read(&marker_path)?, b"x");
 
+            // A completed call wins a later cancellation. The exact original
+            // provider result and physical execution count remain unchanged.
+            let invocation = acyclic_harness_core::tool::ToolInvocation {
+                operation_id: op,
+                call_id: run.call_id.clone(),
+                name: "shell".into(),
+                arguments: run.arguments.clone(),
+            };
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                task.clone(),
+                op,
+                &invocation.call_id,
+            )?;
+            let completed_tail = provider.tail(call.log().clone()).await?;
+            let foreign_task = Arc::new(
+                task.as_ref().clone().for_agent(
+                    AgentPath::root(&AgentId::from_bytes([42; 16])),
+                    task.agent()
+                        .ok_or("missing original agent binding")?
+                        .1
+                        .to_vec(),
+                ),
+            );
+            let foreign_context = acyclic_harness_core::runtime::ToolContext::new(
+                foreign_task,
+                op,
+                &invocation.call_id,
+            )?;
+            assert!(matches!(
+                remote
+                    .executor
+                    .cancellation(&invocation, Some(&foreign_context)),
+                Err(acyclic_harness_core::Error::Unauthorized(_))
+            ));
+            remote
+                .executor
+                .cancellation(&invocation, Some(&context))?
+                .ok_or("original device has no cancellation publisher")?
+                .await?;
+            assert_eq!(provider.tail(call.log().clone()).await?, completed_tail);
+            assert_eq!(
+                remote
+                    .executor
+                    .execute(invocation, Some(context))
+                    .await?
+                    .value["exit_code"],
+                7
+            );
+
+            // Prepare without publishing, then cancel before the original Run
+            // reaches the Actor. The same healthy queue must consume it without
+            // accepting it or starting another process.
+            let mut cancelled = run.clone();
+            cancelled.op = OperationId::new();
+            let cancelled_call = acyclic_harness_core::devices::call(&run.agent, cancelled.op)?;
+            let invocation = acyclic_harness_core::tool::ToolInvocation {
+                operation_id: cancelled.op,
+                call_id: cancelled.call_id.clone(),
+                name: "shell".into(),
+                arguments: cancelled.arguments.clone(),
+            };
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                task.clone(),
+                cancelled.op,
+                &invocation.call_id,
+            )?;
+            let prepared = remote
+                .executor
+                .cancellation(&invocation, Some(&context))?
+                .ok_or("original device has no cancellation publisher")?;
+            drop(prepared);
+            assert!(matches!(
+                provider.head(cancelled_call.log().clone()).await,
+                Err(acyclic_stream::StreamError::NotFound)
+            ));
+            remote
+                .executor
+                .cancellation(&invocation, Some(&context))?
+                .unwrap()
+                .await?;
+            assert!(matches!(
+                remote.executor.execute(invocation, Some(context)).await,
+                Err(acyclic_harness_core::Error::InteractionRejected(
+                    acyclic_harness_core::InteractionRejection::Cancelled
+                ))
+            ));
+            provider
+                .commit(dispatch(cancelled, b"cancel-before-handover")?)
+                .await?;
+
+            // Cancel another call after its real process has connected. The
+            // journal reader must return while that same process is still
+            // blocked; cancellation never asserts physical cleanup.
+            let mut active_cancel = run.clone();
+            active_cancel.op = OperationId::new();
+            active_cancel.arguments["command"] = if cfg!(windows) {
+                format!("$peer = [Net.Sockets.TcpClient]::new('127.0.0.1', {port}); [Console]::Out.Write('out'); $null = $peer.GetStream().ReadByte(); $peer.Dispose(); exit 0")
+            } else {
+                format!("exec 3<>/dev/tcp/127.0.0.1/{port}; printf out; IFS= read -r permit <&3; exit 0")
+            }.into();
+            let cancelled_after_acceptance =
+                acyclic_harness_core::devices::call(&run.agent, active_cancel.op)?;
+            let invocation = acyclic_harness_core::tool::ToolInvocation {
+                operation_id: active_cancel.op,
+                call_id: active_cancel.call_id.clone(),
+                name: "shell".into(),
+                arguments: active_cancel.arguments.clone(),
+            };
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                task.clone(),
+                active_cancel.op,
+                &invocation.call_id,
+            )?;
+            provider
+                .commit(dispatch(active_cancel, b"cancel-after-handover")?)
+                .await?;
+            let (mut still_running, _) = listener.accept().await?;
+            remote
+                .executor
+                .cancellation(&invocation, Some(&context))?
+                .unwrap()
+                .await?;
+            assert!(
+                matches!(remote.executor.execute(invocation.clone(), Some(context.clone())).await,
+                Err(acyclic_harness_core::Error::Indeterminate(id)) if id == invocation.operation_id)
+            );
+            let cancelled_tail = provider
+                .tail(cancelled_after_acceptance.log().clone())
+                .await?;
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            assert!(futures::poll!(Box::pin(still_running.read_u8())).is_pending());
+            still_running.write_all(b"continue\n").await?;
+            assert_eq!(
+                still_running.read_u8().await.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+
             let mut binary = run.clone();
             binary.op = OperationId::new();
             let binary_op = binary.op;
@@ -860,6 +997,16 @@ async fn committed_handover(refused_close: bool) -> Result {
                 }
             }
             assert_eq!(captured, vec![255; 16 * 1024]);
+            // The next original queue/inbox round trip proves progress past
+            // both cancellations and the late physical completion above.
+            assert_eq!(std::fs::read(&marker_path)?, b"x");
+            assert_eq!(provider.tail(cancelled_call.log().clone()).await?, 1);
+            assert_eq!(
+                provider
+                    .tail(cancelled_after_acceptance.log().clone())
+                    .await?,
+                cancelled_tail
+            );
         }
 
         // Even another authorized project cannot replace the original mounted

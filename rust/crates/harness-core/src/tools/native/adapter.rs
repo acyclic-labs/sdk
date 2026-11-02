@@ -108,6 +108,16 @@ impl ToolExecutor for Adapter {
         self.original.executor.cancellable_on_drop()
     }
 
+    fn cancellation(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<BoxFuture<'static, Result<()>>>> {
+        self.original
+            .executor
+            .cancellation(&self.adapt(invocation)?, context)
+    }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,

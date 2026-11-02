@@ -155,6 +155,22 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         false
     }
 
+    /// Prepares cancellation of an independently owned effect on its original
+    /// call journal. Preparation sends nothing. The returned future owns the
+    /// original call identity and publisher, and fences late results without
+    /// waiting for the executor to stop. After publication, the caller keeps
+    /// reading the original execution result: a completed result can win, and
+    /// an accepted call can be indeterminate. `None` retains reconciliation.
+    /// Successful publication must release that reader through its terminal
+    /// event, including when a competing terminal wins the publication.
+    fn cancellation(
+        &self,
+        _invocation: &ToolInvocation,
+        _context: Option<&crate::runtime::ToolContext>,
+    ) -> Result<Option<BoxFuture<'static, Result<()>>>> {
+        Ok(None)
+    }
+
     /// Executes an already admitted invocation.
     fn execute<'a>(
         &'a self,
