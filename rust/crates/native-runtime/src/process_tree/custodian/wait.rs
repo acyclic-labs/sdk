@@ -167,7 +167,6 @@ impl Producer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::io::AsHandle as _;
     use windows_sys::Win32::Foundation::{
         ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
     };
