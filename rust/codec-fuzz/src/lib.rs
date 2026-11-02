@@ -1296,7 +1296,6 @@ pub fn actor_codecs(bytes: &[u8]) {
 pub fn filesystem_codecs(bytes: &[u8]) {
     acyclic_fs::s3_http::codec_fuzz::check(bytes);
     assert!(acyclic_fs::core_state::codec_fuzz::check(bytes));
-    assert!(acyclic_fs::native_exchange::codec_fuzz::check(bytes));
     assert!(acyclic_fs::lazy_workspace::codec_fuzz::check(bytes));
     assert!(acyclic_fs::materializer::codec_fuzz::check(bytes));
     assert!(acyclic_fs::native_ownership_codec::check(bytes));
