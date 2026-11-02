@@ -402,7 +402,8 @@ fn digest(value: [u8; 32]) -> String {
     blake3::Hash::from(value).to_hex().to_string()
 }
 
-/// Reads one page exactly once. Referenced usage and admitted requests are loaded;
+/// Reads one page exactly once. Referenced usage, original terminal model
+/// observations and admitted requests are loaded;
 /// tool payloads and earlier journal pages are never reconstructed. Admissions
 /// retain call identity with unknown measurements until the terminal observation.
 /// `price` explicitly selects an immutable price for each call; it may select none.
@@ -460,8 +461,14 @@ pub async fn journal_page<'price>(
                 usage.cache,
                 &mut edges,
             );
-            row.replay_key =
-                step_replay_key(journal, operation, usage.dispatch.step, usage.purpose).await?;
+            row.replay_key = step_replay_key(
+                journal,
+                operation,
+                usage.dispatch.step,
+                usage.purpose,
+                Some(usage.dispatch.request_digest),
+            )
+            .await?;
             models.push(model_call(row, usage, selected)?);
             continue;
         }
@@ -479,9 +486,14 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "admitted".into();
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&invocation)?);
                 tools.push(row);
@@ -494,9 +506,14 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "completed".into();
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&result)?);
                 tools.push(row);
@@ -515,9 +532,14 @@ pub async fn journal_page<'price>(
                         .unwrap_or("unknown")
                 );
                 row.step = Some(step);
-                row.replay_key =
-                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
-                        .await?;
+                row.replay_key = step_replay_key(
+                    journal,
+                    operation,
+                    step,
+                    super::ModelPurpose::Response,
+                    None,
+                )
+                .await?;
                 row.call_id = Some(call_id);
                 tools.push(row);
             }
@@ -554,6 +576,7 @@ async fn step_replay_key(
     operation: OperationId,
     step: u32,
     purpose: super::ModelPurpose,
+    request_digest: Option<[u8; 32]>,
 ) -> Result<Option<String>> {
     let select = |event: &ExecutionEvent| {
         matches!(event,
@@ -587,8 +610,9 @@ async fn step_replay_key(
     let record = &records[0];
     if record.operation_id != operation
         || !matches!(&record.event,
-        ExecutionEvent::ModelStarted { step: recorded, purpose: recorded_purpose, .. }
-        if *recorded == step && *recorded_purpose == purpose)
+        ExecutionEvent::ModelStarted { step: recorded, purpose: recorded_purpose, request_digest: recorded_digest, .. }
+        if *recorded == step && *recorded_purpose == purpose
+            && request_digest.is_none_or(|expected| expected == *recorded_digest))
     {
         return Err(export_error(
             "step replay key admission has a foreign binding",

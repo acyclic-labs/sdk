@@ -550,6 +550,13 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     );
     let terminal = &records[3];
     let settlement = call.settlement(journal.as_ref(), terminal).await?;
+    let page =
+        crate::executor::usage_page(journal.as_ref(), operation, source().agent_path, 0).await?;
+    assert_eq!(page.items.iter().filter(|usage| usage.completed).count(), 1);
+    super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
+        None
+    })
+    .await?;
     let mut output = Vec::new();
     settlement.write(
         &mut output,
@@ -579,6 +586,16 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     let mut foreign = terminal.clone();
     foreign.operation_id = OperationId::new();
     assert!(call.settlement(journal.as_ref(), &foreign).await.is_err());
+    assert!(
+        crate::executor::model_usage::project_record(
+            journal.as_ref(),
+            operation,
+            source().agent_path,
+            &foreign,
+        )
+        .await
+        .is_err()
+    );
     let mut early = terminal.clone();
     early.sequence = records[1].sequence;
     assert!(call.settlement(journal.as_ref(), &early).await.is_err());
@@ -609,5 +626,74 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         _ => unreachable!("original model terminal"),
     }
     assert!(call.settlement(journal.as_ref(), &changed).await.is_err());
+    assert!(
+        crate::executor::model_usage::project_record(
+            journal.as_ref(),
+            operation,
+            source().agent_path,
+            &changed,
+        )
+        .await
+        .is_err(),
+        "JSONL/Arrow cannot certify counters contradicted by the original terminal"
+    );
+
+    // An actual nonterminal observation cannot become completed accounting
+    // by attaching the original valid usage artifact to it.
+    let mut partial = records[2].clone();
+    match &mut partial.event {
+        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+            *usage = crate::executor::ExecutionPayloadField::Usage
+                .select(&terminal.event)
+                .cloned();
+        }
+        _ => unreachable!("original partial observation"),
+    }
+    assert!(
+        crate::executor::model_usage::project_record(
+            journal.as_ref(),
+            operation,
+            source().agent_path,
+            &partial,
+        )
+        .await
+        .is_err(),
+        "partial source is not a completed call"
+    );
+
+    let mut wrong_request = mismatched;
+    wrong_request.tokens.output = Some(17);
+    wrong_request.dispatch.request_digest[0] ^= 1;
+    let wrong_request_file = stage_json(
+        journal.as_ref(),
+        operation,
+        "wrong-request-usage",
+        &wrong_request,
+        None,
+    )
+    .await?;
+    let mut wrong_request_event = terminal.event.clone();
+    match &mut wrong_request_event {
+        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+            *usage = Some(wrong_request_file)
+        }
+        _ => unreachable!("original model terminal"),
+    }
+    journal
+        .append(
+            operation,
+            "wrong-request-completion",
+            &wrong_request_event,
+            None,
+        )?
+        .await?;
+    assert!(
+        super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
+            None
+        },)
+        .await
+        .is_err(),
+        "an indexed replay key cannot certify a different request digest"
+    );
     Ok(())
 }
