@@ -168,7 +168,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+            maximum_bytes: Some(4096),
         };
         let mut files = crate::files::resolve(&provider.files, prepared.request(), None).await?;
         let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
