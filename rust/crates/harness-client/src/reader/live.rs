@@ -1,16 +1,14 @@
 //! Bounded live file reads over the one [`Reader`].
 //!
-//! A caller supplies the original committed stream backing a resolved file.
+//! A caller supplies the original committed stream backing a resolved file and
+//! uses its existing decoder before projecting the public file value.
 //! This module does not resolve agent aliases or create a stream, writer, cache,
 //! watcher or background service. File heads use one tail observation; JSONL
 //! windows use the caller's range. Parts directories use ordinary
 //! [`super::Want::Listing`] and this same source for each selected part.
 
-use super::{Reader, Want};
-use acyclic_harness_core::live::{Error as RecordError, Record};
+use super::{Reader, RecordBytes, Want};
 use acyclic_stream::StreamPath;
-use serde::Deserialize;
-use std::marker::PhantomData;
 use std::num::NonZeroU32;
 
 #[cfg(test)]
@@ -18,9 +16,8 @@ mod tests;
 
 /// One public file's original committed record source.
 #[derive(Clone, Debug)]
-pub struct Source<T> {
+pub struct Source {
     stream: StreamPath,
-    value: PhantomData<fn() -> T>,
 }
 
 /// A live value must not turn a missing source, gap or refused read into zero.
@@ -45,22 +42,13 @@ pub enum Error {
         "live range is outside the observed source; recovery: use a cursor at or before its observed tail"
     )]
     Range,
-    /// The original record is malformed; no fallback layout is attempted.
-    #[error("live record is malformed; recovery: inspect the original producer's committed record")]
-    Malformed,
-    /// A source record refused its layout or projection.
-    #[error(transparent)]
-    Record(#[from] RecordError),
 }
 
-impl<T> Source<T> {
+impl Source {
     /// Bind the original stream backing this file. An agent
     /// name, request digest or phase is not used to reconstruct its identity.
     pub const fn new(stream: StreamPath) -> Self {
-        Self {
-            stream,
-            value: PhantomData,
-        }
+        Self { stream }
     }
 
     /// Plan a snapshot file, such as status, counters, budget or context.
@@ -82,17 +70,18 @@ impl<T> Source<T> {
         })
     }
 
-    /// Render the observed latest record without a history read or any IO.
-    pub fn latest<'a>(&self, reader: &'a Reader) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-    {
+    /// Borrow the observed latest original record without IO, a payload copy
+    /// or a second encoding. Decode using the original producer's format.
+    pub fn latest<'a>(&self, reader: &'a Reader) -> Result<&'a RecordBytes, Error> {
         let tail = self.tail(reader)?;
         let sequence = tail.checked_sub(1).ok_or(Error::Empty)?;
-        decode(reader.cache().record(&self.stream, sequence))
+        reader
+            .cache()
+            .record(&self.stream, sequence)
+            .ok_or(Error::Pending)
     }
 
-    /// Lazily decode only the requested JSONL records. The exclusive end is
+    /// Lazily borrow only the requested original records. The exclusive end is
     /// the original observed tail clipped to the supplied window. Reaching it
     /// is not producer completion: growth is delivered by the original follow.
     pub fn page<'a>(
@@ -100,10 +89,7 @@ impl<T> Source<T> {
         reader: &'a Reader,
         from: u64,
         count: NonZeroU32,
-    ) -> Result<Page<T, impl Iterator<Item = (u64, Option<&'a super::RecordBytes>)>>, Error>
-    where
-        T: Deserialize<'a>,
-    {
+    ) -> Result<Page<impl Iterator<Item = (u64, Option<&'a RecordBytes>)>>, Error> {
         let tail = self.tail(reader)?;
         if from > tail {
             return Err(Error::Range);
@@ -115,7 +101,6 @@ impl<T> Source<T> {
         Ok(Page {
             end,
             records: reader.cache().records(&self.stream, from, end),
-            value: PhantomData,
         })
     }
 
@@ -132,32 +117,22 @@ impl<T> Source<T> {
 
 /// One borrowed window. No page payload, prefix or decoded value is retained
 /// beyond what its caller consumes. Work is proportional to requested records.
-pub struct Page<T, I> {
+pub struct Page<I> {
     /// Exclusive original stream cursor, including gaps; it is not an ACK.
     pub end: u64,
     records: I,
-    value: PhantomData<fn() -> T>,
 }
 
-impl<'a, T: Deserialize<'a>, I: Iterator<Item = (u64, Option<&'a super::RecordBytes>)>> Iterator
-    for Page<T, I>
-{
-    type Item = (u64, Result<T, Error>);
+impl<'a, I: Iterator<Item = (u64, Option<&'a RecordBytes>)>> Iterator for Page<I> {
+    type Item = (u64, Result<&'a RecordBytes, Error>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.records
             .next()
-            .map(|(sequence, bytes)| (sequence, decode(bytes)))
+            .map(|(sequence, bytes)| (sequence, bytes.ok_or(Error::Pending)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.records.size_hint()
     }
-}
-
-fn decode<'a, T: Deserialize<'a>>(bytes: Option<&'a super::RecordBytes>) -> Result<T, Error> {
-    serde_json::from_slice::<Record<T>>(bytes.ok_or(Error::Pending)?)
-        .map_err(|_| Error::Malformed)?
-        .into_value()
-        .map_err(Error::Record)
 }

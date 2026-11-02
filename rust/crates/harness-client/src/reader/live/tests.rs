@@ -2,6 +2,7 @@ use super::*;
 use crate::reader::{Failure, Op, Outcome, Priority, ReaderPolicy};
 use acyclic_harness_core::{
     OperationId,
+    agent::{AgentRecord as _, Phase, StatusRecord},
     executor::{ModelPriceRecord, ModelPurpose, ModelTokenUsage, ModelUsageRecord, TokenPrice},
     live::{ContextAdmission, ContextInfo, Error as ProjectionError, Usage},
     model::ModelDispatch,
@@ -139,13 +140,13 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
 
         let provider = MemoryStream::default();
         let stream = StreamPath::new("original/usage").unwrap();
-        let source = Source::<Usage>::new(stream.clone());
+        let source = Source::new(stream.clone());
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         assert_eq!(source.latest(&reader), Err(Error::Pending));
-        let records = [first.clone(), exclusive]
-            .into_iter()
-            .map(|value| serde_json::to_vec(&Record::new(value)).unwrap().into())
-            .collect();
+        // Keep the existing usage format. These generated counters exercise
+        // projection arithmetic, not an actual provider completion.
+        let bytes = serde_json::to_vec(&call).unwrap();
+        let records = vec![bytes.clone().into(), bytes.into()];
         provider
             .append(AppendRequest {
                 path: stream.clone(),
@@ -161,7 +162,16 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             panic!("snapshot must request its original head")
         };
         reader.complete(id, Outcome::Head(provider.head(path).await.unwrap()), 0);
-        assert_eq!(source.latest(&reader).unwrap(), first);
+        let latest = source.latest(&reader).unwrap();
+        assert!(std::ptr::eq(
+            latest,
+            reader.cache().record(&stream, 1).unwrap()
+        ));
+        let original: ModelUsageRecord = serde_json::from_slice(latest).unwrap();
+        assert_eq!(
+            Usage::project(&admission, &original, Some(&price)).unwrap(),
+            first
+        );
         let issued = reader.issued();
         let count = NonZeroU32::new(1).unwrap();
         let mut page = source.page(&reader, 0, count).unwrap();
@@ -176,7 +186,13 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         let id = read.id();
         reader.complete(id, super::super::driver::execute(&provider, read).await, 0);
         let mut page = source.page(&reader, 0, count).unwrap();
-        assert_eq!(page.next(), Some((0, Ok(first.clone()))));
+        let (sequence, bytes) = page.next().unwrap();
+        assert_eq!(sequence, 0);
+        let original: ModelUsageRecord = serde_json::from_slice(bytes.unwrap()).unwrap();
+        assert_eq!(
+            Usage::project(&admission, &original, Some(&price)).unwrap(),
+            first
+        );
         assert!(page.next().is_none());
         drop(page);
         assert!(source.page(&reader, 2, count).unwrap().next().is_none());
@@ -192,12 +208,11 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
                 .await
                 .unwrap(),
         );
-        let mut unsupported = serde_json::to_value(Record::new(first)).unwrap();
-        unsupported["version"] = 2.into();
+        call.version = ModelUsageRecord::VERSION + 1;
         provider
             .append(AppendRequest {
                 path: stream.clone(),
-                records: vec![serde_json::to_vec(&unsupported).unwrap().into()],
+                records: vec![serde_json::to_vec(&call).unwrap().into()],
                 if_tail: Some(2),
                 idempotency_key: IdempotencyKey::new(b"unsupported-layout".to_vec()).unwrap(),
             })
@@ -205,9 +220,11 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             .unwrap();
         let record = follow.next().await.unwrap().unwrap();
         reader.deliver(&stream, super::super::driver::fetched(record), 3);
+        let original: ModelUsageRecord =
+            serde_json::from_slice(source.latest(&reader).unwrap()).unwrap();
         assert_eq!(
-            source.latest(&reader),
-            Err(Error::Record(ProjectionError::Version))
+            Usage::project(&admission, &original, Some(&price)),
+            Err(ProjectionError::Version)
         );
 
         // A refusal of the same original head must not leave stale values
@@ -219,6 +236,33 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert_eq!(
             source.latest(&reader),
             Err(Error::Source(super::super::ReadIssue::AccessDenied))
+        );
+
+        // The same reader also borrows the actual agent status encoding.
+        // A live view must not require the phase owner to publish another row.
+        let status = StatusRecord {
+            phase: Phase::Idle,
+            cursor: 0,
+            conversation: 0,
+        };
+        let stream = StreamPath::new("original/status").unwrap();
+        provider
+            .append(AppendRequest {
+                path: stream.clone(),
+                records: vec![status.encode().unwrap().into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"original-status".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let source = Source::new(stream);
+        reader.plan([(source.want(), Priority::Visible)]);
+        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        let id = head.id();
+        reader.complete(id, super::super::driver::execute(&provider, head).await, 0);
+        assert_eq!(
+            StatusRecord::decode(source.latest(&reader).unwrap()).unwrap(),
+            status
         );
     });
 }
