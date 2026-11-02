@@ -8,9 +8,6 @@ publish = false
 autobins = false
 autotests = false
 
-[lib]
-path = "lib.rs"
-
 [[bin]]
 name = "graphcoder"
 path = "../graphcoder.rs"
@@ -20,29 +17,20 @@ name = "embedded"
 path = "examples/embedded.rs"
 
 [dependencies]
-acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
-acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }
-acyclic-native-runtime = { path = "../../../../native-runtime" }
-acyclic-observability = { path = "../../../../observability" }
-acyclic-stream = { path = "../../../../stream", default-features = false }
-clap.workspace = true
-futures.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tempfile = "3.27.0"
-tokio = { workspace = true, features = ["rt", "macros", "sync", "io-std", "io-util", "net", "signal", "time"] }
-tracing.workspace = true
-tracing-subscriber.workspace = true
+acyclic-plugin = { path = "../../../../../../plugin" }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
+acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }
 acyclic-native-runtime = { path = "../../../../native-runtime", features = ["test-support"] }
 acyclic-test-support = { path = "../../../../test-support" }
 axum.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["rt", "macros", "sync", "io-std", "io-util", "net", "signal", "time"] }
 
 [[test]]
 name = "cli"
