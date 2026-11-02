@@ -258,6 +258,35 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 assert_eq!(provider.creates.load(Ordering::Relaxed), 1);
                 assert!(unrelated.list_machines(None, 1).await?.machines.is_empty());
             }
+
+            // Interrupted command recovery must refuse before inspecting or
+            // binding the original UUID under a replacement provider identity.
+            let mut replacement = target.machines.targets()[target.target].clone();
+            replacement.host = MachinesHost::new(
+                provider.clone(),
+                ProviderRef::new(
+                    "replacement".into(),
+                    "machines".into(),
+                    "1".into(),
+                    &mut None,
+                )?,
+            )?;
+            let changed = Arc::new(AgentMachines::new(
+                Arc::clone(&target.machines.stream),
+                vec![replacement],
+            )?);
+            let recovered =
+                OnFirstUse::new(&changed, target.agent.clone(), "machine", executors.clone())?;
+            assert!(matches!(
+                recovered.reconcile(invocation, None).await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(provider.creates.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                provider.inspections.load(Ordering::Relaxed),
+                inspections + 1
+            );
+            assert_eq!(executors.calls.load(Ordering::Relaxed), 2);
         }
     }
     Ok(())

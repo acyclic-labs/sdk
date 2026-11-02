@@ -8,7 +8,7 @@
 //! harness/agents/<root>/targets/<name>     one execution target of the tree: LATEST
 //!                                          "status" holds its TargetRecord (v1)
 //! harness/agents/<path>/machines/<name>    this agent's own Machine on provisioned
-//!                                          target <name>: one MachineBinding (v1)
+//!                                          target <name>: one MachineBinding
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! harness/status/<id>                      status records, outside the subtree
 //! ```

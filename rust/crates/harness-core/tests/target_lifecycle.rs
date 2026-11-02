@@ -214,13 +214,10 @@ async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
         let forked = machines.machine(&child, CLOUD).await?;
         let binding = machines.binding(&child, CLOUD).await?.ok_or("no binding")?;
         assert_ne!(forked, source);
-        let parent_binding = machines.binding(&parent, CLOUD).await?.ok_or("no parent")?;
+        let observed = cloud(&machines)?.host.inspect(&source).await?;
         // Negative control: without a fork capability the child is created fresh.
-        assert_eq!(
-            binding.forked_from,
-            live_fork.then_some(parent_binding.machine)
-        );
-        assert_eq!(state(&machines, &parent).await?, MachineState::Running);
+        assert_eq!(binding.forked_from, live_fork.then_some(observed.id));
+        assert_eq!(observed.state, MachineState::Running);
 
         // A paused (or provider-idled) parent is a checkpoint: a later
         // child forks it without waking it.
