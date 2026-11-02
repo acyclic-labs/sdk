@@ -1,11 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners } from "node:events";
-import { mkdtempSync, truncateSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
-import { Processes, Spool } from "./process.mjs";
+import { Processes, Spool, SpoolEnded } from "./process.mjs";
+import { failureReport } from "./report.mjs";
+
+test("native event callback failures end unmatched waits with the original cause", async () => {
+  const root = mkdtempSync(join(tmpdir(), "spool-consumer-"));
+  try {
+    for (const stage of ["key", "listener", "match", "eof"]) {
+      const processes = new Processes();
+      try {
+        let original, calls = 0;
+        const fail = () => {
+          calls++;
+          try { readFileSync(join(root, "original-missing-callback-input")); }
+          catch (error) { original = error; throw error; }
+        };
+        const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "" :
+          "console.log(JSON.stringify({id:'first'}));console.log(JSON.stringify({id:'later'}))"]);
+        producer.input.end();
+        const events = new Spool(producer.child.stdout, producer.closed, {
+          key: stage === "key" ? fail : event => [event.id],
+        });
+        if (stage === "listener") events.subscribe(fail);
+        const next = events.next(stage === "match" ? fail : () => false).catch(error => error);
+        const keyed = events.keyed("unpublished").catch(error => error);
+        const laterNext = events.next(() => false).catch(error => error);
+        const laterKeyed = events.keyed("unpublished-other").catch(error => error);
+        const failure = await next;
+        assert.ok(failure instanceof SpoolEnded);
+        assert.equal(await keyed, failure);
+        assert.equal(await laterNext, failure);
+        assert.equal(await laterKeyed, failure);
+        assert.equal(failure.kind, stage === "eof" ? "eof" : "consumer");
+        if (stage !== "eof") {
+          assert.equal(failure.cause, original);
+          assert.equal(failure.detail, original);
+          assert.equal(original.code, "ENOENT");
+          assert.match(failureReport(failure).cause, /ENOENT.*original-missing-callback-input/);
+          assert.match(failure.message, /step=dispatch event 1.*recovery=/);
+        }
+        await assert.rejects(events.next(() => true), error => error === failure);
+        await assert.rejects(events.keyed("late"), error => error === failure);
+        assert.equal((await producer.closed).code, 0, "native exit zero cannot erase consumer failure");
+        assert.equal(calls, stage === "eof" ? 0 : 1, "a failed callback cannot consume later events");
+        assert.equal(processes.children.size, 0, "original producer retirement precedes completion");
+      } finally { await processes.close(); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
 
 test("keyed transcript lookups read exactly one original event, including after EOF", async () => {
   const source = new PassThrough();
