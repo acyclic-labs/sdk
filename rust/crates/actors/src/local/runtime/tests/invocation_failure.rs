@@ -1,6 +1,8 @@
 use super::*;
 use crate::guest::{CancellationToken, GuestError};
 use crate::invocation::Invocation;
+use crate::local::{FailureDisposition, FailureEntry};
+use acyclic_stream::{ChildrenPageRequest, CommittedMutation, ReadRequest, RevisionCut};
 use futures::TryStreamExt as _;
 
 struct Rejects {
@@ -82,6 +84,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let ticket = store.enqueue_invoke(&invocation).await?;
     let snapshot = store.load(&address).await?;
     let epoch = snapshot.state().ok_or("missing original state")?.epoch();
+    assert_eq!(epoch, 0, "idle discovery must not claim placement");
     let wrong = Trigger::Record {
         subscription: "inbox".into(),
         sequence: ticket.record().sequence + 1,
@@ -147,11 +150,21 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     );
     assert!(publications.try_next().await?.is_none());
     let retained = store.load(&address).await?;
+    assert_eq!(retained.tail, receipt.revision());
+    let publication = provider.read_commit(receipt.commit_id()).await?;
+    let mut states = publication
+        .mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            CommittedMutation::Append(append) if &append.path == snapshot.path() => Some(append),
+            _ => None,
+        });
     assert_eq!(
-        retained.tail - claim.sequence - 1,
-        1,
+        states.next().map(|append| append.records.as_slice()),
+        Some(std::slice::from_ref(receipt.state())),
         "failure consumes input and replies in one state publication"
     );
+    assert!(states.next().is_none());
     let state = retained.state().ok_or("missing terminal state")?;
     assert_eq!(state.checkpoint(), Some(&checkpoint));
     assert_eq!(state.cursor("inbox"), Some(1));
@@ -176,6 +189,43 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         1,
         "terminal failure cannot re-enter the guest"
     );
+    let page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(store.failures_path(&address)?),
+            after: None,
+            hierarchy_version: None,
+            tail_stream: Some(StreamPath::new("status")?),
+            limit: 1,
+        })
+        .await?;
+    let child = page.children.first().ok_or("missing failed invocation")?;
+    let entry = child.tail_record.as_ref().ok_or("missing failure record")?;
+    assert_eq!(entry.commit_id, receipt.reply().commit_id);
+    let FailureEntry::Failed(failed) = FailureEntry::decode(&child.path, entry)? else {
+        return Err("failed invocation already resolved".into());
+    };
+    let captured = provider
+        .read(ReadRequest {
+            path: failed.input_path()?,
+            key: None,
+            from: 0,
+            limit: 1,
+            at_least: RevisionCut::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing captured invocation")?;
+    assert_eq!(failed.input(&captured)?, *ticket.record());
+    assert!(matches!(
+        store.prepare_disposition(
+            &address,
+            &failed,
+            FailureDisposition::Replay(&captured),
+            key("terminal-failure/replay")?
+        ),
+        Err(Error::Invalid("replay requires a new invocation identity"))
+    ));
 
     let cancelled = Invocation::new(
         acyclic_stream::StreamPath::new("invoke-control/caller")?,
