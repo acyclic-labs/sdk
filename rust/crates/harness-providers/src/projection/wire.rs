@@ -1,7 +1,6 @@
 use super::call::Call;
-use super::fields::Fields;
-use acyclic_model_render::ToolDeclarations;
-use serde::{Serialize, ser::SerializeMap};
+use acyclic_model_render::{Field, Fields};
+use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -51,90 +50,112 @@ pub(super) struct Chat<'a> {
     pub reasoning_content: Option<&'a RawValue>,
 }
 
-pub(crate) struct Body<'a> {
+impl acyclic_model_render::Segment for Message<'_> {
+    fn write(
+        &self,
+        _: &acyclic_model_render::Provenance,
+        writer: &mut impl std::io::Write,
+    ) -> Result<Option<bool>, acyclic_model_render::RenderError> {
+        serde_json::to_writer(writer, self).map_err(acyclic_model_render::json_error)?;
+        Ok(match self {
+            Self::Gemini { role, .. } => Some(*role == "model"),
+            _ => None,
+        })
+    }
+}
+
+/// A projected request. Its only encoder is model-render: the header slots and
+/// tools, the conversation, then the per-call trailer.
+pub(crate) struct Request<'a> {
+    pub(super) target: acyclic_model_render::Provenance,
     pub(super) fields: Fields,
-    pub(super) tools:
-        Option<ToolDeclarations<'a, acyclic_harness_core::tool::schema::ModelInput<'a>>>,
-    pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
-impl Serialize for Body<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.serialize_fields(serializer, None, None::<&str>)
+
+impl Request<'_> {
+    pub(crate) fn header(&self) -> acyclic_harness_core::Result<acyclic_model_render::Header> {
+        acyclic_model_render::Header::new(
+            self.target.clone(),
+            acyclic_model_render::RENDERER_VERSION,
+            &self.fields,
+            None,
+        )
+        .map_err(rendered)
+    }
+
+    pub(crate) fn tail(&self) -> acyclic_harness_core::Result<acyclic_model_render::Tail> {
+        acyclic_model_render::Tail::new(&self.fields).map_err(rendered)
+    }
+
+    pub(crate) fn render(
+        &self,
+        writer: &mut impl std::io::Write,
+    ) -> acyclic_harness_core::Result<()> {
+        acyclic_model_render::render(&self.header()?, &self.messages, &self.tail()?, writer)
+            .map_err(rendered)
+    }
+
+    pub(crate) fn encode(&self) -> acyclic_harness_core::Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(128);
+        self.render(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// The count endpoint's subset of this same request, in place.
+    pub(crate) fn into_count(mut self, model: &str, adapter: crate::Adapter) -> Self {
+        if adapter == crate::Adapter::Gemini {
+            self.fields
+                .insert(Field::Model, Value::String(format!("models/{model}")));
+        } else {
+            let include = crate::counting::wire::fields(adapter);
+            self.fields
+                .retain(|name| include.iter().any(|field| *field == name));
+        }
+        self
     }
 }
 
-impl Body<'_> {
-    pub(crate) fn serialize_fields<S: serde::Serializer>(
-        &self,
-        serializer: S,
-        include: Option<&[&str]>,
-        model: Option<impl Serialize>,
-    ) -> Result<S::Ok, S::Error> {
-        self.serialize_with_messages(serializer, include, model, &self.messages)
-    }
-
-    pub(super) fn serialize_with_messages<S: serde::Serializer>(
-        &self,
-        serializer: S,
-        include: Option<&[&str]>,
-        model: Option<impl Serialize>,
-        messages: impl Serialize,
-    ) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        for (name, value) in self.fields.header() {
-            if include.is_none_or(|fields| fields.contains(&name))
-                && !(name == "model" && model.is_some())
-            {
-                map.serialize_entry(name, value)?;
-            }
-        }
-        self.serialize_trailer(&mut map, include)?;
-        if let Some(model) = model {
-            map.serialize_entry("model", &model)?;
-        }
-        if let Some(tools) = &self.tools
-            && include.is_none_or(|fields| fields.contains(&"tools"))
-        {
-            map.serialize_entry("tools", tools)?;
-        }
-        map.serialize_entry(self.messages_field, &messages)?;
-        map.end()
-    }
-
-    // Generation, count projections and summary children all serialize the
-    // original fields here. In particular, Gemini's already composed effort,
-    // sampling and output reservation remain one generationConfig object.
-    fn serialize_trailer<M: SerializeMap>(
-        &self,
-        map: &mut M,
-        include: Option<&[&str]>,
-    ) -> Result<(), M::Error> {
-        for (name, value) in self.fields.call_controls() {
-            if include.is_none_or(|fields| fields.contains(&name)) {
-                map.serialize_entry(name, value)?;
-            }
-        }
-        Ok(())
-    }
+fn rendered(error: acyclic_model_render::RenderError) -> acyclic_harness_core::Error {
+    crate::invalid(error.to_string())
 }
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-impl<'a> Body<'a> {
+impl<'a> Request<'a> {
+    /// Generated root fields and conversation; `tools` must already be encoded.
     pub(crate) fn fixture(mut value: Value, field: &'static str) -> Self {
-        let mut fields = std::mem::take(value.as_object_mut().unwrap());
-        let Value::Array(items) = fields.remove(field).unwrap() else {
+        let mut values = std::mem::take(value.as_object_mut().unwrap());
+        let Value::Array(items) = values.remove(field).unwrap() else {
             panic!("fixture messages must be an array")
         };
+        let family = match field {
+            "input" => crate::Adapter::Responses,
+            "contents" => crate::Adapter::Gemini,
+            _ => crate::Adapter::Anthropic,
+        };
+        let mut fields = Fields::default();
+        if let Some(tools) = values.remove("tools") {
+            assert_eq!(tools, serde_json::json!([]), "fixture tools are typed declarations");
+            let empty = acyclic_model_render::ToolDeclarations::<Value>::new(family, Vec::new());
+            fields.set_tools(family, &empty.unwrap()).unwrap();
+        }
+        for (name, value) in values {
+            let field = Field::named(&name).expect("generated input must use the protocol schema");
+            fields.insert(field, value);
+        }
         let messages = items
             .into_iter()
             .map(|item| Message::Item(Item::Json(item)))
             .collect();
         Self {
-            fields: Fields::from_values(fields),
-            tools: None,
-            messages_field: field,
+            target: acyclic_model_render::Provenance {
+                family,
+                provider: "generated".into(),
+                model: "generated".into(),
+                endpoint: "https://generated.invalid".into(),
+                credential_scope: None,
+            },
+            fields,
             messages,
         }
     }

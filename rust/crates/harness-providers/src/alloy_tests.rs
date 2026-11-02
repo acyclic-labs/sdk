@@ -358,14 +358,14 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let prepared = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
         crate::call_ids::CallIds::assert_round_trip(prepared.request());
-        let body = serde_json::to_vec(&crate::projection::body_named(
+        let body = crate::projection::body_named(
             provider,
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
             &provider.reasoning_origin(None, None),
             &mut crate::files::FileText::default(),
-        )?)
-        .unwrap();
+        )?
+        .encode()?;
         for message in &history {
             if let ModelContent::Part(ModelContentPart::Reasoning { block }) = &message.content {
                 let target = provider.reasoning_origin(None, None);

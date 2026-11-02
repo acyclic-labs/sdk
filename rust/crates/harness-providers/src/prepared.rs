@@ -1,4 +1,4 @@
-use crate::{HttpRequest, ResolvedModel, counting, dispatch, invalid, projection};
+use crate::{HttpRequest, ResolvedModel, counting, dispatch, projection};
 use acyclic_harness_core::{Result, context::ModelTokenCount, model::PreparedModelRequest};
 use bytes::Bytes;
 
@@ -27,14 +27,7 @@ impl PreparedInput {
         let body =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let encoded = projection::cache::encode(&body, provider, &origin)?;
-        let count = serde_json::to_vec(&counting::wire::body(
-            &body,
-            &provider.model.name,
-            spec.adapter,
-        ))
-        .map_err(|_| invalid("token count encoding failed"))?
-        .into();
-        drop(body);
+        let count = counting::wire::body(body, &provider.model.name, spec.adapter)?.into();
         Ok(Self {
             request,
             generation: encoded.bytes.into(),

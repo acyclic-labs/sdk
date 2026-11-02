@@ -1,6 +1,6 @@
 use super::{parser_dispatch, provider, request};
 use crate::{
-    Adapter, Result, invalid,
+    Adapter, Result,
     stream::{State, finish, parse},
 };
 use acyclic_harness_core::{conversation::Limits, model::*};
@@ -98,14 +98,14 @@ fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Resul
     request.messages.extend(results);
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let names = crate::tool_names::Names::new(prepared.request());
-    let bytes = serde_json::to_vec(&crate::projection::body_named(
+    let bytes = crate::projection::body_named(
         provider,
         prepared.request(),
         &names,
         &provider.reasoning_origin(provider.key.as_deref(), None),
         &mut crate::files::FileText::default(),
-    )?)
-    .map_err(|_| invalid("fixture request encoding failed"))?;
+    )?
+    .encode()?;
     let body = crate::json(&bytes)?;
     assert!(crate::validate_input(provider.config.adapter, &body).is_empty());
     Ok(bytes)

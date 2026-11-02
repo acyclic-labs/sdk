@@ -309,9 +309,16 @@ fn user() -> Sender {
 
 /// Where `later` first departs from `earlier`'s open message array, if it does.
 fn departure(earlier: &[u8], later: &[u8]) -> Option<usize> {
-    // A body that does not close on its message array departs at its end, so
-    // a changed body shape fails instead of skipping the check.
-    let Some(open) = earlier.strip_suffix(b"]}") else {
+    // Every request ends with the renderer's trailer: the conversation's `]`,
+    // then any per-call controls, none of which contains `],"`. A body
+    // without that shape departs at its end instead of skipping the check.
+    let Some(open) = earlier.strip_suffix(b"]}").or_else(|| {
+        earlier
+            .windows(3)
+            .rposition(|window| window == b"],\"")
+            .and_then(|at| earlier.get(..at))
+            .filter(|_| earlier.ends_with(b"}"))
+    }) else {
         return Some(earlier.len());
     };
     let shared = open.iter().zip(later).take_while(|(a, b)| a == b).count();
@@ -581,11 +588,13 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     let mut rewritten = parent[1].to_vec();
     rewritten[parent[0].len() / 2] ^= 1;
     assert!(departure(parent[0], &rewritten).is_some());
-    // And a body whose messages are not its last field.
-    let mut reshaped = parent[0].to_vec();
-    reshaped.truncate(reshaped.len() - 1);
-    reshaped.extend_from_slice(b",\"after\":0}");
-    assert!(departure(&reshaped, parent[1]).is_some());
+    // Call controls follow the conversation, so a changed control never
+    // rewrites the prefix, while a body without that trailer departs.
+    let mut controls = parent[0].to_vec();
+    controls.truncate(controls.len() - 1);
+    controls.extend_from_slice(b",\"after\":0}");
+    assert!(departure(&controls, parent[1]).is_none());
+    assert!(departure(b"{\"messages\":[]}", parent[1]).is_some());
 
     let tight: Vec<&Bytes> = tight.iter().map(|sent| &sent.body).collect();
     let [near, before, evicted, continued] = tight[..] else {

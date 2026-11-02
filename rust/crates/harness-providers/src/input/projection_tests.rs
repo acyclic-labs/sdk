@@ -155,8 +155,8 @@ proptest! {
             let body = crate::projection::body_named(&provider, &request, &names,
                 &provider.reasoning_origin(provider.key.as_deref(), None),
                 &mut crate::files::FileText::default()).unwrap();
-            let generation = serde_json::to_value(&body).unwrap();
-            let count = serde_json::to_value(crate::counting::wire::body(&body, &request.model.name, adapter)).unwrap();
+            let generation: serde_json::Value = serde_json::from_slice(&body.encode().unwrap()).unwrap();
+            let count: serde_json::Value = serde_json::from_slice(&crate::counting::wire::body(body, &request.model.name, adapter).unwrap()).unwrap();
             let count = if adapter == Adapter::Gemini { &count["generateContentRequest"] } else { &count };
             prop_assert_eq!(&count["tools"], &generation["tools"], "count/generation declarations diverged for {:?}", adapter);
             prop_assert_eq!(validate_input(adapter, &generation), Vec::<&str>::new(), "provider grammar {:?}", adapter);
@@ -168,7 +168,6 @@ proptest! {
             };
             prop_assert_eq!(parameters, &model_schema);
             prop_assert_eq!(&request.tools[0].input_schema, &schema, "source schema was mutated");
-            drop(body);
             drop(names);
             request.tools.clear();
             let generation = crate::projection::body(&provider, &request).unwrap();

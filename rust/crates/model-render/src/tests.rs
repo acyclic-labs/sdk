@@ -71,19 +71,23 @@ fn target(family: Family, provider: &str) -> Provenance {
 fn header(family: Family) -> Header {
     header_for(family, "producing-provider")
 }
+fn model_fields() -> Fields {
+    let mut fields = Fields::default();
+    fields.insert(Field::Model, json!("target-model"));
+    fields
+}
 fn header_for(family: Family, provider: &str) -> Header {
-    Header::new(
-        target(family, provider),
-        [7; 32],
-        RENDERER_VERSION,
-        json!({"model":"target-model"}).as_object().unwrap(),
-        None,
-    )
-    .unwrap()
+    Header::new(target(family, provider), RENDERER_VERSION, &model_fields(), None).unwrap()
+}
+fn tail() -> Tail {
+    Tail::new(&model_fields()).unwrap()
+}
+fn summary_tail(family: Family) -> Tail {
+    Tail::summary(&model_fields(), family).unwrap()
 }
 fn bytes(header: &Header, items: &[WireItem]) -> Vec<u8> {
     let mut out = Vec::new();
-    render(header, items, Tail, &mut out).unwrap();
+    render(header, items, &tail(), &mut out).unwrap();
     out
 }
 
@@ -148,7 +152,7 @@ proptest! {
             for ((target, provider), previous) in targets.into_iter().zip(old) {
                 let out = bytes(&header_for(target, provider), &reopened);
                 prop_assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), reference(target, provider, &reopened));
-                let prefix = previous.get(..previous.len() - Tail.bytes().len()).unwrap();
+                let prefix = previous.get(..previous.len() - tail().bytes().len()).unwrap();
                 prop_assert!(out.starts_with(prefix), "append changed an earlier segment");
             }
         }
@@ -215,8 +219,8 @@ proptest! {
                     }
                     prop_assert!(visible.get("continuation").is_none());
                     let mut output = Vec::new();
-                    let header = Header::new(changed, [7;32], RENDERER_VERSION, json!({"model":"target-model"}).as_object().unwrap(), None).unwrap();
-                    render(&header, [&reopened], Tail, &mut output).unwrap();
+                    let header = Header::new(changed, RENDERER_VERSION, &model_fields(), None).unwrap();
+                    render(&header, [&reopened], &tail(), &mut output).unwrap();
                     let output: Value = serde_json::from_slice(&output).unwrap();
                     let field = match target_family {Family::Responses => "input", Family::Gemini => "contents", _ => "messages"};
                     prop_assert_eq!(output[field].as_array().unwrap().len(), 1);
@@ -318,6 +322,7 @@ fn gemini_summary_admission_uses_the_selected_guarded_projection_role() {
                     &header_for(Family::Gemini, provider),
                     [&reopened],
                     "summarize",
+                    &summary_tail(Family::Gemini),
                     &mut output
                 )
                 .is_ok(),
@@ -410,7 +415,7 @@ fn sink_failure_returns_at_the_failed_write_without_retrying() {
         accept: 0,
     };
     assert!(
-        matches!(render(&header(Family::Responses), [&source], Tail, &mut closed), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
+        matches!(render(&header(Family::Responses), [&source], &tail(), &mut closed), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
     );
     assert_eq!(closed.writes, 1);
     // Fail in the prefix, separator and borrowed instruction serializer. Each
@@ -418,7 +423,7 @@ fn sink_failure_returns_at_the_failed_write_without_retrying() {
     for accept in 0..6 {
         let mut sink = Closed { writes: 0, accept };
         assert!(
-            matches!(render_summary(&header(Family::Responses), [&source], "summarize", &mut sink), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
+            matches!(render_summary(&header(Family::Responses), [&source], "summarize", &summary_tail(Family::Responses), &mut sink), Err(RenderError::Write(error)) if error.kind() == io::ErrorKind::BrokenPipe)
         );
         assert_eq!(sink.writes, accept + 1);
     }
@@ -454,13 +459,14 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     let ordinary = bytes(&header, std::slice::from_ref(&source));
     let mut summary = Vec::new();
     let instruction = "summarize \"\\\n猫";
-    render_summary(&header, [&source], instruction, &mut summary).unwrap();
+    let closer = summary_tail(Family::Responses);
+    render_summary(&header, [&source], instruction, &closer, &mut summary).unwrap();
     for (is_summary, expected) in [(false, ordinary), (true, summary)] {
         let run = |writer: &mut Writer| {
             if is_summary {
-                render_summary(&header, [&source], instruction, writer)
+                render_summary(&header, [&source], instruction, &closer, writer)
             } else {
-                render(&header, [&source], Tail, writer)
+                render(&header, [&source], &tail(), writer)
             }
         };
         let mut partial = Writer {
@@ -511,6 +517,25 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     assert_eq!(former.writes, 2);
 }
 
+fn declarations(family: Family, names: &[&'static str]) -> Fields {
+    let tools = names
+        .iter()
+        .map(|name| ToolDeclaration::Function {
+            name: (*name).into(),
+            description: "generated",
+            parameters: json!({"type":"object","properties":{}}),
+        })
+        .collect();
+    let mut fields = Fields::default();
+    if family != Family::Gemini {
+        fields.insert(Field::Model, json!("target-model"));
+    }
+    fields
+        .set_tools(family, &ToolDeclarations::new(family, tools).unwrap())
+        .unwrap();
+    fields
+}
+
 proptest! {
     // Generated request inputs and an independent semantic oracle, not captured
     // provider exchanges. Byte-prefix identity is not a cache-hit assertion.
@@ -518,33 +543,37 @@ proptest! {
     fn summary_keeps_the_epoch_prefix_and_disables_invocation(
         instruction in ".{1,160}",
         history in prop::collection::vec(".{0,40}", 0..30),
+        output in 1_u32..100_000,
     ) {
         for family in FAMILIES {
-            let declaration = |name| match family {
-                Family::Anthropic => json!({"name":name,"input_schema":{"type":"object","properties":{}}}),
-                Family::Responses => json!({"type":"function","name":name,"parameters":{"type":"object","properties":{}}}),
-                Family::Chat => json!({"type":"function","function":{"name":name,"parameters":{"type":"object","properties":{}}}}),
-                Family::Gemini => json!({"name":name,"parameters":{"type":"object","properties":{}}}),
+            let mut fields = declarations(family, &["first", "second"]);
+            // A call control the ordinary and summary trailers both carry.
+            let (control, value) = match family {
+                Family::Gemini => (Field::GenerationConfig, json!({"maxOutputTokens":output})),
+                Family::Anthropic => (Field::MaxTokens, json!(output)),
+                Family::Responses => (Field::MaxOutputTokens, json!(output)),
+                Family::Chat => (Field::MaxCompletionTokens, json!(output)),
             };
-            let declarations = json!([declaration("first"), declaration("second")]);
-            let tools = if family == Family::Gemini {
-                json!([{"functionDeclarations":declarations}])
-            } else { declarations };
-            let fields = if family == Family::Gemini { json!({"tools":tools}) }
-                else { json!({"model":"target-model","tools":tools}) };
-            let fields = fields.as_object().unwrap();
-            let header = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, fields, None).unwrap();
+            fields.insert(control, value);
+            if family != Family::Gemini {
+                // An ordinary tool choice is replaced, never duplicated.
+                fields.insert(Field::ToolChoice, json!("auto"));
+            }
+            let header = Header::new(target(family, "producing-provider"), RENDERER_VERSION, &fields, None).unwrap();
             let items: Vec<_> = history.iter().enumerate().map(|(index, text)| {
                 let role = if index % 2 == 0 { "user" } else if family == Family::Gemini { "model" } else { "assistant" };
                 let wire = if family == Family::Gemini { json!({"role":role,"parts":[{"text":text}]}) }
                     else { json!({"role":role,"content":text}) };
                 WireItem::capture(Provenance {family,provider:"producing-provider".into(),model:"producing-model".into(),endpoint:"https://example.invalid".into(),credential_scope:Some([9;32])}, ItemKind::Message, raw(wire.to_string()), BTreeMap::new()).unwrap()
             }).collect();
-            let ordinary = bytes(&header, &items);
-            let prefix = &ordinary[..ordinary.len() - Tail.bytes().len()];
+            let ordinary_tail = Tail::new(&fields).unwrap();
+            let mut ordinary = Vec::new();
+            render(&header, &items, &ordinary_tail, &mut ordinary).unwrap();
+            let prefix = &ordinary[..ordinary.len() - ordinary_tail.bytes().len()];
+            let closer = Tail::summary(&fields, family).unwrap();
             let mut summary = Vec::new();
             let mut visited = 0;
-            let result = render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &mut summary);
+            let result = render_summary(&header, items.iter().inspect(|_| visited += 1), &instruction, &closer, &mut summary);
             prop_assert_eq!(visited, items.len());
             if family == Family::Gemini && items.len() % 2 == 1 {
                 prop_assert!(matches!(result, Err(RenderError::InvalidItem(_))));
@@ -553,6 +582,7 @@ proptest! {
             }
             result.unwrap();
             prop_assert!(summary.starts_with(prefix));
+            prop_assert!(summary.ends_with(closer.bytes()));
             let actual: Value = serde_json::from_slice(&summary).unwrap();
             let mut expected: Value = serde_json::from_slice(&ordinary).unwrap();
             let (input, message) = match family {
@@ -567,64 +597,120 @@ proptest! {
                 _ => expected["tool_choice"] = json!("none"),
             }
             prop_assert_eq!(actual, expected);
+            // Both trailers come from the one encoder: the ordinary trailer
+            // with its tool choice replaced is exactly the summary trailer.
+            let mut suppressed = fields.clone();
+            suppressed.remove(Field::ToolChoice);
+            let (name, none) = match family {
+                Family::Gemini => (Field::ToolConfig, json!({"functionCallingConfig":{"mode":"NONE"}})),
+                Family::Anthropic => (Field::ToolChoice, json!({"type":"none"})),
+                _ => (Field::ToolChoice, json!("none")),
+            };
+            suppressed.insert(name, none);
+            let replaced = Tail::new(&suppressed).unwrap();
+            prop_assert_eq!(replaced.bytes(), closer.bytes());
+            // Each trailer is refused by the other entry point.
+            prop_assert!(render(&header, &items, &closer, &mut Vec::new()).is_err());
+            prop_assert!(render_summary(&header, &items, &instruction, &ordinary_tail, &mut Vec::new()).is_err());
             // Reconstructing the header with reordered declarations is the
             // forbidden alternative: the exact same prefix oracle detects it.
-            let mut changed = fields.clone();
-            let list = changed.get_mut("tools").unwrap();
-            let list = if family == Family::Gemini { &mut list[0]["functionDeclarations"] } else { list };
-            list.as_array_mut().unwrap().reverse();
-            let changed = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, &changed, None).unwrap();
+            let mut changed = declarations(family, &["second", "first"]);
+            changed.insert(control, fields.get(control).unwrap().clone());
+            let changed = Header::new(target(family, "producing-provider"), RENDERER_VERSION, &changed, None).unwrap();
             let mut negative = Vec::new();
-            render_summary(&changed, &items, &instruction, &mut negative).unwrap();
+            render_summary(&changed, &items, &instruction, &closer, &mut negative).unwrap();
             prop_assert!(!negative.starts_with(prefix));
         }
+    }
+
+    // R7a: the bytes depend on the fixed schema alone, never on insertion
+    // order or on the map backend's key order for nested objects.
+    #[test]
+    fn root_and_nested_field_order_is_fixed_by_the_schema(
+        keys in prop::collection::vec("[a-z]{1,8}", 1..8),
+        reverse in any::<bool>(),
+    ) {
+        let nested: serde_json::Map<String, Value> =
+            keys.iter().map(|key| (format!("k_{key}"), json!(key.len()))).collect();
+        let mut backwards = serde_json::Map::new();
+        for (key, value) in nested.iter().rev() {
+            backwards.insert(key.clone(), value.clone());
+        }
+        let entries = [
+            (Field::Temperature, json!(0.5)),
+            (Field::Reasoning, Value::Object(nested)),
+            (Field::Model, json!("target-model")),
+            (Field::MaxTokens, json!(64)),
+        ];
+        let mut forward = Fields::default();
+        let mut backward = Fields::default();
+        for (field, value) in entries.iter().cloned() { forward.insert(field, value); }
+        for (field, value) in entries.into_iter().rev() {
+            let value = if field == Field::Reasoning { Value::Object(backwards.clone()) } else { value };
+            backward.insert(field, value);
+        }
+        if reverse { std::mem::swap(&mut forward, &mut backward); }
+        let render_with = |fields: &Fields| {
+            let header = Header::new(target(Family::Anthropic, "producing-provider"), RENDERER_VERSION, fields, None).unwrap();
+            let mut out = Vec::new();
+            render(&header, std::iter::empty::<&WireItem>(), &Tail::new(fields).unwrap(), &mut out).unwrap();
+            out
+        };
+        let bytes = render_with(&forward);
+        prop_assert_eq!(&bytes, &render_with(&backward));
+        let text = std::str::from_utf8(&bytes).unwrap();
+        // Header slots, then the conversation, then the call controls.
+        let positions: Vec<_> = ["\"model\"", "\"reasoning\"", "\"messages\"", "\"max_tokens\"", "\"temperature\""]
+            .iter().map(|key| text.find(key).unwrap()).collect();
+        prop_assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        let mut sorted = keys.clone();
+        sorted.sort();
+        sorted.dedup();
+        let order: Vec<_> = sorted.iter().map(|key| text.find(&format!("\"k_{key}\"")).unwrap()).collect();
+        prop_assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
 
 #[test]
 fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
-    let fields = json!({"tools":[{"google_search":{}}]});
-    let server_header = Header::new(
-        target(Family::Gemini, "provider"),
-        [7; 32],
-        RENDERER_VERSION,
-        fields.as_object().unwrap(),
-        None,
-    )
-    .unwrap();
+    let mut fields = Fields::default();
+    fields
+        .set_tools(
+            Family::Gemini,
+            &ToolDeclarations::<Value>::new(Family::Gemini, vec![ToolDeclaration::WebSearch])
+                .unwrap(),
+        )
+        .unwrap();
+    let server_header =
+        Header::new(target(Family::Gemini, "provider"), RENDERER_VERSION, &fields, None).unwrap();
     let mut output = Vec::new();
     let mut visited = 0;
     let source = item(Family::Gemini, ItemKind::Message, "source");
     let selected = std::iter::once(&source).inspect(|_| visited += 1);
-    assert!(render_summary(&server_header, selected, "summary", &mut output).is_err());
+    let closer = Tail::summary(&fields, Family::Gemini).unwrap();
+    assert!(render_summary(&server_header, selected, "summary", &closer, &mut output).is_err());
     assert_eq!(visited, 0);
     assert!(output.is_empty());
     // The exact same header remains valid for ordinary generation.
-    render(&server_header, [&source], Tail, &mut output).unwrap();
+    render(&server_header, [&source], &Tail::new(&fields).unwrap(), &mut output).unwrap();
     assert!(!output.is_empty());
     output.clear();
     assert!(
         render_summary(
             &header(Family::Responses),
-            std::iter::empty(),
+            std::iter::empty::<&WireItem>(),
             "",
+            &summary_tail(Family::Responses),
             &mut output
         )
         .is_err()
     );
     assert!(output.is_empty());
-    for fields in [json!({"tool_choice":"auto"}), json!({"toolConfig":{}})] {
-        assert!(
-            Header::new(
-                target(Family::Gemini, "provider"),
-                [7; 32],
-                RENDERER_VERSION,
-                fields.as_object().unwrap(),
-                None,
-            )
-            .is_err()
-        );
-    }
+    // Declarations for another protocol cannot enter this header.
+    let anthropic =
+        ToolDeclarations::<Value>::new(Family::Anthropic, vec![ToolDeclaration::WebSearch])
+            .unwrap();
+    assert!(fields.set_tools(Family::Gemini, &anthropic).is_err());
 }
 
 #[test]
@@ -671,7 +757,7 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
             render(
                 &header,
                 selected.iter().inspect(|_| visited += 1),
-                Tail,
+                &tail(),
                 &mut sink,
             )
             .unwrap();
@@ -687,7 +773,7 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
                 "repeat" => assert_eq!(sink.bytes, first),
                 _ => assert!(
                     sink.bytes
-                        .starts_with(&first[..first.len() - Tail.bytes().len()])
+                        .starts_with(&first[..first.len() - tail().bytes().len()])
                 ),
             }
             // These are generated IR measurements, not provider fixtures or
@@ -702,7 +788,6 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
                     "phase": phase,
                     "target": target(family, "producing-provider"),
                     "renderer_version": RENDERER_VERSION,
-                    "epoch": header.epoch(),
                     "header": std::str::from_utf8(header.bytes()).unwrap(),
                     "items": selected,
                     "request": std::str::from_utf8(&sink.bytes).unwrap(),
@@ -738,7 +823,7 @@ fn rendering_writes_only_the_selected_items_without_flush_or_lookbehind() {
                     .iter()
                     .enumerate()
                     .filter_map(|(index, item)| (index != omitted).then_some(item)),
-                Tail,
+                &tail(),
                 &mut lost,
             )
             .unwrap();

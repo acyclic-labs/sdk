@@ -84,6 +84,18 @@ impl<'a, P> ToolDeclarations<'a, P> {
     pub fn is_empty(&self) -> bool {
         self.declarations.is_empty()
     }
+
+    pub(crate) const fn family(&self) -> Family {
+        self.family
+    }
+
+    /// GenerateContent's NONE controls function declarations only; it cannot
+    /// establish that a built-in server tool will not execute.
+    pub(crate) fn has_server_tools(&self) -> bool {
+        self.declarations
+            .iter()
+            .any(|tool| matches!(tool, ToolDeclaration::WebSearch))
+    }
 }
 
 impl<P: Serialize> Serialize for ToolDeclarations<'_, P> {

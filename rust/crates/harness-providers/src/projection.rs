@@ -1,7 +1,6 @@
 pub(crate) mod arguments;
 pub(crate) mod cache;
 mod call;
-mod fields;
 pub(crate) mod gemini;
 mod gemini_results;
 pub(crate) mod image;
@@ -21,10 +20,10 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolResultContent,
     },
 };
-use fields::{Field, Fields};
+use acyclic_model_render::{Field, Fields};
 pub(crate) use profile::validate as validate_profile;
 use serde_json::{Value, json};
-use wire::{Body, Item, Message};
+use wire::{Item, Message, Request};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
     let mut base = validate_url(&provider.config.base_url)?;
@@ -117,14 +116,15 @@ pub(crate) fn body_with_files(
     request: &ModelRequest,
     files: &mut FileText,
 ) -> Result<Value> {
-    serde_json::to_value(body_named(
+    let bytes = body_named(
         provider,
         request,
         &crate::tool_names::Names::new(request),
         &provider.reasoning_origin(provider.key.as_deref(), None),
         files,
-    )?)
-    .map_err(|_| invalid("cannot encode projected request"))
+    )?
+    .encode()?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid("cannot decode projected request"))
 }
 
 pub(crate) fn body_named<'a>(
@@ -133,8 +133,15 @@ pub(crate) fn body_named<'a>(
     names: &'a crate::tool_names::Names<'_>,
     target: &acyclic_harness_core::model::ReasoningOrigin,
     files: &mut FileText,
-) -> Result<Body<'a>> {
+) -> Result<Request<'a>> {
     let adapter = provider.config.adapter;
+    let rendered = acyclic_model_render::Provenance {
+        family: adapter,
+        provider: target.provider.clone(),
+        model: target.model.clone(),
+        endpoint: endpoint(provider)?,
+        credential_scope: target.credential_scope,
+    };
     if provider
         .profile
         .as_ref()
@@ -177,16 +184,7 @@ pub(crate) fn body_named<'a>(
         }
         let event = message.content.notice_parts();
         if let Some((notices, attachments)) = event {
-            let notice = acyclic_model_render::notice_block(
-                acyclic_model_render::Provenance {
-                    family: adapter,
-                    provider: target.provider.clone(),
-                    model: target.model.clone(),
-                    endpoint: endpoint(provider)?,
-                    credential_scope: target.credential_scope,
-                },
-                notices,
-            )
+            let notice = acyclic_model_render::notice_block(rendered.clone(), notices)
             .map_err(|error| invalid(error.to_string()))?;
             sequence::push(adapter, &mut messages, Message::Notice(notice))?;
             if attachments.is_empty() {
@@ -261,12 +259,16 @@ pub(crate) fn body_named<'a>(
         .collect::<Result<Vec<_>>>()?;
     let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)
         .map_err(|error| invalid(error.to_string()))?;
-    let tools = (!tools.is_empty() || adapter == Adapter::Responses).then_some(tools);
     system.retain(|text| !text.trim().is_empty());
     let max = provider
         .admitted_capacity()
         .output_reservation(request.max_output_tokens)?;
     let mut fields = Fields::default();
+    if !tools.is_empty() || adapter == Adapter::Responses {
+        fields
+            .set_tools(adapter, &tools)
+            .map_err(|error| invalid(error.to_string()))?;
+    }
     let model = request.model.name.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
@@ -313,9 +315,13 @@ pub(crate) fn body_named<'a>(
         Adapter::Gemini => {
             fields.insert(Field::GenerationConfig, json!({"maxOutputTokens":max}));
             if !system.is_empty() {
+                // Built in place: `json!` would copy the joined text again.
+                let text = Value::String(text::join(system, "\n\n"));
+                let part = Value::Object([("text".to_owned(), text)].into_iter().collect());
+                let parts = Value::Array(vec![part]);
                 fields.insert(
                     Field::SystemInstruction,
-                    json!({"parts": [{"text": text::join(system, "\n\n")}]}),
+                    Value::Object([("parts".to_owned(), parts)].into_iter().collect()),
                 );
             }
         }
@@ -325,17 +331,22 @@ pub(crate) fn body_named<'a>(
     }
     let sampling = request.sampling;
     if adapter == Adapter::Gemini {
-        let config = fields.get_mut(Field::GenerationConfig).and_then(Value::as_object_mut)
+        fields
+            .update(Field::GenerationConfig, |config| {
+                let config = config.as_object_mut()?;
+                for (name, value) in [
+                    ("temperature", sampling.temperature.map(Value::from)),
+                    ("topP", sampling.top_p.map(Value::from)),
+                    ("seed", sampling.seed.map(Value::from)),
+                ] {
+                    if let Some(value) = value {
+                        config.insert(name.into(), value);
+                    }
+                }
+                Some(())
+            })
+            .flatten()
             .ok_or_else(|| invalid("sampling projection failed: generationConfig is absent; recovery: reconstruct the Gemini request"))?;
-        for (name, value) in [
-            ("temperature", sampling.temperature.map(Value::from)),
-            ("topP", sampling.top_p.map(Value::from)),
-            ("seed", sampling.seed.map(Value::from)),
-        ] {
-            if let Some(value) = value {
-                config.insert(name.into(), value);
-            }
-        }
     } else {
         for (field, value) in [
             (Field::Temperature, sampling.temperature.map(Value::from)),
@@ -347,16 +358,9 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    fields.freeze();
-    let messages_field = match adapter {
-        Adapter::Responses => "input",
-        Adapter::Gemini => "contents",
-        _ => "messages",
-    };
-    Ok(Body {
+    Ok(Request {
+        target: rendered,
         fields,
-        tools,
-        messages_field,
         messages,
     })
 }

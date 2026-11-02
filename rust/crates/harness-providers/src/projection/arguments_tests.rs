@@ -401,7 +401,7 @@ fn projection(
             })?;
         }
         let mut see = |seen| observer.see(Event::Normalization(seen));
-        let bytes = serde_json::to_vec(&projected).unwrap_or_default();
+        let bytes = projected.encode().unwrap_or_default();
         let site = format!("{adapter:?} projection");
         let Some(mut wire) = decoded(&mut see, &site, &bytes, 0)? else {
             return Ok(());
