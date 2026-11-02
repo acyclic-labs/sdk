@@ -45,7 +45,7 @@ async fn captured_gemini_terminal_and_refusal_keep_original_evidence() -> Result
     let journal = storage.journal();
     let input = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::text("Replay captured response through the selected provider".into()),
+        input: ModelContent::Text("Replay captured response through the selected provider".into()),
         selected_context: None,
         max_steps: Some(1),
     };
@@ -86,7 +86,7 @@ async fn captured_gemini_terminal_and_refusal_keep_original_evidence() -> Result
 
     let failed = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::text("Replay the captured continuation refusal".into()),
+        input: ModelContent::Text("Replay the captured continuation refusal".into()),
         selected_context: None,
         max_steps: Some(1),
     };
