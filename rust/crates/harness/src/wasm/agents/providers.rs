@@ -277,7 +277,7 @@ impl Providers {
         limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
             maximum_bytes: limits.file_bytes,
-            history_turns: None,
+            history_turns: Some(TurnLimits::HISTORY_PAGE_SIZE),
         };
         let turns = Arc::new(
             FilesystemTurnHost::new(
