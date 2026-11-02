@@ -10,6 +10,7 @@ enum Fault {
     Wake,
     Accounting,
     Cause,
+    ForeignCause,
 }
 
 struct Woken(AtomicUsize);
@@ -25,23 +26,38 @@ enum Disposition {
 }
 
 #[derive(Debug)]
-struct TaskFailure;
+// Nonzero size makes each simultaneously live boxed cause distinguishable.
+struct TaskFailure(&'static str);
 
 impl std::fmt::Display for TaskFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("original worker refusal")
+        f.write_str(self.0)
     }
 }
 
 impl std::error::Error for TaskFailure {}
 
-fn task_result(disposition: Disposition) -> std::io::Result<i32> {
+fn cause_identity(error: &std::io::Error) -> Option<*const ()> {
+    error
+        .get_ref()
+        .map(|cause| std::ptr::from_ref(cause).cast::<()>())
+}
+
+fn failure(disposition: Disposition) -> (Option<std::io::Error>, Option<*const ()>) {
+    let error = matches!(disposition, Disposition::Failed).then(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            TaskFailure("original worker refusal"),
+        )
+    });
+    let identity = error.as_ref().and_then(cause_identity);
+    (error, identity)
+}
+
+fn task_result(disposition: Disposition, failure: Option<std::io::Error>) -> std::io::Result<i32> {
     match disposition {
         Disposition::Returned => Ok(17),
-        Disposition::Failed => Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            TaskFailure,
-        )),
+        Disposition::Failed => Err(failure.expect("original worker failure")),
         Disposition::Panicked => std::panic::panic_any(PANIC),
     }
 }
@@ -53,7 +69,11 @@ fn poll_task(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Pin::new(task).poll(cx)))
 }
 
-fn assert_outcome(outcome: TaskOutcome, disposition: Disposition) {
+fn assert_outcome(
+    outcome: TaskOutcome,
+    disposition: Disposition,
+    original_cause: Option<*const ()>,
+) {
     match disposition {
         Disposition::Returned => assert!(matches!(outcome, Ok(Poll::Ready(Ok(17))))),
         Disposition::Failed => match outcome {
@@ -62,7 +82,8 @@ fn assert_outcome(outcome: TaskOutcome, disposition: Disposition) {
                 assert!(
                     error
                         .get_ref()
-                        .is_some_and(|cause| cause.is::<TaskFailure>()),
+                        .is_some_and(|cause| cause.is::<TaskFailure>())
+                        && cause_identity(&error) == original_cause,
                     "original worker failure cause replaced"
                 );
             }
@@ -179,10 +200,11 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         explored.fetch_add(1, Ordering::Relaxed);
         let effects = Arc::new(AtomicUsize::new(0));
         let executed = effects.clone();
+        let (failure, original_cause) = failure(disposition);
         let mut task = crate::blocking::task_completion(
             move || {
                 executed.fetch_add(1, Ordering::SeqCst);
-                task_result(disposition)
+                task_result(disposition, failure)
             },
             None,
             None,
@@ -224,12 +246,21 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         if pending && !drop_observer {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         }
-        if matches!(fault, Fault::Cause) {
-            // Erase only the original retained cause, keeping its kind and
+        if matches!(fault, Fault::Cause | Fault::ForeignCause) {
+            // Replace only the original retained cause, keeping its kind and
             // message. The worker, terminal and observer ownership stay real.
             let mut state = state.lock().unwrap();
-            let error = state.result.take().unwrap().unwrap_err();
-            state.result = Some(Err(std::io::Error::new(error.kind(), error.to_string())));
+            let error = state.result.as_ref().unwrap().as_ref().unwrap_err();
+            let replacement = if matches!(fault, Fault::ForeignCause) {
+                std::io::Error::new(error.kind(), TaskFailure("original worker refusal"))
+            } else {
+                std::io::Error::new(error.kind(), error.to_string())
+            };
+            assert_eq!(replacement.kind(), error.kind());
+            assert_eq!(replacement.to_string(), error.to_string());
+            // Construct the foreign cause while the original is still live,
+            // so its backing cannot reuse the original address.
+            state.result = Some(Err(replacement));
         }
         let outcome = match observer.as_mut() {
             Some(task) => poll_task(task, &mut cx),
@@ -247,7 +278,7 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
                 }
             }
         };
-        assert_outcome(outcome, disposition);
+        assert_outcome(outcome, disposition, original_cause);
     });
     assert_eq!(
         orders.load(Ordering::Relaxed),
@@ -331,6 +362,12 @@ fn replaced_worker_failure_cause_is_detected() {
     terminal(false, Disposition::Failed, Fault::Cause);
 }
 
+#[test]
+#[should_panic(expected = "original worker failure cause replaced")]
+fn foreign_worker_failure_cause_is_detected() {
+    terminal(false, Disposition::Failed, Fault::ForeignCause);
+}
+
 /// Result observation and abandonment race the worker's final shared release.
 /// Every remaining state owner must retain the original physical funding.
 fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
@@ -342,8 +379,9 @@ fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
         explored.fetch_add(1, Ordering::Relaxed);
         let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
         let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
+        let (failure, original_cause) = failure(disposition);
         let mut task = crate::blocking::task_completion(
-            move || task_result(disposition),
+            move || task_result(disposition, failure),
             Some(observed),
             None,
             None,
@@ -402,7 +440,7 @@ fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
         // before panicking: its destructor must run inside this Loom model.
         assert!(live_funding >= funded, "live shared state lost its funding");
         assert_eq!(joined_funding, funded);
-        assert_outcome(outcome, disposition);
+        assert_outcome(outcome, disposition, original_cause);
     });
     if !drop_observer {
         assert_ne!(

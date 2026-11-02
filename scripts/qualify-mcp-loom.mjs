@@ -127,6 +127,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::queue_model::broken_panicked_terminal_accounting_is_detected",
       "testing::queue_model::broken_failed_terminal_accounting_is_detected",
       "testing::queue_model::replaced_worker_failure_cause_is_detected",
+      "testing::queue_model::foreign_worker_failure_cause_is_detected",
       "testing::queue_model::shared_state_funding_survives_observation_and_worker_release",
       "testing::queue_model::premature_shared_state_refund_is_detected",
       "testing::queue_model::premature_panicked_shared_state_refund_is_detected",
