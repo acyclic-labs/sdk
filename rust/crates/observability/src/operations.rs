@@ -737,12 +737,17 @@ struct Operation {
     publication: Option<crate::Publication>,
     rpc: Option<String>,
     started: Instant,
-    completed: bool,
     error_kind: Option<Box<str>>,
 }
 
+enum OperationState {
+    Unobserved,
+    Active(Operation),
+    Completed,
+}
+
 struct SpanState {
-    operation: Option<Operation>,
+    operation: OperationState,
     binding: Option<crate::Binding>,
 }
 
@@ -760,7 +765,7 @@ pub(crate) fn attach_binding(
         let state = extensions
             .get_mut::<SpanState>()
             .ok_or(BindingError::UnobservedSpan)?;
-        if state.operation.as_ref().is_some_and(|op| op.completed) {
+        if matches!(state.operation, OperationState::Completed) {
             return Err(BindingError::Completed);
         }
         if state
@@ -899,6 +904,41 @@ impl Visit for Terminal {
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
 }
 
+impl<C: Sink> Operations<C> {
+    fn complete(
+        &self,
+        operation: Operation,
+        span_id: Id,
+        binding: Option<crate::Binding>,
+        outcome: Outcome,
+    ) {
+        let finished = Instant::now();
+        self.0.record_owned(OwnedSample {
+            span_id,
+            parent_id: operation.parent_id,
+            durability: operation.durability,
+            native_task: operation.native_task,
+            capture_retirement: operation.capture_retirement,
+            work: operation.work,
+            publication: operation.publication,
+            binding,
+            metadata: operation.metadata,
+            rpc: operation.rpc,
+            elapsed: finished.saturating_duration_since(operation.started),
+            #[cfg(feature = "research")]
+            interval: self
+                .0
+                .interval_details()
+                .then_some(crate::OperationInterval {
+                    started: operation.started,
+                    finished,
+                }),
+            outcome,
+            error_kind: operation.error_kind,
+        });
+    }
+}
+
 impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C> {
     fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
         let metadata = attributes.metadata();
@@ -928,7 +968,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 && let Some(span) = context.span(id)
             {
                 span.extensions_mut().insert(SpanState {
-                    operation: None,
+                    operation: OperationState::Unobserved,
                     binding: Some(binding),
                 });
             }
@@ -974,7 +1014,6 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             publication: fields.publication,
             rpc: fields.rpc,
             started: Instant::now(),
-            completed: false,
             error_kind: None,
         };
         let mut terminal = Terminal::default();
@@ -982,37 +1021,14 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if self.0.error_details() {
             attributes.record(&mut FirstCause(&mut operation.error_kind));
         }
-        if let Some(outcome) = terminal.outcome {
-            let finished = Instant::now();
-            self.0.record_owned(OwnedSample {
-                span_id: id.clone(),
-                parent_id: operation.parent_id.take(),
-                durability: operation.durability.take(),
-                native_task: operation.native_task.take(),
-                capture_retirement: operation.capture_retirement.take(),
-                work: operation.work.take(),
-                publication: operation.publication.take(),
-                binding: binding.clone(),
-                metadata,
-                rpc: operation.rpc.take(),
-                elapsed: finished.saturating_duration_since(operation.started),
-                #[cfg(feature = "research")]
-                interval: self
-                    .0
-                    .interval_details()
-                    .then_some(crate::OperationInterval {
-                        started: operation.started,
-                        finished,
-                    }),
-                outcome,
-                error_kind: operation.error_kind.take(),
-            });
-            operation.completed = true;
-        }
-        span.extensions_mut().insert(SpanState {
-            operation: Some(operation),
-            binding,
-        });
+        let operation = if let Some(outcome) = terminal.outcome {
+            self.complete(operation, id.clone(), binding.clone(), outcome);
+            OperationState::Completed
+        } else {
+            OperationState::Active(operation)
+        };
+        span.extensions_mut()
+            .insert(SpanState { operation, binding });
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
@@ -1038,12 +1054,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             .binding_details()
             .then(|| state.binding.clone())
             .flatten();
-        let Some(operation) = state.operation.as_mut() else {
+        let OperationState::Active(operation) = &mut state.operation else {
             return;
         };
-        if operation.completed {
-            return;
-        }
         if let Some(attempt) = operation.durability.as_mut() {
             values.record(attempt);
         }
@@ -1065,41 +1078,15 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let Some(outcome) = terminal.outcome else {
             return;
         };
-        operation.completed = true;
-        let metadata = operation.metadata;
-        let parent_id = operation.parent_id.take();
-        let durability = operation.durability.take();
-        let native_task = operation.native_task.take();
-        let capture_retirement = operation.capture_retirement.take();
-        let work = operation.work.take();
-        let publication = operation.publication.take();
-        let rpc = operation.rpc.take();
-        let started = operation.started;
-        let error_kind = operation.error_kind.take();
+        let OperationState::Active(operation) =
+            std::mem::replace(&mut state.operation, OperationState::Completed)
+        else {
+            return;
+        };
         drop(extensions);
-        let finished = Instant::now();
         // Notification may run arbitrary wakers. Never call them while holding
         // the registry's extension lock.
-        self.0.record_owned(OwnedSample {
-            span_id: id.clone(),
-            parent_id,
-            durability,
-            native_task,
-            capture_retirement,
-            work,
-            publication,
-            binding,
-            metadata,
-            rpc,
-            elapsed: finished.saturating_duration_since(started),
-            #[cfg(feature = "research")]
-            interval: self
-                .0
-                .interval_details()
-                .then_some(crate::OperationInterval { started, finished }),
-            outcome,
-            error_kind,
-        });
+        self.complete(operation, id.clone(), binding, outcome);
     }
 
     fn on_close(&self, id: Id, context: Context<'_, S>) {
@@ -1108,35 +1095,16 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         };
         let state = span.extensions_mut().remove::<SpanState>();
         if let Some(SpanState {
-            operation: Some(operation),
+            operation: OperationState::Active(operation),
             binding,
         }) = state
-            && !operation.completed
         {
-            let finished = Instant::now();
-            self.0.record_owned(OwnedSample {
-                span_id: id,
-                parent_id: operation.parent_id,
-                durability: operation.durability,
-                native_task: operation.native_task,
-                capture_retirement: operation.capture_retirement,
-                work: operation.work,
-                publication: operation.publication,
-                binding: self.0.binding_details().then_some(binding).flatten(),
-                metadata: operation.metadata,
-                rpc: operation.rpc,
-                elapsed: finished.saturating_duration_since(operation.started),
-                #[cfg(feature = "research")]
-                interval: self
-                    .0
-                    .interval_details()
-                    .then_some(crate::OperationInterval {
-                        started: operation.started,
-                        finished,
-                    }),
-                outcome: Outcome::Incomplete,
-                error_kind: operation.error_kind,
-            });
+            self.complete(
+                operation,
+                id,
+                self.0.binding_details().then_some(binding).flatten(),
+                Outcome::Incomplete,
+            );
         }
     }
 }
