@@ -479,7 +479,9 @@ version = "0.0.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-objects",
+ "acyclic-stream",
  "libfuzzer-sys",
+ "prost",
  "serde_json",
 ]
 

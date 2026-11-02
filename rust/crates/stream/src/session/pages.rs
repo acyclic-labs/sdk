@@ -60,7 +60,6 @@ impl Visibility {
                     &target,
                     acyclic_auth::authority::Scope::Follow,
                 )? {
-
                     if let Some(record) = child.tail_record.take() {
                         child.tail_record =
                             filter.as_ref().map_err(Clone::clone)?.project(record)?;
