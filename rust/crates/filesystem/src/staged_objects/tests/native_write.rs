@@ -22,7 +22,7 @@ fn native_write_budget() -> WorkBudget {
 }
 
 #[tokio::test]
-async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
+async fn native_flush_caller_cancellation_refuses_before_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let store = StagedObjects::open(
@@ -61,6 +61,75 @@ async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
     assert_eq!(original.receipt(), before);
     assert_eq!(original.live_allocation_bytes(), live);
     assert!(store.index().objects.contains_key(&id));
+    let collecting = store.collection.begin().await;
+    let (sweep, _) = collecting.sweepable(Vec::new()).await;
+    for exit in 0..3 {
+        let caller = CancellationToken::new();
+        let original_token = CancellationToken::new();
+        let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let mut work = if exit == 0 {
+            AuthorityWork::new(native_write_budget(), &caller)
+        } else {
+            AuthorityWork::native(&original, &caller)
+        };
+        let closure = [id];
+        let spill = store.spill_io.write().await;
+        let mut publishing = Box::pin(store.flush_before_publish(
+            PublicationScope {
+                objects: &closure,
+                proven_at: store.collection.sweeps(),
+            },
+            &mut work,
+        ));
+        assert!(futures::poll!(publishing.as_mut()).is_pending());
+        let mut independent = AuthorityWork::new(native_write_budget(), &original_token);
+        let mut read = std::pin::pin!(store.read(id, 1024, &mut independent));
+        let std::task::Poll::Ready(result) = futures::poll!(read.as_mut()) else {
+            panic!("publication leases blocked an independent resident read");
+        };
+        assert_eq!(result?.bytes, bytes);
+        if exit == 2 {
+            original_token.cancel();
+        } else {
+            caller.cancel();
+        }
+        drop(spill);
+        // The sweep producer remains held: cancelled work must not join it.
+        let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
+            panic!("cancelled publication waited for collection admission");
+        };
+        if exit == 2 {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::Native(
+                    NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+        } else {
+            assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
+        }
+        drop(publishing);
+        let completed = work.spent();
+        assert_eq!(completed.backend_write_operations, 0);
+        assert_eq!(completed.durability_operations, 0);
+        assert_eq!(completed.object_bytes_written, 0);
+        assert_eq!(completed.items_examined, 0);
+        assert_eq!(
+            completed.allocation_operations,
+            if exit == 0 {
+                0
+            } else {
+                before.allocation_operations + 1
+            }
+        );
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(matches!(store.lookup(id), Lookup::Resident(_)));
+    }
+    drop(sweep);
+    drop(collecting);
     drop(
         store
             .flush_before_publish(

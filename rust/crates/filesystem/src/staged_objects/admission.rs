@@ -103,17 +103,12 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
         if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
-            let future = async {
+            return in_frame(native, async {
                 let unswept = self.collection.unswept().await;
                 self.collection.writing(&unswept, [object.object_id()]);
                 self.inner.put_hashed(object, work).await
-            };
-            let allocation = frame_allocation(native, &future)?;
-            let mut future = Box::pin(future);
-            let result = future.as_mut().await;
-            drop(future);
-            drop(allocation);
-            return result;
+            })
+            .await;
         }
         let overflowing = {
             let (object_id, bytes) = object.into_parts();
@@ -123,13 +118,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if !overflowing {
             return Ok(());
         }
-        let future = self.relieve_window(work);
-        let allocation = frame_allocation(native, &future)?;
-        let mut future = Box::pin(future);
-        let result = future.as_mut().await;
-        drop(future);
-        drop(allocation);
-        result
+        in_frame(native, self.relieve_window(work)).await
     }
     async fn put_many(
         &self,
@@ -137,9 +126,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         if writes.is_empty() {
-            return Err(ObjectStoreError::Rejected(
-                "object write batch is empty".to_owned(),
-            ));
+            return Err(ObjectStoreError::EmptyWriteBatch);
         }
         for write in writes {
             self.put(write.object_id, write.bytes.clone(), work).await?;
@@ -152,9 +139,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         if objects.is_empty() {
-            return Err(ObjectStoreError::Rejected(
-                "object write batch is empty".to_owned(),
-            ));
+            return Err(ObjectStoreError::EmptyWriteBatch);
         }
         for object in objects {
             self.put_hashed(object.clone(), work).await?;
@@ -169,14 +154,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let native = work.original;
-        let future = self.flush(scope, work);
-        let allocation = frame_allocation(native, &future)?;
-        let mut future = Box::pin(future);
-        let result = future.as_mut().await;
-        drop(future);
-        drop(allocation);
-        result
+        in_frame(work.original, self.flush(scope, work)).await
     }
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         Some(&self.collection)
@@ -217,25 +195,19 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             // Durable immutable reads must remain independent of a concurrent
             // publication, including synchronous native callbacks.
             Lookup::Absent => {
-                let native = work.original;
-                let future = self.inner.read(object_id, maximum_bytes, work);
-                let allocation = frame_allocation(native, &future)?;
-                let mut future = Box::pin(future);
-                let result = future.as_mut().await;
-                drop(future);
-                drop(allocation);
-                return result;
+                return in_frame(
+                    work.original,
+                    self.inner.read(object_id, maximum_bytes, work),
+                )
+                .await;
             }
             Lookup::Spilled { .. } => {}
         }
-        let native = work.original;
-        let future = self.read_private(object_id, maximum_bytes, work);
-        let allocation = frame_allocation(native, &future)?;
-        let mut future = Box::pin(future);
-        let result = future.as_mut().await;
-        drop(future);
-        drop(allocation);
-        result
+        in_frame(
+            work.original,
+            self.read_private(object_id, maximum_bytes, work),
+        )
+        .await
     }
     async fn read_many(
         &self,

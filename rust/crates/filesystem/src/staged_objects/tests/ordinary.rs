@@ -783,6 +783,18 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     let directory = tempfile::tempdir()?;
     let (store, _provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
+    let mut empty = AuthorityWork::new(WorkBudget::default(), &token);
+    assert!(matches!(
+        store.put_many(&[], &mut empty).await,
+        Err(ObjectStoreError::EmptyWriteBatch)
+    ));
+    assert!(matches!(
+        store.put_many_hashed(&[], &mut empty).await,
+        Err(ObjectStoreError::EmptyWriteBatch)
+    ));
+    assert_eq!(empty.spent(), WorkCounters::UNCHARGED);
+    assert!(store.index().objects.is_empty());
+    assert!(store.spill_io.try_read()?.is_none());
     let object = HashedObject::new(
         ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"proven body"),
