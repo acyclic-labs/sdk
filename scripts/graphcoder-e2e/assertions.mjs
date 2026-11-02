@@ -108,6 +108,21 @@ export function toolResults(records) {
   return [...new Set(results)];
 }
 
+// Evidence names a provider body, never an observer's path or diagnostic.
+// Each selected body is encoded once for all presence/absence queries.
+export function modelInputs(expected, generations) {
+  const inputs = generations.map(request => JSON.stringify(request.body));
+  const last = inputs.at(-1) ?? "";
+  for (const text of expected.model_contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
+  for (const text of expected.model_absent ?? []) assert.ok(inputs.every(input => !input.includes(text)), `model wire contains forbidden ${text}`);
+  for (const text of expected.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
+  for (const text of expected.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
+  for (const [index, input] of inputs.entries()) {
+    for (const text of expected.each_model_contains ?? []) assert.ok(input.includes(text), `model input ${index} missing ${text}`);
+    for (const text of expected.each_model_absent ?? []) assert.ok(!input.includes(text), `model input ${index} contains forbidden ${text}`);
+  }
+}
+
 export function requests(test, records) {
   const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
     || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
@@ -116,16 +131,7 @@ export function requests(test, records) {
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");
   for (const expected of test.assert.http ?? []) assert.ok(records.some(record => subset(record, expected)), `missing HTTP request ${JSON.stringify(expected)}`);
-  const wire = JSON.stringify(records), last = JSON.stringify(generations.at(-1)?.body);
-  for (const text of test.assert.model_contains ?? []) assert.ok(wire.includes(text), `model wire missing ${text}`);
-  for (const text of test.assert.model_absent ?? []) assert.ok(!wire.includes(text), `model wire contains forbidden ${text}`);
-  for (const text of test.assert.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
-  for (const text of test.assert.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);
-  for (const [index, request] of generations.entries()) {
-    const input = JSON.stringify(request.body);
-    for (const text of test.assert.each_model_contains ?? []) assert.ok(input.includes(text), `model input ${index} missing ${text}`);
-    for (const text of test.assert.each_model_absent ?? []) assert.ok(!input.includes(text), `model input ${index} contains forbidden ${text}`);
-  }
+  modelInputs(test.assert, generations);
   // Auxiliary search/fetch requests have independent, non-conversation schemas.
   const outputs = toolResults(generations).map(value => { try { return JSON.parse(value); } catch { return value; } });
   for (const expected of test.assert.tool_results ?? []) assert.ok(outputs.some(value => subset(value, expected)), `step=assert exact tool result; actual tool result missing exact value ${JSON.stringify(expected)}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${test.id}`);
