@@ -516,8 +516,9 @@ impl Namespace {
             while let Some(text) = parts.next() {
                 let name =
                     segment(index, text).map_or_else(|| SegmentText::new(text, build), Ok)?;
+                let existing = lookup(index, text);
                 let parent = if parts.peek().is_some() {
-                    Some(lookup(index, text).ok_or(StreamError::Unavailable)?.clone())
+                    Some(existing.ok_or(StreamError::Unavailable)?.clone())
                 } else {
                     None
                 };
@@ -527,9 +528,7 @@ impl Namespace {
                     parent,
                 });
                 if parts.peek().is_some() {
-                    index = &lookup(index, text)
-                        .ok_or(StreamError::Unavailable)?
-                        .children;
+                    index = &existing.ok_or(StreamError::Unavailable)?.children;
                 }
             }
             let mut next = node;
