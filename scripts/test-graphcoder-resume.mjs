@@ -22,7 +22,8 @@ const start = (first, resume = true) => {
     USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
     APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
     OPENAI_API_KEY: "", ACYCLIC_MODEL: "", TERM: "xterm-256color" };
-  const running = interactive ? processes.startTerminal(binary, launchArgs, { env }) : processes.start(binary, launchArgs, { env });
+  const options = { env, cwd: host.root };
+  const running = interactive ? processes.startTerminal(binary, launchArgs, options) : processes.start(binary, launchArgs, options);
   if (!interactive) return { running, exit: running.closed };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   let submitted = false, complete = false, stopped = false;

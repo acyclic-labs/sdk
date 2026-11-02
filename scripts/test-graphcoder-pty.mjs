@@ -16,7 +16,7 @@ else host.hold();
 if (scenario === "cancel-preparation") host.holdCount("cancel before headers");
 if (scenario === "thinking") host.holdCount("say hello");
 const processes = new Processes();
-const running = processes.startTerminal(binary, host.args);
+const running = processes.startTerminal(binary, host.args, { cwd: host.root });
 const { child } = running;
 const raw = new OutputWatch(["\x1b[?25h", "\x1b["]);
 if (scenario === "cancel-preparation") host.counting.then(() => child.stdin.write("\x03"));

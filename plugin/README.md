@@ -4,10 +4,14 @@ The `acyclic` executable runs the GraphCoder preset with `acyclic run`, serves t
 shared harness with `acyclic serve ADDRESS`, and reopens an existing agent with
 `acyclic attach AGENT`. All three use the same frontend library and SDK client.
 `acyclic run --help` lists execution, provider and output options.
+The thin `graphcoder` executable is `acyclic run --template graphcoder`: with
+terminal input and output it opens the same TUI as `acyclic attach`; with pipes
+it runs headless. It forwards options to the shared parser.
 `ACYCLIC_MODEL` selects the model when `--model` is absent. `ACYCLIC_LOG` enables
 diagnostics with explicit `--diagnostic-records` and `--diagnostic-record-bytes`
 storage; use `off` to disable text diagnostics. `--default-config` ignores the
-environment model selection.
+environment model and `ACYCLIC_CATALOG` selection. `ACYCLIC_CATALOG` selects the
+provider catalog when `--catalog` is absent; neither variable contains credentials.
 
 ## Native host workspace coordination
 
