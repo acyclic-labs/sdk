@@ -323,18 +323,31 @@ fn gemini_summary_admission_uses_the_selected_guarded_projection_role() {
         let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
         for (provider, role) in [("producing-provider", native), ("other-provider", visible)] {
             let mut output = Vec::new();
-            assert_eq!(
-                render_summary(
-                    &header_for(Family::Gemini, provider),
-                    [&reopened],
-                    "summarize",
-                    &summary_tail(Family::Gemini),
-                    &mut output
-                )
-                .is_ok(),
-                role == "model"
-            );
+            render_summary(
+                &header_for(Family::Gemini, provider),
+                [&reopened],
+                "summarize",
+                &summary_tail(Family::Gemini),
+                &mut output,
+            )
+            .unwrap();
+            let mut parts = vec![json!({"text":"visible"})];
+            if provider == "producing-provider" {
+                parts.push(json!({"text":"private","thought":true}));
+            }
+            let mut expected = vec![json!({"role":role,"parts":parts})];
+            if role == "user" {
+                expected[0]["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"text":"summarize"}));
+            } else {
+                expected.push(json!({"role":"user","parts":[{"text":"summarize"}]}));
+            }
+            let actual: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(actual["contents"], json!(expected));
         }
+        assert_eq!(serde_json::to_vec(&reopened).unwrap(), stored);
     }
 }
 
