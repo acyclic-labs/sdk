@@ -77,7 +77,11 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     "export default Symbol();",
                     "export default NaN;",
                     "export default () => () => 1;",
-                ][bytes.get(1).copied().unwrap_or_default() as usize % 4]
+                    "export default new Set();",
+                    "export default 1n;",
+                    "export default Infinity;",
+                    "const value = {}; value.self = value; export default value;",
+                ][bytes.get(1).copied().unwrap_or_default() as usize % 8]
                     .to_owned(),
                 Value::Null,
                 Form::Value,
@@ -167,7 +171,8 @@ mod tests {
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
         for mode in 0..10 {
-            for variant in 0..4 {
+            let variants = if mode == 4 { 8 } else { 4 };
+            for variant in 0..variants {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
             }
         }
