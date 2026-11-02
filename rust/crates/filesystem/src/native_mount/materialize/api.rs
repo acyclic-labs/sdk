@@ -157,32 +157,20 @@ fn select_materialization_paths<'a>(
 ) -> Result<Vec<&'a NamespacePath>, MaterializeError> {
     let mut selected_paths = Vec::<&NamespacePath>::new();
     receipt.reserve(&mut selected_paths, paths.len())?;
-    for path in paths {
-        let mut insertion = selected_paths.len();
-        while insertion != 0 {
-            let previous = *selected_paths
-                .get(insertion - 1)
-                .ok_or(MaterializeError::InvalidOptions)?;
-            receipt
-                .custody
-                .work()
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                .map_err(MaterializeError::from)?;
-            if previous <= path {
-                break;
-            }
-            insertion -= 1;
-        }
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
-                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
-                    as u64,
-            ))
-            .map_err(MaterializeError::from)?;
-        selected_paths.insert(insertion, path);
-    }
+    let copied = paths
+        .len()
+        .checked_mul(std::mem::size_of::<&NamespacePath>())
+        .ok_or(WorkError::Overflow)?;
+    receipt
+        .custody
+        .work()
+        .charge(crate::materializer::NativeResourceCredit::Copy.delta(copied as u64))
+        .map_err(MaterializeError::from)?;
+    selected_paths.extend(paths);
+    let work = receipt.custody.work().clone();
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
+    crate::kernel::sort_by_with_accounting(&mut selected_paths, &mut accounting, Ord::cmp)
+        .map_err(MaterializeError::from)?;
     for pair in selected_paths.windows(2) {
         receipt
             .custody
@@ -195,6 +183,10 @@ fn select_materialization_paths<'a>(
     }
     Ok(selected_paths)
 }
+
+#[cfg(test)]
+#[path = "tests/path_selection.rs"]
+mod path_selection_tests;
 
 #[allow(
     clippy::too_many_arguments,
