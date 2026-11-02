@@ -12,33 +12,46 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
-            let layer = context.effective_tool_path(&input.0.path, io).await?;
-            input.0.path = layer.into_owned();
-        }
         if input.0.range.is_some() && input.0.selection.is_some() {
             return Err(invalid(
                 "byte ranges and projections are mutually exclusive",
             ));
         }
+        let mut source = super::source::ReadSource::decode(
+            context,
+            &input.0.path,
+            input.0.version.as_deref(),
+            work,
+        )?;
+        if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
+            let (path, selected, retained) = context.effective_tool_path(&input.0.path, io).await?;
+            let custody = super::window::custody(io, retained)?;
+            input.0.path = path.into_owned();
+            source = super::source::ReadSource {
+                source: selected.map(FileReadSource::Authored),
+                custody,
+            };
+        }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
-            return super::lines::read(context, &input.0, offset, limit, work, io).await;
+            return super::lines::read(context, &input.0, source, offset, limit, work, io).await;
         }
         if let Some(ReadSelection::Cells { offset, limit }) = input.0.selection {
-            return super::notebook_read::read(context, &input.0, offset, limit, work, io).await;
+            return super::notebook_read::read(context, &input.0, source, offset, limit, work, io)
+                .await;
         }
         if input.0.selection.is_none()
             && input.0.range.is_none()
             && input.0.path.ends_with(".ipynb")
         {
-            return super::notebook_read::read(context, &input.0, 0, None, work, io).await;
+            return super::notebook_read::read(context, &input.0, source, 0, None, work, io).await;
         }
         if input.0.selection.is_none() {
-            return self.read_path_range(context, &input.0, work, io).await;
+            return self
+                .read_path_range(context, &input.0, source, work, io)
+                .await;
         }
-        let source = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
-            .await?;
+        let source =
+            super::executor::Source::selected(context, &input.0.path, source, work, io).await?;
         self.media_result(source.file, input.0.selection.clone(), work)
     }
 
@@ -46,6 +59,7 @@ impl FileTool {
         &self,
         context: &ToolContext,
         input: &ReadFileInput,
+        source: super::source::ReadSource,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
@@ -66,6 +80,7 @@ impl FileTool {
         let window = super::window::Window::first(
             context,
             input,
+            source,
             acyclic_fs::ByteRange {
                 offset: start,
                 length: count.min(window).max(1),
