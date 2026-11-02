@@ -50,11 +50,16 @@ impl Stream for FollowSource {
         let source = self.get_mut();
         match source.records.poll_next_unpin(cx) {
             Poll::Ready(record) => {
-                let record = record.unwrap_or(Err(StreamError::Unavailable));
-                if let Ok(record) = &record {
-                    source.position = record.sequence + 1;
-                    source.accepted = source.accepted.max(source.position);
-                }
+                let record = record
+                    .unwrap_or(Err(StreamError::Unavailable))
+                    .and_then(|record| {
+                        source.position = record
+                            .sequence
+                            .checked_add(1)
+                            .ok_or(StreamError::InvalidResponse)?;
+                        source.accepted = source.accepted.max(source.position);
+                        Ok(record)
+                    });
                 Poll::Ready(Some((source.path.clone(), source.accepted, record)))
             }
             Poll::Pending => Poll::Pending,
@@ -194,7 +199,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     let accepted = head.tail.max(reader.cache().tail(&stream).unwrap_or(0));
                     match reader.observed_head(&stream, head, observed) {
                         HeadObservation::Invalid => {
-                            reader.follow_failed(Failure::Refused, now);
+                            reader.refuse_follow(&stream);
                             self.queue(&stream, reader);
                             continue;
                         }
@@ -212,7 +217,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     }
                     reader.follow_opened(&stream, from);
                     if let Err(error) = self.opened(stream.clone(), from, accepted, records) {
-                        reader.follow_failed(Failure::of(&error), now);
+                        failed(reader, &stream, &error, now);
                         self.queue(&stream, reader);
                     }
                 }
@@ -407,8 +412,15 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let (path, accepted, record) = match self.ready.poll_next(cx) {
                 Poll::Ready(Ok(Some(record))) => record,
                 Poll::Ready(Err(error)) => {
-                    reader.follow_failed(Failure::of(&error), now);
+                    let failure = Failure::of(&error);
+                    let transient = matches!(failure, Failure::Unavailable | Failure::Overloaded);
+                    if transient {
+                        reader.follow_failed(failure, now);
+                    }
                     for (path, _) in std::mem::take(&mut self.follows) {
+                        if !transient {
+                            failed(reader, &path, &error, now);
+                        }
                         self.queue(&path, reader);
                     }
                     self.ready = ReadySources::new();
@@ -430,14 +442,15 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     }
 }
 
-/// A changed anchor replaced the provisional suffix; anything else backs off.
+/// Retire definite failures; only transient transport failures back off.
 fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u64) {
-    if matches!(error, StreamError::PrefixNotRetained) {
-        reader.replaced(stream);
-    } else if matches!(error, StreamError::AccessDenied) {
-        reader.denied(stream);
-    } else {
-        reader.follow_failed(Failure::of(error), now);
+    match Failure::of(error) {
+        Failure::RetentionLost => reader.replaced(stream),
+        Failure::Denied => reader.denied(stream),
+        Failure::Refused | Failure::Changed => reader.refuse_follow(stream),
+        failure @ (Failure::Unavailable | Failure::Overloaded) => {
+            reader.follow_failed(failure, now)
+        }
     }
 }
 
@@ -526,7 +539,7 @@ mod tests {
 
     #[test]
     fn record_coordinates_refuse_unrepresentable_ends_before_retaining_bytes() {
-        use super::super::{Priority, ReaderPolicy, Want};
+        use super::super::{Priority, ReadIssue, ReaderPolicy, Want};
 
         futures::executor::block_on(async {
             let provider = MemoryStream::default();
@@ -571,6 +584,10 @@ mod tests {
                 );
                 assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
                 assert!(reader.cache.record(&path, u64::MAX).is_none());
+                assert_eq!(
+                    reader.issues.get(&path),
+                    invalid.then_some(&ReadIssue::Refused)
+                );
                 if !invalid {
                     assert_eq!(
                         reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
@@ -618,6 +635,10 @@ mod tests {
                     if invalid { None } else { Some(u64::MAX) }
                 );
                 assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
+                assert_eq!(
+                    reader.issues.get(&parent),
+                    invalid.then_some(&ReadIssue::Refused)
+                );
                 reader.plan([(listing.clone(), Priority::Visible)]);
                 assert!(reader.poll(1).is_empty());
             }
@@ -641,6 +662,76 @@ mod tests {
             assert_eq!(record.unwrap_err(), StreamError::InvalidResponse);
             assert_eq!(accepted, u64::MAX);
             assert_eq!(source.position, u64::MAX);
+
+            for (sequence, accepted, invalid) in [
+                (u64::MAX, u64::MAX, true),
+                (u64::MAX - 1, u64::MAX - 1, true),
+                (u64::MAX - 1, u64::MAX, false),
+            ] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.cache.observe_tail(&path, u64::MAX - 1);
+                reader.set_follows([path.clone()]);
+                reader.deliver(&path, fetched(row(sequence)), accepted);
+                assert_eq!(
+                    reader.cache.tail(&path),
+                    Some(if invalid { u64::MAX - 1 } else { accepted })
+                );
+                assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
+                assert_eq!(
+                    reader.follows().next().map(|(_, from)| from),
+                    (!invalid).then_some(u64::MAX)
+                );
+                assert_eq!(
+                    reader.next_deadline(),
+                    None,
+                    "definite refusal scheduled a retry"
+                );
+                if invalid {
+                    reader.set_follows([path.clone()]);
+                    assert!(reader.follows().next().is_none());
+                    reader.acknowledge_issue(&path);
+                    reader.set_follows([path.clone()]);
+                    assert_eq!(reader.follows().next().unwrap().1, u64::MAX - 1);
+                }
+            }
+
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            reader.cache.observe_tail(&path, u64::MAX - 1);
+            reader.set_follows([path.clone()]);
+            let mut driver = Driver::new(Arc::new(provider));
+            driver
+                .opened(
+                    path.clone(),
+                    u64::MAX - 1,
+                    u64::MAX - 1,
+                    Box::pin(futures::stream::iter([
+                        Ok(row(u64::MAX - 1)),
+                        Ok(row(u64::MAX)),
+                    ])),
+                )
+                .unwrap();
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            driver.drain(&mut reader, 1, &mut cx);
+            assert!(driver.follows.is_empty());
+            assert!(driver.waiting.is_empty(), "refused source was requeued");
+            assert_eq!(reader.next_deadline(), None);
+            assert_eq!(reader.issues.get(&path), Some(&ReadIssue::Refused));
+            assert_eq!(
+                reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
+                original.value.as_slice().as_ptr()
+            );
+            reader.set_follows([path.clone()]);
+            assert!(reader.follows().next().is_none());
+            reader.acknowledge_issue(&path);
+            reader.set_follows([path.clone()]);
+            driver.queue(&path, &reader);
+            assert_eq!(driver.waiting[&path].from, u64::MAX);
+
+            // The same owner must still retain a transient source failure for
+            // transport recovery, rather than treating every error as final.
+            failed(&mut reader, &path, &StreamError::Unavailable, 2);
+            assert_eq!(reader.follows().next().unwrap().1, u64::MAX);
+            assert!(reader.next_deadline().is_some());
         });
     }
 

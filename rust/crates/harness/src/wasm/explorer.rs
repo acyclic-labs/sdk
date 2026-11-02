@@ -281,6 +281,7 @@ impl WasmExplorer {
                         ReadIssue::AccessDenied => "accessDenied",
                         ReadIssue::RetentionLost => "retentionLost",
                         ReadIssue::HierarchyChanged => "hierarchyChanged",
+                        ReadIssue::Refused => "refused",
                     },
                 })
                 .collect(),

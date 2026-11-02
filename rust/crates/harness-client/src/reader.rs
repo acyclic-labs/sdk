@@ -275,7 +275,7 @@ pub enum Failure {
     Unavailable,
     /// The server shed load: back off longer and pause prefetch.
     Overloaded,
-    /// A definite refusal: do not retry this read.
+    /// A definite refusal: do not retry this operation without acknowledgment.
     Refused,
     /// The credential cannot read this stream; surface it and discard its cache.
     Denied,
@@ -310,6 +310,8 @@ pub enum ReadIssue {
     RetentionLost,
     /// A directory continuation observed concurrent hierarchy changes.
     HierarchyChanged,
+    /// A definite provider refusal; explicitly acknowledge before following again.
+    Refused,
 }
 
 /// What the client can promise about freshness.
@@ -1111,6 +1113,9 @@ impl Reader {
             }
             (OpKey::Read(stream, from), Outcome::Records(records)) => {
                 let valid = records.len() <= self.policy.read_limit as usize
+                    // Validate the exclusive end once before per-row arithmetic
+                    // or mutation. The admitted count also bounds each offset.
+                    && from.checked_add(records.len() as u64).is_some()
                     && records
                         .iter()
                         .enumerate()
@@ -1140,9 +1145,13 @@ impl Reader {
                 let valid = children.len() <= self.policy.listing_limit as usize
                     && children.iter().all(|child| {
                         child
-                            .origin
+                            .tail
                             .as_ref()
-                            .is_none_or(|origin| origin.source != child.path)
+                            .is_none_or(|row| row.sequence < u64::MAX)
+                            && child
+                                .origin
+                                .as_ref()
+                                .is_none_or(|origin| origin.source != child.path)
                     })
                     && children
                         .windows(2)
@@ -1170,6 +1179,7 @@ impl Reader {
         } else {
             self.demand
                 .restore_paging(&flight.key, flight.paging, false);
+            self.report_issue(flight.key.path(), ReadIssue::Refused);
             self.refused.insert(flight.key, flight.ticket);
         }
     }
@@ -1438,7 +1448,10 @@ impl Reader {
             }
             return;
         }
-        if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
+        if matches!(
+            self.issues.get(&stream),
+            Some(ReadIssue::AccessDenied | ReadIssue::Refused)
+        ) {
             return;
         }
         let Some(tail) = self.cache.tail(&stream) else {
@@ -1500,13 +1513,21 @@ impl Reader {
         if !self.readable() {
             return;
         }
+        let Some(next) = record
+            .sequence
+            .checked_add(1)
+            .filter(|next| *next <= accepted)
+        else {
+            self.refuse_follow(stream);
+            return;
+        };
         self.delivered += 1;
         self.generation += 1;
         self.follow_backoff = false;
         self.recovered();
         self.cache.observe_tail(stream, accepted);
         if let Some(intent) = self.follows.get_mut(stream) {
-            intent.from = intent.from.max(record.sequence + 1);
+            intent.from = intent.from.max(next);
             self.keep(stream, record, Some(self.frame_mark));
         }
     }
@@ -1547,6 +1568,14 @@ impl Reader {
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
         self.issues.insert(stream.clone(), issue);
+    }
+
+    fn refuse_follow(&mut self, stream: &StreamPath) {
+        self.generation += 1;
+        self.report_issue(stream, ReadIssue::Refused);
+        if self.follows.remove(stream).is_some() {
+            self.follow_changes.insert(stream.clone());
+        }
     }
 
     /// Refuse further delivery under a denied stream's old authority.
