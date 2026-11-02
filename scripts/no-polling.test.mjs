@@ -282,11 +282,13 @@ test('comments and Future polling remain distinct from time and readiness rechec
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));
 });
 
-test('host language sources cannot hide a wait behind a non-comment slash', () => {
+test('host language sources cannot hide a wait behind non-comment syntax', () => {
  for (const [file, source] of [
   ['scripts/control.py', 'value = 6 // 2; time.sleep(1)'],
   ['scripts/control.sh', 'printf https://example.invalid; sleep 1'],
   ['scripts/control.ps1', 'Write-Output https://example.invalid; Start-Sleep 1'],
+  ['scripts/control.sh', 'printf https://example.invalid/#fragment; sleep 1'],
+  ['scripts/control.sh', 'printf "value"#fragment; sleep 1'],
   ['scripts/control.cs', 'class Control { void Wait() { System.Threading.Thread.Sleep(1); } }'],
   ['scripts/control.cs', 'class Control { async Task Run() { await System.Threading.Tasks.Task.Delay(1000); } }'],
   ['scripts/control.c', 'void run(void) { clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0); }'],
@@ -299,6 +301,17 @@ test('host language sources cannot hide a wait behind a non-comment slash', () =
  ]) {
   assert.ok(sourceInScope(file));
   assert.ok(newPollingSites(file, '', source).length, file);
+ }
+ for (const [extension, source] of [
+  ['sh', 'printf value # sleep 1'],
+  ['sh', 'printf value;# sleep 1'],
+ ]) assert.deepEqual(pollingSites(`scripts/control.${extension}`, source), [], source);
+ // Captured from the real PowerShell parser; command extents independently
+ // establish which hashes are data and which begin comments.
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/powershell-comments.json', import.meta.url), 'utf8'));
+ for (const {source, commands} of captured.records) {
+  const expected = commands.filter(command => command.name === 'Start-Sleep').map(command => command.start + command.name.indexOf('Sleep'));
+  assert.deepEqual(pollingSites('scripts/control.ps1', source).map(site => site.start), expected, source);
  }
 });
 

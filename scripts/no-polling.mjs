@@ -119,6 +119,11 @@ function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const python = file.endsWith('.py');
  const powershell = file.endsWith('.ps1');
+ const shell = file.endsWith('.sh');
+ const wordComments = powershell || shell;
+ const escape = powershell ? '`' : shell ? '\\' : undefined;
+ const continuation = powershell ? '`\n' : '\\\n';
+ const separator = powershell ? /^[;|&(){},]$/ : /^[;|&()<>]$/;
  const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
  const escapedIdentifiers = cFamily.test(file);
  const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
@@ -131,19 +136,25 @@ function nativeTokens(source, file) {
  const out = [];
  let at = 0;
  let line = 1;
+ let wordBoundary = true;
  const malformed = message => new Error(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
   if (kind) out.push({value: spelling ?? value, kind, line, start: at});
+  // A hash inside an unquoted argument is data. Escaped separators stay in
+  // that argument; a continued line preserves the preceding boundary.
+  if (wordComments && value !== continuation && !(powershell && value === '`\r\n')) {
+   wordBoundary = !kind || (kind === 'literal' ? powershell && wordBoundary : kind === 'punctuation' && separator.test(value));
+  }
   line += (value.match(/\n/g) ?? []).length;
   at = end;
  };
  while (at < source.length) {
   const tail = source.slice(at);
   if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
-  if (hashComments && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
+  if (hashComments && (!wordComments || wordBoundary) && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
-  if ((slashComments || powershell) && tail.startsWith(blockOpen)) {
+  if ((slashComments || (powershell && wordBoundary)) && tail.startsWith(blockOpen)) {
    let depth = 1;
    let end = at + 2;
    while (end < source.length && depth) {
@@ -195,7 +206,9 @@ function nativeTokens(source, file) {
    spelling = escapedSpelling(word[0]);
    if (powershell) spelling = spelling.toLowerCase();
   }
-  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation', spelling);
+  const width = word ? word[0].length : escape && tail[0] === escape
+   ? powershell && tail.startsWith('`\r\n') ? 3 : Math.min(2, tail.length) : 1;
+  emit(at + width, word ? 'word' : 'punctuation', spelling);
  }
  return out;
 }
