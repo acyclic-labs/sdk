@@ -54,20 +54,6 @@ fn native_name_layout(
     }
 }
 
-fn copy_name(
-    name: &LogicalName,
-    limits: VolumeLimits,
-    inputs: &mut InputBuffers<'_, '_>,
-) -> Result<LogicalName, MountSourceError> {
-    let owned = inputs.copy_bytes(name.as_bytes())?;
-    if name.as_bytes().len() as u64 > u64::from(limits.maximum_component_bytes) {
-        return Err(MountSourceError::NamespacePath(
-            crate::kernel::NamespacePathError::Name(crate::kernel::TreePageError::NameTooLarge),
-        ));
-    }
-    Ok(LogicalName::from_validated_bytes(name.encoding(), owned))
-}
-
 fn native_name(
     bytes: &[u8],
     profile: FilesystemProfile,
@@ -142,7 +128,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let mut names = inputs.vec::<LogicalName>(count)?;
         for name in self.root.components() {
-            names.push(copy_name(name, self.config.limits, inputs)?);
+            let owned = inputs.copy_bytes(name.as_bytes())?;
+            names.push(LogicalName::from_validated_bytes(name.encoding(), owned));
         }
         for component in path.components() {
             names.push(native_name(
