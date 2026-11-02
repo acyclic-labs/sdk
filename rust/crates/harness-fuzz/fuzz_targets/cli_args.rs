@@ -10,8 +10,8 @@ mod ingress;
 
 // Exercise the production parser and cross-command validation. No runtime,
 // filesystem, provider, command execution or reconstructed parser is involved.
-fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>)| {
-    let (arguments, raw) = input;
+fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool)| {
+    let (arguments, raw, refuse) = input;
     let mut arguments = std::iter::once(std::ffi::OsString::from("acyclic"))
         .chain(arguments.into_iter().map(std::ffi::OsString::from))
         .collect::<Vec<_>>();
@@ -20,7 +20,18 @@ fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>)| {
         use std::os::unix::ffi::OsStringExt as _;
         arguments.extend(raw.into_iter().map(std::ffi::OsString::from_vec));
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt as _;
+        arguments.extend(raw.into_iter().map(|bytes| {
+            let wide = bytes
+                .chunks(2)
+                .map(|pair| u16::from(pair[0]) | (u16::from(*pair.get(1).unwrap_or(&0)) << 8))
+                .collect::<Vec<_>>();
+            std::ffi::OsString::from_wide(&wide)
+        }));
+    }
+    #[cfg(not(any(unix, windows)))]
     arguments.extend(
         raw.into_iter()
             .filter_map(|bytes| String::from_utf8(bytes).ok())
@@ -32,7 +43,17 @@ fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>)| {
                 let _ = args.prepare_input();
             }
         }
-        Ok(ingress::Input::Native(arguments)) => drop(arguments),
+        Ok(ingress::Input::Native(arguments)) => {
+            let _ = ingress::workspace_action(&arguments, || {
+                if refuse {
+                    Err("no selected agent in argument fuzzing".into())
+                } else {
+                    Ok(acyclic_harness::agent::AgentPath::root(
+                        &acyclic_harness::agent::AgentId::from_bytes([0; 16]),
+                    ))
+                }
+            });
+        }
         Err(_) => {}
     }
 });
