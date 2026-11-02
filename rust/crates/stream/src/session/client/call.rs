@@ -36,7 +36,7 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: impl Into<Option<usize>>,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<
         impl futures::Stream<
             Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
@@ -45,7 +45,6 @@ impl Client {
         + use<>,
         StreamError,
     > {
-        let maximum_reply_bytes = maximum_reply_bytes.into();
         validate_call(invocation, maximum_reply_bytes)?;
         self.reply_chunks(
             Kind::ActorCall(invocation.clone()),

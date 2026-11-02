@@ -146,7 +146,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     let refused = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len() - 1)
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len() - 1))
         .await?;
     futures::pin_mut!(refused);
     assert!(matches!(
@@ -155,7 +155,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     ));
 
     let stopped = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len()))
         .await?;
     futures::pin_mut!(stopped);
     let first = stopped
