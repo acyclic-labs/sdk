@@ -8,13 +8,14 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectId, ObjectStoreError};
+use acyclic_collections::page::Direction;
 use std::ops::Bound;
 use thiserror::Error;
 
 /// One authenticated bounded directory page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectoryPage {
-    /// Entries strictly after the supplied cursor.
+    /// Entries in the requested order, strictly beyond the supplied cursor.
     pub entries: Vec<TreeEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
@@ -40,6 +41,7 @@ pub async fn list_tree_entries<S: AsyncObjectStore>(
             root,
             after.map_or(Bound::Unbounded, Bound::Excluded),
             maximum_entries,
+            Direction::Ascending,
         ),
         limits,
         budget,
@@ -57,7 +59,7 @@ pub(crate) async fn list_tree_entries_async_with_accounting<
 >(
     store: &'a S,
     root: ObjectId,
-    page: (Bound<&'a LogicalName>, u32),
+    page: (Bound<&'a LogicalName>, u32, Direction),
     limits: DecodeLimits,
     accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
     cancellation: &'a CancellationToken,
@@ -65,7 +67,7 @@ pub(crate) async fn list_tree_entries_async_with_accounting<
 ) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
         store,
-        (root, page.0, page.1),
+        (root, page.0, page.1, page.2),
         limits,
         accounting,
         cancellation,

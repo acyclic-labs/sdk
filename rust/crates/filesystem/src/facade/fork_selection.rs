@@ -378,6 +378,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             (cursor.as_ref().map(|cursor| &cursor.value))
                                 .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                             limits.maximum_page_items,
+                            acyclic_collections::page::Direction::Ascending,
                         ),
                         limits,
                         accounting,

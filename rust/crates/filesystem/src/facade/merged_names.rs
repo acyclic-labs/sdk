@@ -23,6 +23,7 @@ async fn admit_tree_binding<O: AsyncObjectStore>(
                         std::ops::Bound::Excluded(&owned.0)
                     }),
                     CASE_FOLD_COLLISION_SCAN_PAGE,
+                    acyclic_collections::page::Direction::Ascending,
                 ),
                 limits,
                 accounting,

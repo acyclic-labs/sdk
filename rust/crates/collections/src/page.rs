@@ -10,6 +10,33 @@ pub mod rewrite;
 pub mod search;
 pub mod selection;
 
+/// Traversal order over the caller's original ordered page or cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    /// Visit the smallest eligible key first.
+    Ascending,
+    /// Visit the largest eligible key first.
+    Descending,
+}
+
+impl Direction {
+    /// Takes the next original item without allocating or reversing its backing.
+    pub fn next<I: DoubleEndedIterator>(self, items: &mut I) -> Option<I::Item> {
+        match self {
+            Self::Ascending => items.next(),
+            Self::Descending => items.next_back(),
+        }
+    }
+
+    /// Reverses traversal, for pushing a frontier visited from the other end.
+    pub const fn reversed(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
 /// One child page and the exact first key in its subtree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Child<K, P> {

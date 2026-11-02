@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_collections::page::Direction;
 
 /// One child returned from an authenticated directory page, resolved by the
 pub struct ResolvedDirectoryEntry<A: 'static, O: 'static> {
@@ -30,7 +31,7 @@ pub struct DirectoryRecordEntry {
 /// One page-efficient directory listing for native projection callbacks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectoryRecordPage {
-    /// Ordered entries strictly after the supplied cursor.
+    /// Entries in the requested order, strictly beyond the supplied cursor.
     pub entries: Vec<DirectoryRecordEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
@@ -55,6 +56,45 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<DirectoryRecordPage> {
+        self.list_directory_records_in_order(
+            path,
+            (after, maximum_entries, Direction::Ascending),
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Returns the largest names first from this reader's retained generation.
+    ///
+    /// `before` is exclusive; `None` starts at the last name. The continuation
+    /// is the last returned name. Only the selected frontier and bounded page
+    /// are read; earlier names are not enumerated. Output and traversal work
+    /// use the original caller's accounting and cancellation.
+    pub async fn list_directory_records_reverse<W: FsWork>(
+        &self,
+        path: &NamespacePath,
+        before: Option<&LogicalName>,
+        maximum_entries: u32,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::OwnedOutput<DirectoryRecordPage> {
+        self.list_directory_records_in_order(
+            path,
+            (before, maximum_entries, Direction::Descending),
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn list_directory_records_in_order<W: FsWork>(
+        &self,
+        path: &NamespacePath,
+        page: (Option<&LogicalName>, u32, Direction),
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::OwnedOutput<DirectoryRecordPage> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]
@@ -65,8 +105,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 &self.volume,
                 &self.root,
                 path,
-                after,
-                maximum_entries,
+                page,
                 &mut accounting,
                 cancellation,
             )
@@ -91,8 +130,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 &self.volume,
                 &self.root,
                 path,
-                after,
-                maximum_entries,
+                (after, maximum_entries, Direction::Ascending),
                 &mut accounting,
                 cancellation,
             )
@@ -142,8 +180,7 @@ pub(crate) async fn list_directory_records_to_file_root_with_accounting<
     volume: &Volume<A, O>,
     root: &GenerationRoot,
     path: &NamespacePath,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
+    selection: (Option<&LogicalName>, u32, Direction),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -159,8 +196,7 @@ pub(crate) async fn list_directory_records_to_file_root_with_accounting<
             volume,
             root,
             path,
-            after,
-            maximum_entries,
+            selection,
             accounting,
             cancellation,
         )
@@ -170,7 +206,7 @@ pub(crate) async fn list_directory_records_to_file_root_with_accounting<
             root.file_table,
             page,
             allocation,
-            maximum_entries,
+            selection.1,
             accounting,
             cancellation,
             None,
