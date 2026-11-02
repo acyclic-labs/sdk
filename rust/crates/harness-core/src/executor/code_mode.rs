@@ -400,6 +400,13 @@ impl StockExecution<'_> {
                             Ok(result) => result,
                             Err(cause) => (serde_json::json!({"class":cause.class,"message":cause.message}), None),
                         };
+                        let version = if ok {
+                            crate::tool::files::result_version(
+                                call.name.value.strip_prefix("acyclic.").unwrap_or(""),
+                                &value,
+                                self.native_work(),
+                            )?
+                        } else { None };
                         let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
@@ -419,8 +426,8 @@ impl StockExecution<'_> {
                             result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
                         }
                         #[derive(Serialize)]
-                        struct Reply<'a> { ok: bool, value: &'a Value }
-                        let reply = Reply { ok, value: &value };
+                        struct Reply<'a> { ok: bool, value: &'a Value, version: Option<&'a str> }
+                        let reply = Reply { ok, value: &value, version: version.as_ref().map(|v| v.0.as_str()) };
                         #[cfg(feature = "filesystem")]
                         let funded = self.io.map(|io| io.encode(&reply, u64::MAX, false)).transpose()?;
                         #[cfg(not(feature = "filesystem"))]

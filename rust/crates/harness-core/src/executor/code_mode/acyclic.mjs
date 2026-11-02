@@ -28,8 +28,6 @@ const bind = async (name, input) => {
 const parse = JSON.parse, stringify = JSON.stringify;
 const encode = (path, data) => typeof data === 'string' ? data
     : `${path.endsWith('.ts') ? 'export default ' : ''}${stringify(data)}`;
-const token = source => source.authored
-    ? `authored-file-v1:${stringify(source.authored)}` : stringify(source.content);
 
 // Each value holds one immutable version. Byte pages stay pinned to that
 // version; text()/json()/lines() never issue hidden host calls.
@@ -64,9 +62,9 @@ class File {
 }
 
 export async function read(path) {
-    let result = await bind('read', {path});
+    let result = await bind('read', {path, selection: {kind: 'lines', offset: 0}});
     if (result === null) return null;
-    const version = token(result.file);
+    const version = result.version;
     const size = result.file.authored ? result.file.authored.byte_length
         : result.file.content.descriptor.byte_length;
     if (result.media) throw new DeniedError('File requires a text read');
@@ -85,7 +83,7 @@ export async function write(path, data, ifVersion) {
     if (typeof ifVersion !== 'string' || ifVersion.length === 0)
         throw new TypeError('write requires any, absent or a version');
     const result = await bind('write', {path, content: encode(path, data), ifVersion});
-    return stringify(result.file);
+    return result.version;
 }
 
 export async function spawn() { throw new DeniedError('needs P2'); }
