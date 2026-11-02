@@ -195,6 +195,7 @@ struct Invocation {
     executable: OsString,
     arguments: Vec<OsString>,
     inherit_input: bool,
+    control: Option<PathBuf>,
     custody: Option<PathBuf>,
     lease: Option<PathBuf>,
     completion: Option<PathBuf>,
@@ -205,6 +206,7 @@ impl Invocation {
     fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
         let mut arguments = arguments.into_iter();
         let mut inherit_input = false;
+        let mut control = None;
         let mut custody = None;
         let mut lease = None;
         let mut completion = None;
@@ -223,7 +225,10 @@ impl Invocation {
                     return Err(invalid_arguments());
                 }
                 invocation = Some(value);
-            } else if argument == "--custody" || argument == "--completion" || argument == "--lease"
+            } else if argument == "--custody"
+                || argument == "--completion"
+                || argument == "--lease"
+                || argument == "--control"
             {
                 let path = arguments.next().ok_or_else(invalid_arguments)?;
                 if !Path::new(&path).is_absolute() {
@@ -233,22 +238,33 @@ impl Invocation {
                     &mut custody
                 } else if argument == "--lease" {
                     &mut lease
+                } else if argument == "--control" {
+                    &mut control
                 } else {
                     &mut completion
                 };
                 if destination.replace(PathBuf::from(path)).is_some() {
                     return Err(invalid_arguments());
                 }
-            } else if Path::new(&argument).is_absolute() {
+            } else if argument == "--" || Path::new(&argument).is_absolute() {
+                let executable = if argument == "--" {
+                    arguments
+                        .next()
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(invalid_arguments)?
+                } else {
+                    argument
+                };
                 if (custody.is_some() && lease.is_some())
                     || (invocation.is_some() && completion.is_none())
                 {
                     return Err(invalid_arguments());
                 }
                 return Ok(Self {
-                    executable: argument,
+                    executable,
                     arguments: arguments.collect(),
                     inherit_input,
+                    control,
                     custody,
                     lease,
                     completion,
@@ -265,11 +281,42 @@ impl Invocation {
 fn invalid_arguments() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE [--invocation OPAQUE_ID]] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
+        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE [--invocation OPAQUE_ID]] [--control ABSOLUTE_ENDPOINT] [--inherit-input] -- EXECUTABLE ARGS",
     )
 }
 
 struct Completion(Option<std::fs::File>);
+
+// One cancellation input for the same tree owner. A separate caller-owned
+// endpoint leaves command stdin available for arbitrary input and EOF.
+enum ControlInput {
+    Standard,
+    #[cfg(unix)]
+    Endpoint(std::os::unix::net::UnixStream),
+    #[cfg(windows)]
+    Endpoint(std::fs::File),
+}
+
+impl ControlInput {
+    fn open(endpoint: Option<&Path>, inherit_input: bool) -> io::Result<Option<Self>> {
+        if let Some(endpoint) = endpoint {
+            #[cfg(unix)]
+            let stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+            #[cfg(windows)]
+            let stream = std::fs::File::open(endpoint)?;
+            Ok(Some(Self::Endpoint(stream)))
+        } else {
+            Ok((!inherit_input).then_some(Self::Standard))
+        }
+    }
+
+    fn read(&mut self) -> io::Result<usize> {
+        match self {
+            Self::Standard => io::stdin().read(&mut [0]),
+            Self::Endpoint(stream) => stream.read(&mut [0]),
+        }
+    }
+}
 
 impl Completion {
     fn open(path: Option<&Path>) -> io::Result<Self> {
@@ -356,6 +403,10 @@ impl Drop for Directory {
 /// never certified. Without this option, the exact v2 receipt remains unchanged.
 ///
 /// This is an executable entry point: the caller must exit after it returns.
+/// `--control ABSOLUTE_ENDPOINT` connects to the caller's existing Unix socket
+/// or Windows named pipe before launching. Its EOF cancels the same tree even
+/// with `--inherit-input`; command stdin and cancellation are independent.
+/// `-- EXECUTABLE ARGS` ends host options and permits the caller's PATH lookup.
 /// The control reader can still be blocked on stdin after a normal command
 /// exit, and belongs to that process rather than a reusable runtime service.
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
@@ -455,6 +506,11 @@ fn run_host<const OBSERVATIONS: usize>(
             .map(ProcessCustodyLease::custody)
             .or(custody.as_deref())
             .ok_or_else(invalid_arguments)?;
+        // Admit the cancellation channel before the selected root can act.
+        observe(observations, |progress| {
+            progress.phase = ProcessHostPhase::ControlAdmission
+        });
+        let control = ControlInput::open(invocation.control.as_deref(), invocation.inherit_input)?;
         let mut command = ProcessCommand::new(invocation.executable);
         command
             .args(invocation.arguments)
@@ -485,7 +541,7 @@ fn run_host<const OBSERVATIONS: usize>(
             }),
             control: std::array::from_fn(|_| OnceLock::new()),
         });
-        if !invocation.inherit_input {
+        if let Some(mut input) = control {
             observe(observations, |progress| {
                 progress.phase = ProcessHostPhase::ControlAdmission
             });
@@ -493,7 +549,7 @@ fn run_host<const OBSERVATIONS: usize>(
             let started = std::thread::Builder::new()
                 .name("process-host-control".into())
                 .spawn(move || {
-                    let input = io::stdin().read(&mut [0]);
+                    let input = input.read();
                     if let Some(origin) = origin {
                         let outcome = match &input {
                             Ok(0) => ProcessHostControl::Eof,
@@ -1396,6 +1452,15 @@ mod tests {
                 Invocation::parse(arguments).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput
             );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn process_host_argument_fuzz(arguments in proptest::collection::vec(
+            proptest::prelude::any::<String>(), 0..32,
+        )) {
+            let _ = Invocation::parse(arguments.into_iter().map(OsString::from));
         }
     }
 

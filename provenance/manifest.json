@@ -103,6 +103,12 @@
   ],
   "references": [
     {
+      "repository": "https://github.com/acyclic-labs/cloud",
+      "commit": "f9a9ea5d08c28a833a8a2d4bf6ed57ea76685d30",
+      "paths": ["lib/process/command.mjs", "lib/process/signals.mjs"],
+      "purpose": "Process callback, sink completion and cancellation contract comparison; native custody and Node bridge implemented in the SDK"
+    },
+    {
       "repository": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.316.tgz",
       "commit": "cd7ceb459c6864567b16a11f60101b24421475c1",
       "paths": ["sdk-tools.d.ts", "manifest.json"],

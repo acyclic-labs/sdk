@@ -33,7 +33,6 @@ impl ChildExitWatch {
 #[cfg(target_os = "linux")]
 impl std::os::fd::AsFd for ChildExitWatch {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        use std::os::fd::AsFd as _;
         self.0.fd.as_ref().expect("opened exit descriptor").as_fd()
     }
 }
