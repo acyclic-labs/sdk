@@ -21,8 +21,8 @@
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentProfilePin, AgentState, IntentId, MAX_OPEN_CHILDREN, SpawnProfiles,
-        TurnChildren, TurnEffect, TurnEffects,
+        AgentPath, AgentProfilePin, AgentState, IntentId, SpawnProfiles, TurnChildren, TurnEffect,
+        TurnEffects,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -140,7 +140,7 @@ const SPAWN: &str = "spawn:";
 /// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
 ///
 /// # Errors
-/// When `name` is not a valid spawn name or the child would exceed the depth.
+/// When `name` is not a valid spawn name.
 pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
     TurnEffect::child(parent, &intent).map_err(agent)
@@ -185,13 +185,6 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
-                // The agent's hard limit: a spawn the step would refuse is
-                // refused here, before the model is told it succeeded.
-                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
-                    return Ok(rejected(format!(
-                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
-                    )));
-                }
                 let brief = turn
                     .writer
                     .stage_once(
@@ -268,21 +261,6 @@ impl AgentTool {
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
         };
         Ok(ToolResult { value })
-    }
-
-    /// Whether spawning `intent` keeps at most `limit` open children: those
-    /// open when the turn started plus this turn's recorded spawns. A spawn
-    /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
-        let turn = &*self.turn;
-        let mut open = turn.children.clone();
-        for effect in turn.effects.recorded().await? {
-            if let TurnEffect::Spawn { intent, .. } = effect {
-                open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
-            }
-        }
-        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit)
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.

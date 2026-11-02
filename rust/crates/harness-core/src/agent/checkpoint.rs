@@ -1,23 +1,16 @@
-//! The agent checkpoint's one encoding, and the static size bound of every
-//! record an agent step writes.
+//! The agent checkpoint's one encoding and protected record admission.
 //!
-//! The parts that scale with the agent's limits are raw protobuf fields
+//! The parts that scale with the child set are raw protobuf fields
 //! rather than JSON: each open child is its 16-byte id (its path, like the
 //! agent's parent, is derived from the agent's path), the children still to
 //! archive and the children awaited are bitmaps over them, and the turn
 //! driver's checkpoint is raw bytes. The rest of the state is JSON.
 //!
-//! Every part of every agent record is bounded at admission: paths by
-//! [`super::MAX_DEPTH`], file and volume references by the conversation
-//! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
-//! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
-//! built or decoded), and texts by their own limits. `tests` builds the worst
-//! case of each record kind a step appends and checks it encodes, and the
-//! worst settled checkpoint within [`MAX_CHECKPOINT_BYTES`] and one stream
-//! record. Only the input window and the turn grow with traffic; a state
-//! whose window and turn would not fit fails the agent visibly instead (see
-//! [`super::machine`]), so no step can wedge an agent on a record its stream
-//! refuses.
+//! Child ids and path bytes have no logical count or depth ceiling. The current
+//! checkpoint still uses one protected record; encoding refuses bytes beyond
+//! that transport capacity. Tests retain record round trips, malformed-state
+//! controls and samples across the former child/depth limits. Paged child
+//! storage is a separate representation change.
 use super::{AgentId, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
@@ -31,7 +24,7 @@ pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
 /// The checkpoint codec every agent actor commits with. Its state embeds the
-/// same durable record shapes, so both boundaries admit the same version.
+/// durable record shapes. The checkpoint revision also excludes retired child slots.
 pub(crate) fn codec() -> CodecIdentity {
     identity().clone()
 }
@@ -40,7 +33,7 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            version: super::records::RECORD_VERSION.to_string(),
+            version: format!("{}.1", super::records::RECORD_VERSION),
         });
     &IDENTITY
 }
@@ -192,10 +185,9 @@ mod tests {
     use super::*;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
-        MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-        Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
-        VolumeBinding,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, NoticePayload, Phase, Sender,
+        SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -203,6 +195,10 @@ mod tests {
     };
     use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
+
+    // Samples cross the retired logical limits; they are not admission policies.
+    const SAMPLE_DEPTH: usize = 65;
+    const SAMPLE_CHILDREN: usize = 257;
 
     fn id(n: u64) -> AgentId {
         let mut bytes = [0xff; 16];
@@ -242,7 +238,7 @@ mod tests {
     fn agent(depth: usize) -> AgentPath {
         let mut path = AgentPath::root(&id(0));
         for level in 1..=depth {
-            path = path.child(&id(level as u64)).expect("within MAX_DEPTH");
+            path = path.child(&id(level as u64)).expect("within SAMPLE_DEPTH");
         }
         path
     }
@@ -287,7 +283,7 @@ mod tests {
     fn senders() -> Vec<Sender> {
         vec![
             Sender::Agent {
-                path: agent(MAX_DEPTH),
+                path: agent(SAMPLE_DEPTH),
             },
             Sender::User {
                 principal: widest(MAX_INTENT_BYTES),
@@ -328,7 +324,7 @@ mod tests {
                 context: crate::agent::SpawnContext::TopLevel,
             }),
             agent: id(u64::MAX),
-            parent: Some(agent(MAX_DEPTH - 1)),
+            parent: Some(agent(SAMPLE_DEPTH - 1)),
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
             checkpoint: Some(u64::MAX),
@@ -343,9 +339,9 @@ mod tests {
         }
     }
 
-    /// Every record kind a step sends, each at its widest.
+    /// Every record kind a step sends, with wide fields and a deep path sample.
     fn inbox_records() -> Vec<InboxRecord> {
-        let deepest = agent(MAX_DEPTH);
+        let deepest = agent(SAMPLE_DEPTH);
         let mut records = vec![
             InboxRecord::ForkAdopted(Box::new(adoption())),
             InboxRecord::Approval(crate::agent::Approval { id: intent() }),
@@ -430,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
+    fn record_shapes_and_checkpoint_samples_cross_former_child_limits() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
         // Names admit no control character, so `widest` is their worst case.
         let control = Sender::User {
@@ -446,7 +442,7 @@ mod tests {
             .encode()
             .is_err()
         );
-        let deepest = agent(MAX_DEPTH);
+        let deepest = agent(SAMPLE_DEPTH);
         // Sends, adoptions (host-bound volumes included), reports, archives.
         for record in inbox_records() {
             record.encode().expect("every inbox record fits");
@@ -504,19 +500,15 @@ mod tests {
             .encode()
             .expect("a conversation entry fits");
         }
-        // The widest settled checkpoint: deepest agent that can have children,
-        // every child open and to archive, the widest adoption, settled with
+        // Sample a settled checkpoint across the former child/depth ceilings,
+        // every selected child open and to archive, the widest adoption, settled with
         // the widest outcome, counters at their widest, every child awaited.
         let adopted = adoption();
-        for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
+        for depth in [SAMPLE_DEPTH - 1, SAMPLE_DEPTH] {
             let path = agent(depth);
-            let children = if depth < MAX_DEPTH {
-                MAX_OPEN_CHILDREN
-            } else {
-                0
-            };
+            let children = SAMPLE_CHILDREN;
             let open_children: BTreeSet<_> = (0..children as u64)
-                .map(|n| path.child(&id(n)).expect("below MAX_DEPTH"))
+                .map(|n| path.child(&id(n)).expect("below SAMPLE_DEPTH"))
                 .collect();
             for outcome in outcomes() {
                 let state = AgentState {
@@ -544,7 +536,6 @@ mod tests {
                     closed: true,
                     reported: true,
                     turn: None,
-                    reserved_children: u16::MAX,
                 };
                 let bytes = encode(&state).expect("encodes");
                 assert!(

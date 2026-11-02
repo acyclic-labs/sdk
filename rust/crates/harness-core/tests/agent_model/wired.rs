@@ -1560,7 +1560,7 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 }
 
 #[tokio::test]
-async fn spawn_admits_children_by_role_within_the_open_children_limit() -> Result {
+async fn spawn_admits_children_by_role_beyond_the_former_ceiling() -> Result {
     use acyclic_harness_core::{agent::SpawnProfiles, profile::Profiles};
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
@@ -1626,17 +1626,16 @@ async fn spawn_admits_children_by_role_within_the_open_children_limit() -> Resul
     let mut unpinned = state.clone();
     unpinned.profile = None;
     assert_eq!(refused(unpinned, roles).await?, (vec![true, true, true], 0));
-    // The agent's hard limit still holds: one below it, `b` fits and `c` is
-    // refused to the model rather than dropped by the step.
+    // Role-admitted spawns remain accepted beyond the former child ceiling.
     let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
+    for n in 0..298 {
         let mut bytes = [0; 16];
         bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
         full.open_children
             .insert(path.child(&AgentId::from_bytes(bytes))?);
     }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, roles).await?, (vec![false, false, true], 2));
+    assert_eq!(full.open_children.len(), 299);
+    assert_eq!(refused(full, roles).await?, (vec![false, false, false], 3));
     Ok(())
 }
 

@@ -659,7 +659,7 @@ impl Explorer {
 
     /// The last row shown under `pos`, through expanded descendants.
     fn last_descendant(&self, mut pos: Pos) -> Pos {
-        for _ in 0..acyclic_harness_core::agent::MAX_DEPTH {
+        loop {
             let Pos::Row {
                 parent,
                 page,
@@ -715,7 +715,6 @@ impl Explorer {
                 None => return pos,
             }
         }
-        pos
     }
 
     fn render(&self, pos: &Pos) -> Row {

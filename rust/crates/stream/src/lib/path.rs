@@ -1,4 +1,4 @@
-use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
+use crate::{MAX_PATH_BYTES, StreamError};
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.
@@ -80,9 +80,7 @@ impl StreamPath {
         {
             return Err(StreamError::InvalidPath);
         }
-        let mut count = 0_usize;
         for segment in path.split('/') {
-            count = count.checked_add(1).ok_or(StreamError::LimitExceeded)?;
             if segment.is_empty()
                 || segment == "."
                 || segment == ".."
@@ -93,9 +91,6 @@ impl StreamPath {
             {
                 return Err(StreamError::InvalidPath);
             }
-        }
-        if count > MAX_ITEMS {
-            return Err(StreamError::LimitExceeded);
         }
         Ok(())
     }
@@ -129,9 +124,6 @@ impl StreamPath {
         let length = self.as_str().len().checked_add(suffix.len());
         if length.is_none_or(|length| length > MAX_PATH_BYTES) {
             return Ok(Err(StreamError::InvalidPath));
-        }
-        if self.as_str().split('/').count() + suffix[1..].split('/').count() > MAX_ITEMS {
-            return Ok(Err(StreamError::LimitExceeded));
         }
         Self::native_parts(&[self.as_str(), suffix], meter).map(Ok)
     }

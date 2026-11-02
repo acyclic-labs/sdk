@@ -9,10 +9,8 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
-/// maxima, texts by their own limits), so every record a step builds is
-/// within this; `checkpoint`'s bound test checks each kind at its worst.
+/// Protective byte bound for one agent record. Encoding checks the complete
+/// canonical bytes; child counts and path depth are not admission policies.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest intent identity.
 pub const MAX_INTENT_BYTES: usize = 128;
@@ -663,13 +661,6 @@ impl AgentRecord for InboxRecord {
         match self {
             Self::ForkAdopted(adopted) => {
                 check_volumes(adopted.volumes.iter())?;
-                if adopted
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
-                {
-                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
-                }
                 Ok(())
             }
             Self::ChildDone(done) => check_outcome(&done.outcome),

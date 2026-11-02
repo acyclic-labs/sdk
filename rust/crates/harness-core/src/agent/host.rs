@@ -393,7 +393,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let checkpoint = state.checkpoint().ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
         ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
+        super::checkpoint_state(checkpoint)?.spawn_outcome(intent)
     }
 
     /// Actor state record `sequence` of the state stream at `path`.

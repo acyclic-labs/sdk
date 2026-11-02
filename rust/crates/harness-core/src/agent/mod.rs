@@ -41,7 +41,6 @@ pub(crate) mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
-mod slots;
 mod targets;
 pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
@@ -65,14 +64,13 @@ pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{
-    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+    ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
-    step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
+    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentProfilePin, AgentRecord, Approval, ApprovalRequested, ChildDone,

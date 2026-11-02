@@ -28,7 +28,6 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -76,7 +75,6 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
             self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
@@ -187,7 +185,6 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -272,7 +269,6 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
     for oversized in [false, true] {
         let provider = Arc::new(MemoryStream::default());
         let driver = super::script(vec![TurnStep {
-            reserved_children: 0,
             checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
             outs: vec![
                 Out::Conversation(b"first".to_vec()),
@@ -674,9 +670,8 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
 }
 
 #[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
+async fn a_root_commits_children_beyond_the_former_ceiling() -> Result {
+    // Exercise original Actor commits and checkpoint restoration past 256 children.
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
@@ -700,7 +695,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
         })
     };
     let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
+    for n in 0..=300 {
         let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
             return Err("spawn request was not committed".into());
         };
@@ -709,13 +704,11 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
+    assert_eq!(state.open_children.len(), 301);
+    let (spawn, child) = requested_child(&root, last)?;
     assert_eq!(
         host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
+        SpawnOutcome::Spawned { child }
     );
     Ok(())
 }

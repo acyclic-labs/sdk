@@ -203,3 +203,69 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn deep_forks_preserve_the_original_cut_and_replay() -> Result<(), StreamError> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("source")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![Bytes::from_static(b"original").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    for via_commit in [false, true] {
+        let destination = StreamPath::new(format!(
+            "{}{}",
+            "deep/".repeat(1024),
+            if via_commit { "commit" } else { "fork" }
+        ))?;
+        if via_commit {
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent {
+                    path: destination.clone(),
+                }],
+                mutations: vec![CommitMutation::Fork {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: 1,
+                    records: vec![],
+                    exclude: vec![],
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            let first = provider.commit(request.clone()).await?;
+            assert!(matches!(first, CommitOutcome::Committed(_)));
+            assert_eq!(provider.commit(request).await?, first);
+        } else {
+            let request = ForkRequest {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: Some(1),
+                exclude: vec![],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            let first = provider.fork(request.clone()).await?;
+            assert_eq!(provider.fork(request).await?, first);
+        }
+        let records: Vec<_> = provider
+            .read(ReadRequest {
+                path: destination,
+                from: 0,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_collect()
+            .await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].value.as_ref(), b"original");
+    }
+    assert!(StreamPath::new("deep//invalid").is_err());
+    assert!(StreamPath::new("x".repeat(crate::MAX_PATH_BYTES + 1)).is_err());
+    Ok(())
+}

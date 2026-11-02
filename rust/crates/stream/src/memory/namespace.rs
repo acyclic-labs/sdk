@@ -151,7 +151,6 @@ struct Branch {
     count: usize,
     bytes: usize,
     max_suffix: usize,
-    depth: usize,
     _allocation: Allocation,
 }
 #[derive(Clone, Default)]
@@ -167,9 +166,6 @@ impl NamespaceNode {
     }
     fn max_suffix(&self) -> usize {
         self.children.as_ref().map_or(0, |n| n.max_suffix + 1)
-    }
-    fn depth(&self) -> usize {
-        1 + self.children.as_ref().map_or(0, |n| n.depth)
     }
 }
 fn height(index: &Index) -> u8 {
@@ -191,10 +187,6 @@ fn branch(
     let max_suffix = (name.len() + node.max_suffix())
         .max(left.as_ref().map_or(0, |n| n.max_suffix))
         .max(right.as_ref().map_or(0, |n| n.max_suffix));
-    let depth = node
-        .depth()
-        .max(left.as_ref().map_or(0, |n| n.depth))
-        .max(right.as_ref().map_or(0, |n| n.depth));
     let mut spare = if let Some(pool) = &mut build.reserve {
         Some(pool.branches.pop().ok_or(StreamError::Capacity)?)
     } else {
@@ -217,7 +209,6 @@ fn branch(
         count,
         bytes,
         max_suffix,
-        depth,
         _allocation: allocation,
     };
     if let Some(mut spare) = spare {
