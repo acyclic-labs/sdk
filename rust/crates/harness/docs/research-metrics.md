@@ -102,7 +102,7 @@ This projection is independent of per-turn file-read coverage: completeness
 requires observations from the original authenticated read producer, including
 native reads satisfied from the OS cache.
 
-`metrics::read_set::page(journal, agent, operation, after, cut)` projects original
+With `research`, `executor::read_set::page(journal, agent, operation, after, cut)` projects original
 successful builtin read-tool receipts. It retains the result's `FileReadSource`
 and optional returned interval. An authored selection keeps its original volume,
 path and generation; it does not invent a full-file digest. Absent intervals do
@@ -110,7 +110,8 @@ not imply a full-file read. The original indexed tool admission binds each
 completion; adapters without this index refuse instead of rescanning history.
 Each page visits up to 32 journal records and retains only that page's receipts.
 
-Supply `cut` from the settled turn's consumed-input fence. Use one
+Supply `cut` from the original settled execution journal sequence, distinct
+from an agent inbox cursor. Use one
 `read_set::Writer` across the pages, then call `finish` and publish its bytes once
 as the turn's immutable read-set `FileRef`. Its version-1 JSONL header declares
 `committed_read_tool_results_only` coverage, agent, original operation and cut;
@@ -123,3 +124,40 @@ incomplete pinned prefix, never evidence of completion.
 exports the original turn's `prov:used` relation to that generation. Shell,
 context, hook, search and failed-read coverage remains unknown. These functions
 reuse committed results and add no work to execution or read operations.
+
+`executor::read_set::source` exposes the same artifact as a pull-based
+`ContentSource`, retaining one encoded page and source page. Cursor records
+preserve progress across pages with no reads. EOF follows successful closure;
+an incomplete prefix returns an error. Feed this source to the shared
+`ContentPublisher::stage_stream_once` with an operation derived specifically
+for the read-set artifact. Other outputs from the turn retain their own
+publication identities. The filesystem implementation hashes the consumed
+bytes during original immutable chunk staging and publishes them with metadata
+in its original transaction. It never buffers the complete artifact, starts a
+worker, or flushes per chunk. Source retirement or cancellation prevents a
+successful publication. Original native allocation custody is required for
+native publication; an ordinary stream cannot assert that custody and refuses.
+
+The research-only `conversation::read_set::TurnReadSet` carrier is available
+without Arrow or RDF dependencies. It records version 1, the fixed original
+agent, execution operation, optional journal cut, explicit producer coverage,
+and either `Closed { file }` or `Unavailable { reason }`. An enclosing absent
+observation, an unavailable observation and a closed empty artifact have
+different meanings. Admit this association once in the original turn
+settlement, bound to its original agent and operation. A failed turn without a
+conversation entry does not imply an empty read set.
+
+The following row kinds are reserved for the original research carriers in
+the same six tables. Their producers remain separate from this offline codec:
+
+| Table / kind | Original authority and coverage |
+| --- | --- |
+| `turns` / `resources` | Cumulative resource snapshot at its original resource stream, sequence and commit ID. Select latest; never sum snapshots. Original inbox cursor is distinct from the source sequence. Semantic step commits and newly encoded conversation bytes do not measure physical work. |
+| `agents` / `placement` | Original immutable placement fact on initial observation or change, joined by its original digest. Unknown location stays unknown. |
+| `edges` / `stream_record_shared` | Original record origin, sequence and commit ID, selected destination stream and bound provider/account. Coverage is logical record-value bytes; union original identities before summing. |
+| `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
+
+These reservations do not claim that the outstanding producer integrations
+already emit rows. Existing object identity or `AlreadyExists` alone never
+proves zero physical writes, and overlapping sibling durations are not added
+into a critical path.

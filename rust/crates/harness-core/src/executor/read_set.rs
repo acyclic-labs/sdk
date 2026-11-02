@@ -523,13 +523,7 @@ mod tests {
         writer.append(&first)?;
         writer.append(&second)?;
         let bytes = writer.finish()?;
-        assert_eq!(
-            bytes
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.is_empty())
-                .count(),
-            6
-        );
+        assert!(bytes.ends_with(b"\n"));
         // The actual artifact source feeds the original publisher, rather
         // than a whole-turn buffer or another checkpoint writer.
         let bindings = storage.content_bindings();
@@ -549,6 +543,24 @@ mod tests {
             )?
             .await?;
         let published = storage.read(&artifact).await?;
+        use crate::conversation::{VolumeOwner, read_set::*};
+        let VolumeOwner::Agent(owner) = storage.volume().owner() else {
+            return Err(export_error("read-set fixture lacks its original owner"));
+        };
+        let mut settlement = TurnReadSet {
+            version: 1,
+            agent: *owner,
+            operation,
+            cut: Some(cut),
+            coverage: ReadSetCoverage::CommittedReadToolResultsOnly,
+            observation: ReadSetObservation::Closed { file: artifact },
+        };
+        settlement.validate()?;
+        settlement.agent = AgentId::new();
+        assert!(settlement.validate().is_err());
+        settlement.agent = *owner;
+        settlement.cut = None;
+        assert!(settlement.validate().is_err());
         let records = published
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
