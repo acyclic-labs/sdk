@@ -1,7 +1,7 @@
 //! Layout of one admitted live-query page. No I/O, source discovery or runtime
 //! logic lives here: callers supply rows and retain their source-owned cursor.
 use crate::{Editor, Layout};
-use ratatui::text::Line;
+use ratatui::{style::Style, text::Line};
 
 /// Presentation shared by paged file views. Retained work is proportional to
 /// one admitted page; resize only reflows that page and never reads its source.
@@ -49,18 +49,37 @@ impl<C> QueryPage<C> {
             }
             let text = line.to_string();
             let layout = Layout::new(&Editor::new(&text), usize::from(columns));
+            let mut source_spans = line.spans.iter();
+            let mut end = 0;
+            let mut style = Style::default();
+            let mut style_at = |offset| {
+                while offset >= end {
+                    let Some(span) = source_spans.next() else {
+                        break;
+                    };
+                    end += span.content.len();
+                    style = span.style;
+                }
+                style
+            };
             for row in layout.rows {
                 // The editor reserves an insertion row after an exact-width
                 // final row. A read-only page has no insertion cursor.
                 if !text.is_empty() && row.cells.is_empty() {
                     continue;
                 }
-                self.lines.push(Line::raw(
+                let mut spans = Vec::new();
+                crate::styled_cells::append(
+                    &mut spans,
                     row.cells
                         .into_iter()
-                        .map(|cell| cell.symbol)
-                        .collect::<String>(),
-                ));
+                        .map(|cell| (cell.source.start, cell.symbol)),
+                    &mut style_at,
+                );
+                let mut wrapped = Line::from(spans);
+                wrapped.style = line.style;
+                wrapped.alignment = line.alignment;
+                self.lines.push(wrapped);
             }
         }
     }
@@ -91,7 +110,12 @@ mod tests {
     use super::*;
     use crate::{
         PromptInput, Screen, Viewport,
-        ratatui::{Terminal, backend::TestBackend},
+        ratatui::{
+            Terminal,
+            backend::TestBackend,
+            style::{Color, Modifier},
+            text::Span,
+        },
     };
     use std::collections::BTreeMap;
     type Failure = Box<dyn std::error::Error>;
@@ -106,6 +130,18 @@ mod tests {
                 "abcdef".repeat(60)
             )),
             Line::raw("+\t\tshort-tab-tail"),
+            Line::from(vec![
+                Span::styled("Ω".repeat(50), Style::default().fg(Color::Yellow)),
+                Span::raw(""),
+                Span::styled(
+                    "Ж\t".repeat(10),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+            .style(Style::default().bg(Color::DarkGray)),
             Line::raw(""),
         ];
         let expected = source
@@ -130,6 +166,7 @@ mod tests {
             panel.wrap(areas.overlay_columns());
             let mut top = 0;
             let mut seen = BTreeMap::new();
+            let mut styled = false;
             loop {
                 // Inspect the completed render, not the backend's sparse
                 // diff-write history beneath earlier wide glyphs.
@@ -148,11 +185,24 @@ mod tests {
                     let mut text = String::new();
                     let mut column = 0;
                     while column < areas.overlay_columns() {
-                        let symbol = painted.buffer[(
+                        let cell = &painted.buffer[(
                             areas.transcript.x + 1 + column,
                             areas.transcript.y + 1 + u16::try_from(row)?,
-                        )]
-                            .symbol();
+                        )];
+                        let symbol = cell.symbol();
+                        match symbol {
+                            "Ω" => {
+                                assert_eq!(cell.fg, Color::Yellow);
+                                assert_eq!(cell.bg, Color::DarkGray);
+                                styled = true;
+                            }
+                            "Ж" => {
+                                assert_eq!(cell.fg, Color::Cyan);
+                                assert_eq!(cell.bg, Color::Blue);
+                                assert!(cell.modifier.contains(Modifier::BOLD));
+                            }
+                            _ => {}
+                        }
                         text.push_str(symbol);
                         // A wide glyph covers the next buffer cell; that cell's
                         // previous symbol is not visible in the terminal.
@@ -169,6 +219,7 @@ mod tests {
                 }
             }
             assert_eq!(seen.into_values().collect::<String>(), expected);
+            assert!(styled, "the paged paint must reach the styled source");
             assert_eq!(panel.next.as_deref(), Some("original-continuation"));
             assert_eq!(
                 panel.source.as_ptr(),

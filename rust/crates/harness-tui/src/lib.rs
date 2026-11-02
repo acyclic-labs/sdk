@@ -58,6 +58,8 @@ mod screen;
 #[cfg(feature = "tui")]
 mod scrollbar;
 #[cfg(feature = "tui")]
+mod styled_cells;
+#[cfg(feature = "tui")]
 mod thinking;
 #[cfg(feature = "tui")]
 mod transcript;
