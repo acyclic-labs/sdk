@@ -89,6 +89,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
+    seed_file!("sys/types/index.d.ts", "types/index.d.ts"),
     seed_file!("templates/advisor/AGENT.md"),
     seed_file!("templates/advisor/agent.ts"),
     seed_file!("templates/orchestrator/AGENT.md"),
