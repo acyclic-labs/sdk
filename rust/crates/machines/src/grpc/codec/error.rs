@@ -19,9 +19,6 @@ pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status
 pub(in super::super) fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key).with_cause(value)
 }
-pub(in super::super) fn operation_watch_error(operation: OperationId) -> ProviderError {
-    ProviderError::OperationIndeterminate(operation)
-}
 pub(in super::super) fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
         tonic::Code::Unavailable

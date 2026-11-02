@@ -652,9 +652,19 @@ machine_mutations! {
                             .is_ok_and(|value| !matches!(value.phase, OperationPhase::Pending));
                         Some((value, (stream, terminal || decode_failed)))
                     }
-                    Ok(None) | Err(_) => {
-                        Some((Err(operation_watch_error(operation)), (stream, true)))
-                    }
+                    Ok(None) => Some((
+                        Err(ProviderError::OperationIndeterminate(operation).with_cause(
+                            std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "Machines operation watch ended before its terminal receipt; recovery: inspect the original operation without redispatch",
+                            ),
+                        )),
+                        (stream, true),
+                    )),
+                    Err(error) => Some((
+                        Err(ProviderError::OperationIndeterminate(operation).with_cause(error)),
+                        (stream, true),
+                    )),
                 }
             });
             Ok(Box::pin(stream) as OperationStream)
