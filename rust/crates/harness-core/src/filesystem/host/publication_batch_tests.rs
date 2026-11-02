@@ -221,7 +221,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
             b"settled",
             "application/json",
             "result",
-            64,
+            Some(64),
             &IdempotencyKey::new("tool-result")?,
             InternalContentClass::Execution,
             io.as_ref(),
@@ -370,7 +370,7 @@ impl InternalPublicationCase<'_> {
                 bytes,
                 "application/json",
                 "payload",
-                64,
+                Some(64),
                 key,
                 class,
                 self.io,
@@ -556,7 +556,15 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
     let changes = [add("nested/first"), add("second")];
     let key = IdempotencyKey::new("conditional-create")?;
     let original = host
-        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+        .put_changes(
+            &volume,
+            &write,
+            &changes,
+            &key,
+            Some(64),
+            create_access,
+            None,
+        )?
         .await?;
     let first = original.files().next().unwrap();
     assert_eq!(
@@ -564,7 +572,15 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         b"first"
     );
     let replay = host
-        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+        .put_changes(
+            &volume,
+            &write,
+            &changes,
+            &key,
+            Some(64),
+            create_access,
+            None,
+        )?
         .await?;
     assert_eq!(replay.generation, original.generation);
     assert_eq!(
@@ -580,7 +596,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             &write,
             &[add("unpublished"), add("second")],
             &IdempotencyKey::new("conditional-conflict")?,
-            64,
+            Some(64),
             create_access,
             None
         )?
@@ -601,7 +617,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             &write,
             &[add("valid"), add("forbidden/file")],
             &IdempotencyKey::new("conditional-parent")?,
-            64,
+            Some(64),
             create_access,
             Some(&deny_parent)
         )?
@@ -618,7 +634,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 bytes: b"denied"
             }],
             &IdempotencyKey::new("conditional-write-denied")?,
-            64,
+            Some(64),
             create_access,
             None
         )?
@@ -633,7 +649,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             &write,
             &[ContentChange::DeleteExpected { source: first }],
             &IdempotencyKey::new("conditional-delete")?,
-            64,
+            Some(64),
             ContentAccess {
                 ceiling: Some(&delete),
                 io: None,

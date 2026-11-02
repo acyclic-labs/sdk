@@ -219,7 +219,6 @@ impl<F: Format> Side<F> {
 
     fn take_value(
         &mut self,
-        limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Owned<F::Value>, FsError> {
         let frame = self.frames.value.last_mut().ok_or(FsError::InvalidDiff)?;
@@ -504,7 +503,7 @@ impl<F: Format> Cursor<F> {
         } else {
             &mut self.after
         }
-        .take_value(self.limits, accounting)?;
+        .take_value(accounting)?;
         Ok(Some((side, value)))
     }
 
@@ -539,7 +538,7 @@ impl<F: Format> Cursor<F> {
                 (after, &mut self.after, &mut result.value.after),
             ] {
                 if selected {
-                    let part = side.take_value(self.limits, accounting)?;
+                    let part = side.take_value(accounting)?;
                     *destination = Some(part.transfer_to(
                         &mut result.allocation,
                         &mut result.bytes,
@@ -583,7 +582,7 @@ impl<F: Format> Values<F> {
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<F::Value>>, FsError> {
         match self.0.advance(store, accounting, cancellation).await? {
-            Some((false, true)) => self.0.after.take_value(self.0.limits, accounting).map(Some),
+            Some((false, true)) => self.0.after.take_value(accounting).map(Some),
             None => Ok(None),
             _ => Err(FsError::InvalidDiff),
         }

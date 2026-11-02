@@ -926,7 +926,7 @@ where
         path: &acyclic_stream::StreamPath,
         from: u64,
         tail: u64,
-    ) -> Result<Vec<ConversationEntry>> {
+    ) -> Result<Vec<(u64, ConversationEntry)>> {
         let mut history = Vec::new();
         let mut next = from;
         while next < tail {
@@ -950,7 +950,10 @@ where
                     return Err(Error::Invalid("conversation page is discontinuous".into()));
                 }
                 history.try_reserve(1).map_err(Error::Allocation)?;
-                history.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+                history.push((
+                    record.sequence,
+                    ConversationEntry::decode(&record.value).map_err(agent_error)?,
+                ));
                 next = next
                     .checked_add(1)
                     .ok_or_else(|| Error::Invalid("conversation offset overflow".into()))?;
