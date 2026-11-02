@@ -2,6 +2,7 @@
 use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
 mod follower;
+pub mod issuance;
 mod issuer;
 pub use follower::{
     Applied, EnvironmentFrontier, FenceCause, Follower, FollowerState, account_path,

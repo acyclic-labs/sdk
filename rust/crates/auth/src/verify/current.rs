@@ -67,6 +67,34 @@ struct View<'a, C, N> {
     expires_at: u64,
 }
 
+pub(super) fn check_certificates(
+    certificates: &CertificateChain,
+    roots: &super::certificates::CertifiedRoots,
+    trust: &(impl Trust + ?Sized),
+    now: u64,
+) -> Result<(), VerifyError> {
+    let leaf = certificates.keys.last().ok_or(VerifyError::Malformed)?;
+    View {
+        environment: &certificates.birth.birth.environment,
+        account: &certificates.birth.birth.account_id,
+        environment_issuers: std::slice::from_ref(&roots.environment),
+        issuers: &roots.issuers,
+        ids: &[],
+        certificates: certificates.keys.iter().map(|certificate| Certificate {
+            id: &certificate.key.key_id,
+            epoch: certificate.key.key_epoch,
+            parents: &certificate.key.parent_revocation_ids,
+        }),
+        next_keys: certificates
+            .keys
+            .iter()
+            .map(|certificate| certificate.key.public_key.as_slice()),
+        not_before: leaf.key.validity.not_before_unix_seconds,
+        expires_at: leaf.key.validity.expires_at_unix_seconds,
+    }
+    .check(trust, now)
+}
+
 impl<'a, C, N> View<'a, C, N>
 where
     C: Iterator<Item = Certificate<'a>>,

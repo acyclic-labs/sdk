@@ -491,11 +491,6 @@ impl AccountRoot {
         birth: &BirthCertificate,
         certification: Certification<'_>,
     ) -> Result<CertificateChain, VerifyError> {
-        if birth.birth.account_id != self.id()
-            || birth.birth.genesis_public_key != self.root.verifying_key().to_bytes()
-        {
-            return Err(VerifyError::Trust);
-        }
         let key = CertifiedKey {
             account_id: self.id().into(),
             key_id: certification.key_id.into(),
@@ -507,6 +502,42 @@ impl AccountRoot {
             parent_key_id: None,
             parent_revocation_ids: certification.parent_revocation_ids,
         };
+        self.sign_certificate(birth, key)
+    }
+
+    /// Sign the exact public request under the original account custody. This
+    /// is not a durable acknowledgement: the serving owner must first admit
+    /// the caller and bind the request key, then atomically retain its result.
+    /// A changed root or epoch refuses rather than silently changing the request.
+    ///
+    /// # Errors
+    /// Rejects a foreign account, environment, root or epoch.
+    pub fn certify_request(
+        &self,
+        birth: &BirthCertificate,
+        request: &super::issuance::Request,
+    ) -> Result<CertificateChain, VerifyError> {
+        if request.issuer() != &self.root.verifying_key().to_bytes()
+            || request.environment() != birth.birth.environment
+            || request.claims().account_id != self.id()
+            || request.claims().key_epoch != self.minimum_key_epoch()
+        {
+            return Err(VerifyError::Trust);
+        }
+        self.sign_certificate(birth, request.claims().clone().try_into()?)
+    }
+
+    fn sign_certificate(
+        &self,
+        birth: &BirthCertificate,
+        key: CertifiedKey,
+    ) -> Result<CertificateChain, VerifyError> {
+        if birth.birth.account_id != self.id()
+            || key.account_id != self.id()
+            || birth.birth.genesis_public_key != self.root.verifying_key().to_bytes()
+        {
+            return Err(VerifyError::Trust);
+        }
         Ok(CertificateChain {
             birth: birth.clone(),
             keys: vec![KeyCertificate {
