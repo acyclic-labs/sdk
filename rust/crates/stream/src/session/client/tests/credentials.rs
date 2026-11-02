@@ -334,34 +334,55 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
     let credential = crate::session::testing::credential();
     let count = (crate::MAX_COMMAND_BYTES / credential.len()).max(crate::MAX_ITEMS) + 1;
     // No yield: all updates queue before the pool runs, and their aggregate
-    // exceeds the former Hello/slot-byte limit. Slot IDs remain sparse.
+    // exceeds one Hello. Exercise that finite refusal before the sparse slot,
+    // so the old dense handshake fails without attempting billions of slots.
     for slot in 0..count {
         client.register_credential(u32::try_from(slot)?, credential.clone())?;
     }
-    client.register_credential(u32::MAX, credential)?;
-    let mut frames = client
-        .subscribe(wire::SessionSubscription {
-            credential: u32::MAX,
-            resume: Some(cursor(0)),
-            kind: Some(Kind::Follow(wire::SessionFollow {
-                resource: crate::wire_codec::session::stream_resource("events"),
-                delivery: wire::SessionDelivery::All as i32,
-                ..Default::default()
-            })),
+    let subscription = |credential| wire::SessionSubscription {
+        credential,
+        resume: Some(cursor(0)),
+        kind: Some(Kind::Follow(wire::SessionFollow {
+            resource: crate::wire_codec::session::stream_resource("events"),
+            delivery: wire::SessionDelivery::All as i32,
             ..Default::default()
-        })
+        })),
+        ..Default::default()
+    };
+    let mut dense = client
+        .subscribe(subscription(u32::try_from(count - 1)?))
         .await?;
     loop {
-        let value = frames.next().await.ok_or("missing record")??;
+        let value = dense.next().await.ok_or("missing dense-slot record")??;
         if let Some(Body::Data(data)) = &value.wire().body {
             assert!(matches!(&data.item, Some(Item::Record(record)) if record.sequence == 0));
             break;
         }
     }
+    drop(dense);
+    client.register_credential(u32::MAX, credential)?;
+    let mut frames = client.subscribe(subscription(u32::MAX)).await?;
     let mut records = client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 0))
         .await?;
-    assert_eq!(next(&mut records).await?.sequence, 0);
+    for sequence in 0..=1 {
+        if sequence == 1 {
+            // Close the real TCP connection. Reopening must replay only actual
+            // credentials, including the maximum slot, before subscriptions.
+            fixture.connections.reset()?;
+            append(&provider, "events", 1).await?;
+        }
+        loop {
+            let value = frames.next().await.ok_or("missing sparse-slot record")??;
+            if let Some(Body::Data(data)) = &value.wire().body {
+                assert!(
+                    matches!(&data.item, Some(Item::Record(record)) if record.sequence == sequence)
+                );
+                break;
+            }
+        }
+        assert_eq!(next(&mut records).await?.sequence, sequence);
+    }
     client.register_credential(u32::MAX, Bytes::new())?;
     let error = loop {
         match frames.next().await {
@@ -373,7 +394,7 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
     assert_eq!(error, StreamError::AccessDenied);
     // The same physical session and independent slot remain usable.
     append(&provider, "events", 1).await?;
-    assert_eq!(next(&mut records).await?.sequence, 1);
-    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(next(&mut records).await?.sequence, 2);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
     Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
 }
