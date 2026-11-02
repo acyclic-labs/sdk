@@ -147,25 +147,25 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
 8. Archive native-child using the installed Acyclic tool, then reply ${answer}.`;
  let outcome,failure;
  try {
-  await writeFile(join(output,'binding.json'),JSON.stringify({source,artifact_source:artifactSource,host,platform:process.platform,architecture:process.arch,
+  outcome=await withOwnedCase({processes:scope,prepare:async()=>writeFile(join(output,'binding.json'),JSON.stringify({source,artifact_source:artifactSource,host,platform:process.platform,architecture:process.arch,
    model:live.model,provider:live.provider,profile:live.profile,
    artifacts:{graphcoder:await digest(binary),plugin:await digest(plugin)},
-   prompt_sha256:createHash('sha256').update(prompt).digest('hex')},null,2)+'\n');
-  outcome=await withOwnedCase({processes:scope,run:()=>installedHost({host,processes:scope,fixture,packageStage,
-   capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer})});
-  for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
-   assert.equal(await readFile(join(workspace,file),'utf8'),bytes,'original native effect missing: '+file);
-  const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/home',`native-${phase}-session.json`),'utf8'));
-  assertNativeResume(await session('initial'),await session('resumed'));
+   prompt_sha256:createHash('sha256').update(prompt).digest('hex')},null,2)+'\n'),run:async()=>{
+   await installedHost({host,processes:scope,fixture,packageStage,
+    capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer});
+   // The same owner holds the view until this run settles. Read its proof
+   // before withOwnedCase retires that owner and detaches the private volume.
+   for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
+    assert.equal(await readFile(join(workspace,file),'utf8'),bytes,'original native effect missing: '+file);
+   const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/home',`native-${phase}-session.json`),'utf8'));
+   assertNativeResume(await session('initial'),await session('resumed'));
+  }});
   return outcome;
  } catch(error) {failure={code:error.code??error.cause?.code??'NATIVE_WORKFLOW_FAILED',message:error.message};throw error;}
  finally {
-  try {await scope.close();}
-  finally {
-   await writeFile(join(output,'captures.json'),JSON.stringify(captures,null,2)+'\n');
-   await writeFile(join(output,'workflow.json'),JSON.stringify({host,model:live.model,result:failure?'FAIL':'PASS',
-    outcome,failure,warm_turn_pairs:0,physical_custody:'requires enclosing original completion receipt'},null,2)+'\n');
-  }
+  await writeFile(join(output,'captures.json'),JSON.stringify(captures,null,2)+'\n');
+  await writeFile(join(output,'workflow.json'),JSON.stringify({host,model:live.model,result:failure?'FAIL':'PASS',
+   outcome,failure,warm_turn_pairs:0,physical_custody:'requires enclosing original completion receipt'},null,2)+'\n');
  }
 }
 
