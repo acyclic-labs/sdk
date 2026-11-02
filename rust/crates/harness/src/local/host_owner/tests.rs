@@ -238,6 +238,23 @@ not json naming a session_id
         std::fs::read(fixture.checkout.path().join("child.txt")).map_err(storage)?,
         b"native"
     );
+    assert!(!fixture.owner.views()?.contains_key(&child));
+    let session = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Hook {
+                host: host.into(),
+                event: "NativeSession".into(),
+                input: json!({"task": child}),
+            },
+        )
+        .await?;
+    assert_eq!(session["id"], "opaque-native-resume-id");
+    assert!(
+        !fixture.owner.views()?.contains_key(&child),
+        "reading committed session metadata must not reattach its retired view"
+    );
     Ok(())
 }
 
@@ -435,6 +452,25 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         fixture.owner.views().unwrap().len(),
         1,
         "idle children retired"
+    );
+    let missing = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Hook {
+                host: "codex".into(),
+                event: "NativeSession".into(),
+                input: json!({"task": agents::child(&fixture.parent, "settled")?}),
+            },
+        )
+        .await;
+    assert!(
+        matches!(missing, Err(Error::NotFound(ref cause)) if cause == "native session reference absent")
+    );
+    assert_eq!(
+        fixture.owner.views()?.len(),
+        1,
+        "a missing native reference must not reattach a retired child view"
     );
     let observed = fixture.session("settled", SessionAction::Observe).await?;
     assert_eq!(

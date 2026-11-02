@@ -36,7 +36,6 @@ impl HostWorkspaceOwner {
         if agent.parent().is_some() && matches!(event, "Stop" | "SessionEnd") {
             return Ok(json!({}));
         }
-        self.attach(&agent).await?;
         if event == "NativeSession" {
             if let Some(session) = input.get("native_session") {
                 let object = session.as_object().ok_or_else(|| {
@@ -80,6 +79,7 @@ impl HostWorkspaceOwner {
                 .native
                 .ok_or_else(|| Error::NotFound("native session reference absent".into()));
         }
+        self.attach(&agent).await?;
         if matches!(event, "Stop" | "SessionEnd") {
             self.view(&agent)?.capture(operation).await?;
             return Ok(json!({}));

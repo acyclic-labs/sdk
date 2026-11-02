@@ -165,14 +165,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRe
         .await
     }
 
-    pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        AgentInternalFiles::list_at(
-            &self.generation,
-            &format!("/{}{path}", InternalContentClass::Interaction.prefix()),
-        )
-        .await
-    }
-
     pub(in crate::filesystem) fn directory(&self, path: &str) -> InternalDirectory<'_, A, O> {
         InternalDirectory::new(
             &self.generation,
@@ -351,12 +343,6 @@ where
                 maximum_bytes,
             })),
         }
-    }
-
-    /// The names of the files in internal directory `path`, in name order;
-    /// empty when the directory does not exist.
-    pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        self.reader().await?.list(path).await
     }
 
     /// The names of the entries of volume directory `directory` in `head`,

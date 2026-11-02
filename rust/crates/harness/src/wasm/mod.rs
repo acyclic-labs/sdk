@@ -56,7 +56,6 @@ mod agent_client;
 #[cfg(target_arch = "wasm32")]
 mod agent_command;
 mod client_connection;
-mod client_preset;
 #[cfg(target_arch = "wasm32")]
 mod explorer;
 mod wire;
