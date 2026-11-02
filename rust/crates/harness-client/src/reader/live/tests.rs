@@ -227,6 +227,33 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             Err(ProjectionError::Version)
         );
 
+        // The same reader also borrows the actual agent status encoding.
+        // A live view must not require the phase owner to publish another row.
+        let status = StatusRecord {
+            phase: Phase::Idle,
+            cursor: 0,
+            conversation: 0,
+        };
+        let status_stream = StreamPath::new("original/status").unwrap();
+        provider
+            .append(AppendRequest {
+                path: status_stream.clone(),
+                records: vec![status.encode().unwrap().into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"original-status".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let status_source = Source::new(status_stream);
+        reader.plan([(status_source.want(), Priority::Visible)]);
+        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        let id = head.id();
+        reader.complete(id, super::super::driver::execute(&provider, head).await, 0);
+        assert_eq!(
+            StatusRecord::decode(status_source.latest(&reader).unwrap()).unwrap(),
+            status
+        );
+
         // A refusal of the same original head must not leave stale values
         // readable. It is not an empty successful log or a forged zero.
         reader.cache_mut().forget(&stream);
@@ -236,33 +263,6 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert_eq!(
             source.latest(&reader),
             Err(Error::Source(super::super::ReadIssue::AccessDenied))
-        );
-
-        // The same reader also borrows the actual agent status encoding.
-        // A live view must not require the phase owner to publish another row.
-        let status = StatusRecord {
-            phase: Phase::Idle,
-            cursor: 0,
-            conversation: 0,
-        };
-        let stream = StreamPath::new("original/status").unwrap();
-        provider
-            .append(AppendRequest {
-                path: stream.clone(),
-                records: vec![status.encode().unwrap().into()],
-                if_tail: Some(0),
-                idempotency_key: IdempotencyKey::new(b"original-status".to_vec()).unwrap(),
-            })
-            .await
-            .unwrap();
-        let source = Source::new(stream);
-        reader.plan([(source.want(), Priority::Visible)]);
-        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
-        let id = head.id();
-        reader.complete(id, super::super::driver::execute(&provider, head).await, 0);
-        assert_eq!(
-            StatusRecord::decode(source.latest(&reader).unwrap()).unwrap(),
-            status
         );
     });
 }
