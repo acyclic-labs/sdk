@@ -150,7 +150,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         .decide_with_binding(&id, binding.clone(), true)
         .await?;
     let (agents, root) = harness.agents().await?;
-    settled(agents, root).await?;
+    settled(&harness, agents, root).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
     let requests = provider.request_count();
@@ -223,7 +223,7 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
 /// The root's conversation once it has settled every input sent before
 /// this call: idle past that inbox tail. Its adoption's own `Idle` status
 /// precedes those inputs, so it never counts.
-async fn settled(
+pub(super) async fn settled(
     harness: &LocalHarness,
     agents: &LocalAgents,
     root: &AgentPath,
@@ -1998,7 +1998,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone())?;
     client.send("first", "hello").await?;
-    settled(&agents, &root).await?;
+    settled(&harness, &agents, &root).await?;
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
     let snapshot = saved
         .volumes
@@ -2013,7 +2013,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("refuse", 0, RestoreMode::Both, expected)
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let refusal = ConversationEntry::decode(
         entries
             .last()
@@ -2110,7 +2110,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("apply", 0, RestoreMode::Both, expected)
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     assert_eq!(entries.len(), 3);
     let restored =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 2).await?;
@@ -2185,7 +2185,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("policy-refusal", 0, RestoreMode::Both, expected.clone())
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settled(&harness, &agents, &root).await?;
     let refusal = ConversationEntry::decode(
         entries
             .last()
@@ -2207,7 +2207,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("context-only", 0, RestoreMode::Context, Vec::new())
         .await?;
-    settled(&agents, &root).await?;
+    settled(&harness, &agents, &root).await?;
     let context_only =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 4).await?;
     assert_eq!(context_only.context, saved.context);
@@ -2261,7 +2261,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let client = Conversation::open(connection.clone())?;
     for id in ["first", "second", "third"] {
         client.send(id, id).await?;
-        settled(&agents, &root).await?;
+        settled(&harness, &agents, &root).await?;
         if id == "first" {
             workspace
                 .write_text("/plan.md", "later files")
@@ -2294,7 +2294,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let entries = tokio::select! {
         biased;
         result = completion => { result?; return Err(Error::Invalid("runtime completion returned success".into())); },
-        result = settled(&agents, &child) => result?,
+        result = settled(&harness, &agents, &child) => result?,
     };
     assert_eq!(entries.len(), 2);
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;

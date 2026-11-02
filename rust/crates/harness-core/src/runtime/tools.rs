@@ -719,10 +719,9 @@ impl ToolContext {
         #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
+        let maximum = None;
         let (files, hold) = writer
             .observe_changes(
                 volume,
