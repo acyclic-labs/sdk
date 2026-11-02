@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Processes } from "./process.mjs";
+import { requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 import { answer, requireTools } from "./live.mjs";
 
@@ -61,5 +66,36 @@ test("collaboration requires the spawned child's exact settled public result", (
     const events = hooks();
     mutate(events);
     assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+  }
+});
+
+test("a real command's published bytes cannot conceal its failed shell status", async () => {
+  const root = await mkdtemp(join(tmpdir(), "live-shell-result-")), processes = new Processes();
+  try {
+    const path = join(root, "effect.txt");
+    const result = await processes.run(process.execPath,
+      ["-e", "require('node:fs').writeFileSync(process.argv[1], 'EXPECTED_BYTES'); process.exitCode = 17", path]);
+    assert.equal(result.code, 17, result.stderr);
+    assert.equal(await readFile(path, "utf8"), "EXPECTED_BYTES");
+    // Original OS completion supplies these SDK ToolResult fields; the two
+    // mutations require each status field to reject failure independently.
+    const status = { success: result.code === 0, exit_code: result.code, stop: null };
+    const success = { success: true, exit_code: 0, stop: null };
+    const hook = tool_response => ({ hook_event_name: "PostToolUse", tool_name: "shell", tool_response });
+    const fixture = { id: "shell-status", model: { steps: [{}] }, assert: { requests: 1 } };
+    const record = value => [{ path: "responses", step: 0, status: 200,
+      body: { input: [{ type: "function_call_output", output: JSON.stringify(value) }] } }];
+    requireTools([hook(success)], ["shell"]);
+    requests(fixture, record(success));
+    for (const value of [status, { ...status, success: true }, { ...status, exit_code: 0 }]) {
+      assert.throws(() => requireTools([hook(value), hook(success)], ["shell"]), /unexpected tool error/);
+      assert.throws(() => requests(fixture, record(value)), /unexpected tool error/);
+    }
+    assert.throws(() => requireTools([hook(status), { hook_event_name: "PostToolUse",
+      tool_name: "spawn", tool_response: { agent: "agents/worker" } }], ["spawn"]), /unexpected tool error/);
+    requests({ ...fixture, assert: { requests: 1, tool_errors: ["exit_code=17"] } }, record(status));
+  } finally {
+    await processes.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
