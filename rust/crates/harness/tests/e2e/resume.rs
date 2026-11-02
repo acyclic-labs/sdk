@@ -90,7 +90,6 @@ impl Identity {
             operation_id: self.operation,
             input: ModelContent::Text(INSTRUCTION.into()),
             selected_context: None,
-            max_steps: 4,
         }
     }
 }

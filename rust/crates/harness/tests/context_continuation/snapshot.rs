@@ -278,7 +278,6 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         operation_id: OperationId::new(),
         input: input.input.clone(),
         selected_context: None,
-        max_steps: 1,
     };
     let journal = storage.journal();
     let output = executor.execute(turn.clone(), journal.as_ref()).await?;

@@ -144,7 +144,6 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
-                max_steps: 2,
             };
             let result = executor
                 .execute(input.clone(), &journal)
@@ -382,7 +381,6 @@ async fn complete_failures_obey_pinned_render_limits() -> Result<()> {
             operation_id: OperationId::from_bytes([65; 16]),
             input: ModelContent::Text("input".into()),
             selected_context: None,
-            max_steps: 2,
         };
         let result = executor.execute(input.clone(), &journal).await;
         let records = journal.replay(input.operation_id, 0, 100, None)?.await?;

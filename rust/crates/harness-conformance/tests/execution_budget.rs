@@ -58,28 +58,3 @@ async fn complete_corpus_verdict_does_not_depend_on_elapsed_time() -> Result {
     );
     Ok(())
 }
-
-#[tokio::test(start_paused = true)]
-async fn the_public_host_still_exhausts_the_same_executor_step() -> Result {
-    // Reuse the existing corpus recipe and scripted responses, rather than
-    // adding a second provider fixture or a conformance-specific step counter.
-    let root = corpus();
-    let mut recipe = scenario_data::load_value(&root, &root.join("errors/unbound/plain.json"))?;
-    let object = recipe.as_object_mut().ok_or("missing recipe")?;
-    object.remove("expect");
-    object.remove("driver");
-    object.insert("max_steps".into(), Value::from(1));
-    let host = Descheduled(substrate::Local);
-    let observed = host.execute(recipe, Vec::new()).await?;
-    let CaseObservation::Executor(observed) = observed else {
-        return Err("host did not execute the shared executor".into());
-    };
-    assert!(
-        matches!(&observed.result, Err(error) if error.contains("executor step limit reached")),
-        "{:?}",
-        observed.result
-    );
-    assert_eq!(observed.requests.len(), 1);
-    assert_eq!(observed.unused_turns, 1);
-    Ok(())
-}

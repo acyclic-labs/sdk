@@ -26,7 +26,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     stream_limits: { commands: 10000n, journal_bytes: 16777216n, paths: 1000, path_bytes: 262144,
       records: 10000, payload_bytes: 16777216, commits: 10000, idempotency_results: 10000 },
     limits: { file_bytes: 1048576n, path_bytes: 4096n, attachments: 32n, render_bytes: 1048576n,
-      model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
+      model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
     principal: "browser-user",
     // The fixture host explicitly accepts every action its agents take.
     preset: { tools: [], web_tools: false, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },

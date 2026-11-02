@@ -352,8 +352,6 @@ impl LocalHarness {
                 executors: self.executors(),
                 limits: TurnLimits {
                     maximum_bytes: self.limits.file_bytes,
-                    max_steps: u32::try_from(self.limits.model_steps)
-                        .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                     history_turns: HISTORY_TURNS,
                 },
                 actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
@@ -428,8 +426,6 @@ impl LocalHarness {
             executors: self.executors(),
             limits: TurnLimits {
                 maximum_bytes: self.limits.file_bytes,
-                max_steps: u32::try_from(self.limits.model_steps)
-                    .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                 history_turns: HISTORY_TURNS,
             },
             actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,

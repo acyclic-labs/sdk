@@ -27,7 +27,6 @@ use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
-    max_steps: 4,
     history_turns: 8,
 };
 
@@ -88,10 +87,7 @@ fn executors_with_render_bytes(
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
-    let mut base = acyclic_harness_core::conversation::Limits {
-        model_steps: 1,
-        ..Default::default()
-    };
+    let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
         base.render_bytes = render_bytes;
     }
@@ -100,12 +96,12 @@ fn executors_with_render_bytes(
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
             if matching_limits {
+                base
+            } else {
                 acyclic_harness_core::conversation::Limits {
-                    model_steps: usize::try_from(LIMITS.max_steps)?,
+                    file_bytes: 1,
                     ..base
                 }
-            } else {
-                base
             },
         )?,
         ..Default::default()
@@ -114,13 +110,7 @@ fn executors_with_render_bytes(
     Ok(Arc::new(preset.executors(
         (selection, model),
         ToolRegistry::default(),
-        (
-            acyclic_harness_core::conversation::Limits {
-                model_steps: usize::try_from(LIMITS.max_steps)?,
-                ..base
-            },
-            CompactionPolicy::Disabled,
-        ),
+        (base, CompactionPolicy::Disabled),
         Arc::new(Tasks(bindings)),
     )))
 }

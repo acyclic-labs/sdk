@@ -5,7 +5,7 @@ import {
 } from "@acyclic-labs/harness";
 
 const fixtureLimits: ModelContentLimits = { file_bytes: 65_536, path_bytes: 4_096, attachments: 16,
-  render_bytes: 65_536, model_steps: 8, model_events_per_step: 64, tool_calls_per_step: 16, context_messages: 128 };
+  render_bytes: 65_536, model_events_per_step: 64, tool_calls_per_step: 16, context_messages: 128 };
 
 test("installed native inventory preserves ordered tool media, option refs and full-width revisions", async () => {
   await initializeModelContent();

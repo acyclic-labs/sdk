@@ -133,13 +133,7 @@ pub async fn open<B: Backend + ?Sized>(
                 Arc::new(Scripted),
             ),
             tools,
-            (
-                Limits {
-                    model_steps: 4,
-                    ..Limits::default()
-                },
-                CompactionPolicy::Disabled,
-            ),
+            (Limits::default(), CompactionPolicy::Disabled),
             Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
         )
         .with_profiles(crate::profile::Profiles::builtin());
@@ -161,7 +155,6 @@ pub async fn open<B: Backend + ?Sized>(
             executors: Arc::new(executors),
             limits: TurnLimits {
                 maximum_bytes: 1 << 20,
-                max_steps: 4,
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,

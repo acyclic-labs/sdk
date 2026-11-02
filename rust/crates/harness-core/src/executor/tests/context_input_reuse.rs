@@ -14,7 +14,6 @@ fn base_and_stages_reuse_the_same_input_without_a_history_copy() {
         operation_id: OperationId::from_bytes([29; 16]),
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 1,
     };
     for count in [1, 10, 100, 1000] {
         let prior: Vec<_> = (0..count)

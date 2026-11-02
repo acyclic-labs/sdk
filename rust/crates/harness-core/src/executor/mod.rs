@@ -167,6 +167,7 @@ pub(crate) fn validate_execution_page(maximum: u32) -> Result<()> {
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
 pub struct TurnInput {
     /// Stable durable turn execution identity.
     pub operation_id: OperationId,
@@ -175,8 +176,6 @@ pub struct TurnInput {
     /// Exact, separately recorded canonical history selection for this turn.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
-    /// Maximum model/tool steps permitted for this turn.
-    pub max_steps: u32,
 }
 
 impl TurnInput {
@@ -184,7 +183,6 @@ impl TurnInput {
     pub fn from_selected_context(
         operation_id: OperationId,
         selected_context: SelectedModelContext,
-        max_steps: u32,
     ) -> Result<Self> {
         let input = selected_context
             .messages
@@ -200,7 +198,6 @@ impl TurnInput {
             operation_id,
             input,
             selected_context: Some(selected_context),
-            max_steps,
         })
     }
 }

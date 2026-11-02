@@ -147,7 +147,6 @@ impl McpRuntimeCallbacks {
                     operation_id: operation,
                     input,
                     selected_context: None,
-                    max_steps: 1,
                 },
                 0,
                 &[],

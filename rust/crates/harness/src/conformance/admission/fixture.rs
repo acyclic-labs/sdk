@@ -82,7 +82,6 @@ impl Fixture {
             executors.clone(),
             TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
                 history_turns: 8,
             },
             Default::default(),

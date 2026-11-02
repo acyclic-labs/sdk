@@ -31,7 +31,6 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("small input".into()),
         selected_context: None,
-        max_steps: 1,
     };
     let output = executor.execute(input.clone(), &journal).await?;
     assert_eq!(executor.execute(input, &journal).await?, output);
@@ -65,7 +64,6 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
         operation_id: OperationId::new(),
         input: ModelContent::Text("current".into()),
         selected_context: None,
-        max_steps: 1,
     };
     StockExecution::ordinary(&executor)
         .ensure_started(&journal, &input)
@@ -117,7 +115,6 @@ async fn operation_identity_rejects_changed_input() -> Result<()> {
                 operation_id,
                 input: ModelContent::Text("first".into()),
                 selected_context: None,
-                max_steps: 1,
             },
             &journal,
         )
@@ -129,7 +126,6 @@ async fn operation_identity_rejects_changed_input() -> Result<()> {
                     operation_id,
                     input: ModelContent::Text("changed".into()),
                     selected_context: None,
-                    max_steps: 1,
                 },
                 &journal,
             )
@@ -164,7 +160,6 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
         operation_id,
         input: ModelContent::Text("same input".into()),
         selected_context: None,
-        max_steps: 1,
     };
     for operation in operations {
         executor.execute(input(operation), &journal).await?;
@@ -356,7 +351,6 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
             operation_id: OperationId::new(),
             input: ModelContent::Text("question".into()),
             selected_context: None,
-            max_steps: 1,
         };
         assert!(
             matches!(executor.model_step(&Journal::default(), &input, 0, &[]).await,
@@ -390,7 +384,6 @@ async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("start".into()),
         selected_context: None,
-        max_steps: 1,
     };
     {
         let pending = executor.model_step(&journal, &input, 0, &[]);
@@ -439,7 +432,6 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("start".into()),
         selected_context: None,
-        max_steps: 1,
     };
     assert!(matches!(
         executor.execute(input.clone(), &journal).await,
