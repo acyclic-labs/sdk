@@ -1,112 +1,95 @@
-//! Advance registered production polling timers while real HTTP I/O progresses.
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+//! Advance each registered production timer on its original operation path.
+use std::cell::Cell;
+use std::sync::Arc;
+use std::time::Duration;
 
-type Sleeps = Arc<Mutex<VecDeque<Duration>>>;
 thread_local! {
-    static SLEEPS: RefCell<Option<Sleeps>> = const { RefCell::new(None) };
+    static ENABLED: Cell<bool> = const { Cell::new(false) };
+    static ADVANCING: Arc<tokio::sync::Mutex<()>> = Arc::default();
 }
 
-fn sleeping(duration: Duration) {
-    SLEEPS.with_borrow(|sleeps| {
-        if let Some(sleeps) = sleeps {
-            sleeps.lock().expect("clock waits").push_back(duration);
-        }
-    });
+/// Resume the runtime even if its advancing operation is cancelled.
+struct Resume;
+
+impl Drop for Resume {
+    fn drop(&mut self) {
+        tokio::time::resume();
+    }
 }
 
-/// Register a timer only once its actual Sleep has first returned Pending.
-pub(crate) async fn observe(delay: tokio::time::Sleep, duration: Duration) {
+/// Advance only after the original Sleep has registered its actual waker.
+pub(crate) async fn observe(delay: tokio::time::Sleep) {
     use std::future::Future as _;
     use std::task::Poll;
+    let advancing = ENABLED.with(Cell::get).then(|| ADVANCING.with(Arc::clone));
     tokio::pin!(delay);
-    let mut registered = false;
-    std::future::poll_fn(|cx| match delay.as_mut().poll(cx) {
-        Poll::Ready(()) => Poll::Ready(()),
-        Poll::Pending => {
-            if !registered {
-                sleeping(duration);
-                registered = true;
+    if let Some(advancing) = advancing {
+        let pending =
+            std::future::poll_fn(|cx| Poll::Ready(delay.as_mut().poll(cx).is_pending())).await;
+        if pending {
+            let owner = advancing.lock().await;
+            if delay.deadline() > tokio::time::Instant::now() {
+                tokio::time::pause();
+                let resume = Resume;
+                let remaining = delay
+                    .deadline()
+                    .saturating_duration_since(tokio::time::Instant::now());
+                // Cross the original timer wheel's rounded millisecond tick.
+                tokio::time::advance(remaining.saturating_add(Duration::from_millis(1))).await;
+                drop(resume);
             }
-            Poll::Pending
+            drop(owner);
         }
-    })
-    .await;
+    }
+    delay.await;
 }
 
 pub(crate) struct Clock {
-    task: tokio::task::JoinHandle<()>,
+    _owner: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl Clock {
     pub(crate) fn start() -> Self {
-        let sleeps: Sleeps = Arc::default();
-        SLEEPS.with_borrow_mut(|current| {
-            assert!(current.is_none(), "one polling clock per test runtime");
-            *current = Some(Arc::clone(&sleeps));
+        assert!(matches!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread
+        ));
+        ENABLED.with(|enabled| {
+            assert!(!enabled.replace(true), "one test clock per runtime thread");
         });
-        tokio::time::pause();
-        let task = tokio::spawn(async move {
-            let mut observed_wall = Instant::now();
-            loop {
-                // Real socket and persistence deadlines must still expire even
-                // if a peer stalls or the awaiting task stays runnable.
-                let now = Instant::now();
-                let elapsed = now.duration_since(observed_wall);
-                if elapsed >= Duration::from_millis(1) {
-                    observed_wall = now;
-                    tokio::time::advance(elapsed).await;
-                }
-                let duration = sleeps.lock().expect("clock waits").pop_front();
-                if let Some(duration) = duration {
-                    // This timer returned Pending before registration. Advance
-                    // its actual requested delay, preserving polling intervals.
-                    // Tokio rounds timer deadlines up to the next millisecond.
-                    // Cross that timer-wheel tick without waiting out the polling delay.
-                    tokio::time::advance(duration.saturating_add(Duration::from_millis(1))).await;
-                }
-                // Remain runnable so Tokio cannot auto-advance unrelated HTTP
-                // timeouts while the loopback server waits for real socket I/O.
-                tokio::task::yield_now().await;
-            }
-        });
-        Self { task }
+        Self {
+            _owner: std::marker::PhantomData,
+        }
     }
 }
 
 impl Drop for Clock {
     fn drop(&mut self) {
-        self.task.abort();
-        SLEEPS.with_borrow_mut(|current| {
-            current.take();
-        });
-        tokio::time::resume();
+        ENABLED.with(|enabled| enabled.set(false));
     }
 }
 
 #[tokio::test]
-async fn stalled_io_timeout_expires_while_poll_clock_is_active() {
+async fn cancelled_advancement_resumes_time_and_preserves_late_timer_entry() {
     use std::future::Future as _;
     use std::task::Poll;
     let _clock = Clock::start();
-    let deadline = tokio::time::timeout(Duration::from_millis(20), std::future::pending::<()>());
-    tokio::pin!(deadline);
-    let wall = Instant::now();
-    let expired = std::future::poll_fn(|cx| {
-        if let Poll::Ready(result) = deadline.as_mut().poll(cx) {
-            assert!(result.is_err());
-            return Poll::Ready(true);
-        }
-        // Independent real time makes the old frozen-clock negative control
-        // terminate promptly even though its Tokio timeout never expires.
-        if wall.elapsed() >= Duration::from_millis(200) {
-            return Poll::Ready(false);
-        }
-        cx.waker().wake_by_ref();
-        Poll::Pending
-    })
-    .await;
-    assert!(expired, "real I/O deadline was frozen by the polling clock");
+    // These original timers model the configured device approval interval.
+    let interval = Duration::from_secs(1);
+    let started = tokio::time::Instant::now();
+    let late = tokio::time::sleep(interval);
+    {
+        let advancing = observe(tokio::time::sleep(interval));
+        tokio::pin!(advancing);
+        let result = std::future::poll_fn(|cx| Poll::Ready(advancing.as_mut().poll(cx))).await;
+        assert!(result.is_pending(), "advance retains the observing future");
+        assert!(
+            started.elapsed() >= interval,
+            "registered deadline advanced"
+        );
+    }
+    // A canceled advancement must already have resumed time: pause would panic.
+    tokio::time::pause();
+    tokio::time::resume();
+    observe(late).await;
 }
