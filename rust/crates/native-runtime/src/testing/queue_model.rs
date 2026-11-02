@@ -12,6 +12,25 @@ enum Fault {
 }
 
 struct Woken(AtomicUsize);
+
+const PANIC: &str = "original native task panic control";
+type TaskOutcome = Result<Poll<std::io::Result<i32>>, Box<dyn std::any::Any + Send>>;
+
+fn poll_task(
+    task: &mut crate::NativeCompletion<i32>,
+    cx: &mut std::task::Context<'_>,
+) -> TaskOutcome {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Pin::new(task).poll(cx)))
+}
+
+fn assert_outcome(outcome: TaskOutcome, panicked: bool) {
+    if panicked {
+        assert_eq!(outcome.unwrap_err().downcast_ref::<&str>(), Some(&PANIC));
+    } else {
+        assert!(matches!(outcome, Ok(Poll::Ready(Ok(17)))));
+    }
+}
+
 impl Wake for Woken {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -109,7 +128,6 @@ fn capacity(fault: Fault) {
 }
 
 fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
-    const PANIC: &str = "original native task panic control";
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let orders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -164,9 +182,7 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         }
         let outcome = match observer.as_mut() {
-            Some(task) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Pin::new(task).poll(&mut cx)
-            })),
+            Some(task) => poll_task(task, &mut cx),
             None => {
                 // The independently owned worker still publishes after the
                 // sole caller drops; inspect its original result or panic.
@@ -181,11 +197,7 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
                 }
             }
         };
-        if panicked {
-            assert_eq!(outcome.unwrap_err().downcast_ref::<&str>(), Some(&PANIC));
-        } else {
-            assert!(matches!(outcome, Ok(Poll::Ready(Ok(17)))));
-        }
+        assert_outcome(outcome, panicked);
     });
     assert_eq!(
         orders.load(Ordering::Relaxed),
@@ -249,7 +261,7 @@ fn broken_panicked_terminal_accounting_is_detected() {
 
 /// Result observation and abandonment race the worker's final shared release.
 /// Every remaining state owner must retain the original physical funding.
-fn charge(drop_observer: bool, broken: bool) {
+fn charge(drop_observer: bool, panicked: bool, broken: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -258,7 +270,16 @@ fn charge(drop_observer: bool, broken: bool) {
         explored.fetch_add(1, Ordering::Relaxed);
         let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
         let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
-        let mut task = run_blocking_io(|| 17, Some((observed, false))).unwrap();
+        let mut task = run_blocking_io(
+            move || {
+                if panicked {
+                    std::panic::panic_any(PANIC);
+                }
+                17
+            },
+            Some((observed, false)),
+        )
+        .unwrap();
         let state = task.state.as_ref().unwrap().clone();
         let funded = {
             let mut state = state.lock().unwrap();
@@ -284,19 +305,16 @@ fn charge(drop_observer: bool, broken: bool) {
         let waker = Waker::from(flag);
         let mut cx = std::task::Context::from_waker(&waker);
         let mut worker = Some(worker);
-        match Pin::new(&mut task).poll(&mut cx) {
-            Poll::Ready(result) => {
-                raced.fetch_add(1, Ordering::Relaxed);
-                assert!(matches!(result, Ok(17)));
-            }
-            Poll::Pending => {
+        let outcome = match poll_task(&mut task, &mut cx) {
+            Ok(Poll::Pending) => {
                 worker.take().unwrap().join().unwrap();
-                assert!(matches!(
-                    Pin::new(&mut task).poll(&mut cx),
-                    Poll::Ready(Ok(17))
-                ));
+                poll_task(&mut task, &mut cx)
             }
-        }
+            ready => {
+                raced.fetch_add(1, Ordering::Relaxed);
+                ready
+            }
+        };
         drop(task);
         let live_funding = meter.memory.load(Ordering::SeqCst);
         if let Some(worker) = worker {
@@ -309,6 +327,7 @@ fn charge(drop_observer: bool, broken: bool) {
         // before panicking: its destructor must run inside this Loom model.
         assert!(live_funding >= funded, "live shared state lost its funding");
         assert_eq!(joined_funding, funded);
+        assert_outcome(outcome, panicked);
     });
     if !drop_observer {
         assert_ne!(
@@ -318,21 +337,23 @@ fn charge(drop_observer: bool, broken: bool) {
         );
     }
     eprintln!(
-        "charge schedules (drop={drop_observer}): {}",
+        "charge schedules (drop={drop_observer}, panic={panicked}): {}",
         schedules.load(Ordering::Relaxed)
     );
 }
 
 #[test]
 fn shared_state_funding_survives_observation_and_worker_release() {
-    charge(false, false);
-    charge(true, false);
+    for panicked in [false, true] {
+        charge(false, panicked, false);
+        charge(true, panicked, false);
+    }
 }
 
 #[test]
 #[should_panic(expected = "live shared state lost its funding")]
 fn premature_shared_state_refund_is_detected() {
-    charge(false, true);
+    charge(false, false, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
