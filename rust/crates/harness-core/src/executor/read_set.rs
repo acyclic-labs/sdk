@@ -21,6 +21,15 @@ fn export_error(error: impl std::fmt::Display) -> Error {
     ))
 }
 
+fn validate_cut(cut: u64) -> Result<()> {
+    if cut == 0 {
+        return Err(export_error(
+            "zero is not an original one-based terminal journal receipt",
+        ));
+    }
+    Ok(())
+}
+
 // Project only these original fields. The original terminal producer already
 // validated the result; ignored arguments/text/media are never rebuilt in a
 // second JSON value tree merely to read immutable identity.
@@ -104,6 +113,7 @@ pub async fn page(
     after: u64,
     cut: u64,
 ) -> Result<Page> {
+    validate_cut(cut)?;
     let remaining = cut
         .checked_sub(after)
         .ok_or_else(|| export_error("read-set cursor exceeds its pinned cut"))?;
@@ -242,6 +252,7 @@ fn line(writer: &mut impl Write, value: &impl Serialize) -> Result<()> {
 impl<W: Write> Writer<W> {
     /// Starts one artifact at the original turn's settled journal cut.
     pub fn new(mut writer: W, agent: &str, operation: OperationId, cut: u64) -> Result<Self> {
+        validate_cut(cut)?;
         #[derive(Serialize)]
         struct Header<'a> {
             version: u32,
@@ -522,6 +533,8 @@ mod tests {
         }
         assert_ne!(sources[0], sources[1]);
         let cut = 5;
+        assert!(page(journal.as_ref(), "a", operation, 0, 0).await.is_err());
+        assert!(source(journal.as_ref(), "a", operation, 0).is_err());
         let observed = page(journal.as_ref(), "a", operation, 0, cut).await?;
         assert_eq!(observed.end(), cut);
         assert_eq!(observed.observations().len(), 2);
@@ -613,6 +626,12 @@ mod tests {
     #[test]
     fn incomplete_foreign_and_repeated_pages_cannot_certify_a_read_set() -> Result<()> {
         let operation = OperationId::from_bytes([1; 16]);
+        let mut refused = Vec::new();
+        assert!(Writer::new(&mut refused, "a", operation, 0).is_err());
+        assert!(
+            refused.is_empty(),
+            "refuse before writing an artifact header"
+        );
         let page = Page {
             agent: "a".into(),
             operation,

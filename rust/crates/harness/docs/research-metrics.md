@@ -126,7 +126,9 @@ completion; adapters without this index refuse instead of rescanning history.
 Each page visits up to 32 journal records and retains only that page's receipts.
 
 Supply `cut` from the original settled execution journal sequence, distinct
-from an agent inbox cursor. In research mode, the stock executor supplies
+from an agent inbox cursor. Journal receipts are one-based: zero refuses before
+any source read or artifact header, and cannot certify a closed empty read set.
+In research mode, the stock executor supplies
 `TurnOutput.journal_cut`: version 1, original execution operation and the
 accepted terminal model observation's sequence. The original journal append
 returns this sequence on fresh publication and exact retry; replay retains the

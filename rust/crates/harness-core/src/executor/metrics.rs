@@ -987,7 +987,7 @@ mod tests {
         #[cfg(feature = "provenance-export")]
         assert!(provenance::write(&batch(Table::Agents, &[row])?, Refused).is_err());
         #[cfg(feature = "research")]
-        assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0).is_err());
+        assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 1).is_err());
         Ok(())
     }
 
