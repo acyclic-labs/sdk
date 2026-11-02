@@ -50,13 +50,23 @@ impl Layout {
     /// Wrap without splitting a grapheme. Oversized glyphs become a one-cell
     /// replacement glyph; the original text and hit-test range are preserved.
     pub fn new(editor: &Editor, width: usize) -> Self {
+        Self::build(editor, width, &mut || {})
+    }
+
+    fn build(editor: &Editor, width: usize, visit_fold: &mut impl FnMut()) -> Self {
         let width = width.max(1);
         let mut rows = vec![];
         let mut row = Row::default();
         let mut column = 0;
         let mut offset = 0;
+        // Buffer keeps disjoint folds in source order. Layout walks that same
+        // order, so only the next fold can match the current source boundary.
+        let mut folds = editor.collapsed_pastes().iter().peekable();
         while offset < editor.text().len() {
-            let fold = editor.collapsed_pastes().iter().find(|r| r.start == offset);
+            let fold = folds.next_if(|range| {
+                visit_fold();
+                range.start == offset
+            });
             let (end, symbol) = if let Some(range) = fold {
                 (
                     range.end,
@@ -182,6 +192,61 @@ impl Layout {
             row.cells.last().map_or(row.end, |cell| cell.source.start)
         } else {
             row.end
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folded_layout_visits_only_the_next_paste_and_preserves_source_hits() {
+        for count in [1, 8, 64] {
+            let mut editor = Editor::default();
+            let mut settings = *editor.settings();
+            settings.paste_collapse_bytes = 4;
+            assert!(editor.set_settings(settings));
+            for index in 0..count {
+                editor.insert("界e\u{301}\t", index);
+                editor.paste("one\n👩‍💻", index);
+                editor.insert(" tail\n", index);
+            }
+            assert_eq!(editor.collapsed_pastes().len(), count as usize);
+            // Undo/redo restores the original ordered fold metadata as well as
+            // text; layout must use the restored source, not a private index.
+            let source = editor.text().to_owned();
+            assert!(editor.undo());
+            assert!(editor.redo());
+            assert_eq!(editor.text(), source);
+
+            for width in [1, 7, 32] {
+                let mut checks = 0;
+                let layout = Layout::build(&editor, width, &mut || checks += 1);
+                let cells = layout.rows.iter().flat_map(|row| &row.cells);
+                let mut folded = 0;
+                for cell in cells {
+                    assert!(cell.column + cell.width <= width);
+                    if editor.collapsed_pastes().contains(&cell.source) {
+                        folded += 1;
+                        assert_eq!(
+                            cell.symbol,
+                            if width < "[Pasted 2 lines]".len() {
+                                "�"
+                            } else {
+                                "[Pasted 2 lines]"
+                            }
+                        );
+                        let (row, column) = layout.position(cell.source.start);
+                        assert_eq!(layout.hit_test(row, column), cell.source.start);
+                        assert_eq!(layout.position(cell.source.end - 1), (row, column));
+                    }
+                }
+                assert_eq!(folded, count as usize);
+                // Each gap has nine graphemes and each paste is one atom.
+                // Restarting a search over all folds exceeds this linear bound.
+                assert!(checks <= 10 * count as usize, "{checks} fold checks");
+            }
         }
     }
 }
