@@ -7,9 +7,9 @@ use crate::{
     config::{Admission, AdmissionStatus, Sampling},
     conversation::{ContentAccess, ContentGrant, VolumeOperation},
 };
-use std::path::Path;
 
-async fn open(directory: &Path) -> Result<LocalHarness> {
+#[cfg(feature = "hooks")]
+async fn open(directory: &std::path::Path) -> Result<LocalHarness> {
     let project = volume(directory).await?;
     LocalHarness::open(
         volume_config(directory, project, text())?
