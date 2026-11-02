@@ -176,10 +176,7 @@ impl State {
     /// appended after preparation remain verbatim, even if the source grew.
     pub fn swap(&mut self, summary: SummaryId, expected: u64, head: u64) -> Result<(), Refusal> {
         let pending = self.pending.ok_or(Refusal::Stale)?;
-        if expected != self.generation
-            || pending.generation != expected
-            || pending.summary != summary
-        {
+        if pending.generation != expected || pending.summary != summary {
             return Err(Refusal::Stale);
         }
         if pending.completion != Some(Completion::Ready) {
@@ -188,10 +185,27 @@ impl State {
         if pending.through > head {
             return Err(Refusal::Range);
         }
-        let generation = self.generation.checked_add(1).ok_or(Refusal::Exhausted)?;
-        self.generation = generation;
+        self.advance(expected)?;
         self.cursor = pending.through;
         self.pending = None;
+        Ok(())
+    }
+
+    /// Changes a frozen model header without changing source coverage. A
+    /// pending summary still belongs to its original producer: a model change
+    /// cannot discard it or reinterpret its terminal under a new generation.
+    pub fn reconfigure(&mut self, expected: u64) -> Result<(), Refusal> {
+        if self.pending.is_some() {
+            return Err(Refusal::Busy);
+        }
+        self.advance(expected)
+    }
+
+    fn advance(&mut self, expected: u64) -> Result<(), Refusal> {
+        if expected != self.generation {
+            return Err(Refusal::Stale);
+        }
+        self.generation = expected.checked_add(1).ok_or(Refusal::Exhausted)?;
         Ok(())
     }
 

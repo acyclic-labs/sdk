@@ -531,6 +531,173 @@ fn fanout_waits_for_the_parent_swap_without_discarding_pending_custody() {
     assert_eq!(before.fork(19), Err(Refusal::NotReady));
 }
 
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn model_epoch_changes_keep_coverage_and_fence_the_original_step_commit() {
+    use acyclic_stream::{
+        AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    };
+
+    for summarized in [false, true] {
+        let provider = acyclic_stream::MemoryStream::default();
+        let io = snapshot_io();
+        let source = StreamPath::new("account/agent/conversation").unwrap();
+        let path = StreamPath::new("account/agent/epochs").unwrap();
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![CommitMutation::Append {
+                    path: source.clone(),
+                    records: (0..3).map(|item| AppendRecord::from(vec![item])).collect(),
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        let mut snapshot = Snapshot::genesis(Epoch {
+            header: [1; 32],
+            profile: [2; 32],
+            summary: None,
+            key: SummaryKey {
+                source: source.clone(),
+                through: 0,
+                renderer: 1,
+                model: [3; 32],
+            },
+        })
+        .unwrap();
+        if summarized {
+            let summary = snapshot.prepare(2, 3).unwrap();
+            let body = SummaryRef::new(
+                super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt")
+                    .unwrap(),
+                Vec::new(),
+            )
+            .unwrap();
+            snapshot
+                .complete(summary, SummaryOutcome::Ready(body.clone()))
+                .unwrap();
+            let mut next = snapshot.epoch().clone();
+            next.key.through = 2;
+            next.summary = Some(body);
+            snapshot.swap(0, next, 3).unwrap();
+        }
+        assert!(matches!(
+            snapshot_request(&snapshot, path.clone(), &io)
+                .commit(&provider)
+                .await
+                .unwrap(),
+            CommitOutcome::Committed(_)
+        ));
+        let original =
+            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 3).unwrap();
+        let generation = original.state().generation();
+        let next = EpochConfiguration {
+            header: [4; 32],
+            profile: [5; 32],
+            model: [6; 32],
+            renderer: 2,
+        };
+
+        // Coverage cannot move, and a real pending producer cannot disappear
+        // merely because its consumer selected another model.
+        let mut pending = original.clone();
+        let summary = pending.prepare(original.epoch().cursor() + 1, 3).unwrap();
+        let retained = pending.clone();
+        assert!(matches!(
+            pending.reconfigure(generation, next),
+            Err(SnapshotError::Transition(Refusal::Busy))
+        ));
+        assert_eq!(pending, retained);
+        pending.complete(summary, SummaryOutcome::Failed).unwrap();
+        assert_eq!(pending.state().demand(), Demand::Failed(summary));
+        let retained = pending.clone();
+        assert!(matches!(
+            pending.reconfigure(generation, next),
+            Err(SnapshotError::Transition(Refusal::Busy))
+        ));
+        assert_eq!(pending, retained);
+        let mut candidate = original.clone();
+        candidate.reconfigure(generation, next).unwrap();
+        // Destruction before commit leaves the admitted original unchanged.
+        assert_eq!(
+            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 3).unwrap(),
+            original
+        );
+        let first = snapshot_request(&candidate, path.clone(), &io);
+        let competing = snapshot_request(&candidate, path.clone(), &io);
+        let (left, right) = futures::join!(first.commit(&provider), competing.commit(&provider));
+        assert!(matches!(
+            (left.unwrap(), right.unwrap()),
+            (CommitOutcome::Committed(_), CommitOutcome::Conflict(_))
+                | (CommitOutcome::Conflict(_), CommitOutcome::Committed(_))
+        ));
+        let mut reopened =
+            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 3).unwrap();
+        assert_eq!(reopened.epoch().header, next.header);
+        assert_eq!(reopened.epoch().profile, next.profile);
+        assert_eq!(reopened.epoch().key.model, next.model);
+        assert_eq!(reopened.epoch().key.renderer, next.renderer);
+        assert_eq!(reopened.state().generation(), generation + 1);
+        assert_eq!(reopened.epoch().cursor(), original.epoch().cursor());
+        assert_eq!(reopened.epoch().summary, original.epoch().summary);
+        assert_eq!(provider.tail(source).await.unwrap(), 3);
+        assert_eq!(
+            provider
+                .tail(StreamPath::new("account/agent/transaction-marker").unwrap())
+                .await
+                .unwrap(),
+            2
+        );
+        let retained = reopened.clone();
+        assert!(matches!(
+            reopened.reconfigure(generation, next),
+            Err(SnapshotError::Transition(Refusal::Stale))
+        ));
+        assert_eq!(reopened, retained);
+    }
+    let mut exhausted = State::restore(u64::MAX, 0, None, 0).unwrap();
+    let retained = exhausted;
+    assert_eq!(exhausted.reconfigure(u64::MAX), Err(Refusal::Exhausted));
+    assert_eq!(exhausted, retained);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn model_epoch_fences_preserve_coverage_and_pending_custody() {
+    let generation: u64 = kani::any();
+    let expected: u64 = kani::any();
+    let cursor: u64 = kani::any();
+    let pending = if kani::any() && cursor < u64::MAX {
+        Some(protocol::Pending {
+            summary: [1; 32],
+            generation,
+            through: cursor + 1,
+            completion: None,
+        })
+    } else {
+        None
+    };
+    let mut state = State::restore(generation, cursor, pending, u64::MAX).unwrap();
+    let original = state;
+    let result = state.reconfigure(expected);
+    if result.is_ok() {
+        assert!(pending.is_none());
+        assert_eq!(generation, expected);
+        assert!(generation < u64::MAX);
+        assert_eq!(state.generation(), generation + 1);
+        assert_eq!(state.cursor(), cursor);
+        assert!(state.pending().is_none());
+    } else {
+        assert_eq!(state, original);
+    }
+    kani::cover!(result.is_ok());
+    kani::cover!(result == Err(Refusal::Busy));
+    kani::cover!(result == Err(Refusal::Stale));
+    kani::cover!(result == Err(Refusal::Exhausted));
+}
+
 #[test]
 fn producer_failure_is_terminal_and_cannot_be_relabelled_ready() {
     let id = [3; 32];

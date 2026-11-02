@@ -1,6 +1,7 @@
 //! Durable model epochs: a summarized prefix followed by a verbatim suffix.
 //!
-//! A swap changes the epoch, never the underlying conversation. Old items stay
+//! A summary swap or model reconfiguration changes the epoch, never the
+//! underlying conversation. Old items stay
 //! addressable by their original stream cursors. The summary key names the full
 //! covered prefix even when preparation reads a previous summary and only its
 //! subsequent items.
@@ -67,6 +68,20 @@ pub struct Epoch {
     /// Frozen portable text and optional native artifacts. A genesis epoch has
     /// no summary and cursor zero. Late artifacts require a later epoch.
     pub summary: Option<SummaryRef>,
+}
+
+/// The fixed-size part of an epoch changed by an admitted model selection.
+/// Source coverage and summary custody are retained by the epoch owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EpochConfiguration {
+    /// Digest of the next frozen renderer Header.
+    pub header: [u8; 32],
+    /// Digest of the next admitted provider profile.
+    pub profile: [u8; 32],
+    /// Digest of the selected provider family and model identity.
+    pub model: [u8; 32],
+    /// Explicit version of the request renderer.
+    pub renderer: u32,
 }
 
 impl Epoch {

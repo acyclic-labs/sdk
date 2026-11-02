@@ -2,7 +2,7 @@
 //! writes. Reopening reads only the last record, independent of history length.
 
 use super::{
-    Epoch, InvalidEpoch, SummaryRef,
+    Epoch, EpochConfiguration, InvalidEpoch, SummaryRef,
     protocol::{Completion, Pending, Refusal, State},
 };
 #[cfg(feature = "filesystem")]
@@ -133,7 +133,9 @@ impl Snapshot {
         let RecordWire::V2(wire): RecordWire<Epoch, SummaryOutcome> =
             serde_json::from_slice(&record.value)?;
         wire.epoch.validate(source, head)?;
-        if (wire.generation == 0) != (wire.epoch.cursor() == 0) {
+        // A header can change before the first summary. Generation counts
+        // both kinds of epoch boundary; only summarized genesis is invalid.
+        if wire.generation == 0 && wire.epoch.cursor() != 0 {
             return Err(Refusal::Stale.into());
         }
         let (pending, outcome) = match wire.pending {
@@ -243,6 +245,27 @@ impl Snapshot {
         self.state = state;
         self.epoch = next;
         self.outcome = None;
+        Ok(())
+    }
+
+    /// Pins the next model's frozen header at the original step commit. The
+    /// caller admits the selection, grant and price before constructing this
+    /// candidate, then publishes its encoded record with that same step.
+    ///
+    /// Existing summary artifacts keep their producing provenance. Changing
+    /// model or wire family never rewrites them: the renderer's original
+    /// `select` chooses their native or portable representation for the new
+    /// header. Source coverage cannot move through this transition.
+    pub fn reconfigure(
+        &mut self,
+        expected: u64,
+        next: EpochConfiguration,
+    ) -> Result<(), SnapshotError> {
+        self.state.reconfigure(expected)?;
+        self.epoch.header = next.header;
+        self.epoch.profile = next.profile;
+        self.epoch.key.model = next.model;
+        self.epoch.key.renderer = next.renderer;
         Ok(())
     }
 
