@@ -32,6 +32,51 @@ pub(crate) fn stock_retire_text(text: String, io: Option<&PreparationIo>) -> Res
     stock_retire(text, bytes, io)
 }
 
+/// Keeps fallible text construction on the original ledger. Field order makes
+/// the text die before its custody on every unsuccessful exit.
+pub(in crate::executor) struct StockText<'a> {
+    text: String,
+    #[cfg(feature = "filesystem")]
+    scope: crate::filesystem::PreparationScope<'a>,
+    #[cfg(not(feature = "filesystem"))]
+    _io: std::marker::PhantomData<&'a PreparationIo>,
+}
+
+impl<'a> StockText<'a> {
+    pub(in crate::executor) fn adopt(text: String, io: Option<&'a PreparationIo>) -> Result<Self> {
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::with_input(io, text.capacity() as u64)?;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = io;
+        Ok(Self {
+            text,
+            #[cfg(feature = "filesystem")]
+            scope,
+            #[cfg(not(feature = "filesystem"))]
+            _io: std::marker::PhantomData,
+        })
+    }
+
+    pub(in crate::executor) fn push(
+        &mut self,
+        suffix: &str,
+        maximum: u64,
+        reason: &'static str,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let io = self.scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = None;
+        stock_string_push(&mut self.text, suffix, maximum, reason, io)
+    }
+
+    pub(in crate::executor) fn finish(self) -> Result<String> {
+        #[cfg(feature = "filesystem")]
+        self.scope.finish(self.text.capacity() as u64)?;
+        Ok(self.text)
+    }
+}
+
 fn stock_retire<T>(value: T, bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
     #[cfg(feature = "filesystem")]
     let custody = io

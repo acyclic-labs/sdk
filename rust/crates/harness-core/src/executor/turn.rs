@@ -153,23 +153,21 @@ impl StockExecution<'_> {
         let completed_message = self.has_completed_message(model_events.as_slice())?;
         let mut parts = false;
         let mut calls = Vec::new();
-        let mut text = String::new();
+        let mut text = StockText::adopt(String::new(), self.io)?;
         let mut completed = Value::Null;
         for event in model_events {
             match event? {
                 ModelEvent::Content { delta } if !completed_message => {
-                    stock_string_push(
-                        &mut text,
+                    let appended = text.push(
                         &delta,
                         self.stock.limits.file_bytes,
                         "assistant output exceeds file limit",
-                        self.io,
-                    )?;
+                    );
                     stock_retire_text(delta, self.io)?;
+                    appended?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    stock_retire_text(text, self.io)?;
-                    text = completed;
+                    text = StockText::adopt(completed, self.io)?;
                 }
                 ModelEvent::ToolCall(call) => {
                     if self.single_request {
@@ -227,7 +225,7 @@ impl StockExecution<'_> {
         }
         Ok(CollectedStep {
             calls,
-            text,
+            text: text.finish()?,
             metadata: completed,
             parts,
         })
