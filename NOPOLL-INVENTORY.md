@@ -4,7 +4,7 @@ Identity consumed-exchange release successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `plugin/identity/src/mcp.rs:748` | HTTP fixture waits on a Notify whose producer can disappear | One-shot release retained before subscription; producer loss ends the original HTTP response with 503. | Source complete; runtime qualification pending |
+| `plugin/identity/src/mcp.rs:748` | HTTP fixture waits on a Notify whose producer can disappear | One-shot release retained before subscription; producer loss ends the original HTTP response with 503. | Named release control passed on Linux x86_64 |
 
 The existing handler takes its entry sender and release receiver together under
 the original sender-slot lock, publishes entry, then awaits that release. The
@@ -12,7 +12,8 @@ two drain controls send exactly once and detect a lost receiver. A second HTTP
 request is refused with 409 instead of entering an unowned wait. No readiness
 probe, timer or retry is added. The named real HTTP/credential control releases
 or drops the producer before the request, then requires either saved rotated
-credentials or the original identity client's typed HTTP 503 failure.
+credentials or the original identity client's typed HTTP 503 failure. This control
+passed (one test, 0.79 s). Existing drain controls remain unexecuted for this change.
 
 Area cleanup folds both event endpoints into the one existing exchange slot and
 removes the release Notify and two per-handler Arc clones. Per fixture, event
