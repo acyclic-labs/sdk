@@ -177,9 +177,13 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     std::fs::create_dir(&external).unwrap();
     let sentinel = external.join("sentinel");
     std::fs::write(&sentinel, "original").unwrap();
+    let readable = b"workspace bytes\n";
+    std::fs::write(workspace.join("readable"), readable).unwrap();
     std::os::unix::fs::symlink(&sentinel, workspace.join("escape")).unwrap();
     let read = system_read_roots();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let mut admitted = 0;
+    let mut unsupported = 0;
     for (access, custody) in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly]
         .into_iter()
         .flat_map(|access| [None, Some(&custody)].map(|custody| (access, custody)))
@@ -188,7 +192,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             ExecutionGrant::new(&workspace, access, read.clone(), ExecutionNetwork::Off).unwrap();
         let make_command = || {
             let mut command = Command::new("/bin/sh");
-            command.args(["-c", "(printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
+            command.args(["-c", "read value < readable; printf '%s\\n' \"$value\"; (printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
                 .current_dir(&workspace).stdin(Stdio::null())
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             command
@@ -268,10 +272,12 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
                 assert!(retained.is_none());
                 assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
                 assert!(!workspace.join("new").exists());
+                unsupported += 1;
                 continue;
             }
             Err(error) => panic!("confined launch failed: {error}"),
         }
+        admitted += 1;
         // A real admitted tree still needs cleanup. Refusing that operation
         // must not turn it into a pre-launch capability refusal or retire it.
         let denied_cleanup = crate::tests::ReadBudgetMeter::new(0, 0);
@@ -304,22 +310,25 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         .expect_err("an occupied recovery slot was replaced");
         assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
         let mut tree = retained.expect("admitted tree retains its original recovery slot");
-        let output = tree.wait_with_output(
-            std::time::Duration::from_secs(5),
-            65536,
-            None,
-            || Ok(()),
-            |_| Ok(Default::default()),
-            None,
-            None,
-            None,
-        );
-        assert!(output.is_ok(), "{output:?}");
+        let output = tree
+            .wait_with_output(
+                std::time::Duration::from_secs(5),
+                65536,
+                None,
+                || Ok(()),
+                |_| Ok(Default::default()),
+                None,
+                None,
+                None,
+            )
+            .expect("confined process output");
         assert!(!workspace.join("unexpected").exists());
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
-        let output = output.unwrap();
         assert!(output.status.success(), "{output:?}");
-        assert!(output.stdout.is_empty(), "outside reads escaped Landlock");
+        assert_eq!(
+            output.stdout, readable,
+            "workspace reads must succeed without disclosing outside bytes"
+        );
         match access {
             ExecutionAccess::WorkspaceWrite => {
                 assert_eq!(
@@ -331,6 +340,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             ExecutionAccess::ReadOnly => assert!(!workspace.join("new").exists()),
         }
     }
+    eprintln!("execution boundary cases: admitted={admitted}, unsupported={unsupported}");
     // Enforcement must affect only the child, never the launching host thread.
     std::fs::write(&sentinel, "host").unwrap();
 }
