@@ -11,6 +11,7 @@ test("deployment declarations become scoped namespace and private service handle
   let factories = 0;
   const requests: unknown[] = [];
   let bodyCost: { copies: () => number; expected: Uint8Array; finalCopies: number } | undefined;
+  let responseStatus: { value: number; reads: number } | undefined;
   const record = (request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest) => {
     expect(request.accountId).toEqual(account);
     if (bodyCost) {
@@ -28,7 +29,12 @@ test("deployment declarations become scoped namespace and private service handle
     requests.push(received);
     // A transport owns these request bytes, never the handle's retained scope.
     if (request.accountId instanceof Uint8Array) request.accountId.fill(120);
-    return {status:200,headers:[],body:received.body};
+    const selectedStatus = responseStatus;
+    return {get status() {
+      // Negative control: a second read substitutes the original reply status.
+      if (!selectedStatus) return 200;
+      return selectedStatus.reads++ === 0 ? selectedStatus.value : 418;
+    },headers:[],body:received.body};
   };
   let actorReads = 0, workerReads = 0;
   const actorTransport = {get invokeActor() {
@@ -133,6 +139,17 @@ test("deployment declarations become scoped namespace and private service handle
       expect(new U8(await (await handle.fetch(request)).arrayBuffer())).toEqual(expected);
     } finally { globalThis.Uint8Array = U8; bodyCost = undefined; }
   }
+  for (const handle of [actor,worker]) for (const [status,method] of [[204,"GET"],[205,"GET"],[304,"GET"],[200,"HEAD"],[200,"GET"]] as const) {
+    const selectedStatus = {value:status,reads:0};
+    responseStatus = selectedStatus;
+    try {
+      const response = await handle.fetch("https://example.com/",{method});
+      expect(response.status).toBe(status);
+      expect(selectedStatus.reads).toBe(1);
+      expect(response.body === null).toBe(method === "HEAD" || status !== 200);
+      expect(await response.text()).toBe("");
+    } finally { responseStatus = undefined; }
+  }
   factories = 0;
   for (const invalid of [
     {...namespace,resource:"actors:/Other"}, {...namespace,targetAccount:new Uint8Array()},
@@ -181,13 +198,6 @@ for (const kind of ["actor","worker"] as const) {
   const handle = (transport: {invoke(request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest, options?: import("@acyclic-labs/actors").ActorsCallOptions): Promise<semantic.InvokeActorResponse>}) => kind === "actor"
     ? new ActorNamespaceBinding(account,"ClassOne",{invokeActor:transport.invoke.bind(transport)},"OBJECTS").getByName("same")
     : new WorkerServiceBinding(account,"worker",{invokeWorker:transport.invoke.bind(transport)},"SERVICE");
-  test(`${kind} fetch preserves bodyless statuses and HEAD responses`, async () => {
-    for (const status of [204,205,304,200]) {
-      const target = handle({async invoke() {return {status,headers:[],body:new Uint8Array()};}});
-      const response = await target.fetch("https://example.com/",{method:status === 200 ? "HEAD" : "GET"});
-      expect(response.status).toBe(status); expect(response.body).toBeNull(); expect(await response.text()).toBe("");
-    }
-  });
   test(`${kind} fetch forwards Request, init and SDK cancellation to transport`, async () => {
     for (const source of ["request","init","sdk","both"] as const) {
       let entered!: () => void; const started = new Promise<void>(resolve => {entered = resolve;});

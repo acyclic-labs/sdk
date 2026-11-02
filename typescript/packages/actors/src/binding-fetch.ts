@@ -42,8 +42,9 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
 }
 /** One Fetch response boundary, including statuses that forbid a body. */
 export function bindingResponse(result: {readonly body: ArrayLike<number>; readonly status: number; readonly headers: readonly {readonly name:string;readonly value:string}[]}, method: string): Response {
-  const body = method === "HEAD" || [204,205,304].includes(result.status) ? null : Uint8Array.from(result.body);
-  return new Response(body, {status:result.status,headers:result.headers.map(h => [h.name,h.value])});
+  const status = result.status;
+  const body = method === "HEAD" || status === 204 || status === 205 || status === 304 ? null : Uint8Array.from(result.body);
+  return new Response(body, {status,headers:result.headers.map(h => [h.name,h.value])});
 }
 /** Standard Request cancellation and optional SDK cancellation share one signal. */
 export function bindingSignal(request: Request, signal?: AbortSignal): AbortSignal {
