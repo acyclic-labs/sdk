@@ -173,7 +173,7 @@ fn hammered_owner() {
 }
 
 /// Execs the runner image at `image`, with no control socket: it exits at
-/// once. Returns the spawn's error.
+/// once. Returns an error if it cannot exec or exits unsuccessfully.
 fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
     use std::os::fd::AsRawFd as _;
     match Command::new(format!("/proc/self/fd/{}", image.as_raw_fd()))
@@ -183,8 +183,8 @@ fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
         .spawn()
     {
         Ok(mut runner) => {
-            runner.wait().expect("runner exit");
-            None
+            let status = runner.wait().expect("runner exit");
+            (!status.success()).then(|| std::io::Error::other(status.to_string()))
         }
         Err(error) => Some(error),
     }
