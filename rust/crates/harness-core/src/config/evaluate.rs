@@ -11,7 +11,7 @@ use std::sync::{
 };
 
 /// The evaluator's identity: a change to its semantics changes every key.
-const VERSION: &str = "acyclic.harness.config.v1";
+const VERSION: &str = "acyclic.harness.config.v2";
 
 /// Interrupt polls (QuickJS polls every ten thousand instructions)
 /// before a settings module stops. It is deterministic, so a module passes
@@ -56,6 +56,17 @@ pub async fn evaluate(
     base: &Value,
     surface: Surface,
 ) -> Result<Evaluated> {
+    evaluate_cached(path, source, tree, base, surface, cache()).await
+}
+
+async fn evaluate_cached(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+    cache: &Cache,
+) -> Result<Evaluated> {
     let invalid = |reason: String| Error::Invalid(format!("{path}: {reason}"));
     let modules = closure(path, source, tree).await?.map_err(invalid)?;
     let mut digest = blake3::Hasher::new_derive_key(VERSION);
@@ -72,7 +83,6 @@ pub async fn evaluate(
     key.update(&[u8::from(surface == Surface::Data)]);
     key.update(&base);
     let key: [u8; 32] = key.finalize().into();
-    let cache = cache();
     let cached = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -126,9 +136,10 @@ pub async fn compose(
 /// The most recently evaluated result or failure. Replacing the entry drops
 /// its ownership instead of retaining every historical agent/revision.
 type Outcome = std::result::Result<Arc<(Value, Form)>, String>;
+type Cache = Mutex<Option<([u8; 32], Outcome)>>;
 
-fn cache() -> &'static Mutex<Option<([u8; 32], Outcome)>> {
-    static CACHE: OnceLock<Mutex<Option<([u8; 32], Outcome)>>> = OnceLock::new();
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
@@ -311,11 +322,30 @@ fn resolve(importer: &str, specifier: &str) -> std::result::Result<String, Strin
 /// path (`undefined` where the base has none) and must return data there.
 /// The result is rebuilt as plain data, so cycles, accessors and exotic
 /// objects never reach the encoder.
-const FINISH: &str = r#"(namespace, base, data) => {
+// The trusted closure is prepared before module evaluation. Protect JSON
+// imports and the fold against replacements by modules or their callbacks.
+const FINISH: &str = r#"(() => {
+    delete globalThis.Date;
+    delete Math.random;
+    const freeze = Object.freeze;
+    const define = Object.defineProperty;
+    for (const name of ['Object', 'Array', 'Number', 'JSON', 'Function', 'TypeError', 'Set']) {
+        const value = globalThis[name];
+        if (value.prototype) freeze(value.prototype);
+        freeze(value);
+        define(globalThis, name, { value, writable: false, configurable: false });
+    }
+    return (namespace, base, data) => {
     const own = Object.prototype.hasOwnProperty;
     if (!own.call(namespace, 'default'))
         throw new TypeError('has no `export default`');
-    const open = [];
+    const open = new Set();
+    const item = (v, key, at) => {
+        const descriptor = Object.getOwnPropertyDescriptor(v, key);
+        if (!own.call(descriptor, 'value'))
+            throw new TypeError(`${at}.${key} is an accessor, not plain data`);
+        return descriptor.value;
+    };
     const fold = (v, below, at) => {
         if (typeof v === 'function') {
             if (data) throw new TypeError(`${at} must be plain data, not a function of the defaults`);
@@ -328,27 +358,36 @@ const FINISH: &str = r#"(namespace, base, data) => {
             return v;
         }
         if (typeof v !== 'object') throw new TypeError(`${at} is a ${typeof v}, not plain data`);
-        if (open.includes(v)) throw new TypeError(`${at} contains itself`);
+        if (open.has(v)) throw new TypeError(`${at} contains itself`);
         const array = Array.isArray(v);
         const prototype = Object.getPrototypeOf(v);
         if (prototype !== (array ? Array.prototype : Object.prototype) && !(prototype === null && !array))
             throw new TypeError(`${at} is not a plain object or array`);
         const map = below !== null && typeof below === 'object' && Array.isArray(below) === array;
         const at_ = (key) => (map && own.call(below, key) ? below[key] : undefined);
-        open.push(v);
+        open.add(v);
         let out;
-        if (array) out = v.map((item, index) => fold(item, at_(index), `${at}[${index}]`));
-        else {
+        if (array) {
+            out = [];
+            out.length = v.length;
+            for (let index = 0; index < v.length; index++)
+                if (own.call(v, index)) out[index] = fold(item(v, index, at), at_(index), `${at}[${index}]`);
+        } else {
             out = Object.create(null);
-            for (const key of Object.keys(v))
-                if (v[key] !== undefined) out[key] = fold(v[key], at_(key), `${at}.${key}`);
+            const keys = Object.keys(v);
+            for (let index = 0; index < keys.length; index++) {
+                const key = keys[index];
+                const value = item(v, key, at);
+                if (value !== undefined) out[key] = fold(value, at_(key), `${at}.${key}`);
+            }
         }
-        open.pop();
+        open.delete(v);
         return out;
     };
     const form = typeof namespace.default === 'function' ? 'function' : 'value';
     return { form, json: JSON.stringify(fold(namespace.default, JSON.parse(base), 'the default export')) };
-}"#;
+    };
+})()"#;
 
 /// Evaluates a resolved closure once, with no host functions installed.
 fn run(
@@ -358,6 +397,8 @@ fn run(
 ) -> std::result::Result<(Value, Form), String> {
     use rquickjs::{CaughtError, Context, Function, Object, Runtime};
     let engine = |error: rquickjs::Error| error.to_string();
+    #[cfg(any(test, feature = "test-support"))]
+    model::entered();
     let runtime = Runtime::new().map_err(engine)?;
     runtime.set_memory_limit(crate::executor::ENGINE_MEMORY);
     let fuel = Arc::new(AtomicU64::new(FUEL));
@@ -377,7 +418,7 @@ fn run(
         let result = (|| {
             // Settings are pure: no clock or randomness, and no host
             // function, loader, tool or I/O is installed.
-            ctx.eval::<rquickjs::Value, _>("delete globalThis.Date; delete Math.random;")?;
+            let finish: Function = ctx.eval(FINISH)?;
             // Dependencies come first, so each import resolves to a
             // declared module; the root is last.
             let mut declared = modules
@@ -388,7 +429,6 @@ fn run(
                 .collect::<rquickjs::Result<Vec<_>>>()?;
             let (module, promise) = declared.pop().ok_or(rquickjs::Error::Unknown)?.eval()?;
             promise.finish::<()>()?;
-            let finish: Function = ctx.eval(FINISH)?;
             let result: Object =
                 finish.call((module.namespace()?, base, surface == Surface::Data))?;
             let encoded = (
@@ -407,7 +447,16 @@ fn run(
                         _ => message,
                     }
                 }
-                CaughtError::Value(value) => format!("threw {value:?}"),
+                CaughtError::Value(value) => {
+                    // QuickJS Debug prints native addresses for reference
+                    // values. Preserve scalar causes, but never cache an
+                    // allocator-dependent address as a settings diagnostic.
+                    if value.is_string() || value.is_bool() || value.is_number() {
+                        format!("threw {value:?}")
+                    } else {
+                        format!("threw {:?}", value.type_of())
+                    }
+                }
                 CaughtError::Error(error) => error.to_string(),
             },
         })
@@ -427,3 +476,7 @@ fn run(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod model;
