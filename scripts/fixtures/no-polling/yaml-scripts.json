@@ -1,0 +1,31 @@
+{
+  "producer": "PyYAML yaml.compose",
+  "version": "5.4.1",
+  "records": [
+    {
+      "source": "steps:\n  - run: |\n      while ! ready; do\n        step\n      done\n",
+      "program": "while ! ready; do\n  step\ndone\n",
+      "style": "|"
+    },
+    {
+      "source": "steps:\n  - run: >-\n      while ! ready; do step; done\n",
+      "program": "while ! ready; do step; done",
+      "style": ">"
+    },
+    {
+      "source": "steps: [{run: 'while ! ready; do step; done'}]\n",
+      "program": "while ! ready; do step; done",
+      "style": "'"
+    },
+    {
+      "source": "steps: [{run: \"while ! ready; do step; done\"}]\n",
+      "program": "while ! ready; do step; done",
+      "style": "\""
+    },
+    {
+      "source": "steps:\n  - run: while ! ready; do step; done\n",
+      "program": "while ! ready; do step; done",
+      "style": null
+    }
+  ]
+}

@@ -10,6 +10,9 @@ const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
 const loop = new Set(['for', 'while', 'loop', 'do']);
+const embeddedLoop = new RegExp('\\b(?:' + [...loop].join('|') + ')\\b', 'i');
+const embeddedKind = spelling => embeddedCandidate(spelling) ? 'embedded-timer-or-retry'
+ : embeddedLoop.test(spelling) ? 'embedded-loop' : undefined;
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
 const opening = new Set(['(', '[', '{']);
@@ -293,7 +296,7 @@ export function pollingUnit(file, source) {
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' ? embeddedKind(t.value) ?? embeddedKind(escapedSpelling(t.value))
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');

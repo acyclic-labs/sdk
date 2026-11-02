@@ -16,6 +16,13 @@ export function fuzz(data) {
  assert.deepEqual(pollingSites('scripts/control.ps1', source).map(site => site.start), [source.lastIndexOf('Sleep')]);
  assert.throws(() => pollingSites('scripts/control.ps1', comment.slice(0, -2)), /unterminated block comment/);
  const word = 'value' + Buffer.from(data).toString('hex');
+ for (const program of [`while ! ${word}; do step; done`, `for item in ${word}; do step; done`]) {
+  for (const [file, source] of [
+   ['scripts/control.yaml', 'run: |\n  ' + program],
+   ['scripts/control.yml', 'run: ' + JSON.stringify(program)],
+   ['scripts/control.mjs', 'runHost(' + JSON.stringify(program) + ')'],
+  ]) assert.ok(pollingSites(file, source).some(site => site.kind === 'embedded-loop'), source);
+ }
  const settings = `settings: [${word}\u00a0#owner's"fragment, {timeout: 1}]`;
  assert.deepEqual(pollingSites('scripts/control.yaml', settings).map(site => site.start), [settings.indexOf('timeout')]);
  for (const command of ['\\sleep', 'sl\\eep', 'sl\\\neep', 's\\l\\e\\e\\p']) {
