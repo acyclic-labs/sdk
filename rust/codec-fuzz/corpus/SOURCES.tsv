@@ -1710,3 +1710,16 @@ object_persistence/incarnation	47	31e792b414e2edac20f2e7c59307f4beebf62122026ea8
 object_persistence/epoch	25	26d05514aeb34f8a06a04a8ad95c0911f3bbf81d4a9dfdb90d604e4a0f513c7e	acyclic_objects::codec_fuzz::seeds
 object_persistence/head-v2-live	110	081894d3ac1a5fd9800783d6efa93658c4cfe2f0f8f0d27a0a3fb131fecb8779	acyclic_objects::codec_fuzz::seeds
 object_persistence/head-v2-dying	110	b44ba57b530d791abeb97fb154a8eb6056dc21aa8e1d640439452230e972c518	acyclic_objects::codec_fuzz::seeds
+harness_codecs/agent-v9-adopted	189	3e80bc965e19a185d2ab89c8fc49e6f2848d030868f7bcc48e8d246e6799e953	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-awaited	32	42c5e865b02e458ad52a234322a01a6c518c98c3668afe80706ead155c2885d9	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-status	67	c5a2870ca7b4362ea740a52e437e6c3673643f9433ea431356a9a29b8f355882	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-closed	121	c0b264310584f28f2f8fe5d544ea20b31c00d34967626a5177805c4a3858a77a	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-effect	118	0ecdfe5c69dba54355a2e5f96f7ee8c229128bd9bd5aad8cd79d1cea2fff923d	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint	307	dce90ad66990799171e36af3043ecda1337c23ca9459433f12966c4749ac8f50	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint-envelope	1150	c8fe21998bf9482bb28b3859985749be010bc5a7b3274cdd1ef7d63c3e7bc6b3	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-status-approval-bound	288	359aaed4b6de7ca4738489a09746f5d5c5a363a6eea11d4a2e0f7bd440925aa2	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint-approval-bound	528	49f1cd7ae2ca99ef58807b5d1fab17a1cc02fbfeb8e4058f4d79b75c34aea33c	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint-envelope-approval-bound	1867	093d19d39d613934281a99a6b321bf3b41400ae4d6b5026a2de43aa66574a522	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-status-approval-external	123	1db7d854f65e1d7c630cd99061156439142d986ef24553a80881ce7ad78fe2b2	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint-approval-external	363	0f23d0dda50ee56c2395e7df88da073c8e2dc5b86d31da532019572c06643dbb	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v9-checkpoint-envelope-approval-external	1354	a5d1b357c24550cf37edeb02dc80955e4f6d24f21dbb80ea3c590cb7477576dc	harness-core canonical agent record, effect and checkpoint encoders
