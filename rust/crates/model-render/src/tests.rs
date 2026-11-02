@@ -462,12 +462,13 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     }
     for family in [Family::Responses, Family::Gemini] {
         let source = if family == Family::Gemini {
-            // Generated IR with a non-final parts field and original whitespace.
+            // Generated IR with a non-final parts field, escaped role and
+            // original whitespace. Metadata must admit decoded role semantics.
             WireItem::capture(
                 target(family, "producing-provider"),
                 ItemKind::Message,
                 raw(
-                    r#"{ "role":"user", "parts" : [ { "text":"original bytes" } ], "extra":true }"#
+                    r#"{ "role":"u\u0073er", "parts" : [ { "text":"original bytes" } ], "extra":true }"#
                         .into(),
                 ),
                 BTreeMap::new(),
@@ -482,6 +483,16 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
         let instruction = "summarize \"\\\n猫";
         let closer = summary_tail(family);
         render_summary(&header, [&source], instruction, &closer, &mut summary).unwrap();
+        if family == Family::Gemini {
+            let value: Value = serde_json::from_slice(&summary).unwrap();
+            assert_eq!(value["contents"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                value["contents"][0]["parts"],
+                json!([
+                    {"text": "original bytes"}, {"text": instruction}
+                ])
+            );
+        }
         for (is_summary, expected) in [(false, ordinary), (true, summary)] {
             let run = |writer: &mut Writer| {
                 if is_summary {
