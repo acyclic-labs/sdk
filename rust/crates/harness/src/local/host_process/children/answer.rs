@@ -22,7 +22,18 @@ impl NativeAnswer {
     }
 
     pub(super) fn record(&mut self, event: &Value) {
-        match event.get("type").and_then(Value::as_str) {
+        let kind = event.get("type").and_then(Value::as_str);
+        // A native refusal owns this attempt across every host format.
+        // Only an original new-turn boundary can release that terminal.
+        if kind != Some("turn.started")
+            && matches!(
+                self.outcome,
+                Some(Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. })
+            )
+        {
+            return;
+        }
+        match kind {
             Some("turn.started") => *self = Self::default(),
             Some("item.completed")
                 if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
@@ -139,9 +150,11 @@ mod tests {
                     if event.get("type").and_then(Value::as_str) == Some("result") {
                         // Derived negative: the captured success text cannot
                         // override the native terminal's failure flag.
-                        let mut refused = event;
+                        let mut refused = event.clone();
                         refused["is_error"] = Value::Bool(true);
                         answer.record(&refused);
+                        answer.omit();
+                        answer.record(&event);
                         assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
                     } else {
                         // Derived negative: a late completion cannot erase a
@@ -168,6 +181,19 @@ mod tests {
         let mut refused = NativeAnswer::default();
         for line in include_str!("../fixtures/pi-assistant-error.jsonl").lines() {
             refused.record(&serde_json::from_str(line).expect("captured Pi JSON"));
+        }
+        let original = refused.outcome.clone();
+        let line = include_str!("../fixtures/pi-assistant-error.jsonl")
+            .lines()
+            .next()
+            .expect("captured Pi assistant terminal");
+        let mut late: Value = serde_json::from_str(line).expect("captured Pi JSON");
+        // Derived negative: a later assistant completion, or even an
+        // unrecognized stop reason, cannot replace the original failure.
+        for reason in ["stop", "unrecognized"] {
+            late["message"]["stopReason"] = Value::String(reason.into());
+            refused.record(&late);
+            assert_eq!(refused.outcome, original);
         }
         assert!(
             matches!(refused.outcome, Some(Outcome::Failed { ref message }) if message == "No API key for provider: fixture")
