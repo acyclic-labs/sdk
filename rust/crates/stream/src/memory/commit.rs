@@ -800,7 +800,8 @@ impl Namespace {
                     std::cmp::Ordering::Less => index = &mut edge.left,
                     std::cmp::Ordering::Greater => index = &mut edge.right,
                     std::cmp::Ordering::Equal => {
-                        return Arc::get_mut(&mut edge.node).ok_or(StreamError::Unavailable);
+                        return Arc::get_mut(edge.node.as_mut().ok_or(StreamError::Unavailable)?)
+                            .ok_or(StreamError::Unavailable);
                     }
                 }
             }
