@@ -9,6 +9,23 @@ import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
 
+test("serial qualification retains the first assertion when a suite receipt is missing", async () => {
+  const cases = [{ id: "case" }], coverage = { pass: true };
+  let original;
+  const receipts = await runSuites(cases, async () => {
+    try { assert.equal("original result", "original expectation", "original operation"); }
+    catch (error) { original = error; throw error; }
+  }, async () => { throw new Error("unreachable receipt read"); });
+  const matrix = JSON.parse(JSON.stringify(collect(cases, receipts, process.platform, coverage)));
+  assert.equal(matrix.pass, false);
+  for (const result of [matrix.suites[0], matrix.results[0]]) {
+    assert.equal(result.receipt_failure.error, original.stack);
+    assert.equal(result.receipt_failure.assertion.operator, original.operator);
+    assert.match(result.receipt_failure.assertion.actual, /original result/);
+    assert.match(result.receipt_failure.assertion.expected, /original expectation/);
+  }
+});
+
 test('installed host admission launches the actual package entries',async()=>{
  const scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));

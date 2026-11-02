@@ -20,7 +20,7 @@ import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
-import { publishReport } from "./report.mjs";
+import { failureReport, publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { variants } from "./serial.mjs";
@@ -168,10 +168,12 @@ async function execute(test, prepared) {
     return { case: test.id, platform: process.platform, status: "pass", seconds: preparationSeconds + productSeconds,
       preparation_seconds: preparationSeconds, product_seconds: productSeconds };
   } catch (error) {
-    try { await checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
+    let treeFailure;
+    try { await checkTree(test); } catch (treeError) { treeFailure = failureReport(treeError); }
     const productSeconds = (performance.now() - begin) / 1000;
     return { case: test.id, platform: process.platform, status: "fail", phase: "run", seconds: preparationSeconds + productSeconds,
-      preparation_seconds: preparationSeconds, product_seconds: productSeconds, error: error.stack, workspace: fixture.workspace };
+      preparation_seconds: preparationSeconds, product_seconds: productSeconds, ...failureReport(error),
+      tree_failure: treeFailure, workspace: fixture.workspace };
   } finally {
     await Promise.all(interrupted);
     evidence.set(test.id, { captures });
@@ -193,7 +195,7 @@ async function verify(result, allRecords) {
     }
     return result;
   } catch (error) {
-    return { ...result, status: "fail", error: error.stack, workspace: fixture.workspace };
+    return { ...result, status: "fail", ...failureReport(error), workspace: fixture.workspace };
   }
 }
 let results, currentPhase, failedPhase, execution;
@@ -230,10 +232,12 @@ try { execution = await withOwnedCase({ processes, signal: cancellation.signal, 
   results = await schedule(cases, process.platform, test => execute(test, prepared.get(test.id)));
 } }); }
 catch (error) {
-  const detail = `step=case-${failedPhase ?? currentPhase}: ${error.stack}\nrecovery command: ${JSON.stringify([process.execPath, ...process.argv.slice(1)])}`;
+  const failure = failureReport(error);
+  const detail = `step=case-${failedPhase ?? currentPhase}: ${failure.error}\nrecovery command: ${JSON.stringify([process.execPath, ...process.argv.slice(1)])}`;
   results = cases.map((test, index) => {
     const result = results?.[index];
-    return { ...result, case: test.id, platform: process.platform, status: "fail", phase: result?.phase ?? failedPhase ?? currentPhase,
+    return { ...failure, ...result, case: test.id, platform: process.platform, status: "fail", phase: result?.phase ?? failedPhase ?? currentPhase,
+      ...(result?.error ? { lifecycle_failure: failure } : {}),
       error: result?.error ? `${result.error}\n${detail}` : detail };
   });
   execution = { preparation_seconds: phases.preparation?.seconds };
