@@ -88,15 +88,13 @@ pub(crate) fn admit_child(parent: &CreationConfig, name: &str) -> Result<()> {
 /// Reads the selected effective template once through the original authorized
 /// content reader. A missing home file falls through to the immutable seed;
 /// a refusal or an off marker never does. No later head lookup is performed.
-pub async fn child(
+pub(crate) async fn select(
     reader: &dyn ContentResidencyVerifier,
     home: &VolumeRef,
     seed: &VolumeRef,
-    parent: &CreationConfig,
     name: &str,
     access: ContentAccess<'_, '_>,
 ) -> Result<CreationConfig> {
-    admit_child(parent, name)?;
     let path = format!("templates/{name}/AGENT.md");
     let read = reader.read_private_path(
         home,
@@ -164,7 +162,7 @@ pub(crate) async fn directive(
         }
         None => ROOT.as_bytes(),
     };
-    let (_, body) = parse(source, None)?;
+    let (_, _, body) = crate::context::frontmatter_end(source)?;
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();

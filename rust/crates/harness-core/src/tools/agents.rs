@@ -174,7 +174,7 @@ impl AgentTool {
                 };
                 let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(
-                        "this agent has no role profile to spawn under".into(),
+                        "this agent has no creation template to spawn from".into(),
                     )));
                 };
                 let profile = match templates
