@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes, Spool, OutputWatch, conptyArgs } from "./process.mjs";
@@ -92,7 +92,36 @@ test("ConPTY refuses launches outside admitted native custody", conpty, async t 
 });
 
 const witnessed = { stdio: ["pipe", "pipe", "pipe", "pipe"] };
-const released = running => { running.child.stdio[3].resume(); return once(running.child.stdio[3], "end"); };
+const released = running => {
+  const source = running.child.stdio[3];
+  const completion = finished(source, { readable: true, writable: false, cleanup: true });
+  source.resume();
+  return completion;
+};
+
+test("terminal release observes active and retained original EOF", async t => {
+  const processes = new Processes();
+  t.after(() => processes.close());
+  const running = processes.start(process.execPath, ["-e",
+    'process.stdin.once("data", () => { require("node:fs").closeSync(3); process.stdout.write("retired"); }); process.stdin.resume();'], witnessed);
+  const active = released(running);
+  const retired = shown(running, "retired");
+  running.child.stdin.write("release");
+  await Promise.all([active, retired]);
+  const late = released(running).then(() => "released");
+  running.child.stdin.end();
+  assert.equal(await Promise.race([late, running.closed.then(() => "exited")]), "released",
+    "original EOF must remain observable before the child exit");
+  assert.equal((await running.closed).code, 0);
+
+  const withdrawn = processes.start(process.execPath, ["-e", "process.stdin.resume()"], witnessed);
+  const incomplete = released(withdrawn);
+  withdrawn.child.stdio[3].destroy();
+  await assert.rejects(incomplete, { code: "ERR_STREAM_PREMATURE_CLOSE" });
+  withdrawn.child.stdin.end();
+  assert.equal((await withdrawn.closed).code, 0);
+});
+
 // A regression fails at the test deadline and still reaches cleanup.
 const bounded = (t, promise) => Promise.race([promise, new Promise((_, reject) =>
   t.signal.addEventListener("abort", () => reject(t.signal.reason), { once: true }))]);
