@@ -151,40 +151,31 @@ impl Client {
                 if complete {
                     return Ok(None);
                 }
-                loop {
-                    let delivery = cursor.receive().await?.ok_or(StreamError::Unavailable)?;
-                    if delivery.before.is_some() {
-                        return Err(StreamError::InvalidResponse);
-                    }
-                    if !delivery.consume(&cursor.progress)? {
-                        continue;
-                    }
-                    let data = delivery
-                        .item
-                        .into_data()
-                        .map_err(|_| StreamError::InvalidResponse)?;
-                    let length = wire_codec::session::actor_call_total(&data)?;
-                    if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
-                        return Err(StreamError::InvalidResponse);
-                    }
-                    let bytes = match data.item {
-                        Some(
-                            wire::session_data::Item::ActorCall(bytes)
-                            | wire::session_data::Item::ChildrenPage(bytes)
-                            | wire::session_data::Item::Heads(bytes),
-                        ) => bytes,
-                        _ => return Err(StreamError::InvalidResponse),
-                    };
-                    let received = received
-                        .checked_add(bytes.len())
-                        .filter(|received| *received <= length)
-                        .ok_or(StreamError::InvalidResponse)?;
-                    let chunk = crate::body::BodyChunk::new(bytes, delivery.credit);
-                    return Ok(Some((
-                        (length, chunk),
-                        (cursor, Some(length), received, received == length),
-                    )));
+                let (data, credit) = cursor
+                    .receive_data()
+                    .await?
+                    .ok_or(StreamError::Unavailable)?;
+                let length = wire_codec::session::actor_call_total(&data)?;
+                if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+                    return Err(StreamError::InvalidResponse);
                 }
+                let bytes = match data.item {
+                    Some(
+                        wire::session_data::Item::ActorCall(bytes)
+                        | wire::session_data::Item::ChildrenPage(bytes)
+                        | wire::session_data::Item::Heads(bytes),
+                    ) => bytes,
+                    _ => return Err(StreamError::InvalidResponse),
+                };
+                let received = received
+                    .checked_add(bytes.len())
+                    .filter(|received| *received <= length)
+                    .ok_or(StreamError::InvalidResponse)?;
+                let chunk = crate::body::BodyChunk::new(bytes, credit);
+                Ok(Some((
+                    (length, chunk),
+                    (cursor, Some(length), received, received == length),
+                )))
             },
         )))
     }

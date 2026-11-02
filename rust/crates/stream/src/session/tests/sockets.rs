@@ -431,9 +431,20 @@ async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> 
     )?;
     let mut socket = client.actor_socket(Bytes::from_static(b"open"), 0).await?;
     assert_eq!(socket.next().await?.as_deref(), Some(&b"hello"[..]));
-    for frame in [&b"one"[..], b"two"] {
-        socket.send(Bytes::copy_from_slice(frame)).await?;
-        assert_eq!(socket.next().await?.as_deref(), Some(frame));
+    let frames = [
+        Bytes::from(vec![1; 1024]),
+        Bytes::from(vec![2; crate::MAX_RECORD_BYTES]),
+    ];
+    let mut retained = Vec::new();
+    for frame in &frames {
+        socket.send(frame.clone()).await?;
+        let chunk = socket.next_chunk().await?.ok_or("echo ended")?;
+        assert_eq!(chunk.as_ref(), frame.as_ref());
+        assert_eq!(chunk.as_ref().as_ptr(), frame.as_ptr());
+        // A full copy is a negative control for the original-range oracle.
+        let copy = Bytes::copy_from_slice(frame);
+        assert_ne!(chunk.as_ref().as_ptr(), copy.as_ptr());
+        retained.push(chunk);
     }
     // Negative control: an empty frame never reaches the owner.
     assert_eq!(
@@ -441,7 +452,12 @@ async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> 
         Err(StreamError::InvalidArgument)
     );
     drop(socket);
+    // Both data credits remain held, but the original peer retirement still
+    // releases the actual socket owner. Escaped frames remain readable.
     left.await?;
+    for (chunk, frame) in retained.iter().zip(&frames) {
+        assert_eq!(chunk.as_ref(), frame.as_ref());
+    }
     Ok(())
 }
 
