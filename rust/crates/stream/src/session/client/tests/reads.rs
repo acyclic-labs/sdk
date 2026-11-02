@@ -619,9 +619,34 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             &credential,
             crate::session::Limits::default().channels,
         )?;
-        let (_, visibility) = authority
-            .bind_list(&slots, 1, Some(&StreamPath::new("tree")?), 1)
+        let parent = request
+            .children
+            .as_ref()
+            .and_then(|page| page.parent.as_ref());
+        let mut admitted = None;
+        let list_cost = acyclic_test_support::measure(|| {
+            admitted = Some(authority.bind_list(&slots, 1, parent, 1));
+        });
+        let (_, visibility) = admitted
+            .ok_or("missing measured list admission")?
             .map_err(|_| "page admission failed")?;
+        let mut admitted = None;
+        let heads_cost = acyclic_test_support::measure(|| {
+            admitted = Some(authority.bind_heads(&slots, 1, &request, 1));
+        });
+        admitted
+            .ok_or("missing measured heads admission")?
+            .map_err(|_| "heads admission failed")?;
+        // Heads still reauthorizes its complete binding. With no named reads,
+        // it must pay only the list admission's one filter derivation.
+        assert_eq!(heads_cost.count_total, list_cost.count_total);
+        assert_eq!(heads_cost.bytes_total, list_cost.bytes_total);
+        if predicate {
+            eprintln!(
+                "pinned admission follow={follow}: list={} heads={} allocated bytes={}",
+                list_cost.count_total, heads_cost.count_total, heads_cost.bytes_total,
+            );
+        }
         if follow && predicate {
             let capability = visibility.authorization.current()?;
             let mut built = None;
@@ -732,6 +757,17 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
         let view = client.heads(request.clone(), 1).await?;
         assert_eq!(view.snapshot, direct.snapshot);
         assert_eq!(view.children, Some(expected));
+        // Reusing the list digest never grants an additional named read.
+        let mut named = request.clone();
+        named.paths.push(StreamPath::new(format!(
+            "{}/{}",
+            original.children[0].path,
+            tail_stream.ok_or("missing tail path")?,
+        ))?);
+        assert_eq!(
+            client.heads(named, 1).await.err(),
+            Some(StreamError::AccessDenied)
+        );
     }
     assert!(construction.count_total > 0);
     // The unfiltered real page accounts for all path and reply work. The pin
