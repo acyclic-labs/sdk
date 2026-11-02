@@ -49,19 +49,6 @@ impl NativeTreeMaterializationBackend {
             Err(NativeTreeMaterializationError::InvalidLayout)
         }
     }
-    /// Returns an admitted staging path.
-    pub fn staging_path(
-        &self,
-        path: &str,
-    ) -> Result<(PathBuf, NativeAllocation), NativeTreeMaterializationError> {
-        self.check_path(path)?;
-        let (base, mut allocation) = self
-            .work
-            .path(self.operation_directory_path(), Some(Path::new("target")))?;
-        let (result, mut extra) = self.work.path(&base, Some(Path::new(path)))?;
-        allocation.absorb(&mut extra)?;
-        Ok((result, allocation))
-    }
     /// Clears staged contents while retaining the witnessed target root.
     pub async fn reset_target_directory(
         self: &std::sync::Arc<Self>,
