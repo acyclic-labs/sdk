@@ -166,15 +166,25 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile and cohort admission controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
-    if let Err(error) = run() {
-        let recovery = Options::parse().map_or_else(
-            |_| "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
-            |options| options.recovery(),
-        );
+    let observations_only = std::env::args().any(|argument| argument == "--check-observations");
+    let result = if observations_only {
+        report::check_observations()
+    } else {
+        run()
+    };
+    if let Err(error) = result {
+        let recovery = if observations_only {
+            "cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations".into()
+        } else {
+            match Options::parse() {
+                Ok(options) => options.recovery(),
+                Err(_) => "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
+            }
+        };
         eprintln!("STEP_FAILED local-hotpath: {error}; recovery: {recovery}");
         std::process::exit(1);
     }
