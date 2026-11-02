@@ -11,7 +11,7 @@ use super::{
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
-    FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
+    FileRecord, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
@@ -126,28 +126,21 @@ pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
 impl From<FsError> for MountSourceError {
     fn from(error: FsError) -> Self {
         match error {
-            FsError::CreationRejected
-            | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
-                MountSourceError::AlreadyExists
-            }
-            FsError::NotFound
-            | FsError::Mutation(
-                GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
-            ) => MountSourceError::NotFound,
-            FsError::NotDirectory | FsError::Mutation(GenerationMutationError::NotDirectory) => {
-                MountSourceError::NotDirectory
-            }
-            FsError::Mutation(GenerationMutationError::IsDirectory) => {
-                MountSourceError::IsDirectory
-            }
-            FsError::Mutation(GenerationMutationError::DirectoryNotEmpty) => {
-                MountSourceError::DirectoryNotEmpty
-            }
             FsError::Work(error) => MountSourceError::Work(error),
             FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
             FsError::Cancelled(_) => MountSourceError::Cancelled,
             FsError::SourceSnapshotStale => MountSourceError::Stale,
-            other => MountSourceError::Filesystem(other),
+            other => {
+                use super::shared::outcome::{CallbackFailure as F, filesystem_failure};
+                match filesystem_failure(&other) {
+                    F::AlreadyExists => Self::AlreadyExists,
+                    F::NotFound => Self::NotFound,
+                    F::NotDirectory => Self::NotDirectory,
+                    F::IsDirectory => Self::IsDirectory,
+                    F::DirectoryNotEmpty => Self::DirectoryNotEmpty,
+                    _ => Self::Filesystem(other),
+                }
+            }
         }
     }
 }
