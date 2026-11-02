@@ -70,6 +70,26 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
         earlier.retire(&mut work.accounting())?;
         assert_eq!(work.allocations.live_bytes(), 0);
     }
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let mut earlier = work.vec_owned::<u8>(31)?;
+    let read = store.read(object_id, bytes.len() as u64, &mut work).await?;
+    assert_eq!(read.bytes.as_ref(), bytes);
+    assert_eq!(work.allocations.live_bytes(), 31 + bytes.len() as u64);
+    drop(read);
+    work.allocations.release_owned(bytes.len() as u64)?;
+    let before = work.spent();
+    work.budget.bytes_copied = before.bytes_copied;
+    assert!(matches!(
+        store.read(object_id, bytes.len() as u64, &mut work).await,
+        Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+            counter: "bytes_copied",
+            ..
+        }))
+    ));
+    assert_eq!(work.spent().bytes_copied, before.bytes_copied);
+    assert_eq!(work.allocations.live_bytes(), 31);
+    earlier.retire(&mut work.accounting())?;
+    assert_eq!(work.allocations.live_bytes(), 0);
     Ok(())
 }
 

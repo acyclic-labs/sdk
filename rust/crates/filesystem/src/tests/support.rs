@@ -2,10 +2,9 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::memory::MemoryObjectStore;
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::performance::WorkCounters;
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
-    ObjectStoreError,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,46 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) struct OwnedReadObjectStore {
     pub(crate) inner: MemoryObjectStore,
     pub(crate) reject_decoded_admission: AtomicBool,
-}
-
-impl OwnedReadObjectStore {
-    fn own_read(
-        receipt: &crate::OperationReceipt<ObjectRead>,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead> {
-        let logical_bytes = u64::try_from(receipt.value.bytes.len()).map_err(|_| {
-            ObjectFailure::new(
-                ObjectStoreError::Work(crate::WorkError::Overflow),
-                receipt.work,
-            )
-        })?;
-        let mut work = receipt
-            .work
-            .checked_add(WorkCounters {
-                bytes_copied: logical_bytes,
-                allocation_operations: u64::from(logical_bytes != 0),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        work.peak_allocation_bytes = work
-            .peak_allocation_bytes
-            .checked_add(logical_bytes)
-            .ok_or_else(|| {
-                ObjectFailure::new(
-                    ObjectStoreError::Work(crate::WorkError::Overflow),
-                    receipt.work,
-                )
-            })?;
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        Ok(crate::OperationReceipt {
-            value: ObjectRead {
-                bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
-                retention: ObjectReadRetention::Owned { logical_bytes },
-            },
-            work,
-        })
-    }
 }
 
 impl AsyncObjectStore for OwnedReadObjectStore {
@@ -84,16 +43,32 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         ordinary(context)?;
-        let budget = context.read_budget()?;
-        let mut backend = crate::AuthorityWork::new(budget, context.cancellation);
-        let result = self
-            .inner
-            .read(object_id, maximum_bytes, &mut backend)
-            .await;
-        let owned = backend
-            .receipt(result)
-            .and_then(|receipt| Self::own_read(&receipt, budget));
-        context.accept(owned)
+        let read = self.inner.read(object_id, maximum_bytes, context).await?;
+        let logical_bytes = read.bytes.len() as u64;
+        let mut accounting = context.read_accounting()?;
+        let mut scope = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let allocation = scope
+            .claim_owned(logical_bytes, u64::from(logical_bytes != 0))
+            .map_err(crate::async_storage::object_error)?;
+        let bytes = scope
+            .perform(
+                WorkCounters {
+                    bytes_copied: logical_bytes,
+                    ..WorkCounters::UNCHARGED
+                },
+                || OwnedBytes::copy_from_slice(&read.bytes),
+            )
+            .map_err(crate::async_storage::object_error)?;
+        scope
+            .keep_bytes(logical_bytes)
+            .map_err(crate::async_storage::object_error)?;
+        drop(allocation);
+        Ok(ObjectRead {
+            bytes,
+            retention: ObjectReadRetention::Owned { logical_bytes },
+        })
     }
 
     async fn read_many(
