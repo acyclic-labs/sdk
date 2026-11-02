@@ -4,14 +4,15 @@
 use serde::{Deserialize, Serialize};
 
 pub mod probes;
+pub mod reports;
 pub mod stats;
 
 /// Refusals leave analysis accumulators unchanged.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// An invalid pair, statistic or planning input.
+    /// An invalid pair, statistic, trial cost or planning input.
     #[error(
-        "analyze paired observations: {0}; recovery: correct finite paired inputs and call Observation::difference, Cluster::push, PairedStats::push, PairedStats::estimate or required_clusters again"
+        "analyze experiment observations: {0}; recovery: correct finite inputs and call Observation::difference, AssignedTrials::push/report, Cluster::push, PairedStats::push/estimate or required_clusters again"
     )]
     Statistics(&'static str),
     /// Original scored-row decoder failure.
@@ -31,7 +32,7 @@ pub enum Error {
     ProbeJson(serde_json::Error),
     /// Counter or power-planning result cannot be represented.
     #[error(
-        "count experiment observations: overflow; recovery: split independent input groups before calling Cluster::push or PairedStats::push, or correct required_clusters inputs"
+        "count experiment observations: overflow; recovery: split independent input groups before calling AssignedTrials::push, Cluster::push or PairedStats::push, or correct required_clusters inputs"
     )]
     Overflow,
 }

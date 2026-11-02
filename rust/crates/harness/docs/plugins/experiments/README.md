@@ -33,9 +33,10 @@ Workers return an immutable artifact containing exactly
 `{"version":1,"value":47}`, with their selected integer in `value`. Decode the
 whole artifact with `Decision::decode`, then score it once. Retain its original
 reference and accounting before closing the worker. A missing, malformed,
-refused or failed output is a failure row, not an invented zero or an exclusion.
-Report correctness over all assigned trials and, separately, over valid outputs.
-Observed adoption is a lower bound when decisions are missing.
+refused or failed output retains its original failure row. Feed every settled
+assignment once to `experiments::reports::AssignedTrials`, using `None` when
+there is no valid decision. Its shared summary supplies the assigned and valid
+denominators, unscored fraction and observed-adoption lower bound.
 
 ## Admission and execution boundary
 
@@ -93,8 +94,9 @@ arms and model calls are not independent clusters. Predeclare any multiple
 comparisons; other node/edge summaries are exploratory.
 
 Join actual `ModelTokenUsage` and `ModelPriceRecord` for every paid participant.
-Report total USD divided by assigned trials, priced-call coverage and unknown
-cost separately, including failures and coordinator/injector work. Authored
+Supply a trial cost to the shared summary only when all its accounting is known,
+including failures and coordinator/injector work. Report priced-call coverage
+separately; incomplete accounting leaves total USD/run unknown. Authored
 payloads need no injector model. No probe has run; USD/run is unknown.
 
 ## Work and controls
