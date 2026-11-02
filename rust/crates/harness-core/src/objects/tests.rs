@@ -10,7 +10,15 @@ use acyclic_objects::MemoryObjects;
 #[tokio::test]
 async fn an_upload_retry_naming_other_content_is_refused()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    upload_contract(MemoryObjects::memory(), None).await?;
+    let issuer = AuthorityRoot::new(
+        "objects-test",
+        [9; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "objects-test".into(),
+        },
+    );
+    upload_contract(MemoryObjects::memory(), None, &issuer).await?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         use acyclic_objects::{LocalClose, LocalMedium, Store, binary::BinaryObjects};
@@ -31,7 +39,8 @@ async fn an_upload_retry_naming_other_content_is_refused()
             account: account.clone(),
             lost_retain_reply: lost_retain_reply.clone(),
         });
-        let (file, uncertain) = upload_contract(objects, Some(lost_retain_reply.clone())).await?;
+        let (file, uncertain) =
+            upload_contract(objects, Some(lost_retain_reply.clone()), &issuer).await?;
         assert!(!lost_retain_reply.load(Ordering::SeqCst));
         let digest = Digest::from_hex(file.version())?;
         assert_eq!(
@@ -67,7 +76,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
         }));
         objects.collect().await?;
         objects.collect().await?;
-        let binding = upload_binding(objects.clone())?;
+        let binding = upload_binding(objects.clone(), &issuer)?;
         for (file, expected) in [
             (file, b"owner bytes".as_slice()),
             (
@@ -153,13 +162,14 @@ impl acyclic_objects::binary::Transport for LocalCell {
 async fn upload_contract(
     objects: impl Blobs + 'static,
     lost_retain_reply: Option<Arc<std::sync::atomic::AtomicBool>>,
+    issuer: &AuthorityRoot,
 ) -> Result<(FileRef, Option<FileRef>)> {
     #[cfg(feature = "conformance")]
     let objects = acyclic_stream::testing::Counted::new(objects);
     #[cfg(feature = "conformance")]
     let ledger = objects.ledger();
     let objects = Arc::new(objects);
-    let owner_store = upload_binding(objects.clone())?;
+    let owner_store = upload_binding(objects.clone(), issuer)?;
     let stage = |operation: u8, path: &'static str, bytes: &'static [u8]| {
         owner_store.stage(
             OperationId::from_bytes([operation; 16]),
@@ -267,7 +277,10 @@ async fn upload_contract(
     Ok((file, uncertain))
 }
 
-fn upload_binding(objects: Arc<dyn Blobs>) -> Result<Arc<ObjectContentStore>> {
+fn upload_binding(
+    objects: Arc<dyn Blobs>,
+    issuer: &AuthorityRoot,
+) -> Result<Arc<ObjectContentStore>> {
     let owner = AgentId::from_bytes([7; 16]);
     let volume = VolumeRef::new(
         ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
@@ -276,14 +289,6 @@ fn upload_binding(objects: Arc<dyn Blobs>) -> Result<Arc<ObjectContentStore>> {
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let issuer = AuthorityRoot::new(
-        "objects-test",
-        [9; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "objects-test".into(),
-        },
-    );
     let owner_scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([

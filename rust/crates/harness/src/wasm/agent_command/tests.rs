@@ -33,9 +33,12 @@ struct Endpoint {
 const AGENT: &str = "harness/agents/00000000000000000000000000000001";
 
 impl CallProvider for Endpoint {
-    fn resource(&self, invocation: &[u8]) -> Result<String, StreamError> {
+    fn target(
+        &self,
+        invocation: &[u8],
+    ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
         AgentCall::decode(invocation).map_err(|_| StreamError::InvalidArgument)?;
-        Ok(RESOURCE.into())
+        acyclic_stream::session::CallTarget::new(RESOURCE.into(), "actors/invoke")
     }
 
     fn call(

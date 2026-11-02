@@ -1094,9 +1094,12 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn resource(&self, invocation: &[u8]) -> Result<String, StreamError> {
+    fn target(
+        &self,
+        invocation: &[u8],
+    ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
         self.admit(invocation)?;
-        Ok(self.resource.clone())
+        acyclic_stream::session::CallTarget::new(self.resource.clone(), "actors/invoke")
     }
 
     fn call(
