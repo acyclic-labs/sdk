@@ -539,6 +539,99 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
 }
 
 #[tokio::test]
+async fn pinned_module_calls_keep_canonical_approval_rules_and_replay() -> Result<()> {
+    use crate::approvals::{ApprovalRule, RuleVerdict};
+    use crate::interaction::{ApprovalSubject, Interaction};
+    use crate::model::NativeToolProfile;
+
+    for profile in [
+        None,
+        Some(NativeToolProfile::Anthropic),
+        Some(NativeToolProfile::Openai),
+        Some(NativeToolProfile::Google),
+    ] {
+        for verdict in [RuleVerdict::Deny, RuleVerdict::Allow] {
+            let code = "import {write, DeniedError} from 'acyclic'; export default (async () => { try { await write('file.txt', 'body', 'any'); return 'allowed'; } catch (error) { return error instanceof DeniedError ? 'denied' : String(error); } })()";
+            let (mut executor, model, writes) = executor(code, Arc::new(InnerApproval), false)?;
+            let mut write = executor
+                .tools
+                .get("example.echo", None, None)?
+                .unwrap()
+                .clone();
+            write.definition.name = "write".into();
+            write.definition.revision = "pin-test".into();
+            executor.tools.register((write, None), &mut None, None)?;
+            if let Some(profile) = profile {
+                crate::tools::native::NativeTools::new(profile)?.bind(&mut executor.tools)?;
+            }
+            executor = executor.with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new([
+                        "tool:call:code",
+                        "tool:call:write",
+                        capability::INTERACTION_ROUTE,
+                    ]),
+                    Limits::default(),
+                )?,
+                Arc::new(InnerApproval),
+            )?;
+            let rule = ApprovalRule {
+                tool: Some("write".into()),
+                arguments: None,
+                selectors: Vec::new(),
+                target: None,
+                verdict,
+            };
+            // The exact pinned spelling is the negative control: it misses
+            // the rule and would take this permissive fallback.
+            assert_eq!(
+                ApprovalRule::evaluate(
+                    std::slice::from_ref(&rule),
+                    RuleVerdict::Allow,
+                    "write@pin-test",
+                    &Value::Null
+                ),
+                RuleVerdict::Allow
+            );
+            let input = input();
+            let journal = Journal::default();
+            assert!(matches!(
+                executor.execute_progress(input.clone(), &journal).await?,
+                ExecutionProgress::Pending(_)
+            ));
+            assert_eq!(writes.0.load(Ordering::SeqCst), 0);
+            {
+                let mut approvals = journal.2.lock().unwrap();
+                assert_eq!(approvals.len(), 1);
+                let (request, outcome) = approvals.values_mut().next().unwrap();
+                let Interaction::Approval { subject, .. } = request else {
+                    panic!("not an approval")
+                };
+                assert!(matches!(subject, ApprovalSubject::Tool { tool, .. } if tool == "write"));
+                let decision = ApprovalRule::evaluate_subject(
+                    std::slice::from_ref(&rule),
+                    RuleVerdict::Allow,
+                    subject,
+                );
+                assert_eq!(decision, verdict);
+                *outcome = Some(if decision == RuleVerdict::Allow {
+                    InteractionOutcome::Approved {}
+                } else {
+                    InteractionOutcome::Denied {}
+                });
+            }
+            executor.execute(input.clone(), &journal).await?;
+            let allowed = verdict == RuleVerdict::Allow;
+            assert_eq!(result(&model), if allowed { "allowed" } else { "denied" });
+            assert_eq!(writes.0.load(Ordering::SeqCst), usize::from(allowed));
+            executor.execute(input, &journal).await?;
+            assert_eq!(writes.0.load(Ordering::SeqCst), usize::from(allowed));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()> {
     struct Observe(Arc<Journal>);
     impl ToolExecutor for Observe {

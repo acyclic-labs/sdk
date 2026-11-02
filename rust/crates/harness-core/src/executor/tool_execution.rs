@@ -629,9 +629,24 @@ impl<'io> StockExecution<'io> {
         // Evaluation, the prompt and the approval request are charged to the
         // call's original ledger; the prompt's custody is held while it settles.
         // Policy and approval judge the canonical call, whatever its spelling.
-        let canonical = tool.executor.canonical(invocation)?;
-        let judged = canonical.as_ref().unwrap_or(invocation);
         let judged_tool = tool.executor.capability().unwrap_or(tool);
+        let mut canonical = tool.executor.canonical(invocation)?;
+        // An explicit revision selects the executor; it is not a different
+        // policy capability. Retain the pinned spelling in the original call
+        // and journal, but judge every spelling under the registered name.
+        if let Some(canonical) = &mut canonical {
+            if canonical.name != judged_tool.definition.name {
+                canonical.name = stock_string_copy(&judged_tool.definition.name, self.io)?;
+            }
+        } else if invocation.name != judged_tool.definition.name {
+            canonical = Some(ToolInvocation {
+                operation_id: invocation.operation_id,
+                call_id: stock_string_copy(&invocation.call_id, self.io)?,
+                name: stock_string_copy(&judged_tool.definition.name, self.io)?,
+                arguments: crate::model::clone_value(&invocation.arguments, self.io)?,
+            });
+        }
+        let judged = canonical.as_ref().unwrap_or(invocation);
         let (decision, custody) = policy.evaluate(judged, scope, self.io)?.await?;
         if !identity_matches()? {
             return Err(Error::Conflict(
