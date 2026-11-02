@@ -720,6 +720,7 @@ mod model {
                         .as_ref()
                         .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     page,
+                    acyclic_collections::page::Direction::Ascending,
                 ),
                 LIMITS,
                 WorkBudget::UNBOUNDED,
