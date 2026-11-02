@@ -120,14 +120,16 @@ impl TurnAdmission {
         issuer: &RuntimeAuthority,
         path: &AgentPath,
     ) -> Result<RuntimeAuthority> {
-        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
         match self {
             Self::LocalRoot => issuer.with_audience(Authority {
                 kind: AggregateKind::Conversation,
-                id: path.id().as_str().to_owned(),
+                id: path.id().into(),
             }),
             Self::Admitted { audience, scope } => {
-                if scope.agent().is_some_and(|agent| agent != owner) {
+                if scope
+                    .agent()
+                    .is_some_and(|agent| agent.into_bytes() != path.id_bytes())
+                {
                     return Err(Error::Unauthorized(
                         "admitted scope belongs to another agent".into(),
                     ));
@@ -163,7 +165,7 @@ impl<'v> AdmittedAgent<'v> {
         path: &AgentPath,
         volumes: &'v [VolumeBinding],
     ) -> Result<Self> {
-        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
+        let owner = crate::AgentId::from_bytes(path.id_bytes());
         let private = volumes
             .iter()
             .find(|binding| binding.name == PRIVATE_VOLUME)
@@ -1230,7 +1232,7 @@ impl<'a> TurnContext<'a> {
         // the owner of an inherited output names the ancestor that ran it.
         let lineage: Vec<_> = std::iter::successors(agent.path.parent(), AgentPath::parent)
             .map(|path| {
-                let owner = VolumeOwner::Agent(crate::AgentId::from_bytes(path.id().to_bytes()));
+                let owner = VolumeOwner::Agent(crate::AgentId::from_bytes(path.id_bytes()));
                 (owner, path)
             })
             .collect();
