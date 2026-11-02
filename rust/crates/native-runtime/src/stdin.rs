@@ -265,7 +265,7 @@ mod tests {
         let runtime = crate::coordination_runtime()?;
         let (input, mut writer) = std::io::pipe()?;
         runtime.block_on(async {
-            let mut lines = AsyncLines::new(super::reader(input)?, usize::MAX);
+            let mut lines = AsyncLines::new(super::reader(input)?, None);
             // The input is open and empty: its read waits on its own thread
             // while the one blocking slot runs other work to completion.
             tokio::select! {

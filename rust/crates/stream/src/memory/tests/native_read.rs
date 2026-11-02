@@ -255,3 +255,91 @@ async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn large_snapshot_read_reuses_one_page_and_preserves_original_refusals() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let path = path("native/read/pages")?;
+    for from in (0..10_000).step_by(128) {
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: (from..(from + 128).min(10_000))
+                    .map(|_| OwnedBytes::from_static(b"aa").into())
+                    .collect(),
+                if_tail: Some(from),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    for failure in [None, Some(false), Some(true)] {
+        let meter = Arc::new(Meter {
+            memory_limit: 40 * 1024,
+            read_limit: if failure == Some(false) {
+                2048
+            } else {
+                u64::MAX
+            },
+            cancel_after_read: if failure == Some(true) {
+                2048
+            } else {
+                u64::MAX
+            },
+            ..Meter::default()
+        });
+        let mut output = provider
+            .native_read(
+                ReadRequest {
+                    path: path.clone(),
+                    from: 0,
+                    key: None,
+                    limit: u32::MAX,
+                    at_least: Default::default(),
+                },
+                meter.original(),
+            )
+            .await??;
+        if failure.is_none() {
+            // Appending after opening must not extend the captured finite cut.
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![OwnedBytes::from_static(b"late").into()],
+                    if_tail: Some(10_000),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        let expected = if failure.is_none() { 10_000 } else { 1024 };
+        for sequence in 0..expected {
+            let record = output
+                .value_mut()
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)???;
+            assert_eq!(record.value().sequence, sequence);
+            assert_eq!(record.value().value.as_ref(), b"aa");
+        }
+        if let Some(cancellation) = failure {
+            let error = output
+                .value_mut()
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)?;
+            assert!(
+                matches!(error, Err(error) if error.kind() == if cancellation {
+                    std::io::ErrorKind::Interrupted
+                } else {
+                    std::io::ErrorKind::OutOfMemory
+                })
+            );
+            assert_eq!(meter.read.load(Ordering::SeqCst), 2048);
+        }
+        assert!(output.value_mut().next().await.is_none());
+        drop(output);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.pending_examination.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}

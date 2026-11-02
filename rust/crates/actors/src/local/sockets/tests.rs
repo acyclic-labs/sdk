@@ -823,12 +823,13 @@ impl Executor for HeldCloseExecutor {
         self.tasks.lock().unwrap().push_back(future);
     }
 
-    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, milliseconds: u64) -> BoxProviderFuture<'static, Result<(), acyclic_stream::runtime::SleepError>> {
         let retry = self.retry.lock().unwrap().take();
         Box::pin(async move {
             let retry = retry.expect("a decided socket operation must not retry");
             assert_eq!(milliseconds, 1, "unexpected additional transport retry");
             retry.await.expect("lost original transport-retry producer");
+            Ok(())
         })
     }
 }

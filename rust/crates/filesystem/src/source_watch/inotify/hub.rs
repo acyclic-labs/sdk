@@ -30,8 +30,6 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::sync::{OnceLock, Weak};
 
-/// Records a watch may hold undelivered before it reports lost changes.
-pub(super) const INBOX_BYTES: usize = READ_BUFFER_BYTES;
 /// Threads delivering inbox records to watch sinks.
 pub(super) const SERVICE_THREADS: usize = 2;
 /// Records that concern a directory itself rather than one named child.
@@ -50,6 +48,7 @@ pub(super) enum Interest<'a> {
 
 pub(super) struct Hub {
     descriptor: OwnedFd,
+    failure: AtomicI32,
     routes: Mutex<Routes>,
     pending: Mutex<VecDeque<Arc<Shared>>>,
     pending_changed: Condvar,
@@ -75,6 +74,7 @@ struct Routes {
 pub(super) struct Inbox {
     bytes: VecDeque<u8>,
     overflowed: bool,
+    failure: Option<DemandError>,
     scheduled: bool,
     #[cfg(test)]
     service_started: Option<std::sync::mpsc::Sender<()>>,
@@ -119,6 +119,7 @@ impl Hub {
         })?;
         Ok(Self {
             descriptor,
+            failure: AtomicI32::new(0),
             routes: Mutex::new(Routes {
                 buffer: vec![0; READ_BUFFER_BYTES],
                 descriptors: HashMap::new(),
@@ -162,13 +163,21 @@ impl Hub {
 
     /// Subscribes a new watch to queue overflow records.
     pub(super) fn subscribe(&'static self, watch: &Arc<Shared>) -> Result<(), DemandError> {
+        self.check()?;
         self.start_threads()?;
-        self.routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        self.check()?;
+        routes
             .subscribers
             .insert(watch.subscriber, Arc::downgrade(watch));
         Ok(())
+    }
+
+    pub(super) fn check(&self) -> io::Result<()> {
+        match self.failure.load(Ordering::Acquire) {
+            0 => Ok(()),
+            code => Err(io::Error::from_raw_os_error(code)),
+        }
     }
 
     /// Stops routing queue overflow records to `subscriber`.
@@ -220,8 +229,17 @@ impl Hub {
             // other watches share may hold records about this watch's names
             // from before it existed. Route them to the earlier interests
             // first, as a fresh instance would never have queued them.
-            self.drain_locked(&mut routes, &mut ready)
-                .and_then(|()| self.add_locked(&mut routes, watch, path, mask, interest))
+            match self
+                .check()
+                .and_then(|()| self.drain_locked(&mut routes, &mut ready))
+            {
+                Ok(()) => self.add_locked(&mut routes, watch, path, mask, interest),
+                Err(error) => {
+                    drop(routes);
+                    self.fail_all(&error);
+                    Err(error)
+                }
+            }
         };
         self.schedule_ready(ready);
         added
@@ -353,7 +371,8 @@ impl Hub {
     /// observes them in its inbox. Records arriving meanwhile are left to the
     /// router: the work is bounded by the queue at entry, however busy.
     pub(super) fn drain(&self) -> io::Result<()> {
-        let queued = self.queued()?;
+        self.check()?;
+        let queued = self.queued().inspect_err(|error| self.fail_all(error))?;
         // The queue is FIFO and the router reads under the routing lock: once
         // this call has read `queued` bytes or found the queue empty, every
         // record queued at entry was routed by this call or before its batch.
@@ -390,7 +409,7 @@ impl Hub {
             self.route_batch(&mut routes, &mut ready)
         };
         self.schedule_ready(ready);
-        result
+        result.inspect_err(|error| self.fail_all(error))
     }
 
     /// Schedules the watches that became due. Every watch upgraded under the
@@ -405,27 +424,25 @@ impl Hub {
     }
 
     fn route_batch(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<usize> {
-        let filled = loop {
-            let length = routes.buffer.len();
-            // SAFETY: the routing lock owns this buffer for the read.
-            let read = unsafe {
-                libc::read(
-                    self.descriptor.as_raw_fd(),
-                    routes.buffer.as_mut_ptr().cast(),
-                    length,
-                )
-            };
-            if read >= 0 {
-                break usize::try_from(read)
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            }
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::WouldBlock => return Ok(0),
-                io::ErrorKind::Interrupted => {}
-                _ => return Err(error),
-            }
+        self.check()?;
+        let length = routes.buffer.len();
+        // SAFETY: the routing lock owns this buffer for the read.
+        let read = unsafe {
+            libc::read(
+                self.descriptor.as_raw_fd(),
+                routes.buffer.as_mut_ptr().cast(),
+                length,
+            )
         };
+        if read < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return Ok(0);
+            }
+            return Err(error);
+        }
+        let filled =
+            usize::try_from(read).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         {
             let Routes {
                 buffer,
@@ -464,23 +481,23 @@ impl Hub {
                 for watch in route.all.values().filter_map(Weak::upgrade) {
                     deliver(watch, record, ready);
                 }
-                let named = if name.is_empty() || mask & SELF_RECORDS != 0 {
-                    // Records about the directory itself reach every interest.
-                    route
-                        .named
-                        .values()
-                        .flat_map(HashMap::iter)
-                        .collect::<Vec<_>>()
-                } else {
-                    route.named.get(name).into_iter().flatten().collect()
+                let mut deliver_named = |named: &HashMap<u64, Weak<Shared>>| {
+                    for (subscriber, watch) in named {
+                        if route.all.contains_key(subscriber) {
+                            continue;
+                        }
+                        if let Some(watch) = watch.upgrade() {
+                            deliver(watch, record, ready);
+                        }
+                    }
                 };
-                for (subscriber, watch) in named {
-                    if route.all.contains_key(subscriber) {
-                        continue;
+                if name.is_empty() || mask & SELF_RECORDS != 0 {
+                    // Records about the directory itself reach every interest.
+                    for named in route.named.values() {
+                        deliver_named(named);
                     }
-                    if let Some(watch) = watch.upgrade() {
-                        deliver(watch, record, ready);
-                    }
+                } else if let Some(named) = route.named.get(name) {
+                    deliver_named(named);
                 }
                 if mask & libc::IN_IGNORED != 0 {
                     // The kernel removed this descriptor.
@@ -500,8 +517,12 @@ impl Hub {
     }
 
     fn route_forever(&'static self) {
+        self.route_descriptor(self.descriptor.as_raw_fd());
+    }
+
+    fn route_descriptor(&self, source: i32) {
         let mut descriptor = libc::pollfd {
-            fd: self.descriptor.as_raw_fd(),
+            fd: source,
             events: libc::POLLIN,
             revents: 0,
         };
@@ -509,10 +530,20 @@ impl Hub {
             // SAFETY: one initialized pollfd record.
             let ready = unsafe { libc::poll(&raw mut descriptor, 1, -1) };
             if ready < 0 {
-                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                self.fail_all();
+                self.fail_all(&error);
+                return;
+            }
+            if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                let code = if descriptor.revents & libc::POLLNVAL != 0 {
+                    libc::EBADF
+                } else {
+                    libc::EIO
+                };
+                self.fail_all(&io::Error::from_raw_os_error(code));
                 return;
             }
             #[cfg(test)]
@@ -522,22 +553,41 @@ impl Hub {
             #[cfg(test)]
             drop(paused);
             if routed.is_err() {
-                self.fail_all();
                 return;
             }
         }
     }
 
-    /// The shared queue failed: no watch can observe changes exactly again.
-    fn fail_all(&self) {
-        let mut ready = Vec::new();
-        {
-            let routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-            for watch in routes.subscribers.values().filter_map(Weak::upgrade) {
-                deliver_overflow(watch, &mut ready);
+    /// Terminal source loss is distinct from a recoverable queue overflow.
+    fn fail_all(&self, error: &io::Error) {
+        let code = error.raw_os_error().unwrap_or(libc::EIO);
+        let watches = {
+            let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+            if self
+                .failure
+                .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
             }
+            std::mem::take(&mut routes.subscribers)
+        };
+        for watch in watches.into_values().filter_map(|watch| watch.upgrade()) {
+            // Mark a pending terminal pass so a held cursor reschedules it on
+            // release. Notification itself never waits for that cursor.
+            let error = watch
+                .inbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .failure
+                .replace(io::Error::from_raw_os_error(code).into())
+                .unwrap_or_else(|| io::Error::from_raw_os_error(code).into());
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut work = watch.delivery.callback_work();
+                watch.delivery.failed_with_work(error, &mut work);
+            }));
+            self.schedule(watch);
         }
-        self.schedule_ready(ready);
     }
 
     fn serve_forever(&'static self) {
@@ -562,17 +612,14 @@ impl Hub {
 /// Watches that received records, and whether each needs a service pass.
 type Ready = Vec<(Arc<Shared>, bool)>;
 
-/// Appends one record; a full inbox records loss instead.
+/// Appends one record using the watch's original allocation owner.
 fn deliver(watch: Arc<Shared>, record: &[u8], ready: &mut Ready) {
     let due = {
         let mut inbox = watch.inbox.lock().unwrap_or_else(PoisonError::into_inner);
-        if !inbox.overflowed {
-            if inbox.bytes.len() + record.len() > INBOX_BYTES
-                || inbox.bytes.try_reserve(record.len()).is_err()
-            {
-                inbox.overflowed = true;
-            } else {
-                inbox.bytes.extend(record);
+        if !inbox.overflowed && inbox.failure.is_none() {
+            let mut work = watch.delivery.callback_work();
+            if let Err(error) = inbox.append(record, &watch, &mut work) {
+                inbox.failure = Some(error);
             }
         }
         !std::mem::replace(&mut inbox.scheduled, true)
@@ -590,10 +637,88 @@ fn deliver_overflow(watch: Arc<Shared>, ready: &mut Ready) {
 }
 
 impl Inbox {
+    fn append<W: SourceDemandReadWork>(
+        &mut self,
+        record: &[u8],
+        watch: &Shared,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.admit(copied(record.len() as u64))?;
+        let needed = self
+            .bytes
+            .len()
+            .checked_add(record.len())
+            .ok_or(WorkError::Overflow)?;
+        let old = self.bytes.capacity();
+        if needed > old {
+            let capacity = old.checked_mul(2).ok_or(WorkError::Overflow)?.max(needed);
+            watch
+                .ownership
+                .claim_retained(capacity as u64, WorkCounters::UNCHARGED, work)?;
+            let mut grown = VecDeque::new();
+            if let Err(error) = grown.try_reserve_exact(capacity) {
+                watch.ownership.discard_retained(capacity as u64, work)?;
+                return Err(DemandError::Allocation(error));
+            }
+            let actual = grown.capacity();
+            // Reconcile allocator rounding before exposing or copying payload.
+            if actual > capacity {
+                if let Err(error) = watch.ownership.claim_retained(
+                    (actual - capacity) as u64,
+                    WorkCounters::UNCHARGED,
+                    work,
+                ) {
+                    drop(grown);
+                    watch.ownership.discard_retained(capacity as u64, work)?;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = work.started_io(copied(self.bytes.len() as u64)) {
+                drop(grown);
+                watch.ownership.discard_retained(actual as u64, work)?;
+                return Err(error);
+            }
+            if watch
+                .retained_variable_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
+                    bytes.checked_add((actual - old) as u64)
+                })
+                .is_err()
+            {
+                drop(grown);
+                watch.ownership.discard_retained(actual as u64, work)?;
+                return Err(WorkError::Overflow.into());
+            }
+            grown.extend(self.bytes.drain(..));
+            self.bytes = grown;
+            watch.ownership.retire(old as u64)?;
+            if !watch.ownership.has_native_custody() {
+                work.release(actual as u64)?;
+            }
+        }
+        work.started_io(copied(record.len() as u64))?;
+        self.bytes.extend(record);
+        Ok(())
+    }
+
     /// Moves whole records, at most `maximum` bytes, into `buffer`. An inbox
     /// that lost records yields one queue-overflow record once drained.
-    pub(super) fn take(&mut self, buffer: &mut Vec<u8>, maximum: usize) -> io::Result<usize> {
+    pub(super) fn take<W: SourceDemandReadWork>(
+        &mut self,
+        buffer: &mut Vec<u8>,
+        maximum: usize,
+        watch: &Shared,
+        work: &mut W,
+    ) -> Result<usize, DemandError> {
         buffer.clear();
+        if let Some(error) = self.failure.take() {
+            return Err(error);
+        }
+        if !self.bytes.is_empty() || self.overflowed {
+            buffer
+                .try_reserve_exact(maximum)
+                .map_err(DemandError::Allocation)?;
+        }
         while self.bytes.len() >= EVENT_HEADER_BYTES {
             let mut header = [0_u8; EVENT_HEADER_BYTES];
             for (target, byte) in header.iter_mut().zip(self.bytes.iter()) {
@@ -605,24 +730,27 @@ impl Inbox {
             if buffer.len() + length > maximum {
                 if buffer.is_empty() {
                     // inotify reports a buffer too small for the next record.
-                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL).into());
                 }
                 break;
             }
-            buffer
-                .try_reserve(length)
-                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            work.started_io(copied(length as u64))?;
             buffer.extend(self.bytes.drain(..length));
         }
         if self.bytes.is_empty() {
+            let bytes = self.bytes.capacity() as u64;
             self.bytes = VecDeque::new();
+            watch
+                .retained_variable_bytes
+                .fetch_sub(bytes, Ordering::AcqRel);
+            watch.ownership.retire(bytes)?;
             if self.overflowed && buffer.len() + EVENT_HEADER_BYTES <= maximum {
                 self.overflowed = false;
                 buffer.extend_from_slice(&overflow_record());
             }
         }
         if buffer.is_empty() {
-            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            return Err(io::Error::from(io::ErrorKind::WouldBlock).into());
         }
         Ok(buffer.len())
     }
@@ -633,12 +761,17 @@ impl Inbox {
         (self.bytes.len(), self.overflowed)
     }
 
-    /// Observes the next original service pass, or producer destruction.
+    #[cfg(test)]
+    pub(super) fn failure(&self) -> Option<&DemandError> {
+        self.failure.as_ref()
+    }
+
+    /// Observes the next entry into this inbox's original service pass.
     #[cfg(test)]
     pub(super) fn next_service(&mut self) -> std::sync::mpsc::Receiver<()> {
-        let (send, receive) = std::sync::mpsc::channel();
-        assert!(self.service_started.replace(send).is_none());
-        receive
+        let (started, observed) = std::sync::mpsc::channel();
+        assert!(self.service_started.replace(started).is_none());
+        observed
     }
 
     /// Records that a service pass started: later records schedule again.
@@ -653,8 +786,164 @@ impl Inbox {
     /// Marks the inbox scheduled; returns whether it holds records and was not
     /// already scheduled.
     pub(super) fn reschedule(&mut self) -> bool {
-        let due = !self.scheduled && (!self.bytes.is_empty() || self.overflowed);
+        let due = !self.scheduled
+            && (!self.bytes.is_empty() || self.overflowed || self.failure.is_some());
         self.scheduled |= due;
         due
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source_watch::HostChangeSink;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Lost(mpsc::Sender<()>);
+
+    impl HostChangeSink for Lost {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> {
+            work.check()
+        }
+
+        fn delivery_lost(&self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    fn isolate_router_failure() -> io::Result<bool> {
+        const CHILD: &str = "ACYCLIC_TEST_INOTIFY_ROUTER_FAILURE";
+        if std::env::var_os(CHILD).is_none() {
+            // Terminal health belongs to the process-wide service. Isolate the
+            // actual service failure from every other real-watch control.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "source_watch::inotify::hub::tests::fatal_router_loss_notifies_held_watches_and_refuses_future_admission",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn failed_queue_reads_retain_health(root: &Path) -> io::Result<()> {
+        let reads: [fn(&Hub) -> io::Result<()>; 2] =
+            [Hub::drain, |hub| hub.drain_batch().map(|_| ())];
+        for read in reads {
+            let mut hub = Hub::open().map_err(io::Error::from_raw_os_error)?;
+            // A real directory descriptor refuses both FIONREAD and byte
+            // reads. Neither foreground path may leave service health live.
+            hub.descriptor = std::fs::File::open(root)?.into();
+            let error = read(&hub).expect_err("broken queue source must refuse");
+            let retained = hub.check().expect_err("source failure must be retained");
+            assert_eq!(retained.raw_os_error(), error.raw_os_error());
+            assert!(retained.raw_os_error().is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fatal_router_loss_notifies_held_watches_and_refuses_future_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if isolate_router_failure()? {
+            return Ok(());
+        }
+
+        let root = tempfile::tempdir()?;
+        failed_queue_reads_retain_health(root.path())?;
+        let mut work = crate::native_host::ordinary_work();
+        let host = crate::native_host::HostRoot::open(root.path(), &mut work)?;
+        let (lost, observed) = mpsc::channel();
+        let sink = Arc::new(Lost(lost));
+        let watches = (0..2)
+            .map(|_| {
+                let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
+                NativeSourceWatch::start_driver(&host, delivery, &mut work)
+            })
+            .collect::<Result<Vec<_>, DemandError>>()?;
+        let held = watches
+            .iter()
+            .map(|watch| watch.shared.reading())
+            .collect::<Vec<_>>();
+        let hub = hub()?;
+        assert!(hub.check().is_ok());
+
+        let mut pipe = [-1; 2];
+        // SAFETY: two initialized descriptor slots, adopted once on success.
+        if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let reader = owned(pipe[0])?;
+        let writer = owned(pipe[1])?;
+        drop(writer);
+        // Real POLLHUP is a terminal producer loss, even though poll itself
+        // succeeds. The original router wait must return instead of spinning.
+        let (finished, returned) = mpsc::channel();
+        let router = std::thread::spawn(move || {
+            hub.route_descriptor(reader.as_raw_fd());
+            let _ = finished.send(());
+        });
+        returned.recv_timeout(Duration::from_secs(2))?;
+        router.join().expect("native router");
+        for watch in &watches {
+            observed.recv_timeout(Duration::from_secs(2))?;
+            assert!(!watch.delivery().is_exact());
+            let shared = Arc::clone(&watch.shared);
+            let (finished, returned) = mpsc::channel();
+            let observer = std::thread::spawn(move || {
+                let mut work = crate::native_host::ordinary_work();
+                let refused = (0..2).all(|_| {
+                    matches!(
+                        shared.read_events_and_deliver(&mut work),
+                        Err(DemandError::Io(error)) if error.raw_os_error() == Some(libc::EIO)
+                    )
+                });
+                let _ = finished.send(refused);
+            });
+            assert!(returned.recv_timeout(Duration::from_secs(2))?);
+            observer.join().expect("native observer");
+        }
+        hub.fail_all(&io::Error::from_raw_os_error(libc::EBADF));
+        assert_eq!(
+            hub.check().expect_err("terminal health").raw_os_error(),
+            Some(libc::EIO)
+        );
+        assert!(matches!(
+            observed.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let path = CString::new(root.path().as_os_str().as_bytes())?;
+        assert_eq!(
+            hub.add(&watches[0].shared, &path, WATCHED, Interest::All)
+                .expect_err("no registration after producer loss")
+                .raw_os_error(),
+            Some(libc::EIO)
+        );
+        let delivery = Arc::new(Delivery::new(sink, &mut work)?);
+        assert!(matches!(
+            NativeSourceWatch::start_driver(&host, delivery, &mut work),
+            Err(DemandError::Io(error)) if error.raw_os_error() == Some(libc::EIO)
+        ));
+        drop(held);
+        for watch in watches {
+            watch.stop_with_work(&mut work)?;
+        }
+        Ok(())
     }
 }

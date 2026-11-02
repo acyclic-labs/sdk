@@ -181,8 +181,10 @@ fn held_windows_metadata_leaves_sparseness_to_the_file() -> std::io::Result<()> 
         windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
         &[],
         &mut [],
+        acyclic_native_runtime::NativeOperationKind::Write,
         None,
-    )?;
+    )?
+    .into_complete()?;
     drop(sparse);
     let root = test_root(temporary.path())?;
     for (path, requested, observed) in [
@@ -528,7 +530,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
             &target.try_clone()?.into_std(),
             0,
             length,
-            if length > second_chunk { 4 } else { 3 },
+            Some(if length > second_chunk { 4 } else { 3 }),
             &mut ordinary_work(),
         )
         .map_err(ordinary_error)?;
@@ -548,12 +550,12 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
     Ok(())
 }
 #[test]
-fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()> {
+fn sparse_range_query_continues_from_the_last_validated_extent() -> std::io::Result<()> {
     let directory = tempfile::tempdir()?;
     let root = test_root(directory.path())?;
     let path = Path::new("ranges.bin");
-    let mut file = sparse_file(&root, path, 20 * 1024 * 1024)?;
-    for index in 0..10_u64 {
+    let mut file = sparse_file(&root, path, 2050 * 1024 * 1024)?;
+    for index in 0..1025_u64 {
         file.seek(SeekFrom::Start(index * 2 * 1024 * 1024))?;
         file.write_all(&[0xA5; 4096])?;
     }
@@ -570,8 +572,8 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
         allocated_data_ranges(
             &source.try_clone()?.into_std(),
             0,
-            20 * 1024 * 1024,
-            9,
+            2050 * 1024 * 1024,
+            Some(1024),
             &mut ordinary_work()
         )
         .is_err()
@@ -579,14 +581,14 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
     let ranges = allocated_data_ranges(
         &source.try_clone()?.into_std(),
         0,
-        20 * 1024 * 1024,
-        10,
+        2050 * 1024 * 1024,
+        None,
         &mut ordinary_work(),
     )
     .map_err(ordinary_error)?;
-    assert_eq!(ranges.len(), 10);
+    assert_eq!(ranges.len(), 1025);
     assert_eq!(ranges[0].offset, 0);
-    assert_eq!(ranges[9].offset, 18 * 1024 * 1024);
+    assert_eq!(ranges[1024].offset, 2048 * 1024 * 1024);
     Ok(())
 }
 

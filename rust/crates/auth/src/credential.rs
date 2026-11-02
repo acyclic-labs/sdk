@@ -30,16 +30,13 @@ pub struct CredentialBinding {
     pub expires_at_unix_seconds: u64,
 }
 
-/// Maximum UTF-8 byte length of an authorization credential.
-pub const MAX_CREDENTIAL_BYTES: usize = 12 * 1024;
-
 /// A failed callback or a value that cannot be sent as a credential.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
     /// Provider failure, with its original diagnostic available as the source.
     #[error("credential provider failed")]
     Provider(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// Empty, oversized or header-delimited credentials fail before transport.
+    /// Empty or header-delimited credentials fail before transport.
     #[error("invalid credential")]
     Invalid,
     /// The provider names the channel's own transport identity and has no
@@ -270,11 +267,9 @@ impl CredentialProvider {
     }
 }
 
-/// Bounded opaque credential admission, shared with static-token constructors.
+/// Opaque credential admission, shared with static-token constructors.
 pub fn valid_credential(value: &str) -> bool {
-    value.len() <= MAX_CREDENTIAL_BYTES
-        && !value.trim().is_empty()
-        && !value.contains(['\r', '\n', '\0'])
+    !value.trim().is_empty() && !value.contains(['\r', '\n', '\0'])
 }
 
 /// The one text form of an encoded capability: unpadded base64url, as a

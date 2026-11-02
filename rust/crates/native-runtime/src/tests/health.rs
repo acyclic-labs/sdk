@@ -244,6 +244,8 @@ fn last_native_file_owner_releases_both_physical_allocations() -> io::Result<()>
         file: temporary.reopen()?,
         #[cfg(target_vendor = "apple")]
         device: Default::default(),
+        #[cfg(windows)]
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     });
     let health = Arc::new(FileHealth::default());

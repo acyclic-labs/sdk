@@ -426,7 +426,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     );
     client.register_credential(0, credential.into())?;
     let response = client
-        .actor_call(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call(&Bytes::from_static(b"invocation"), 0, None)
         .await?;
     assert_eq!(response.as_ref(), body.as_ref());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -435,7 +435,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     // The streaming projection must instead expose each original source range.
     assert_ne!(response.as_ptr(), body.as_ptr());
     let chunks = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, None)
         .await?;
     futures::pin_mut!(chunks);
     let mut received = 0;
@@ -452,7 +452,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     let refused = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len() - 1)
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len() - 1))
         .await?;
     futures::pin_mut!(refused);
     assert!(matches!(
@@ -461,7 +461,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     ));
 
     let stopped = client
-        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, body.len())
+        .actor_call_chunks(&Bytes::from_static(b"invocation"), 0, Some(body.len()))
         .await?;
     futures::pin_mut!(stopped);
     let first = stopped

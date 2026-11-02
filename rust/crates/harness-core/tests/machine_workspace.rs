@@ -161,10 +161,10 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     timeout_ms: None,
                     target: None,
                 },
-                1024,
+                None,
             )
             .await?,
-        1024,
+        None,
     )
     .await
     .map_err(Error::Machines)?;
@@ -181,7 +181,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     timeout_ms: None,
                     target: None
                 },
-                1024
+                None
             )
             .await,
         Err(Error::Unauthorized(_))
