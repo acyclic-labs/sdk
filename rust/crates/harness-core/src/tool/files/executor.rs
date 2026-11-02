@@ -85,16 +85,51 @@ impl FileTool {
 
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
-                context
-                    .stage_tool_file_once(
-                        invocation.operation_id,
-                        &input.0.path,
-                        input.0.content.as_bytes(),
-                        "text/plain",
-                        input.0.path.rsplit('/').next().unwrap_or(&input.0.path),
-                        io,
-                    )
-                    .await?
+                match input.0.if_version.as_deref().unwrap_or("any") {
+                    "any" => {
+                        context
+                            .stage_tool_file_once(
+                                invocation.operation_id,
+                                &input.0.path,
+                                input.0.content.as_bytes(),
+                                "text/plain",
+                                input.0.path.rsplit('/').next().unwrap_or(&input.0.path),
+                                io,
+                            )
+                            .await?
+                    }
+                    "absent" => {
+                        let (volume, path) =
+                            context.tool_write_path_selection(&input.0.path, io)?;
+                        let (result, retained) = context
+                            .stage_tool_changes(
+                                invocation.operation_id,
+                                volume,
+                                &[crate::conversation::ContentChange::CreateAbsent {
+                                    path: &path,
+                                    bytes: input.0.content.as_bytes(),
+                                    media_type: "text/plain",
+                                    display_name: path.rsplit('/').next().unwrap_or(&path),
+                                }],
+                                io,
+                            )
+                            .await?;
+                        (created_file(result, &path, work)?, retained)
+                    }
+                    version => {
+                        let source = self
+                            .source(context, &input.0.path, Some(version), work, io)
+                            .await?;
+                        context
+                            .stage_file_at(
+                                invocation.operation_id,
+                                &source.file,
+                                input.0.content.as_bytes(),
+                                io,
+                            )
+                            .await?
+                    }
+                }
             }
             Self::Edit => self.edit(context, invocation, work, io).await?,
             Self::Patch {
@@ -416,6 +451,38 @@ impl ToolExecutor for FileTool {
             }
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            if matches!(self, Self::Write)
+                && invocation
+                    .arguments
+                    .get("ifVersion")
+                    .and_then(Value::as_str)
+                    == Some("absent")
+            {
+                let path = invocation
+                    .arguments
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| rejection(Some(work), "create receipt requires its path"))?;
+                let (volume, relative) = context.tool_write_path_selection(path, Some(&io))?;
+                let (receipt, retained) = context
+                    .observe_tool_changes(invocation.operation_id, volume, Some(&io))
+                    .await?;
+                let _hold = io.take_native_custody(retained)?;
+                return match receipt {
+                    Some(receipt) => {
+                        let file = created_file(receipt, &relative, Some(work))?;
+                        let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                        Ok((
+                            Some(ToolResult { value: encoded.0 }),
+                            encoded.1.ok_or(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Storage,
+                                reason: "native file result lacks custody",
+                            })?,
+                        ))
+                    }
+                    None => Ok((None, io.take_native_custody(0)?)),
+                };
+            }
             let source = if matches!(self, Self::Write) {
                 (None, None)
             } else {
@@ -527,6 +594,23 @@ impl ToolExecutor for FileTool {
                 .map(|result| Some(result.0))
         })
     }
+}
+
+fn created_file(
+    mut receipt: crate::conversation::ContentChanges,
+    path: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<FileRef> {
+    if receipt.members.len() == 1
+        && let Some(crate::conversation::ContentChangeResult::Created(file)) = receipt.members.pop()
+        && file.path() == path
+    {
+        return Ok(file);
+    }
+    Err(rejection(
+        work,
+        "create receipt differs from its original path or action",
+    ))
 }
 
 /// Only content/selection rejections use this path. Accounting and provider errors propagate.

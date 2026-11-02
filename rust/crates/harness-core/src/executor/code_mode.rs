@@ -40,7 +40,7 @@ struct CallLog<'a> {
 }
 
 type CallResult<'a> =
-    std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
+    std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), ToolFailureCause>;
 
 impl StockExecution<'_> {
     pub(super) fn code_tools_notice(
@@ -396,7 +396,10 @@ impl StockExecution<'_> {
                             ExecutionProgress::PreDispatchFailed(failure) => return Ok(ExecutionProgress::PreDispatchFailed(failure)),
                         };
                         let ok = result.is_ok();
-                        let (value, _result_hold) = match result { Ok(result) => result, Err(message) => (Value::String(message), None) };
+                        let (value, _result_hold) = match result {
+                            Ok(result) => result,
+                            Err(cause) => (serde_json::json!({"class":cause.class,"message":cause.message}), None),
+                        };
                         let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
@@ -509,6 +512,19 @@ impl StockExecution<'_> {
         hash.update(parent.call_id.as_bytes());
         hash.update(&ordinal.to_be_bytes());
         let call_id = hash.finalize().to_hex().to_string();
+        let canonical = call.name.value.strip_prefix("acyclic.");
+        let name = match canonical {
+            Some(name) => match self.stock.tools.capability(name, self.io)? {
+                Some(tool) => with_history_io(self.io, |work| {
+                    preparation_format(
+                        format_args!("{}@{}", tool.definition.name, tool.definition.revision),
+                        work,
+                    )
+                })?,
+                None => stock_string_copy(name, self.io)?,
+            },
+            None => stock_string_copy(&call.name.value, self.io)?,
+        };
         #[cfg(feature = "filesystem")]
         let decoded = self
             .io
@@ -539,7 +555,7 @@ impl StockExecution<'_> {
             operation,
             step,
             stock_string_copy(&call_id, self.io)?,
-            stock_string_copy(&call.name.value, self.io)?,
+            stock_string_copy(&name, self.io)?,
             arguments,
             self.native_work(),
         )?;
@@ -549,7 +565,7 @@ impl StockExecution<'_> {
             role: ModelRole::Assistant,
             content: ModelContent::Part(ModelContentPart::ToolCall(
                 // Only metadata and identity are read from this local envelope.
-                crate::model::ToolCall::new(call_id.clone(), call.name.value.clone(), Value::Null),
+                crate::model::ToolCall::new(call_id.clone(), name.clone(), Value::Null),
             )),
         }];
         let result = match Box::pin(self.settle_tool_call(
@@ -581,7 +597,31 @@ impl StockExecution<'_> {
             ..
         }) = messages.pop()
         {
-            return Ok(ExecutionProgress::Ready(Err(message)));
+            // Classification comes from the exact indexed receipt, never from
+            // parsing model-visible error text. This extra bounded read is
+            // needed only for failures, until settlement exposes its cause.
+            let (_, records) = self
+                .tool_records(journal, operation, step, &call_id)
+                .await?;
+            let super::records::RecordedCall::Failed { reason, cause, .. } =
+                super::records::RecordedCall::classify(&records).map_err(|reason| {
+                    stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason)
+                })?
+            else {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "failed call has no failure receipt",
+                ));
+            };
+            return Ok(ExecutionProgress::Ready(Err(ToolFailureCause {
+                class: if reason == ToolFailureKind::Unavailable {
+                    ToolErrorClass::Denied
+                } else {
+                    cause.class
+                },
+                message,
+            })));
         }
         let result = result.ok_or_else(|| {
             stock_boundary(
@@ -593,7 +633,7 @@ impl StockExecution<'_> {
         let value = if self
             .stock
             .tools
-            .get(&call.name.value, None, self.io)?
+            .get(&name, None, self.io)?
             .is_some_and(|tool| tool.executor.is_code_mode())
         {
             crate::model::clone_value(crate::tools::code_mode::output(&result.0.value)?, self.io)?

@@ -15,7 +15,11 @@
             const response = await stable(rpc(name, stringify(args)));
             if (name === null) return;
             const reply = parse(response);
-            if (!reply.ok) throw new ErrorType(reply.value);
+            if (!reply.ok) {
+                const error = new ErrorType(reply.value.message);
+                error.class = reply.value.class;
+                throw error;
+            }
             return reply.value;
         } finally {
             if (--pending === 0 && wake) wake();
@@ -30,6 +34,12 @@
         tools[definition.name] = Object.freeze(tool);
     }
     Object.defineProperty(globalThis, 'tools', {value: Object.freeze(tools)});
+    // Canonical action names do not depend on a model family's native names.
+    // The host still settles each invocation through its existing registry.
+    Object.defineProperty(globalThis, '__acyclic', {configurable: true, value: (name, args) => {
+        if (closed) throw new ErrorType('JavaScript calls are closed');
+        return invoke(`acyclic.${name}`, args);
+    }});
     Object.defineProperty(globalThis, 'console', {value: Object.freeze({
         log: (...values) => {
             if (closed) throw new ErrorType('JavaScript calls are closed');

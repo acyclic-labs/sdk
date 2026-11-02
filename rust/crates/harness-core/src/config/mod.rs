@@ -23,6 +23,8 @@ pub use types::{
 #[cfg(not(target_arch = "wasm32"))]
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use evaluate::compile_module;
+#[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{Evaluated, Surface, Tree, compose, evaluate};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]

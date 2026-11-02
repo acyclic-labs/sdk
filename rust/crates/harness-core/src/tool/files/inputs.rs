@@ -84,6 +84,10 @@ pub struct WriteFileInput {
     pub path: String,
     /// Exact content bytes encoded as UTF-8.
     pub content: String,
+    /// `any` (or omission) replaces unconditionally; `absent` creates only
+    /// when missing; an opaque read version replaces exactly that source.
+    #[serde(default, rename = "ifVersion", skip_serializing_if = "Option::is_none")]
+    pub if_version: Option<String>,
 }
 
 /// Exact replacement against one pinned file generation.
@@ -290,7 +294,7 @@ mod codec_tests {
             let version = super::super::version::encode_version(&file, None).unwrap().0;
             round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
             round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
-            round_trip(WriteFileInput { path, content: text });
+            round_trip(WriteFileInput { path, content: text, if_version: None });
         }
     }
 }

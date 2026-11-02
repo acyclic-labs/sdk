@@ -144,9 +144,9 @@ fn cache() -> &'static Cache {
 }
 
 /// One module of a closure, as JavaScript.
-struct Module {
-    script: String,
-    imports: Vec<String>,
+pub(crate) struct Module {
+    pub(crate) script: String,
+    pub(crate) imports: Vec<String>,
     digest: [u8; 32],
 }
 
@@ -160,7 +160,7 @@ async fn closure(
     tree: &dyn Tree,
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
     let mut modules = BTreeMap::new();
-    match strip(path, source) {
+    match compile_module(path, source) {
         Ok(module) => modules.insert(path.to_owned(), module),
         Err(error) => return Ok(Err(error)),
     };
@@ -187,7 +187,7 @@ async fn closure(
                 "{current} imports {next}, which no layer holds"
             )));
         };
-        match strip(&next, &bytes) {
+        match compile_module(&next, &bytes) {
             Ok(module) => modules.insert(next.clone(), module),
             Err(error) => return Ok(Err(error)),
         };
@@ -200,7 +200,7 @@ async fn closure(
 }
 
 /// `path`'s source as a JavaScript module and its resolved static imports.
-fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
+pub(crate) fn compile_module(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
     let digest = blake3::hash(source).into();
     let text = std::str::from_utf8(source).map_err(|_| format!("{path} is not UTF-8"))?;
     if path.ends_with(".json") {
@@ -302,7 +302,7 @@ fn resolve(importer: &str, specifier: &str) -> std::result::Result<String, Strin
         }
         directory.push(rest);
         directory.join("/")
-    } else if specifier.starts_with("sys/") {
+    } else if specifier == "acyclic" || specifier.starts_with("sys/") {
         specifier.to_owned()
     } else {
         return Err(refuse());
