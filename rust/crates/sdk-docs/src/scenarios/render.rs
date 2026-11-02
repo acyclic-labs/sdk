@@ -328,11 +328,11 @@ fn bytes_hex(value: &serde_json::Value) -> Result<String, Error> {
     for byte in bytes {
         let byte = byte
             .as_u64()
-            .filter(|byte| *byte <= u8::MAX as u64)
+            .and_then(|byte| u8::try_from(byte).ok())
             .ok_or_else(|| {
                 Error::Invalid("scenario byte field contains an invalid value".into())
             })?;
-        result.push_str(&format!("{byte:02x}"));
+        crate::digest::push_hex_byte(&mut result, byte);
     }
     Ok(result)
 }

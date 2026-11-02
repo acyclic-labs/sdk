@@ -162,11 +162,7 @@ impl DeviceRunner {
     /// # Errors
     /// When the device's name is not an actor identity.
     pub fn attach(&self) -> Result<Attachment> {
-        let session = OperationId::new()
-            .into_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let session = hex::encode(OperationId::new().into_bytes());
         Ok(Attachment {
             open: SocketOpen {
                 actor: target_actor(&self.paths, &self.target.name)?,

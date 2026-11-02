@@ -155,7 +155,11 @@ pub(super) fn copy_and_hash<R: Read + ?Sized, W: Write>(
     let mut remaining = limit;
     let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
     loop {
-        let read = reader.read(&mut buffer)?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }

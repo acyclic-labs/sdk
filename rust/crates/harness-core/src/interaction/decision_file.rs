@@ -41,7 +41,7 @@ impl ApprovalDecisionFile {
     ) -> Result<Self> {
         let value = Self {
             principal: principal.into(),
-            request_sha256: sha256_hex(request_sha256),
+            request_sha256: hex::encode(request_sha256),
             expected_version,
             verdict: if approved {
                 ApprovalVerdict::Approve
@@ -95,14 +95,18 @@ impl ApprovalDecisionFile {
     /// Whether this body decides the request with these exact bytes and version.
     #[must_use]
     pub fn binds(&self, request_sha256: &[u8; 32], expected_version: u64) -> bool {
-        self.expected_version == expected_version
-            && self.request_sha256 == sha256_hex(request_sha256)
+        if self.expected_version != expected_version {
+            return false;
+        }
+        let mut encoded = [0; 64];
+        hex::encode_to_slice(request_sha256, &mut encoded).is_ok()
+            && self.request_sha256.as_bytes() == encoded
     }
 
     /// Canonical file component naming this principal's decision.
     #[must_use]
     pub fn principal_file(principal: &str) -> String {
-        principal_hex(&Self::principal_digest(principal))
+        hex::encode(Self::principal_digest(principal))
     }
 
     pub(super) fn principal_digest(principal: &str) -> [u8; 16] {
@@ -113,25 +117,4 @@ impl ApprovalDecisionFile {
         digest.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
         digest
     }
-}
-
-/// Lowercase hex of a principal file digest.
-pub(crate) fn principal_hex(digest: &[u8; 16]) -> String {
-    hex(digest)
-}
-
-fn sha256_hex(bytes: &[u8; 32]) -> String {
-    hex(bytes)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let digit = |value: u8| match value {
-        0..=9 => b'0' + value,
-        _ => b'a' + value - 10,
-    };
-    bytes
-        .iter()
-        .flat_map(|byte| [digit(byte >> 4), digit(byte & 15)])
-        .map(char::from)
-        .collect()
 }
