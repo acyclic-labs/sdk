@@ -13,12 +13,6 @@ use crate::{CancellationToken, WorkBudget, WorkCounters};
 
 #[cfg(not(target_arch = "wasm32"))]
 enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
-    Owned {
-        allocations: &'a mut crate::kernel::allocation::AllocationLedger,
-        work: &'a mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &'a CancellationToken,
-    },
     Original {
         work: &'a crate::NativeMaterializationWork,
         allocation: Option<crate::materializer::NativeAllocation>,
@@ -31,9 +25,6 @@ enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
 impl<W: SourceDemandReadWork> NameWork<'_, W> {
     fn check(&self) -> Result<(), DemandError> {
         match self {
-            Self::Owned { cancellation, .. } => {
-                cancellation.check().map_err(|_| DemandError::Cancelled)
-            }
             Self::Source(work) => work.check(),
             Self::Original { work, source, .. } => {
                 if let Some(source) = source {
@@ -48,14 +39,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
     fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> {
         self.check()?;
         match self {
-            Self::Owned {
-                allocations,
-                work,
-                budget,
-                ..
-            } => allocations
-                .claim_bytes(bytes, u64::from(bytes != 0), work, *budget)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
             Self::Source(work) => {
                 work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
             }
@@ -73,24 +56,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
 
     fn reconcile(&mut self, claimed: u64, actual: u64) -> Result<(), DemandError> {
         match self {
-            Self::Owned {
-                allocations,
-                work,
-                budget,
-                ..
-            } => {
-                if actual > claimed {
-                    allocations
-                        .record_owned_bytes(actual - claimed, work)
-                        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-                } else if actual < claimed {
-                    allocations
-                        .release(claimed - actual)
-                        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-                }
-                work.verify(*budget)?;
-                Ok(())
-            }
             Self::Source(work) => {
                 let mut bytes = claimed;
                 work.reconcile_allocation(&mut bytes, actual)
@@ -105,9 +70,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
 
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
         match self {
-            Self::Owned { allocations, .. } => allocations
-                .release(bytes)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
             Self::Source(work) => work.release(bytes),
             Self::Original { allocation, .. } => {
                 let result = allocation
@@ -126,7 +88,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
     fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.check()?;
         match self {
-            Self::Owned { work, budget, .. } => work.admit(&delta, budget).map_err(Into::into),
             Self::Source(work) => work.admit(delta),
             Self::Original { work, .. } => work.admit(delta).map_err(original_name_error),
         }
@@ -137,7 +98,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         bytes: u64,
     ) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
         match self {
-            Self::Owned { .. } | Self::Source(_) => {
+            Self::Source(_) => {
                 self.admit(WorkCounters {
                     bytes_copied: bytes,
                     ..WorkCounters::UNCHARGED
@@ -157,7 +118,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
     fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.check()?;
         match self {
-            Self::Owned { work, budget, .. } => work.charge(&delta, budget).map_err(Into::into),
             Self::Source(work) => work.started_io(delta),
             Self::Original { work, .. } => work.charge(delta).map_err(original_name_error),
         }
@@ -165,11 +125,6 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
 
     fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         match self {
-            Self::Owned { work, budget, .. } => {
-                work.try_add_assign(&delta)?;
-                work.verify(*budget)?;
-                Ok(())
-            }
             Self::Source(work) => work.record(delta),
             Self::Original { work, .. } => work.record_admitted(delta).map_err(original_name_error),
         }
@@ -183,19 +138,7 @@ pub(crate) fn host_name_bytes_measured(
     maximum_bytes: u32,
     work: &mut DemandWork,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
-    work.check()?;
-    let (allocations, work, budget, cancellation) = work.allocation_parts();
-    host_name_bytes_with_accounting(
-        name,
-        profile,
-        maximum_bytes,
-        &mut NameWork::<DemandWork>::Owned {
-            allocations,
-            work,
-            budget,
-            cancellation,
-        },
-    )
+    host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut NameWork::Source(work))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
