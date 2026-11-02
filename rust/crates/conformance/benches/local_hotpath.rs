@@ -272,6 +272,10 @@ fn run() -> Result {
             "syscall_rows": ["unknown", "fsync", "fdatasync", "F_FULLFSYNC", "F_BARRIERFSYNC", "FlushFileBuffers", "syncfs"],
             "outcome_columns": ["ok", "err", "incomplete"],
             "missing_field_columns": ["requested", "syscall", "descriptor", "parent", "os_error_on_failure"],
+            "task_rows": ["persistence", "blocking_io"],
+            "task_boolean_columns": ["unknown", "false", "true"],
+            "task_terminal_columns": ["unknown", "ok", "io_error", "panic", "missing"],
+            "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
         }))?;
     }
     for finding in counts.findings(&options.operations, &recovery) {
