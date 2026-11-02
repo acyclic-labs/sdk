@@ -80,29 +80,58 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
         let mut record = wire_codec::record_wire(original.clone(), Some(&path));
         let (native, _) = retain_metadata(&record, Some(&original), 64 * 1024)?;
         for (index, key) in native.keys.iter().enumerate() {
-            if index == count - 1 {
-                assert_ne!(
-                    key.as_ptr(),
-                    record.keys[index].as_ptr(),
-                    "tiny native key pinned excess backing"
-                );
-                assert_ne!(
-                    native.attributes[index].value.as_ptr(),
-                    record.attributes[index].value.as_ptr(),
-                    "tiny native attribute pinned excess backing"
-                );
-            } else {
-                assert_eq!(
-                    key.as_ptr(),
-                    record.keys[index].as_ptr(),
-                    "full native key was copied"
-                );
-                assert_eq!(
-                    native.attributes[index].value.as_ptr(),
-                    record.attributes[index].value.as_ptr(),
-                    "full native attribute was copied"
-                );
-            }
+            assert_eq!(
+                key.as_ptr() == record.keys[index].as_ptr(),
+                original.headers.keys()[index].retained_capacity() == Some(key.len()),
+                "native key sharing disagrees with its charged backing"
+            );
+            let value = &native.attributes[index].value;
+            assert_eq!(
+                value.as_ptr() == record.attributes[index].value.as_ptr(),
+                original
+                    .headers
+                    .attributes()
+                    .get(index)
+                    .unwrap()
+                    .value
+                    .retained_capacity()
+                    == Some(value.len()),
+                "native attribute sharing disagrees with its charged backing"
+            );
+        }
+        // The provider may coallocate headers. Rehouse the same admitted facts
+        // through their canonical constructor to exercise exact owners too.
+        let mut exact_owner = original.clone();
+        exact_owner.headers = RecordHeaders::new(
+            original
+                .headers
+                .keys()
+                .iter()
+                .map(|key| OwnedBytes::copy_from_slice(key.as_slice()))
+                .collect(),
+            original
+                .headers
+                .attributes()
+                .iter()
+                .map(|attribute| Attribute {
+                    name: attribute.name.to_owned(),
+                    value: OwnedBytes::copy_from_slice(attribute.value.as_slice()),
+                })
+                .collect(),
+        )?;
+        let exact_wire = wire_codec::record_wire(exact_owner.clone(), Some(&path));
+        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner), 64 * 1024)?;
+        for (index, key) in shared.keys.iter().enumerate() {
+            assert_eq!(
+                key.as_ptr(),
+                exact_wire.keys[index].as_ptr(),
+                "full native key was copied"
+            );
+            assert_eq!(
+                shared.attributes[index].value.as_ptr(),
+                exact_wire.attributes[index].value.as_ptr(),
+                "full native attribute was copied"
+            );
         }
         // A transport may reserve far more metadata capacity than it sends.
         // Only the admitted output's allocations may enter its byte charge.
