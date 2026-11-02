@@ -228,6 +228,89 @@ fn deadline(at_ns: u64, ttl: ModelCacheTtl) -> Result<Option<u64>, ModelCacheErr
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn residency_preserves_original_clock_and_checked_deadline() {
+        let key = ModelCacheKey {
+            credential_scope: kani::any(),
+            prefix_digest: kani::any(),
+        };
+        let clock_domain: [u8; 16] = kani::any();
+        let at_ns: u64 = kani::any();
+        let seconds: u64 = kani::any();
+        let explicit: bool = kani::any();
+        let ttl = if explicit {
+            ModelCacheTtl::Explicit { seconds }
+        } else {
+            ModelCacheTtl::ProviderManaged
+        };
+        // Wider arithmetic independently detects either u64 overflow boundary.
+        let wide_deadline = u128::from(at_ns) + u128::from(seconds) * 1_000_000_000;
+        let result = ModelCacheResidency::observe(
+            key,
+            None,
+            clock_domain,
+            at_ns,
+            ModelCacheAccess::Write(ttl),
+        );
+        if explicit && wide_deadline > u128::from(u64::MAX) {
+            assert_eq!(result, Err(ModelCacheError::DeadlineOverflow));
+            return;
+        }
+        let written = result.unwrap();
+        assert_eq!(written.version, ModelCacheResidency::VERSION);
+        assert_eq!(written.key, key);
+        assert_eq!(written.clock_domain, clock_domain);
+        assert_eq!(written.written_at_ns, Some(at_ns));
+        assert_eq!(written.last_hit_at_ns, None);
+        let expiry = if explicit {
+            Some(u64::try_from(wide_deadline).unwrap())
+        } else {
+            None
+        };
+        assert_eq!(written.expires_at_ns, expiry);
+        let query: u64 = kani::any();
+        let expected = if query < at_ns {
+            None
+        } else {
+            expiry.map(|expiry| query < expiry)
+        };
+        assert_eq!(written.estimated_resident_at(clock_domain, query), expected);
+
+        let mut foreign_domain = clock_domain;
+        foreign_domain[0] ^= 1;
+        assert_eq!(written.estimated_resident_at(foreign_domain, query), None);
+        assert_eq!(
+            ModelCacheResidency::observe(
+                key,
+                Some(written),
+                foreign_domain,
+                at_ns,
+                ModelCacheAccess::Miss,
+            ),
+            Err(ModelCacheError::ClockMismatch)
+        );
+        let version: u32 = kani::any();
+        if version != ModelCacheResidency::VERSION {
+            let unsupported = ModelCacheResidency { version, ..written };
+            assert_eq!(unsupported.estimated_resident_at(clock_domain, query), None);
+            assert_eq!(
+                ModelCacheResidency::observe(
+                    key,
+                    Some(unsupported),
+                    clock_domain,
+                    at_ns,
+                    ModelCacheAccess::Miss,
+                ),
+                Err(ModelCacheError::Version)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
