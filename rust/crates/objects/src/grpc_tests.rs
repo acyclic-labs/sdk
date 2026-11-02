@@ -633,6 +633,57 @@ async fn availability_delivery_keeps_its_original_deadline() -> TestResult {
 }
 
 #[tokio::test]
+async fn availability_wire_delivery_retains_the_original_source() -> TestResult {
+    use futures::FutureExt as _;
+
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"wire-source")?);
+    let resolve: AccountResolver = {
+        let account = Arc::clone(&account);
+        Arc::new(move |_| Ok(account.clone()))
+    };
+    let objects = client_over(
+        resolve,
+        CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
+    );
+    let digest = Digest::of(b"original wire observation");
+    // The shipped client decodes the opening protobuf cursor over the actual
+    // HTTP/2 server; no authored frames or service error fixtures intervene.
+    let mut observation = objects.availability(digest).await?;
+    let opening = observation.cursor();
+    let mut changed = Box::pin(observation.changed());
+    assert!(changed.as_mut().now_or_never().is_none());
+    account
+        .availability_source()
+        .restored(Digest::of(b"another key"))?;
+    assert!(changed.as_mut().now_or_never().is_none());
+    account.availability_source().restored(digest)?;
+    assert_ne!(changed.await?, opening);
+
+    // Original producer loss crosses the real server/client status codecs.
+    // Its retained observer cannot reconnect to another producer as success.
+    account.availability_source().fail();
+    assert_eq!(
+        observation.changed().await.unwrap_err().code,
+        wire::ErrorCode::Unavailable
+    );
+    assert_eq!(
+        observation
+            .changed()
+            .now_or_never()
+            .expect("the original observation is terminal")
+            .unwrap_err()
+            .code,
+        wire::ErrorCode::Unavailable
+    );
+    assert_eq!(
+        objects.availability(digest).await.err().unwrap().code,
+        wire::ErrorCode::Unavailable
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn availability_source_failure_ends_delivery_before_its_deadline() -> TestResult {
     use futures::{FutureExt as _, StreamExt as _};
     use wire::blobs_service_server::BlobsService as _;
