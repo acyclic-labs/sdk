@@ -188,10 +188,6 @@ fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u3
     }
 }
 
-#[cfg(test)]
-#[cfg(test)]
-mod outcome;
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::native_mount) fn callback_errno(error: &NativeMountError) -> i32 {
     shared::outcome::CallbackFailure::of(error).errno()

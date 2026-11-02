@@ -58,22 +58,22 @@ fn observation_causes_keep_their_original_box_without_allocating() {
 
 #[test]
 fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
-    use crate::native_mount::outcome::{NativeFailure, source_failure};
+    use crate::native_mount::shared::outcome::{CallbackFailure, source_failure};
     for lazy in [false, true] {
         for (cause, expected) in [
-            (DemandError::Cancelled, NativeFailure::Cancelled),
-            (DemandError::StaleSource, NativeFailure::Stale),
-            (DemandError::StaleVersion, NativeFailure::Stale),
-            (DemandError::StaleCursor, NativeFailure::Stale),
-            (DemandError::Absent, NativeFailure::NotFound),
-            (DemandError::NotDirectory, NativeFailure::NotDirectory),
+            (DemandError::Cancelled, CallbackFailure::Cancelled),
+            (DemandError::StaleSource, CallbackFailure::Stale),
+            (DemandError::StaleVersion, CallbackFailure::Stale),
+            (DemandError::StaleCursor, CallbackFailure::Stale),
+            (DemandError::Absent, CallbackFailure::NotFound),
+            (DemandError::NotDirectory, CallbackFailure::NotDirectory),
             (
                 DemandError::Work(crate::WorkError::Overflow),
-                NativeFailure::Io,
+                CallbackFailure::Io,
             ),
             (
                 DemandError::Mount(Box::new(MountSourceError::AccessDenied)),
-                NativeFailure::Denied,
+                CallbackFailure::Denied,
             ),
         ] {
             let converted = convert(cause, lazy);
@@ -97,12 +97,12 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
             #[cfg(windows)]
             {
                 let code = match expected {
-                    NativeFailure::Cancelled => 995,
-                    NativeFailure::Stale => 1006,
-                    NativeFailure::NotFound => 2,
-                    NativeFailure::NotDirectory => 267,
-                    NativeFailure::Denied => 5,
-                    NativeFailure::Io => 1117,
+                    CallbackFailure::Cancelled => 995,
+                    CallbackFailure::Stale => 1006,
+                    CallbackFailure::NotFound => 2,
+                    CallbackFailure::NotDirectory => 267,
+                    CallbackFailure::Denied => 5,
+                    CallbackFailure::Io => 1117,
                     _ => unreachable!("fixture uses explicit Windows statuses"),
                 };
                 assert_eq!(
@@ -125,8 +125,8 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
         let code = error.raw_os_error().ok_or("host open has no native code")?;
         let converted = convert(DemandError::Io(error), lazy);
         assert_eq!(
-            crate::native_mount::outcome::source_failure(&converted),
-            crate::native_mount::outcome::NativeFailure::Os(code)
+            crate::native_mount::shared::outcome::source_failure(&converted),
+            crate::native_mount::shared::outcome::CallbackFailure::Os(code)
         );
         assert!(
             matches!(converted, MountSourceError::Io(error, None) if error.raw_os_error() == Some(code))
@@ -232,8 +232,8 @@ fn capture_io_keeps_the_actual_host_error_without_formatting()
     });
     let retained = retained.expect("conversion completed");
     assert_eq!(
-        crate::native_mount::outcome::source_failure(&retained),
-        crate::native_mount::outcome::NativeFailure::Os(code),
+        crate::native_mount::shared::outcome::source_failure(&retained),
+        crate::native_mount::shared::outcome::CallbackFailure::Os(code),
         "capture I/O must keep its actual host error"
     );
     assert!(
