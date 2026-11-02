@@ -401,6 +401,38 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         );
     }
 
+    // A real selected text view may outlive the preview. Every escaping text
+    // and path buffer must keep its original native allocation until it drops.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let conflict = MergeConflict::File(unbounded!(main, stat("/text"))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+        let rendered = preview.describe_conflict_file(conflict).await?;
+        let view = &rendered.value;
+        assert_eq!(view.kind, ConflictKind::Text);
+        let mut capacity = view.path.as_ref().ok_or("text path missing")?.capacity() as u64;
+        for value in [&view.base, &view.ours, &view.theirs] {
+            let ConflictValue::Text(text) = value else {
+                return Err("text view lost an original body".into());
+            };
+            capacity = capacity
+                .checked_add(text.capacity() as u64)
+                .ok_or("capacity overflow")?;
+        }
+        drop(preview);
+        let live = original.live_allocation_bytes();
+        assert!(live >= capacity, "escaping text backing was not funded");
+        drop(rendered);
+        assert_eq!(
+            live.checked_sub(original.live_allocation_bytes()),
+            Some(capacity),
+            "dropping the real output must release exactly its original backing"
+        );
+    }
+
     // A foreign edit to plan.json cannot be silently overwritten by a later
     // page. Failure terminates the advanced cursor; no partial page appears.
     {
