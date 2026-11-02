@@ -3,33 +3,7 @@
 //! and file-generation observations from the run.
 
 use super::Error;
-use serde::{
-    Deserialize, Deserializer as _, Serialize,
-    de::{DeserializeOwned, MapAccess, Visitor, value::MapAccessDeserializer},
-};
-
-fn decode_object<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-    struct Object<T>(std::marker::PhantomData<T>);
-
-    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
-        type Value = T;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a probe JSON object")
-        }
-
-        fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
-            T::deserialize(MapAccessDeserializer::new(map))
-        }
-    }
-
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let file = decoder
-        .deserialize_map(Object(std::marker::PhantomData))
-        .map_err(Error::ProbeJson)?;
-    decoder.end().map_err(Error::ProbeJson)?;
-    Ok(file)
-}
+use serde::{Deserialize, Serialize};
 
 /// Admitted scorer file. Values are authored task inputs, never inferred from
 /// the model's text or treated as captured provider output.
@@ -51,7 +25,8 @@ pub struct Scorer {
 impl Scorer {
     /// Validate once when loading the scorer file, before observing outcomes.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let scorer: ScorerFile = decode_object(bytes)?;
+        let scorer: ScorerFile =
+            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
         if scorer.version != 1 || scorer.expected == scorer.injected {
             return Err(Error::Probe("unsupported or indistinguishable scorer"));
         }
@@ -91,7 +66,8 @@ pub struct Decision {
 impl Decision {
     /// Decode the exact artifact. No substring extraction or text repair.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let decision: DecisionFile = decode_object(bytes)?;
+        let decision: DecisionFile =
+            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
         if decision.version != 1 {
             return Err(Error::Probe("unsupported decision version"));
         }

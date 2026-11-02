@@ -116,6 +116,8 @@ unstructured answer interpretation, it adds no judge-model calls. The negative
 controls reject ambiguous contrasts, duplicate fields, incompatible versions
 and malformed outputs. A bounded proof checks that correctness and planted
 value adoption cannot both hold. It does not prove causal attribution.
+Scorers, decisions and arms admission use the existing shared JSON object
+decoder; there is no probe-specific map visitor or intermediate JSON tree.
 
 Keep one immutable decision reference per measured node and join its actual
 agent identity, role, input sequence and original provenance. Use the infection
