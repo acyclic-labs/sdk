@@ -1,5 +1,4 @@
 use super::*;
-use crate::WorkCounters;
 use crate::facade::FsWork;
 use crate::workspace::accounting_tests::{Observation, ObservedAuthority, Prefunded};
 use std::sync::Mutex;

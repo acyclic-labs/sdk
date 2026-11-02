@@ -10,7 +10,7 @@ pub(super) async fn lookup_paths<
     paths: &[NamespacePath],
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(crate::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
+) -> Result<(crate::kernel::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
     let mut scope = accounting.allocation_scope();
     let result = async {
         let mut checkout = workspace

@@ -191,7 +191,14 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
             assert!(allocation.is_none());
             assert_eq!(lookup.work, spent);
             assert_eq!(lookup.entries.len(), paths.len());
-            assert!(lookup.entries[0].record.is_some());
+            assert_eq!(
+                regular_file_bytes(
+                    lookup.entries[0]
+                        .record
+                        .ok_or("selected file disappeared")?
+                )?,
+                4
+            );
             assert!(lookup.entries[1].record.is_none());
             assert_eq!(lookup.entries[0], lookup.entries[2]);
             assert_eq!(live, baseline + lookup.retained_allocation_bytes);
@@ -223,7 +230,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
         });
         let mut operation = Box::pin(crate::workspace::read_core::lookup_paths(
             &reader,
-            crate::GenerationSelector::Exact(generation.id()),
+            GenerationSelector::Exact(generation.id()),
             &paths,
             &mut accounting,
             &cancellation,

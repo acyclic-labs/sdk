@@ -365,7 +365,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         paths: &[NamespacePath],
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<(crate::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
+    ) -> W::Output<(crate::kernel::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError>
+    {
         let mut accounting = work.accounting(cancellation);
         let result = read_core::lookup_paths(
             &self.workspace,
