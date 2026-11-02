@@ -1178,7 +1178,10 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     let outcome = AgentOutcome::Failed {
         message: failure.into(),
     };
-    let (next, send) = kernel::report(control(state));
+    let before = control(state);
+    let (next, send) = kernel::report(before);
+    #[cfg(feature = "test-support")]
+    control_trace::record(state, Decision::Report(before, (next, send)));
     state.reported = next.reported;
     if send {
         report(state, outcome.clone(), outs);

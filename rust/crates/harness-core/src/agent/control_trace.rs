@@ -14,6 +14,7 @@ pub enum Decision {
     Admit(Control, Admit, Admitted),
     Pick(Control, bool, bool, bool, Pick),
     Settle(Control, Wait, (Control, bool)),
+    Report(Control, (Control, bool)),
     Cascade(Control, usize, Cascade),
     Alarm(Control, bool, bool, usize, Option<u64>),
     Satisfy(Control, Control),
@@ -26,6 +27,7 @@ impl Decision {
             Self::Admit(..) => "admit",
             Self::Pick(..) => "pick",
             Self::Settle(..) => "settle",
+            Self::Report(..) => "report",
             Self::Cascade(..) => "cascade",
             Self::Alarm(..) => "alarm",
             Self::Satisfy(..) => "satisfy",
@@ -41,6 +43,7 @@ impl Decision {
                 kernel::pick(control, alarm, queued, approval) == actual
             }
             Self::Settle(control, wait, actual) => kernel::settle(control, wait) == actual,
+            Self::Report(control, actual) => kernel::report(control) == actual,
             Self::Cascade(control, pending, actual) => kernel::cascade(control, pending) == actual,
             Self::Alarm(control, queued, approval, pending, actual) => {
                 kernel::alarm(control, queued, approval, pending) == actual

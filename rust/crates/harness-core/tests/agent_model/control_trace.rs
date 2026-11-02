@@ -87,7 +87,7 @@ fn check(events: &[Event], agents: &[AgentPath], required: &[&str]) -> Result {
                     Pick::Nothing
                 };
             }
-            Decision::Settle(_, _, result) => result.1 = !result.1,
+            Decision::Settle(_, _, result) | Decision::Report(_, result) => result.1 = !result.1,
             Decision::Cascade(_, _, result) => result.report = !result.report,
             Decision::Alarm(_, _, _, _, result) => {
                 *result = if result.is_some() {
@@ -145,5 +145,15 @@ pub(super) async fn quorum(future: impl std::future::Future<Output = Result>) ->
         &events,
         &[AgentPath::root(&id(1))],
         &["admit", "pick", "settle", "satisfy", "alarm"],
+    )
+}
+
+pub(super) async fn checkpoint(future: impl std::future::Future<Output = Result>) -> Result {
+    let (result, events) = observe_async::<_, Event>(future).await;
+    result?;
+    check(
+        &events,
+        &[AgentPath::root(&id(1))],
+        &["admit", "pick", "settle", "report", "alarm"],
     )
 }

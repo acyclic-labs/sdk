@@ -306,6 +306,7 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-auth",
  "acyclic-native-runtime",
  "acyclic-observability",

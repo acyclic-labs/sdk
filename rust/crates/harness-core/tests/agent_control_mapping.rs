@@ -3,6 +3,18 @@ use acyclic_test_support::correspondence::{self, Inventory, Mapping};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{Expr, Item, Member, visit::Visit};
 
+fn call_path(call: &syn::ExprCall) -> Vec<String> {
+    match &*call.func {
+        Expr::Path(path) => path
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Default)]
 struct Calls {
     paths: BTreeSet<Vec<String>>,
@@ -12,14 +24,8 @@ struct Calls {
 impl<'ast> Visit<'ast> for Calls {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         match &*call.func {
-            Expr::Path(path) => {
-                self.paths.insert(
-                    path.path
-                        .segments
-                        .iter()
-                        .map(|s| s.ident.to_string())
-                        .collect(),
-                );
+            Expr::Path(_) => {
+                self.paths.insert(call_path(call));
             }
             Expr::Paren(paren) => {
                 if let Expr::Field(field) = &*paren.expr
@@ -200,6 +206,7 @@ pub(crate) fn original() -> Result<(Inventory, Mapping), String> {
         include_str!("formal/agent_control.rs"),
     )?;
     trace_mapping(include_str!("../src/agent/control_trace.rs"), &inventory)?;
+    trace_call_sites(include_str!("../src/agent/machine.rs"), &inventory)?;
     Ok((inventory, mapping))
 }
 
@@ -289,6 +296,131 @@ fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
     Ok(())
 }
 
+/// Each original call must record its own arguments and bound result before
+/// another statement can lower or change them. Set coverage alone cannot show
+/// this: a second call to an already mapped helper can otherwise go unrecorded.
+fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
+    fn name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
+            _ => None,
+        }
+    }
+    fn bound(pattern: &syn::Pat) -> Option<Vec<String>> {
+        match pattern {
+            syn::Pat::Ident(id) if id.subpat.is_none() => Some(vec![id.ident.to_string()]),
+            syn::Pat::Tuple(tuple) => tuple
+                .elems
+                .iter()
+                .map(bound)
+                .collect::<Option<Vec<_>>>()
+                .map(|parts| parts.into_iter().flatten().collect()),
+            _ => None,
+        }
+    }
+    fn result(expr: &Expr) -> Option<Vec<String>> {
+        match expr {
+            Expr::Tuple(tuple) => tuple.elems.iter().map(name).collect(),
+            expr => name(expr).map(|name| vec![name]),
+        }
+    }
+    #[derive(Default)]
+    struct Sites {
+        calls: usize,
+        records: usize,
+        paired: usize,
+        actions: BTreeSet<String>,
+        error: Option<String>,
+    }
+    impl<'ast> Visit<'ast> for Sites {
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            let names = call_path(call);
+            if names.len() == 2 && names[0] == "kernel" {
+                self.calls += 1;
+            } else if names == ["control_trace", "record"] {
+                self.records += 1;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_block(&mut self, block: &'ast syn::Block) {
+            for (index, statement) in block.stmts.iter().enumerate() {
+                let syn::Stmt::Local(local) = statement else {
+                    continue;
+                };
+                let Some(initializer) = &local.init else {
+                    continue;
+                };
+                let Expr::Call(call) = &*initializer.expr else {
+                    continue;
+                };
+                let names = call_path(call);
+                if names.len() != 2 || names[0] != "kernel" {
+                    continue;
+                }
+                let action = &names[1];
+                let paired = (|| {
+                    let syn::Stmt::Expr(Expr::Call(record), _) = block.stmts.get(index + 1)? else {
+                        return None;
+                    };
+                    if call_path(record) != ["control_trace", "record"] || record.args.len() != 2 {
+                        return None;
+                    }
+                    let Expr::Call(decision) = record.args.last()? else {
+                        return None;
+                    };
+                    let recorded = call_path(decision);
+                    if recorded.len() != 2
+                        || recorded[0] != "Decision"
+                        || recorded[1].to_lowercase() != *action
+                    {
+                        return None;
+                    }
+                    if decision.args.len() != call.args.len() + 1 {
+                        return None;
+                    }
+                    let expected: Option<Vec<_>> = call.args.iter().map(name).collect();
+                    let actual: Option<Vec<_>> = decision
+                        .args
+                        .iter()
+                        .take(call.args.len())
+                        .map(name)
+                        .collect();
+                    if expected.is_none()
+                        || actual != expected
+                        || result(decision.args.last()?)? != bound(&local.pat)?
+                    {
+                        return None;
+                    }
+                    Some(())
+                })();
+                if paired.is_some() {
+                    self.paired += 1;
+                    self.actions.insert(action.clone());
+                } else if self.error.is_none() {
+                    self.error = Some(format!(
+                        "shipping {action} call lost its adjacent original input/result record"
+                    ));
+                }
+            }
+            syn::visit::visit_block(self, block);
+        }
+    }
+    let file = syn::parse_file(source).map_err(|error| error.to_string())?;
+    let mut sites = Sites::default();
+    sites.visit_file(&file);
+    if let Some(error) = sites.error {
+        return Err(error);
+    }
+    if sites.calls != sites.paired
+        || sites.records != sites.paired
+        || sites.actions != inventory.actions
+    {
+        return Err("shipping call sites and original trace records differ".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     let kernel = include_str!("../src/agent/kernel.rs");
@@ -338,6 +470,43 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     let (inventory, mapped) = extract(kernel, model, shell, harness)?;
     let trace = include_str!("../src/agent/control_trace.rs");
     trace_mapping(trace, &inventory)?;
+    trace_call_sites(shell, &inventory)?;
+    for (before, after, action) in [
+        (
+            "Decision::Alarm(before, queued, approval_ready, pending, alarm)",
+            "Decision::Alarm(before, queued, queued, pending, alarm)",
+            "alarm",
+        ),
+        (
+            "Decision::Satisfy(before, next)",
+            "Decision::Satisfy(before, before)",
+            "satisfy",
+        ),
+        (
+            "control_trace::record(&state, Decision::Admit(before, kind, admitted));",
+            "control_trace::lost(&state, Decision::Admit(before, kind, admitted));",
+            "admit",
+        ),
+        (
+            "control_trace::record(state, Decision::Report(before, (next, send)));",
+            "control_trace::lost(state, Decision::Report(before, (next, send)));",
+            "report",
+        ),
+    ] {
+        let changed = shell.replacen(before, after, 1);
+        assert_ne!(changed, shell);
+        assert_eq!(
+            trace_call_sites(&changed, &inventory).unwrap_err(),
+            format!("shipping {action} call lost its adjacent original input/result record")
+        );
+    }
+    let record = "control_trace::record(state, Decision::Satisfy(before, next));";
+    let changed = shell.replacen(record, &format!("{record}\n{record}"), 1);
+    assert_ne!(changed, shell);
+    assert_eq!(
+        trace_call_sites(&changed, &inventory).unwrap_err(),
+        "shipping call sites and original trace records differ"
+    );
     let changed = trace.replacen("=> \"admit\"", "=> \"pick\"", 1);
     assert_ne!(changed, trace);
     assert_eq!(
@@ -387,12 +556,15 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     );
     correspondence::validate(&changed, &excluded).map_err(|error| error.to_string())?;
     let mut changed = inventory.clone();
-    for callees in changed.functions.values_mut() {
-        callees.remove("report");
-    }
+    changed
+        .functions
+        .insert("unmodeled_entry".into(), BTreeSet::new());
+    changed.shipping.insert("unmodeled_entry".into());
     assert_eq!(
         correspondence::validate(&changed, &mapped),
-        Err(correspondence::Error::UnobservedEntry("report".into()))
+        Err(correspondence::Error::UnobservedEntry(
+            "unmodeled_entry".into()
+        ))
     );
     let mut changed = mapped;
     changed

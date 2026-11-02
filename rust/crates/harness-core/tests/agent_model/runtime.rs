@@ -322,6 +322,13 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 
 #[tokio::test]
 async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
+    #[cfg(feature = "test-support")]
+    return super::control_trace::checkpoint(checkpoint_tails()).await;
+    #[cfg(not(feature = "test-support"))]
+    checkpoint_tails().await
+}
+
+async fn checkpoint_tails() -> Result {
     for oversized in [false, true] {
         let provider = Arc::new(MemoryStream::default());
         let driver = super::script(vec![TurnStep {
