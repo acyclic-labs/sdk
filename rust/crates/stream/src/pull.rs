@@ -22,15 +22,21 @@ impl<T, E: Clone> PullCursor<T, E> {
     }
     /// Pulls one value; close interrupts the pending source poll.
     pub async fn next(&self) -> Result<Option<T>, E> {
+        let mut cancellation = self.cancel.subscribe();
         let Some(mut stream) = self
             .stream
             .lock()
             .map_err(|_| self.unavailable.clone())?
             .take()
         else {
-            return Ok(None);
+            // An outstanding or abandoned pull owns the empty slot. Only
+            // original EOF or explicit close can establish a terminal end.
+            return if *cancellation.borrow_and_update() {
+                Ok(None)
+            } else {
+                Err(self.unavailable.clone())
+            };
         };
-        let mut cancellation = self.cancel.subscribe();
         if *cancellation.borrow_and_update() {
             return Ok(None);
         }
@@ -46,10 +52,15 @@ impl<T, E: Clone> PullCursor<T, E> {
                 slot.replace(stream);
                 Ok(Some(bytes))
             }
-            futures::future::Either::Left((Some(Err(error)), _)) => Err(error),
-            futures::future::Either::Left((None, _)) | futures::future::Either::Right((_, _)) => {
+            futures::future::Either::Left((Some(Err(error)), _)) => {
+                self.cancel.send_replace(true);
+                Err(error)
+            }
+            futures::future::Either::Left((None, _)) => {
+                self.cancel.send_replace(true);
                 Ok(None)
             }
+            futures::future::Either::Right((_, _)) => Ok(None),
         }
     }
     /// Stops the original source, including an outstanding `next`.
