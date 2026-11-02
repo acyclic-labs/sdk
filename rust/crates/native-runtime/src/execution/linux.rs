@@ -199,6 +199,7 @@ impl Prepared {
 
     pub(super) fn new(
         grant: &Grant,
+        access: ExecutionAccess,
         root: File,
         cwd: Option<&Path>,
         meter: Option<&dyn NativeReadMeter>,
@@ -274,7 +275,7 @@ impl Prepared {
             cwd: directory.unwrap_or(root),
         };
         let workspace = READ
-            | if grant.access == ExecutionAccess::WorkspaceWrite {
+            | if access == ExecutionAccess::WorkspaceWrite {
                 WRITE
             } else {
                 0
@@ -374,7 +375,7 @@ impl Prepared {
 
     fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
         sys::working_directory(self.cwd.as_raw_fd()).map_err(io::Error::from_raw_os_error)?;
-        entry::enter(self.ruleset.as_raw_fd(), &grant.0.filter)
+        entry::enter(self.ruleset.as_raw_fd(), &grant.policy.filter)
             .map_err(io::Error::from_raw_os_error)
     }
 }

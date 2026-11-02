@@ -83,6 +83,14 @@ refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
 Explicit read-root matches are verified before overlapping subtree proofs, so
 retaining a granted root does not require subtree support from its ancestor.
+When only workspace writes must be removed, `ExecutionGrant::into_read_only`
+consumes an already authorized grant and shares its original pinned roots,
+network authority and compiled filter. It performs no allocation, path lookup,
+descriptor duplication or syscall, independent of the number of roots. Clone
+the grant first to retain the original write authority. The resulting value
+cannot reacquire writes through attenuation, and launch still rejects replaced
+roots. This operation authenticates no new authority and does not construct a
+grant from a role label or tool argument.
 `ProcessTree::spawn_granted` prepares active enforcement and enters the same
 process creation, custody, capture, cancellation and retirement implementation.
 `spawn_granted_controlled` borrows the original invocation's launch meter and
