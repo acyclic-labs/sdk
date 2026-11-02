@@ -96,7 +96,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
         }],
     )
     .await?;
-    let forked = StreamPath::new("reader/inherited-conversation")?;
+    let forked = StreamPath::new("reader/inherited.conversation%")?;
     memory
         .fork(acyclic_stream::ForkRequest {
             source: path.clone(),

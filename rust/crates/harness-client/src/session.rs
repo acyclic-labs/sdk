@@ -294,7 +294,7 @@ impl WireSession {
                     .as_ref()
                     .ok_or(WireSessionError::InvalidSubscription)?
                     .next;
-                let (view, follow) = self.stage_stream(subscription.clone(), from, revision);
+                let (view, follow) = self.stage_stream(subscription.clone(), from, revision, None);
                 staged_resources.push((resource.clone(), view, follow));
             }
         }
@@ -310,7 +310,8 @@ impl WireSession {
                 .as_ref()
                 .ok_or(WireSessionError::InvalidSubscription)?
                 .next;
-            let (view, subscription) = self.stage_stream(subscription, from, revision);
+            let (view, subscription) =
+                self.stage_stream(subscription, from, revision, Some(path.clone()));
             staged.push((path, view, subscription));
         }
         self.follows.retain(|path, _| demand.contains_full(path));
@@ -387,7 +388,8 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        let (view, subscription) = self.stage_stream(subscription, from, revision);
+        let (view, subscription) =
+            self.stage_stream(subscription, from, revision, Some(agent.clone()));
         self.views.insert(agent.clone(), view);
         self.follows.insert(agent, subscription);
         self.revision = revision;
@@ -399,6 +401,7 @@ impl WireSession {
         subscription: wire::SessionSubscription,
         from: u64,
         revision: u64,
+        followed: Option<StreamPath>,
     ) -> (RetainedView, Subscription) {
         let filtered = subscription.filter.is_some()
             || matches!(
@@ -407,13 +410,6 @@ impl WireSession {
                     if follow.resource.starts_with(FS_RESOURCE)
                         || follow.delivery == wire::SessionDelivery::Latest as i32
             );
-        // A stream follow spells only record origins other than its path.
-        let followed = match &subscription.kind {
-            Some(wire::session_subscription::Kind::Follow(follow)) => {
-                acyclic_stream::wire_codec::session::stream_path(&follow.resource).ok()
-            }
-            _ => None,
-        };
         let request = subscription.clone();
         let client = self.client.clone();
         let opening = Box::pin(async move { client.subscribe(subscription).await });
@@ -482,7 +478,7 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        let (view, subscription) = self.stage_stream(subscription, from, revision);
+        let (view, subscription) = self.stage_stream(subscription, from, revision, None);
         self.resource_views.insert(resource.clone(), view);
         self.resources.insert(resource, subscription);
         self.revision = revision;
@@ -618,9 +614,10 @@ fn validate_subscription(
         .as_ref()
         .ok_or(WireSessionError::InvalidSubscription)?;
     wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
-    if wire_codec::session::stream_path(&follow.resource).map_err(WireSessionError::Stream)?
-        != *path
-    {
+    if !wire_codec::session::tracks_revisions(follow) {
+        return Err(WireSessionError::Stream(StreamError::Unsupported));
+    }
+    if !wire_codec::session::stream_resource_matches(&follow.resource, path) {
         return Err(WireSessionError::NotRequested);
     }
     Ok(resume.next)
