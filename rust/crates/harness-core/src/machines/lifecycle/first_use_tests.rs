@@ -136,6 +136,28 @@ async fn original_binding_positions_precede_allocation_and_recovery() -> TestRes
     assert_eq!(stream.inner.tail(path).await?, 2);
     stream.position.store(usize::MAX, Ordering::Relaxed);
     assert_eq!(machines.machine(&agent, "machine").await?, original);
+    // Feed the permanent fuzz entrance the SAME original producer's values.
+    let mut records = stream
+        .inner
+        .read(ReadRequest {
+            path: agent.machine("machine")?,
+            from: 0,
+            limit: 2,
+            at_least: Default::default(),
+            key: None,
+        })
+        .await?;
+    while let Some(record) = futures::TryStreamExt::try_next(&mut records).await? {
+        codec_fuzz::check(&record.value);
+        println!(
+            "harness_codecs/machine-record-{}\tbase64:{}",
+            record.sequence,
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                record.value.as_ref()
+            )
+        );
+    }
     Ok(())
 }
 
