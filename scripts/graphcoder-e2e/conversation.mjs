@@ -20,7 +20,9 @@ export async function conversation(processes, binary, fixture, input, capture, b
         }),
       ]);
       assert.ok(!replies.has(turn.id), "committed reply preceded its prompt");
-      active.child.stdin.write(JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n");
+      await new Promise((resolve, reject) => active.input.write(
+        JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n",
+        error => error ? reject(error) : resolve()));
       const reply = messageReply(await replies.keyed(turn.id), turn.id);
       assert.equal(reply.error, undefined, `failed JSONL turn ${turn.id}: ${reply.error}`);
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
@@ -29,11 +31,11 @@ export async function conversation(processes, binary, fixture, input, capture, b
     failures = [error];
     // Retire only this executable: the owner may also hold other cases and
     // their provider. EOF alone need not stop work owned by this executable.
-    active.child.stdin.end();
+    active.input.end();
     try { active.killExecutable(); }
     catch (error) { failures.push(error); }
   } finally {
-    if (!failures) active.child.stdin.end();
+    if (!failures) active.input.end();
     try { result = await active.closed; capture(result); }
     catch (error) { (failures ??= []).push(error); }
   }
