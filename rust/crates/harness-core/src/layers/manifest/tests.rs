@@ -37,6 +37,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
     assert_eq!(bytes.as_ref(), b"export default {model: 'p/m'};");
     drop(bytes);
     assert!(tree.read("absent.ts").await?.is_none());
+    assert!(tree.read("settings.ts/child.ts").await?.is_none());
 
     let bounded = manifest.tree(&io, 0);
     let refused = bounded
