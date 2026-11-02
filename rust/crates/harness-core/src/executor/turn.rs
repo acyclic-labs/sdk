@@ -4,8 +4,6 @@ pub(super) struct CollectedStep {
     pub(super) calls: Vec<(ToolInvocation, usize)>,
     pub(super) text: String,
     pub(super) metadata: Value,
-    /// Index of this step's first assistant part in the request history.
-    pub(super) first: usize,
     /// Whether the provider emitted the step's text as ordered parts.
     pub(super) parts: bool,
 }
@@ -59,7 +57,6 @@ impl StockExecution<'_> {
                 calls,
                 text,
                 metadata,
-                first,
                 parts,
             } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
@@ -78,7 +75,7 @@ impl StockExecution<'_> {
                     stop_active = true;
                     continue;
                 }
-                let parts = self.settled_parts(prior_messages, first, parts, &text)?;
+                let parts = self.settled_parts(prior_messages, parts, &text)?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
@@ -153,7 +150,6 @@ impl StockExecution<'_> {
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<CollectedStep> {
         let completed_message = self.has_completed_message(&model_events)?;
-        let first = prior_messages.len();
         let mut parts = false;
         let mut calls = Vec::new();
         let mut text = String::new();
@@ -227,37 +223,37 @@ impl StockExecution<'_> {
             calls,
             text,
             metadata: completed,
-            first,
             parts,
         })
     }
 
-    /// The final step's assistant parts, which the turn's output keeps so the
-    /// next turn replays them; none when no part carries native bytes.
+    /// The turn's transcript after its input, exactly as its requests sent
+    /// it, closed by the final reply. Tool notices lead it, as every request
+    /// placed them directly after the input.
     fn settled_parts(
         &self,
-        mut messages: Vec<ModelMessage>,
-        first: usize,
+        messages: Vec<ModelMessage>,
         parts: bool,
         text: &str,
-    ) -> Result<Vec<ModelContentPart>> {
-        let native = |part: &ModelContentPart| match part {
-            ModelContentPart::Reasoning { .. } => true,
-            ModelContentPart::Text { native, .. } => native.is_some(),
-            _ => false,
-        };
-        let mut settled = Vec::new();
-        for message in messages.drain(first.min(messages.len())..) {
-            if let ModelContent::Part(part) = message.content {
-                stock_vec_push(&mut settled, part, self.io)?;
+    ) -> Result<Vec<ModelMessage>> {
+        let mut notices = crate::context::Context::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let tools = self.request_tools(&messages)?;
+            if self.code_composition(&tools)? {
+                self.code_tools_notice(&mut notices, &tools)?;
             }
         }
-        if !settled.iter().any(native) {
-            return Ok(Vec::new());
+        let mut settled = notices.messages;
+        for message in messages {
+            stock_vec_push(&mut settled, message, self.io)?;
         }
         if !parts && !text.is_empty() {
-            let text = ModelContentPart::text(stock_string_copy(text, self.io)?);
-            stock_vec_push(&mut settled, text, self.io)?;
+            let reply = ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(stock_string_copy(text, self.io)?),
+            };
+            stock_vec_push(&mut settled, reply, self.io)?;
         }
         Ok(settled)
     }

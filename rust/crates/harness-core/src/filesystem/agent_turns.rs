@@ -896,12 +896,12 @@ where
         )))
     }
 
-    /// The agent's last settled turns, oldest first.
+    /// The agent's last settled turns with their sequences, oldest first.
     async fn history(
         &self,
         _: &AdmittedAgent<'_>,
         agent: &AgentState,
-    ) -> Result<Vec<ConversationEntry>> {
+    ) -> Result<Vec<(u64, ConversationEntry)>> {
         if agent.conversation_tail == 0 {
             return Ok(Vec::new());
         }
@@ -917,11 +917,14 @@ where
             .saturating_sub(u64::from(self.limits.history_turns));
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
-            entries.extend(self.context_entries(&cut.path, checkpoint, 1).await?);
+            entries
+                .extend((checkpoint..).zip(self.context_entries(&cut.path, checkpoint, 1).await?));
         }
         entries.extend(
-            self.context_entries(&cut.path, from, cut.tail - from)
-                .await?,
+            (from..).zip(
+                self.context_entries(&cut.path, from, cut.tail - from)
+                    .await?,
+            ),
         );
         Ok(entries)
     }
@@ -972,8 +975,8 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// Stable message identity of a settled reply's later kept part; the first
-/// part keeps the reply's own identity.
+/// Stable message identity of a settled turn's later transcript message; the
+/// first keeps the reply's own identity.
 fn reply_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.reply-part.v1");
     hasher.update(&turn.into_bytes());
@@ -1181,6 +1184,11 @@ struct TurnContext<'a> {
     )>,
     /// Latest roster message in `settled`, indexed while selecting history.
     roster_at: Option<usize>,
+    /// Where a spawned agent's own conversation starts: after the summary
+    /// and this many settled turns inherited from its parent, or before the
+    /// summary when its own checkpoint replaced them. Its role directive sits
+    /// exactly there, so its context extends the parent's at the fork.
+    fork: Option<usize>,
     turn: OperationId,
     input: ModelContent,
     policy: Option<&'a FileRef>,
@@ -1192,19 +1200,24 @@ impl<'a> TurnContext<'a> {
     /// latest checkpoint on, which replaces every entry before it.
     fn new(
         agent: &'a AgentState,
-        mut history: Vec<ConversationEntry>,
+        mut history: Vec<(u64, ConversationEntry)>,
         turn: OperationId,
         input: &'a ModelContent,
     ) -> Result<Self> {
+        let inherited = |sequence: u64| sequence < agent.conversation_base;
+        let mut fork = Some(0);
         let checkpoint = match history
             .iter()
-            .rposition(|entry| entry.checkpoint().is_some())
+            .rposition(|(_, entry)| entry.checkpoint().is_some())
         {
             Some(at) => {
                 let after = history.split_off(at + 1);
-                let entry = std::mem::replace(&mut history, after)
+                let (sequence, entry) = std::mem::replace(&mut history, after)
                     .pop()
                     .ok_or_else(|| Error::Invalid("checkpoint entry is absent".into()))?;
+                if !inherited(sequence) {
+                    fork = None;
+                }
                 Some((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
                     entry.output,
@@ -1216,9 +1229,12 @@ impl<'a> TurnContext<'a> {
         let mut roster_at = None;
         let settled = history
             .into_iter()
-            .filter(|entry| entry.input.context().is_none())
+            .filter(|(_, entry)| entry.input.context().is_none())
             .enumerate()
-            .map(|(at, entry)| {
+            .map(|(at, (sequence, entry))| {
+                if let Some(fork) = fork.as_mut().filter(|_| inherited(sequence)) {
+                    *fork = at + 1;
+                }
                 if entry.targets.is_some() {
                     roster_at = Some(at);
                 }
@@ -1235,6 +1251,7 @@ impl<'a> TurnContext<'a> {
             checkpoint,
             settled,
             roster_at,
+            fork,
             turn,
             input: input.clone(),
             // A spawned agent runs under the approval policy it inherited,
@@ -1288,11 +1305,13 @@ impl<'a> TurnContext<'a> {
     }
 
     /// The selection: the checkpoint's summary as one assistant message
-    /// (none when it is empty), then one user and one assistant message per
-    /// settled turn, assistant text read from its staged output through
-    /// `reader`, which holds [`Self::files`]. Shared instructions open every
-    /// selection. Target rosters remain separate user messages before each
-    /// turn input and retain their original publication identity.
+    /// (none when it is empty), then each settled turn's input and its staged
+    /// transcript, read through `reader`, which holds [`Self::files`]. Shared
+    /// instructions open every selection; a spawned agent's role directive
+    /// sits at its fork point. Target rosters remain separate user messages
+    /// before each turn input and retain their original publication identity.
+    /// Every earlier selection is a prefix of this one, so provider prompt
+    /// caches hold across turns and forks.
     async fn select<P: StreamProvider + ?Sized>(
         self,
         stream: &P,
@@ -1305,6 +1324,7 @@ impl<'a> TurnContext<'a> {
         let Self {
             checkpoint,
             settled,
+            fork,
             turn,
             notices: current_notices,
             ..
@@ -1329,7 +1349,10 @@ impl<'a> TurnContext<'a> {
             "acyclic.harness.agent.prompt.v1",
             crate::preset::AGENT_PROMPT,
         ));
-        if let Some(parent) = &agent.parent {
+        let directive = |messages: &mut Vec<ModelMessage>, message_ids: &mut Vec<uuid::Uuid>| {
+            let Some(parent) = &agent.parent else {
+                return;
+            };
             let directive = format!(
                 "You are child agent {}, working for parent {parent} in your own fork. Your task is the brief appended to this fork. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions.",
                 agent.path
@@ -1342,7 +1365,11 @@ impl<'a> TurnContext<'a> {
                 role: ModelRole::User,
                 content: ModelContent::Text(directive),
             });
+        };
+        if fork.is_none() {
+            directive(&mut messages, &mut message_ids);
         }
+        let forked = settled.len();
         if let Some((checkpoint, summary)) = summary {
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
@@ -1360,7 +1387,11 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(roster_id(turn));
         };
-        for (settled, announced, content, output, notices) in settled {
+        for (at, (settled, announced, content, output, notices)) in settled.into_iter().enumerate()
+        {
+            if fork == Some(at) {
+                directive(&mut messages, &mut message_ids);
+            }
             if let Some(announced) = &announced {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
@@ -1382,16 +1413,16 @@ impl<'a> TurnContext<'a> {
                 });
                 message_ids.push(message_id(settled, ModelRole::User));
             }
-            for (part, content) in reply.into_iter().enumerate() {
-                messages.push(ModelMessage {
-                    role: ModelRole::Assistant,
-                    content,
-                });
+            for (part, message) in reply.into_iter().enumerate() {
+                messages.push(message);
                 message_ids.push(match part {
                     0 => message_id(settled, ModelRole::Assistant),
                     part => reply_part_id(settled, part),
                 });
             }
+        }
+        if fork == Some(forked) {
+            directive(&mut messages, &mut message_ids);
         }
         if let Some(roster) = roster {
             announce(&mut messages, &mut message_ids, turn, roster);
@@ -1440,23 +1471,26 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
 }
 
-/// A settled turn's reply as the next turn sees it: its kept assistant parts,
-/// native bytes included, or its text when it kept none. Each part is its own
-/// assistant message, the shape the turn admitted it in, so the next turn
-/// checks the same limits.
+/// A settled turn's transcript after its input as the next turn sees it:
+/// every message its last request sent plus its final reply, verbatim, or its
+/// text when the output kept none. Replaying the transcript rather than a
+/// summary of it keeps each turn's request a byte extension of the last.
 async fn staged_reply(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,
-) -> Result<Vec<ModelContent>> {
+) -> Result<Vec<ModelMessage>> {
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
         .await?;
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
     Ok(if output.parts.is_empty() {
-        vec![ModelContent::Text(output.text)]
+        vec![ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text(output.text),
+        }]
     } else {
-        output.parts.into_iter().map(ModelContent::Part).collect()
+        output.parts
     })
 }
 

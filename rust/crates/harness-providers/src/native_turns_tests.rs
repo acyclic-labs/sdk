@@ -56,6 +56,13 @@ fn golden(adapter: Adapter) -> Value {
     }
 }
 
+fn assistant(part: ModelContentPart) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(part),
+    }
+}
+
 /// The settled turn's output exactly as the turn stages it.
 fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
     let events: Vec<ModelEvent> = futures::executor::block_on(
@@ -77,10 +84,10 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
             ModelEvent::Content { delta } => text.push_str(&delta),
             ModelEvent::MessageCompleted { text: completed } => text = completed,
             ModelEvent::ReasoningBlock { block } => {
-                parts.push(ModelContentPart::Reasoning { block })
+                parts.push(assistant(ModelContentPart::Reasoning { block }))
             }
             ModelEvent::TextPart { text, native } => {
-                parts.push(ModelContentPart::Text { text, native });
+                parts.push(assistant(ModelContentPart::Text { text, native }));
             }
             _ => {}
         }
@@ -101,10 +108,7 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
 fn next_turn(provider: &ResolvedModel, reply: &TurnOutput) -> ModelRequest {
     let (prepared, _) = request(provider).unwrap();
     let mut next = prepared.request().clone();
-    next.messages.push(ModelMessage {
-        role: ModelRole::Assistant,
-        content: ModelContent::Parts(reply.parts.clone()),
-    });
+    next.messages.extend(reply.parts.iter().cloned());
     next.messages.push(ModelMessage {
         role: ModelRole::User,
         content: ModelContent::Text("next".into()),
@@ -156,7 +160,10 @@ fn settled_native_parts_replay_exactly_in_the_next_turn() {
             .unwrap(),
         )
         .unwrap();
-        for part in &reply.parts {
+        for message in &reply.parts {
+            let ModelContent::Part(part) = &message.content else {
+                continue;
+            };
             let bytes = match part {
                 ModelContentPart::Reasoning { block } if adapter != Adapter::Chat => {
                     &block.continuity

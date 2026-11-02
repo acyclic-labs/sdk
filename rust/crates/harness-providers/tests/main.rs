@@ -25,6 +25,8 @@ mod ordered_matcher;
 mod progress_guard;
 #[path = "../../harness/tests/support/progress_registry.rs"]
 mod progress_registry;
+#[path = "integration/prefix_cache.rs"]
+mod prefix_cache;
 #[path = "integration/provider_case.rs"]
 mod provider_case;
 #[path = "integration/provider_http.rs"]
