@@ -368,27 +368,20 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(crate::storage::ObjectRead, u64), FsError> {
-    accounting.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return {
-            let __object_args = (object, maximum, original, cancellation);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-
-            store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await
-        }
-        .map(|read| (read, 0))
-        .map_err(read_store_error);
+        accounting.check()?;
+        let mut work = crate::AuthorityWork::native(original, cancellation);
+        return store
+            .read(object, maximum, &mut work)
+            .await
+            .map(|read| (read, 0))
+            .map_err(read_store_error);
     }
     let result = {
-        let __object_args = (object, maximum, accounting.remaining()?, cancellation);
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
+        let mut work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+        let result = store.read(object, maximum, &mut work).await;
+        work.receipt(result)
     };
     accept_standalone_object_read(result, accounting)
 }
@@ -473,10 +466,10 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ReadOwned<Vec<crate::storage::ObjectRead>>, FsError> {
-    accounting.check()?;
-    cancellation.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
+        accounting.check()?;
+        cancellation.check()?;
         let mut work = crate::AuthorityWork::native(original, cancellation);
         let (value, allocation) = store
             .read_many(requests, &mut work)
@@ -489,13 +482,14 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
         });
     }
     let result = {
-        let __object_args = (requests, accounting.remaining()?, cancellation);
-        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
+        let budget = accounting.remaining()?;
+        cancellation.check()?;
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = store
+            .read_many(requests, &mut work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        work.receipt(result)
     };
     let completed = match &result {
         Ok(receipt) => receipt.work,
