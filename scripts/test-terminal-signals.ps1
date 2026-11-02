@@ -18,6 +18,7 @@ using System.Threading;
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 
 public static class TerminalSignalConPty {
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short x,y; }
@@ -59,6 +60,13 @@ public static class TerminalSignalConPty {
             if(count==0) return;
             log.Write(bytes,0,(int)count);
         }
+    }
+
+    static string FailureTail(string report) {
+        using var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite);
+        log.Seek(Math.Max(0,log.Length-1400),SeekOrigin.Begin);
+        using var tail=new StreamReader(log,Encoding.UTF8);
+        return tail.ReadToEnd();
     }
 
     sealed class Publication : IDisposable {
@@ -115,7 +123,8 @@ public static class TerminalSignalConPty {
     public static void Run(string binary,string scenario,string report) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null,close=null;
-        Exception drainFailure=null;
+        Exception drainFailure=null,failure=null;
+        bool drained=false;
         var draining=new ManualResetEvent(scenario!="blocked");
         string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario "+scenario;
         try {
@@ -201,7 +210,8 @@ public static class TerminalSignalConPty {
             for(int i=1;i<=4;i++) Require(fields[i]==fields[i+4],"exact original console state field "+i);
             Require(fields[3]=="437"&&fields[4]=="437","non-UTF8 original code pages");
             if(console!=IntPtr.Zero) { ClosePseudoConsole(console); console=IntPtr.Zero; }
-            Require(drain.Join(500),"output drain completion deadline"+recovery);
+            drained=drain.Join(500);
+            Require(drained,"output drain completion deadline"+recovery);
             if(drainFailure!=null) throw new IOException("output drain failed"+recovery,drainFailure);
             string mouseTrace=File.ReadAllText(Path.ChangeExtension(report,"output"));
             foreach(int mode in new[]{1002,1006}) {
@@ -210,14 +220,25 @@ public static class TerminalSignalConPty {
                 Require(enabled>=0&&restored>enabled,"physical mouse mode restored "+mode);
             }
             Console.WriteLine("ConPTY "+scenario+": original input/output modes and code pages restored");
+        } catch(Exception error) {
+            failure=error;
         } finally {
             draining.Set();
             if(process.process!=IntPtr.Zero) TerminateProcess(process.process,125);
             if(console!=IntPtr.Zero) ClosePseudoConsole(console);
             if(initialized) DeleteProcThreadAttributeList(attributes);
             if(attributes!=IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+            if(drain!=null&&!drained) drained=drain.Join(500);
             foreach(IntPtr handle in new[]{ir,iw,orr,ow,process.thread,process.process}) if(handle!=IntPtr.Zero) CloseHandle(handle);
-            if(drain!=null) drain.Join(500);
+        }
+        if(failure!=null) {
+            if(drained) {
+                try { Console.Error.WriteLine("ConPTY child output tail:\n"+FailureTail(report)); }
+                catch(Exception error) { Console.Error.WriteLine("child output tail read failed: "+error.Message+recovery); }
+            } else {
+                Console.Error.WriteLine("child output drain did not complete"+recovery);
+            }
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 }
