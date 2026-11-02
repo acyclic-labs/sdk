@@ -156,10 +156,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         let created = create_root(intent, adopted)?;
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
-        let effects =
-            effects(created.request)
-                .into_iter()
-                .chain(self.create(&actor, &created.child, 0)?);
+        let effects = effects(created.request).chain(self.create(&actor, &created.child, 0)?);
         for effect in effects {
             publish
                 .join(effect)
@@ -354,7 +351,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         };
         let step = prepared.step();
         let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
-        let mut effects = effects(request);
+        let mut effects: Vec<_> = effects(request).collect();
         let spawned: BTreeSet<_> = step
             .outs
             .iter()
@@ -400,16 +397,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
 
 /// The lowered commit as effects: the first carries every condition, so the
 /// runtime's join keeps them sorted and unique by path.
-fn effects(request: CommitRequest) -> Vec<Effect> {
+fn effects(request: CommitRequest) -> impl Iterator<Item = Effect> {
     let mut conditions = Some(request.conditions);
-    request
-        .mutations
-        .into_iter()
-        .map(|mutation| Effect {
-            conditions: conditions.take().unwrap_or_default(),
-            mutation,
-        })
-        .collect()
+    request.mutations.into_iter().map(move |mutation| Effect {
+        conditions: conditions.take().unwrap_or_default(),
+        mutation,
+    })
 }
 
 impl<P, D> Handler for AgentHandler<P, D>
