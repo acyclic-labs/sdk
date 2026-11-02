@@ -89,7 +89,7 @@ impl Opening {
             model.validate()?;
         }
         let preset = config.preset_value();
-        let tools = configure_tools(&preset, &mut config)?;
+        let tools = configure_tools(&mut config)?;
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let installation = match &settings_configuration {
             Some(settings) => {
@@ -432,6 +432,12 @@ impl Opening {
             verifier,
             signed,
             preset: self.preset,
+            agent_tools: self
+                .config
+                .default_tools
+                .into_iter()
+                .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
+                .collect(),
             approval_models: self.config.approval_models,
             agent: self.config.model,
             served: self.config.served,
@@ -487,7 +493,10 @@ fn scopes(
         seed.capability(VolumeOperation::Read, &mut None)?,
         seed.directory_read_capability("", &mut None)?,
     ]);
-    grants.extend(opening.preset.tool_grants(&opening.tools)?);
+    grants.extend(crate::tools::call_grants(
+        &opening.tools,
+        opening.config.default_tools.iter().map(String::as_str),
+    )?);
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     grants.extend(
         opening
@@ -567,22 +576,20 @@ impl PrivateVolumes {
     }
 }
 
-fn configure_tools(
-    preset: &crate::preset::Preset,
-    config: &mut LocalHarnessConfig,
-) -> Result<ToolRegistry> {
-    let tools = preset.tools(
+fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
+    let tools = crate::tools::registry(
+        &config.default_tools,
         |_| cfg!(any(test, feature = "native-execution")),
         std::mem::take(&mut config.tools),
     )?;
     #[cfg(feature = "search-http")]
-    if config.model.is_none() && preset.web_tools {
+    if config.model.is_none() && config.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));
     }
     #[cfg(feature = "search-http")]
-    let tools = if preset.web_tools {
+    let tools = if config.web_tools {
         let mut tools = tools;
         web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         tools
