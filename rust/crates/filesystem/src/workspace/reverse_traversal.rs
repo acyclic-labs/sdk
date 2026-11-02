@@ -4,20 +4,34 @@ pub(super) fn sorted_changed_file_ids(
     file_ids: impl IntoIterator<Item = FileId>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Vec<FileId>, KernelOwnedAllocation), WorkspaceError> {
-    let mut ids = (Vec::<FileId>::new(), accounting.claim_owned(0, 0)?);
+    accounting.check()?;
+    let mut selected = crate::kernel::allocation::fixed_index::FixedIndex::<()>::default();
+    let mut count = 0_usize;
     for file_id in file_ids {
         accounting.charge_items(1)?;
-        let Err(low) = binary_search_with_accounting(&ids.0, accounting, |id| id.cmp(&file_id))?
-        else {
-            continue;
-        };
-        reverse_grow(&mut ids.0, &mut ids.1, accounting)?;
-        let copied = copy_work(((ids.0.len() - low + 1) * std::mem::size_of::<FileId>()) as u64);
-        accounting.admit(copied)?;
-        ids.0.insert(low, file_id);
-        accounting.record_completed(copied)?;
+        selected.get_or_try_insert_with(file_id.into_bytes(), accounting, |_| {
+            count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            Ok(())
+        })?;
     }
-    Ok(ids)
+    let mut ids = crate::kernel::Owned::<Vec<FileId>>::allocate(count, accounting)?;
+    let result = (|| {
+        // The shared consuming cursor yields full identities in canonical order
+        // and retires each original node without restarting a root search.
+        let mut selected = selected.into_entries();
+        while let Some(entry) = selected.try_next(accounting)? {
+            let copied = copy_work(std::mem::size_of::<FileId>() as u64);
+            accounting.admit(copied)?;
+            ids.value.push(FileId::from_bytes(*entry.key()));
+            accounting.record_completed(copied)?;
+        }
+        Ok::<_, FsError>(())
+    })();
+    if let Err(error) = result {
+        ids.retire(accounting)?;
+        return Err(error.into());
+    }
+    Ok((ids.value, ids.allocation))
 }
 
 pub(super) fn reverse_drop<T>(
