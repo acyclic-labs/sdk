@@ -224,7 +224,7 @@ pub(crate) fn generate<'a>(
                     futures::pin_mut!(events);
                     while let Some(event) = events.next().await { yield event?; }
                 }
-            })
+            }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))
         };
         futures::pin_mut!(exchange, cancelled);
         match futures::future::select(cancelled, exchange).await {

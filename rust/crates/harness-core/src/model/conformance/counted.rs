@@ -1,7 +1,7 @@
 //! Forward the original provider's futures, streams and native custody directly.
 use super::super::*;
 use acyclic_stream::{
-    BoxProviderFuture, BoxProviderStream,
+    BoxProviderFuture,
     testing::{Counted, RequestClass},
 };
 use std::{ops::Deref, sync::Arc};
@@ -49,7 +49,7 @@ where
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         self.record(RequestClass::Data);
         self.inner().generate(request, dispatch)
     }

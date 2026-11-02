@@ -32,7 +32,7 @@ impl ProviderAttempt {
         provider: &'a dyn ModelProvider,
         request: &'a crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         provider.generate(request, dispatch)
     }
 

@@ -25,7 +25,7 @@
 //! ([`crate::tool::ToolExecutor::replays_recorded`]).
 use super::*;
 use acyclic_collections::{FixedIndex, IndexWork};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStream};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -86,6 +86,8 @@ impl RecordedToolOutcome {
 /// One recorded model call.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecordedCall {
+    /// Original admitted dispatch, absent for sources without that observation.
+    pub source: Option<ModelDispatch>,
     /// Exact canonical [`ModelEvent`] JSON, in source order, ending with completion.
     pub events: Vec<Vec<u8>>,
     /// How the tool calls this answer made settled, inner calls of a
@@ -103,6 +105,15 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// Offline projection grouped by request key, with calls in source
+    /// occurrence order. Key order is unspecified; traversal is proportional
+    /// to the recording's capacity.
+    pub fn calls(&self) -> impl Iterator<Item = (&[u8; 32], &[RecordedCall])> {
+        self.calls
+            .iter()
+            .map(|(key, calls)| (key, calls.as_slice()))
+    }
+
     /// Adds `call` as the next answer to the request with replay `key`.
     pub fn insert(&mut self, key: [u8; 32], call: RecordedCall) {
         self.calls.entry(key).or_default().push(call);
@@ -457,6 +468,7 @@ mod tests {
                 if insert {
                     // Generated opaque operands, not external provider fixtures.
                     let call = RecordedCall {
+                        source: None,
                         events: vec![sequence.to_le_bytes().to_vec()],
                         tools: Vec::new(),
                     };
@@ -728,6 +740,7 @@ mod tests {
                 source.insert(
                     [0; 32],
                     RecordedCall {
+                        source: None,
                         events: Vec::new(),
                         tools: vec![(call_id.into(), original.clone())],
                     },
@@ -747,15 +760,23 @@ mod tests {
                     .map_err(|(error, _)| error)?;
                 let baseline = refused.live_allocation_bytes();
                 let denial = trial.recorded_tool_result(operation, call_id, Some(&refused));
+                let cause = match &denial {
+                    Err(Error::NativeWork { cause, .. }) => Some(cause),
+                    Err(Error::NativeFilesystem { source, .. }) => match source.as_ref() {
+                        acyclic_fs::FsError::NativeKernel(cause) => Some(cause),
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 assert!(
                     matches!(
-                        &denial,
-                        Err(Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                                acyclic_fs::WorkError::BudgetExceeded { .. }
-                            ),
-                            ..
-                        })
+                        cause,
+                        Some(acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded {
+                                counter: "bytes_copied",
+                                ..
+                            }
+                        ))
                     ),
                     "original copy denial was {denial:?}"
                 );
@@ -965,13 +986,16 @@ impl ModelProvider for RecordedModel {
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
+    ) -> ModelStream<'a> {
         match self.take(request, dispatch, None) {
-            Ok(Some(call)) => Box::pin(futures::stream::iter(
+            Ok(Some(call)) => ModelStream::new(Box::pin(futures::stream::iter(
                 call.events.iter().map(|bytes| decode(bytes)),
-            )),
+            )))
+            .with_delivery(ModelDelivery::Recorded {
+                source: call.source,
+            }),
             Ok(None) => self.live.generate(request, dispatch),
-            Err(error) => Box::pin(futures::stream::iter([Err(error)])),
+            Err(error) => ModelStream::new(Box::pin(futures::stream::iter([Err(error)]))),
         }
     }
     fn reconcile<'a>(
@@ -1056,6 +1080,11 @@ impl ModelProvider for RecordedModel {
                         .iter()
                         .map(move |bytes| ModelEvent::decode_with_native_work(bytes, work)),
                 )
+            })
+            .map(|stream| {
+                stream.with_delivery(ModelDelivery::Recorded {
+                    source: call.source,
+                })
             })
         })
     }

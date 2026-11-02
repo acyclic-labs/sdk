@@ -32,7 +32,7 @@ use acyclic_harness_core::{
         ToolResult,
     },
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -52,7 +52,7 @@ impl ModelProvider for Scripted {
         &'a self,
         _: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, acyclic_harness_core::Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         let event = if dispatch.step == 0 {
             ModelEvent::ToolCall(ToolCall::new("call-0".into(), TOOL.into(), json!({})))
         } else {
@@ -60,12 +60,12 @@ impl ModelProvider for Scripted {
                 delta: "done".into(),
             }
         };
-        Box::pin(futures::stream::iter([
+        crate::model::ModelStream::new(Box::pin(futures::stream::iter([
             Ok(event),
             Ok(ModelEvent::Completed {
                 metadata: Value::Null,
             }),
-        ]))
+        ])))
     }
 }
 

@@ -156,6 +156,10 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
                 .await?;
+            assert_eq!(
+                stream.delivery(),
+                acyclic_harness_core::model::ModelDelivery::Live
+            );
             let mut calls = 0;
             let mut completed = 0;
             while let Some(event) = stream.next().await {

@@ -542,10 +542,12 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             provider.context_capacity(&provider.model)?.context_tokens,
             8192
         );
-        let events = provider
-            .generate(&request, dispatch)
-            .try_collect::<Vec<_>>()
-            .await?;
+        let stream = provider.generate(&request, dispatch);
+        assert_eq!(
+            stream.delivery(),
+            acyclic_harness_core::model::ModelDelivery::Live
+        );
+        let events = stream.try_collect::<Vec<_>>().await?;
         assert_eq!(
             events
                 .iter()

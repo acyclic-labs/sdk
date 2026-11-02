@@ -16,7 +16,7 @@ use acyclic_harness::{
     server::{self, Actors, Execution, ServerConfig},
 };
 use acyclic_harness_client::AgentCommand;
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream, StreamError};
+use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -121,32 +121,34 @@ impl ModelProvider for ModelGate {
         &'a self,
         request: &'a PreparedModelRequest,
         _: ModelDispatch,
-    ) -> BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
+    ) -> acyclic_harness::model::ModelStream<'a> {
         let system = request.request().messages.iter().any(|message| {
             matches!(&message.content, acyclic_harness::model::ModelContent::Text(text)
                 if text.contains("You are GraphCoder"))
         });
         let entered = self.entered.lock().unwrap().take();
         let output = self.output.lock().unwrap().take();
-        futures::stream::once(async move {
-            if !system {
-                return Err(Error::Invalid("GraphCoder prompt missing".into()));
-            }
-            if let Some(entered) = entered {
-                let _ = entered.send(());
-            }
-            output
-                .ok_or_else(|| Error::Invalid("model dispatched twice".into()))?
-                .await
-                .map_err(|_| Error::Storage("model producer closed".into()))?;
-            Ok(futures::stream::iter(
-                acyclic_harness::conformance::protocol::model_events(1)
-                    .into_iter()
-                    .map(Ok),
-            ))
-        })
-        .try_flatten()
-        .boxed()
+        acyclic_harness::model::ModelStream::new(
+            futures::stream::once(async move {
+                if !system {
+                    return Err(Error::Invalid("GraphCoder prompt missing".into()));
+                }
+                if let Some(entered) = entered {
+                    let _ = entered.send(());
+                }
+                output
+                    .ok_or_else(|| Error::Invalid("model dispatched twice".into()))?
+                    .await
+                    .map_err(|_| Error::Storage("model producer closed".into()))?;
+                Ok(futures::stream::iter(
+                    acyclic_harness::conformance::protocol::model_events(1)
+                        .into_iter()
+                        .map(Ok),
+                ))
+            })
+            .try_flatten()
+            .boxed(),
+        )
     }
 }
 

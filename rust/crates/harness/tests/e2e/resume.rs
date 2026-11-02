@@ -256,34 +256,37 @@ impl ModelProvider for PausedPrefix {
         &'a self,
         _: &'a PreparedModelRequest,
         _: ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
-        Box::pin(futures::stream::unfold(false, move |sent| async move {
-            if !sent {
-                return Some((
-                    Ok(ModelEvent::Content {
-                        delta: PREFIX.into(),
-                    }),
-                    true,
-                ));
-            }
-            // StockExecutor awaits the preceding event's successful journal
-            // append before requesting this next item. Verify that prefix once;
-            // a producer prefetched before append must fail, never signal ready.
-            match observed(self.journal.as_ref(), self.operation).await {
-                Ok(events) if events.as_slice() == &expected()[..4] => {}
-                result => {
+    ) -> crate::model::ModelStream<'a> {
+        crate::model::ModelStream::new(Box::pin(futures::stream::unfold(
+            false,
+            move |sent| async move {
+                if !sent {
                     return Some((
-                        Err(acyclic_harness::Error::Storage(format!(
-                            "the prefix was not journaled before the next item: {result:?}"
-                        ))),
+                        Ok(ModelEvent::Content {
+                            delta: PREFIX.into(),
+                        }),
                         true,
                     ));
                 }
-            }
-            // libtest may have written a test-name prefix without a newline.
-            println!("\n{JOURNALED}");
-            std::future::pending().await
-        }))
+                // StockExecutor awaits the preceding event's successful journal
+                // append before requesting this next item. Verify that prefix once;
+                // a producer prefetched before append must fail, never signal ready.
+                match observed(self.journal.as_ref(), self.operation).await {
+                    Ok(events) if events.as_slice() == &expected()[..4] => {}
+                    result => {
+                        return Some((
+                            Err(acyclic_harness::Error::Storage(format!(
+                                "the prefix was not journaled before the next item: {result:?}"
+                            ))),
+                            true,
+                        ));
+                    }
+                }
+                // libtest may have written a test-name prefix without a newline.
+                println!("\n{JOURNALED}");
+                std::future::pending().await
+            },
+        )))
     }
 }
 

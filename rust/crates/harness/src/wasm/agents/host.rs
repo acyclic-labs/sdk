@@ -215,10 +215,10 @@ impl ModelProvider for HostModel {
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         // Pull exactly one event per poll. The stock executor owns admission,
         // event limits, cancellation, request identity and durable consumption.
-        Box::pin(futures::stream::try_unfold(
+        crate::model::ModelStream::new(Box::pin(futures::stream::try_unfold(
             None,
             move |iterator: Option<HostModelIterator>| async move {
                 let iterator = match iterator {
@@ -253,7 +253,7 @@ impl ModelProvider for HostModel {
                     .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
                 Ok(Some((event, Some(iterator))))
             },
-        ))
+        )))
     }
 
     fn reconcile<'a>(

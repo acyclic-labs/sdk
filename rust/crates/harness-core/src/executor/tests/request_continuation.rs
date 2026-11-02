@@ -61,12 +61,12 @@ impl ModelProvider for ContinuingModel {
         &'a self,
         request: &'a crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+    ) -> crate::model::ModelStream<'a> {
         let events = match self.answer(request, dispatch) {
             Ok(events) => events.into_iter().map(Ok).collect(),
             Err(error) => vec![Err(error)],
         };
-        Box::pin(futures::stream::iter(events))
+        crate::model::ModelStream::new(Box::pin(futures::stream::iter(events)))
     }
 }
 

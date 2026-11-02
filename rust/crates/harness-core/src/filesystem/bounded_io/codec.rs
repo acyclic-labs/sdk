@@ -421,15 +421,12 @@ impl PreparationIo {
                 ..Default::default()
             },
             Charge::CopyAdmission { bytes } => {
-                let next = WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = self.original_native_work() {
-                    return native.admit(next).map_err(Into::into);
-                }
-                return self.preflight(next).map_err(Into::into);
+                return self
+                    .preflight(WorkCounters {
+                        bytes_copied: bytes,
+                        ..Default::default()
+                    })
+                    .map_err(Into::into);
             }
             Charge::Admission { .. } => {
                 return Err(self.invalid("trusted decode admission requires a scoped reservation"));

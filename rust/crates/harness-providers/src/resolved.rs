@@ -4,7 +4,6 @@ use acyclic_harness_core::{
     context::{ModelContextCapacity, ModelTokenCount},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
-use acyclic_stream::BoxProviderStream;
 use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
@@ -299,7 +298,10 @@ impl ModelProvider for ResolvedModel {
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        crate::dispatch::generate(self, request, dispatch)
+    ) -> acyclic_harness_core::model::ModelStream<'a> {
+        acyclic_harness_core::model::ModelStream::new(crate::dispatch::generate(
+            self, request, dispatch,
+        ))
+        .with_delivery(acyclic_harness_core::model::ModelDelivery::Live)
     }
 }

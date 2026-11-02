@@ -332,7 +332,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
 #[tokio::test]
 async fn lost_model_producer_closes_local_session_without_settling_input() -> Result<()> {
     use crate::model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest};
-    use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+    use acyclic_stream::BoxProviderFuture;
     use futures::StreamExt as _;
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -355,18 +355,20 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             &'a self,
             _: &'a PreparedModelRequest,
             _: ModelDispatch,
-        ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+        ) -> crate::model::ModelStream<'a> {
             let gate = self.gate.lock().unwrap().take();
-            futures::stream::once(async move {
-                let (entered, result) =
-                    gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
-                let _ = entered.send(());
-                result
-                    .await
-                    .map_err(|_| Error::Storage("model producer closed".into()))?;
-                Err(Error::Invalid("model gate unexpectedly released".into()))
-            })
-            .boxed()
+            crate::model::ModelStream::new(
+                futures::stream::once(async move {
+                    let (entered, result) =
+                        gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+                    let _ = entered.send(());
+                    result
+                        .await
+                        .map_err(|_| Error::Storage("model producer closed".into()))?;
+                    Err(Error::Invalid("model gate unexpectedly released".into()))
+                })
+                .boxed(),
+            )
         }
     }
 

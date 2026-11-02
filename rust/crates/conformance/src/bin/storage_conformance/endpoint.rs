@@ -23,7 +23,6 @@ use acyclic_objects::{
     Blobs, MemoryObjects, Store,
     s3::{Capabilities as S3Capabilities, S3Medium},
 };
-use acyclic_stream::BoxProviderStream;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -34,15 +33,15 @@ impl ModelProvider for Answer {
         &'a self,
         _: &'a PreparedModelRequest,
         _: ModelDispatch,
-    ) -> BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
-        Box::pin(futures::stream::iter([
+    ) -> acyclic_harness::model::ModelStream<'a> {
+        acyclic_harness::model::ModelStream::new(Box::pin(futures::stream::iter([
             Ok(ModelEvent::Content {
                 delta: "stored answer".into(),
             }),
             Ok(ModelEvent::Completed {
                 metadata: Value::Null,
             }),
-        ]))
+        ])))
     }
 }
 
