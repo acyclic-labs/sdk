@@ -520,7 +520,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         }), "missing original invocation terminal/settlement");
     }
     let published = store
-        .submit(publication)
+        .submit_retained(publication)
         .await?
         .ok_or("missing failed invocation state")?;
     let Err(Error::InvocationFailed { source, receipt }) = store.wait_invocation(ticket).await
