@@ -89,3 +89,8 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "captured_exports"
+path = "tests/captured_exports.rs"
+required-features = ["research", "acyclic-harness/metrics-export"]
