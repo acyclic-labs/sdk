@@ -1,7 +1,8 @@
 use super::*;
 use acyclic_actors::call::{Accepted, CallPath, Commit, Journal};
 use acyclic_stream::{
-    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamProvider,
+    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream,
+    StreamProviderExt as _,
 };
 use arrow_array::{Array, StringArray, UInt64Array};
 use futures::TryStreamExt as _;
@@ -141,7 +142,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         assert!(project(source(), &journal, &call, call.log(), &foreign).is_err());
         let other = StreamPath::new("foreign/calls/cancel").map_err(export_error)?;
         assert!(project(source(), &journal, &call, &other, &record).is_err());
-        let foreign_agent = AgentPath::root(&crate::AgentId::from_bytes([9; 16]));
+        let foreign_agent = AgentPath::root(&crate::agent::AgentId::from_bytes([9; 16]));
         assert!(
             project(
                 Source {
@@ -293,7 +294,7 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
 #[tokio::test]
 async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
-    let agent = AgentPath::root(&crate::AgentId::from_bytes([1; 16]));
+    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
     let caller = StreamPath::new(agent.as_str()).map_err(export_error)?;
     let account = AccountId::new(b"original").map_err(export_error)?;
     for failure in [false, true] {
