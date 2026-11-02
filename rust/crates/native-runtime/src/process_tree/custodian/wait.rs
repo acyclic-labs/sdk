@@ -1,8 +1,8 @@
-//! One physical process exit delivered by the kernel to the original port.
+//! One native lifetime's exit delivered by the kernel to the original port.
 //!
 //! Custody retains each association until its packet is dequeued. Unlike a
 //! cancellable readiness subscription, there is no callback, user buffer or
-//! user-mode completion post between the process exit and that packet. The
+//! user-mode completion post between the process or thread exit and that packet. The
 //! key and message are integer identities, never dereferenced pointers.
 //!
 //! Native contracts: <https://learn.microsoft.com/en-us/windows/win32/devnotes/ntcreatewaitcompletionpacket>
@@ -98,7 +98,7 @@ pub(super) struct ExitWait {
 impl ExitWait {
     pub(super) fn new(
         port: BorrowedHandle<'_>,
-        process: BorrowedHandle<'_>,
+        target: BorrowedHandle<'_>,
         key: usize,
         message: u32,
     ) -> io::Result<Self> {
@@ -121,7 +121,7 @@ impl ExitWait {
             (api.associate)(
                 packet.as_raw_handle(),
                 port.as_raw_handle(),
-                process.as_raw_handle(),
+                target.as_raw_handle(),
                 std::ptr::without_provenance_mut(key),
                 std::ptr::null_mut(),
                 0,

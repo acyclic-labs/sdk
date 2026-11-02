@@ -1117,6 +1117,104 @@ mod handoff_tests {
     };
 
     #[test]
+    fn admission_terminal_survives_failed_post_and_full_credit_loss() -> io::Result<()> {
+        use std::io::Read as _;
+        use std::net::TcpStream;
+
+        for failed_post in [true, false] {
+            // SAFETY: one original completion port, owned through dequeue.
+            let port =
+                unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+            if port.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful creation transferred this owned handle.
+            let port = unsafe { OwnedHandle::from_raw_handle(port) };
+            let server = admission::Server::bind()?;
+            let address = server.endpoint.clone();
+            let (requests, thread) = server.start(if failed_post {
+                std::ptr::null_mut()
+            } else {
+                port.as_raw_handle()
+            })?;
+            let mut producer = wait::Producer::new(thread, port.as_handle(), ADMISSION_EXITED)?;
+            let bytes = [
+                7_u32.to_le_bytes().as_slice(),
+                9_u64.to_le_bytes().as_slice(),
+                &[13; 16],
+            ]
+            .concat();
+            let mut first = TcpStream::connect(&address)?;
+            first.write_all(&bytes)?;
+            let mut requests = Some(requests);
+            let mut second = None;
+            if !failed_post {
+                let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
+                // SAFETY: the original port and writable packet outputs.
+                // The first real post proves its request occupies the sole
+                // credit; no handler or reply has consumed that request.
+                if unsafe {
+                    GetQueuedCompletionStatus(
+                        port.as_raw_handle(),
+                        &mut message,
+                        &mut key,
+                        &mut context,
+                        INFINITE,
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                assert_eq!((key, message), (admission::ADMIT, 0));
+                assert_eq!(requests.as_ref().unwrap().len(), 1);
+                let mut waiting = TcpStream::connect(&address)?;
+                waiting.write_all(&bytes)?;
+                second = Some(waiting);
+                // The same async dispatch must fail on receiver loss even
+                // when its original request credit is occupied.
+                drop(requests.take());
+            }
+            let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
+            // SAFETY: this same original producer's kernel exit packet does
+            // not depend on its own failed PostQueuedCompletionStatus.
+            if unsafe {
+                GetQueuedCompletionStatus(
+                    port.as_raw_handle(),
+                    &mut message,
+                    &mut key,
+                    &mut context,
+                    INFINITE,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            assert_eq!((key, message), (ADMISSION_EXITED, 0));
+            let error = producer.finish().unwrap_err();
+            if failed_post {
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_HANDLE.cast_signed())
+                );
+                let original = requests.as_mut().unwrap().try_recv().unwrap();
+                assert_eq!(
+                    (original.pid, original.tree, original.secret),
+                    (7, 9, [13; 16])
+                );
+            } else {
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                assert_eq!(error.raw_os_error(), None);
+            }
+            // No false admission ACK survives either producer failure.
+            assert_eq!(first.read(&mut [0])?, 0);
+            if let Some(mut second) = second {
+                assert_eq!(second.read(&mut [0])?, 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn failure_response_does_not_wait_for_diagnostic_pipe_credit() -> io::Result<()> {
         let (read, mut write) = io::pipe()?;
         let mode = PIPE_NOWAIT;
