@@ -601,6 +601,36 @@ async fn expired_session_rotates_before_whoami_and_orgs_reuses_new_access() {
 }
 
 #[tokio::test]
+async fn explicit_refresh_retains_one_admission_and_detects_a_redundant_read() {
+    let fake = Fake::start(vec![Expected::token(
+        refresh_fields("refresh-1"),
+        tokens("access-2", "refresh-2"),
+    )])
+    .await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .write(&fake.identity.endpoint, session("access-1", "refresh-1", 0))
+        .expect("write");
+    store.reads.store(0, Ordering::Relaxed);
+    let refreshed = fake.identity.refresh_stored(&store).await.expect("refresh");
+    assert_eq!(refreshed["authenticated"], true);
+    // Dispatch, original token consumption, and publication each admit once.
+    assert_eq!(store.reads.load(Ordering::Relaxed), 3);
+    assert_eq!(fake.requests.load(Ordering::SeqCst), 1);
+    // The old redundant source read adds one to the same boundary counter.
+    assert_eq!(
+        store
+            .read(&fake.identity.endpoint)
+            .expect("saved")
+            .refresh_token,
+        "refresh-2"
+    );
+    assert_eq!(store.reads.load(Ordering::Relaxed), 4);
+    fake.done();
+}
+
+#[tokio::test]
 async fn unauthorized_access_refreshes_once() {
     let mut unauthorized = Expected::get(
         "/v1/identity/session",
