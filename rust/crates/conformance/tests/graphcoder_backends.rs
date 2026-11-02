@@ -519,6 +519,72 @@ async fn served(server: &mut Running) -> Value {
     endpoint
 }
 
+#[cfg(feature = "client-session")]
+#[tokio::test(flavor = "multi_thread")]
+async fn selected_discovery_survives_a_serving_process_restart() {
+    use acyclic_conformance::client::endpoint;
+    use acyclic_harness_client::{
+        AgentBinding, AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
+    };
+    use acyclic_stream::StreamError;
+
+    let directory = tempfile::tempdir().unwrap();
+    let model = model(directory.path()).await;
+    let home = Home::new(directory.path(), "selected");
+    let binary = executable();
+    let mut retained: Option<Vec<u8>> = None;
+    let mut original_root = None;
+    for _ in 0..2 {
+        let mut server =
+            Running::start(home.command_of(&binary, &model, None, &["serve", "127.0.0.1:0"]));
+        let published = served(&mut server).await;
+        let options = acyclic_harness_client::resolve_connection_options(
+            published["endpoint"].as_str(),
+            published["credential"].as_str(),
+            None,
+            None,
+        )
+        .unwrap();
+        let session = endpoint::connect(&options).await.unwrap();
+        let (controls, _) = match &retained {
+            Some(binding) => {
+                AgentControls::discover_at(session, 0, AgentBinding::new(binding).unwrap()).await
+            }
+            None => AgentControls::discover(session, 0).await,
+        }
+        .unwrap();
+        let root = controls
+            .execute(
+                &controls
+                    .prepare(PreparedCommand::new(&AgentCommand::Root {}).unwrap())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let AgentReply::Root { agent } = root else {
+            panic!("serving process did not return its committed root");
+        };
+        if let Some(original) = &original_root {
+            assert_eq!(&agent, original);
+            assert_eq!(Some(controls.binding_bytes()), retained);
+        } else {
+            original_root = Some(agent.clone());
+        }
+        let (selected, _) = controls.select(agent.clone()).await.unwrap();
+        assert_eq!(selected.binding_bytes(), controls.binding_bytes());
+        retained = Some(selected.binding_bytes());
+
+        // Join actual physical exit and pipe retirement before reopening the
+        // SAME durable home. A live client must terminate when its owner dies.
+        server.kill().await;
+        assert!(matches!(
+            selected.select(agent).await,
+            Err(AgentExchangeError::Session(StreamError::Unavailable))
+        ));
+    }
+    assert!(model.steps.lock().unwrap().is_empty());
+}
+
 /// Where the scenario runs: this machine's harness, or a served endpoint
 /// and the credential it minted.
 enum Backend {
