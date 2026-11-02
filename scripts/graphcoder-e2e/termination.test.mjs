@@ -244,7 +244,13 @@ test("original native startup rejection retains cause and selected physical clos
         assert.equal(result.termination.report_acknowledged, false);
       } else {
         assert.equal(refusal.code, "REPORT_CONTROL_ENDED");
-        assert.equal(result.termination, undefined, "source loss or a foreign cause cannot prove a selected startup rejection");
+        if (mode === "reject-foreign") {
+          assert.equal(result.termination.control_failure, "foreign-or-invalid-acknowledgement");
+          assert.equal(result.termination.startup_rejection, undefined,
+            "a foreign cause cannot prove the selected startup rejection");
+        } else {
+          assert.equal(result.termination, undefined, "source loss supplies no selected startup rejection");
+        }
       }
       assert.equal(scope.children.size, 0);
     } finally { await scope.close(); }
@@ -268,7 +274,9 @@ test("the selected native execution failure survives readiness and an earlier di
       assert.equal(result.report_capability.ready, mode !== "fail-before-ready");
       assert.equal(Object.isFrozen(result.report_capability), true);
       if (mode === "fail-foreign") {
-        assert.equal(result.termination, undefined, "a foreign generation cannot supply the selected returned cause");
+        assert.equal(result.termination.control_failure, "foreign-or-invalid-acknowledgement");
+        assert.equal(result.termination.execution_failure, undefined,
+          "a foreign generation cannot supply the selected returned cause");
       } else {
         assert.equal(result.termination.execution_failure.phase, "execution");
         assert.notEqual(result.termination.execution_failure.cause, "");

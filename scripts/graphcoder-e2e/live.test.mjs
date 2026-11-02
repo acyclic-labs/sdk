@@ -178,7 +178,13 @@ if (process.argv.includes("--input-format")) {
         assert.match(result.failure.error, /unexpected tool error.*exit_code=1/);
       } else if (capability !== "ready") {
         assert.equal(result.captures[0].report_capability.ready, false);
-        assert.match(result.failure.error, /step=admit selected native report capability/);
+        if (capability === "foreign") {
+          assert.equal(result.captures[0].termination.control_failure, "foreign-or-invalid-acknowledgement");
+          assert.match(result.failure.error, /step=admit complete native report stream/);
+        } else {
+          assert.equal(result.captures[0].termination, undefined);
+          assert.match(result.failure.error, /step=admit selected native report capability/);
+        }
       }
       assert.deepEqual([result.phases.at(-1).phase, result.phases.at(-1).outcome], ["retired", "completed"]);
     }
