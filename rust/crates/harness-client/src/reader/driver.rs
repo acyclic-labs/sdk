@@ -647,10 +647,18 @@ mod tests {
                 path: path.clone(),
                 position: u64::MAX - 1,
                 accepted: u64::MAX - 1,
-                records: Box::pin(futures::stream::iter([
-                    Ok(row(u64::MAX - 1)),
-                    Ok(row(u64::MAX)),
-                ])),
+                records: acyclic_stream::records_only(
+                    provider
+                        .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                        .await
+                        .unwrap(),
+                )
+                .map_cursor(|_| {
+                    Box::pin(futures::stream::iter([
+                        Ok(row(u64::MAX - 1)),
+                        Ok(row(u64::MAX)),
+                    ]))
+                }),
             };
             let (_, accepted, record) = source.next().await.unwrap();
             assert_eq!(accepted, u64::MAX);
@@ -704,10 +712,18 @@ mod tests {
                     path.clone(),
                     u64::MAX - 1,
                     u64::MAX - 1,
-                    Box::pin(futures::stream::iter([
-                        Ok(row(u64::MAX - 1)),
-                        Ok(row(u64::MAX)),
-                    ])),
+                    acyclic_stream::records_only(
+                        provider
+                            .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                            .await
+                            .unwrap(),
+                    )
+                    .map_cursor(|_| {
+                        Box::pin(futures::stream::iter([
+                            Ok(row(u64::MAX - 1)),
+                            Ok(row(u64::MAX)),
+                        ]))
+                    }),
                 )
                 .unwrap();
             let mut cx = Context::from_waker(futures::task::noop_waker_ref());
