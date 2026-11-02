@@ -2,6 +2,35 @@
 
 use super::Format;
 
+/// Visits the union of two strictly ordered inputs without cloning their items.
+///
+/// Equal items are delivered together; every delivery contains at least one
+/// original item. The caller owns comparison admission, output and retirement.
+/// Each step consumes an input item, using constant scratch and no allocation.
+pub fn ordered<L, R, E>(
+    left: impl IntoIterator<Item = L>,
+    right: impl IntoIterator<Item = R>,
+    mut compare: impl FnMut(&L, &R) -> Result<std::cmp::Ordering, E>,
+    mut emit: impl FnMut(Option<L>, Option<R>) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut left = left.into_iter().peekable();
+    let mut right = right.into_iter().peekable();
+    while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
+        match compare(a, b)? {
+            std::cmp::Ordering::Less => emit(left.next(), None)?,
+            std::cmp::Ordering::Equal => emit(left.next(), right.next())?,
+            std::cmp::Ordering::Greater => emit(None, right.next())?,
+        }
+    }
+    for item in left {
+        emit(Some(item), None)?;
+    }
+    for item in right {
+        emit(None, Some(item))?;
+    }
+    Ok(())
+}
+
 /// Original value ownership and mutation semantics for a structural leaf merge.
 pub trait Work<F: Format, M> {
     /// One original owned optional value, retaining its allocation until drop.

@@ -1,48 +1,87 @@
 use super::*;
 
 pub(super) fn order_host_checkout_union(
-    mut observed: Vec<(NamespacePath, Option<HostStat>)>,
+    observed: Vec<(NamespacePath, Option<HostStat>)>,
     checkout_paths: Vec<(NamespacePath, ())>,
     maximum: usize,
     meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
-    let checkout_bytes = vector_bytes(&checkout_paths);
-    for (path, ()) in checkout_paths {
+    meter.clone().check().map_err(capture_demand_error)?;
+    let compare = |left: &(NamespacePath, Option<HostStat>),
+                   right: &(NamespacePath, ())|
+     -> Result<std::cmp::Ordering, CaptureError> {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
-        match capture_position(&observed, &path, meter)? {
-            Ok(_) => capture_drop_path(path, meter)?,
-            Err(index) => {
-                if observed.len() >= maximum {
-                    return Err(CaptureError::InvalidOptions);
-                }
-                capture_insert_at(&mut observed, index, path, None, meter)?;
+        Ok(left.0.cmp(&right.0))
+    };
+    // Count before allocating: duplicate names must not reserve output credit.
+    let mut count = 0_usize;
+    acyclic_collections::page::merge::ordered(
+        observed.iter(),
+        checkout_paths.iter(),
+        |left, right| compare(left, right),
+        |_, _| {
+            capture_charge(
+                meter,
+                crate::materializer::NativeResourceCredit::Items.delta(1),
+            )?;
+            count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+            if count > maximum {
+                return Err(CaptureError::InvalidOptions);
             }
-        }
-    }
-    meter
-        .clone()
-        .release(checkout_bytes)
-        .map_err(capture_demand_error)?;
+            Ok(())
+        },
+    )?;
     let observed_bytes = vector_bytes(&observed);
-    let mut observations = capture_vec(observed.len(), meter)?;
-    let mut paths = capture_vec(observed.len(), meter)?;
-    for (path, observation) in observed {
-        meter.clone().check().map_err(capture_demand_error)?;
-        observations.push(observation);
-        paths.push(path);
-    }
+    let checkout_bytes = vector_bytes(&checkout_paths);
+    let mut observations = capture_vec(count, meter)?;
+    let mut paths = capture_vec(count, meter)?;
+    acyclic_collections::page::merge::ordered(
+        observed,
+        checkout_paths,
+        compare,
+        |observed, checkout| {
+            capture_charge(
+                meter,
+                WorkCounters {
+                    items_examined: 1,
+                    bytes_copied: (std::mem::size_of::<NamespacePath>()
+                        + std::mem::size_of::<Option<HostStat>>())
+                        as u64,
+                    ..WorkCounters::UNCHARGED
+                },
+            )?;
+            let (path, observation) = match (observed, checkout) {
+                (Some(observed), checkout) => {
+                    if let Some((duplicate, ())) = checkout {
+                        capture_drop_path(duplicate, meter)?;
+                    }
+                    observed
+                }
+                (None, Some((path, ()))) => (path, None),
+                (None, None) => return Err(CaptureError::InvalidOptions),
+            };
+            observations.push(observation);
+            paths.push(path);
+            Ok(())
+        },
+    )?;
     meter
         .clone()
-        .release(observed_bytes)
+        .release(
+            observed_bytes
+                .checked_add(checkout_bytes)
+                .ok_or(WorkError::Overflow)?,
+        )
         .map_err(capture_demand_error)?;
     Ok((observations, paths))
 }
+
+#[cfg(all(test, feature = "memory"))]
+#[path = "union_properties.rs"]
+mod union_properties;
 
 pub(super) fn combined_path_count_exceeds(
     observed: usize,
