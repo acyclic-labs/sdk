@@ -487,8 +487,8 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 5).await?;
     let client = local(&provider)?;
-    // until <= from, and a range that starts at the tail.
-    for (from, until) in [(3, 2), (3, 3), (5, 9)] {
+    // An explicit zero bound, until <= from, and a range starting at the tail.
+    for (from, until) in [(0, 0), (3, 0), (3, 2), (3, 3), (5, 9)] {
         let mut data = Box::pin(
             client
                 .follow_data_with_ack(
@@ -513,10 +513,6 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
         wire_codec::session::follow_bound(&latest),
         Err(StreamError::InvalidArgument)
     ));
-    assert_eq!(
-        wire_codec::session::follow_bound(&bounded("events", 0))?,
-        None
-    );
     assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }

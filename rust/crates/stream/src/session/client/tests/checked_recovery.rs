@@ -7,6 +7,7 @@ struct Received {
     // One fixture lock, never nested or held across an await/wakeup.
     last: Mutex<Option<(u64, u64, CommitId)>>,
     attempts: AtomicU64,
+    mutated: std::sync::atomic::AtomicBool,
     ended: Mutex<Option<(u64, StreamError)>>,
     changed: tokio::sync::Notify,
 }
@@ -65,13 +66,21 @@ impl transport::Transport for Observed {
                 // Observable mutant: send the last received commit rather
                 // than the last yielded commit on recovery. The actual Rust
                 // client, queue, credit and recovery run in both variants.
-                if broken && let Some(Body::Interest(interest)) = &mut frame.body {
+                let interest = match &mut frame.body {
+                    Some(Body::Hello(hello)) => hello.interest.as_mut(),
+                    Some(Body::Interest(interest)) => Some(interest),
+                    _ => None,
+                };
+                if broken && let Some(interest) = interest {
                     let last = *received.last.lock().unwrap();
                     for upsert in &mut interest.upsert {
                         if upsert.channel.is_some_and(|channel| channel.generation > 1)
                             && let Some(Kind::Follow(follow)) = &mut upsert.kind
                             && let Some((_, _, commit)) = last
                         {
+                            if follow.preceding_commit_id.as_ref() != commit.as_bytes() {
+                                received.mutated.store(true, Ordering::Relaxed);
+                            }
                             follow.preceding_commit_id = Bytes::copy_from_slice(commit.as_bytes());
                         }
                     }
@@ -167,6 +176,7 @@ async fn assert_resumed(
     generation: u64,
     next: u64,
     ledger: &[CommitId],
+    mutant: Option<&Received>,
 ) -> TestResult {
     loop {
         let changed = target.counts.changed.notified();
@@ -187,6 +197,12 @@ async fn assert_resumed(
             .find(|(id, current, _)| *id == 1 && *current == generation)
             .cloned();
         if let (Some((_, _, resume)), Some((_, _, guard))) = (resume, guard) {
+            if let Some(mutant) = mutant {
+                assert!(
+                    mutant.mutated.load(Ordering::Relaxed),
+                    "recovery negative control must mutate the actual successor request"
+                );
+            }
             assert_eq!(resume, next, "checked ALL must resume the last yielded cut");
             let yielded = ledger
                 .get(usize::try_from(next - 1)?)
@@ -269,9 +285,15 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             // An unpolled cursor still owns its old-generation deliveries.
             // Recovery cannot refill their credit until next() discards them.
             can_buffer = false;
-            assert_resumed(if moved { &new } else { &old }, generation, next, &ledger)
-                .await
-                .map_err(|error| format!("resume generation={generation} next={next}: {error}"))?;
+            assert_resumed(
+                if moved { &new } else { &old },
+                generation,
+                next,
+                &ledger,
+                broken.then_some(received.as_ref()),
+            )
+            .await
+            .map_err(|error| format!("resume generation={generation} next={next}: {error}"))?;
         }
         if let Some(append) = actions.get(index) {
             if *append {
