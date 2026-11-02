@@ -151,7 +151,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
 const ADDED_DEFAULT_TOOL: &str = "acyclic.aaa_added_default";
 
 /// A registered tool returning its arguments, named like an installed MCP tool.
-fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
+pub(super) fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
     use acyclic_harness::tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
     };

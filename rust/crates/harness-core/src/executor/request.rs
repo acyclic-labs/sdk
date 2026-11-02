@@ -263,7 +263,10 @@ impl StockExecution<'_> {
         self.request_from_parts(messages, tools, compose_tools)
     }
 
-    fn request_tools(&self, messages: &[ModelMessage]) -> Result<Vec<crate::tool::ToolDefinition>> {
+    pub(super) fn request_tools(
+        &self,
+        messages: &[ModelMessage],
+    ) -> Result<Vec<crate::tool::ToolDefinition>> {
         if self.request_tools_required(messages)? {
             stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
         } else {
@@ -286,7 +289,7 @@ impl StockExecution<'_> {
         })
     }
 
-    fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
+    pub(super) fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
         Ok(!cfg!(target_arch = "wasm32")
             && tools.iter().any(|tool| tool.name == "code")
             && self

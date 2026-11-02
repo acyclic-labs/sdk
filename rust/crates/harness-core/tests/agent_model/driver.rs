@@ -634,7 +634,7 @@ fn ready() -> ExecutionProgress<TurnOutput> {
         attachments: Vec::new(),
         metadata: Default::default(),
         steps: 1,
-        parts: Vec::new(),
+        transcript: Vec::new(),
     })
 }
 

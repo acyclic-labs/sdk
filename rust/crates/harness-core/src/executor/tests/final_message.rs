@@ -323,16 +323,25 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
         .now_or_never()
         .expect("scripted turn settles")?;
     assert_eq!(output.text, "done");
-    assert_eq!(
-        output.parts,
-        vec![
-            ModelContentPart::Reasoning { block: thought },
-            ModelContentPart::Text {
-                text: "done".into(),
-                native: answer,
-            },
-        ]
-    );
+    // The output keeps the whole transcript after the input: the last request's
+    // messages after the input, then the final step's parts, so the next turn
+    // extends that request byte for byte.
+    let last = &provider.requests()[1].messages;
+    let input_at = last
+        .iter()
+        .position(|message| message.content == ModelContent::Text("hello".into()))
+        .expect("the input is in the request");
+    let reply = |part| ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(part),
+    };
+    let mut transcript = last[input_at + 1..].to_vec();
+    transcript.push(reply(ModelContentPart::Reasoning { block: thought }));
+    transcript.push(reply(ModelContentPart::Text {
+        text: "done".into(),
+        native: answer,
+    }));
+    assert_eq!(output.transcript, transcript);
     // The tool step's interim text reaches the next request ahead of its call.
     let followup = &provider.requests()[1].messages;
     let interim = followup

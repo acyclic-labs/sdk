@@ -384,7 +384,7 @@ impl Executor for EditorTurn {
                 attachments: Vec::new(),
                 metadata: serde_json::Value::Null,
                 steps: 0,
-                parts: Vec::new(),
+                transcript: Vec::new(),
             })
         })
     }
