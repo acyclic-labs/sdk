@@ -204,7 +204,7 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
 /// The root's conversation once it has settled every input sent before
 /// this call: idle past that inbox tail. Its adoption's own `Idle` status
 /// precedes those inputs, so it never counts.
-async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+pub(super) async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
     let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
         .await
         .map_err(agent)?;

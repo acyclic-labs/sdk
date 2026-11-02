@@ -16,7 +16,16 @@ impl<'io> StockExecution<'io> {
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
         // A remote target's run is queued in the claim's own commit.
         // A target that went away since resolution refuses it unstarted.
-        let dispatch = if started {
+        // An answer served from a recording settles its calls with their
+        // recorded results; nothing is dispatched or run.
+        let replayed = if started || !tool.executor.replays_recorded() {
+            None
+        } else {
+            self.stock
+                .provider
+                .recorded_tool_result(operation_id, &invocation.call_id)
+        };
+        let dispatch = if started || replayed.is_some() {
             None
         } else {
             match tool.executor.dispatch(invocation, context.as_ref()) {
@@ -52,6 +61,29 @@ impl<'io> StockExecution<'io> {
                 claim,
             ))
             .await?
+        };
+        let replayed = match replayed {
+            // A recorded failure settles again; an interruption also stops
+            // the turn where the source's stopped.
+            Some(crate::model::RecordedToolOutcome::Failed { reason, cause }) => {
+                let content = self
+                    .settle_tool_cause(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        reason,
+                        cause,
+                    )
+                    .await?;
+                return Ok(if reason == ToolFailureKind::Interrupted {
+                    ToolInvocationOutcome::Interrupted
+                } else {
+                    ToolInvocationOutcome::Settled(content, None)
+                });
+            }
+            Some(crate::model::RecordedToolOutcome::Completed(result)) => Some(result),
+            None => None,
         };
         #[cfg(not(target_arch = "wasm32"))]
         let composed = if tool.executor.is_code_mode() {
@@ -97,7 +129,9 @@ impl<'io> StockExecution<'io> {
         };
         #[cfg(target_arch = "wasm32")]
         let composed: Option<Result<Option<ToolResult>>> = None;
-        let execution = if let Some(result) = composed {
+        let execution = if let Some(result) = replayed {
+            Ok(Some(result))
+        } else if let Some(result) = composed {
             result
         } else {
             self.observe_tool_cancellation(

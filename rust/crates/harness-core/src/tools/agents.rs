@@ -427,6 +427,11 @@ fn agent(error: crate::agent::Error) -> Error {
 }
 
 impl ToolExecutor for AgentTool {
+    /// The effect is what a replay reproduces: a replayed spawn runs its child.
+    fn replays_recorded(&self) -> bool {
+        false
+    }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,

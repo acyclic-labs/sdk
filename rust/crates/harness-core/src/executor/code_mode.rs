@@ -461,9 +461,13 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<CallResult<'a>>> {
         // A separate hash domain keeps inner identities disjoint from provider
         // call IDs. Replaying the script reuses the exact ordinal and receipt.
+        // The identity is the parent call's place in its turn, never the
+        // turn's id, so a replayed run's inner calls keep recorded identities.
         let mut hash = blake3::Hasher::new();
-        hash.update(b"harness:js-call:v1");
-        hash.update(&parent.operation_id.into_bytes());
+        hash.update(b"harness:js-call:v2");
+        hash.update(&step.to_be_bytes());
+        hash.update(&(parent.call_id.len() as u64).to_be_bytes());
+        hash.update(parent.call_id.as_bytes());
         hash.update(&ordinal.to_be_bytes());
         let call_id = hash.finalize().to_hex().to_string();
         #[cfg(feature = "filesystem")]

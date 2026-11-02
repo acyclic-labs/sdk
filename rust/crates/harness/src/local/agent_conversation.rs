@@ -12,6 +12,8 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod events;
+mod recording;
+mod tree;
 mod usage;
 mod usage_query;
 use crate::{
