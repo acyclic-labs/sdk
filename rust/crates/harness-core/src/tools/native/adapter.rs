@@ -23,9 +23,7 @@ impl Adapter {
             operation_id: invocation.operation_id,
             call_id: invocation.call_id.clone(),
             name: self.original.definition.name.clone(),
-            arguments: self
-                .arguments
-                .adapt(&invocation.call_id, &invocation.arguments)?,
+            arguments: self.arguments.adapt(invocation)?,
         })
     }
 }

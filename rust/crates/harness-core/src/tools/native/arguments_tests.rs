@@ -14,7 +14,12 @@ fn adapt(profile: NativeToolProfile, variant: &str, call: Value) -> Result<Value
     let template = revision
         .arguments
         .ok_or_else(|| Error::Invalid(format!("{variant} is not mapped")))?;
-    Arguments::new(template, revision.refuse)?.adapt("toolu_2", &call)
+    Arguments::new(template, revision.refuse)?.adapt(&crate::tool::ToolInvocation {
+        operation_id: crate::OperationId::from_bytes([7; 16]),
+        call_id: "toolu_2".into(),
+        name: variant.into(),
+        arguments: call,
+    })
 }
 
 fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> T {
@@ -24,6 +29,7 @@ fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> T {
 #[test]
 fn anthropic_calls_map_to_canonical_inputs() -> Result<()> {
     let anthropic = NativeToolProfile::Anthropic;
+    let operation = crate::OperationId::from_bytes([7; 16]).to_string();
     for (variant, call, canonical) in [
         (
             "Read",
@@ -53,12 +59,12 @@ fn anthropic_calls_map_to_canonical_inputs() -> Result<()> {
         (
             "NotebookEdit",
             json!({"notebook_path":"n.ipynb","cell_id":"c1","new_source":"# t","cell_type":"markdown","edit_mode":"insert"}),
-            json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"id","id":"c1"},"after":true,"id":"toolu_2","cell_type":"markdown","source":"# t"}}),
+            json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"id","id":"c1"},"after":true,"id":operation,"cell_type":"markdown","source":"# t"}}),
         ),
         (
             "NotebookEdit",
             json!({"notebook_path":"n.ipynb","new_source":"x","cell_type":"code","edit_mode":"insert"}),
-            json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"index","index":0},"id":"toolu_2","cell_type":"code","source":"x"}}),
+            json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"index","index":0},"id":operation,"cell_type":"code","source":"x"}}),
         ),
         (
             "NotebookEdit",
