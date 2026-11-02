@@ -85,6 +85,8 @@ struct Inner {
     #[cfg(test)]
     transactions: std::cell::Cell<usize>,
     #[cfg(test)]
+    observation_locks: std::cell::Cell<usize>,
+    #[cfg(test)]
     messages: std::cell::Cell<usize>,
 }
 
@@ -174,6 +176,8 @@ impl BrowserStream {
             #[cfg(test)]
             transactions: std::cell::Cell::new(0),
             #[cfg(test)]
+            observation_locks: std::cell::Cell::new(0),
+            #[cfg(test)]
             messages: std::cell::Cell::new(0),
         });
         inner.publications.bind(&inner);
@@ -257,6 +261,10 @@ impl BrowserStream {
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
         let mut dispatch = publication::Dispatch::new(self);
+        #[cfg(test)]
+        self.inner
+            .observation_locks
+            .set(self.inner.observation_locks.get() + 1);
         let mut cache = self.inner.cache.lock().await;
         self.refresh_observation(&mut cache, &mut dispatch).await?;
         operation(&cache.provider).await
@@ -282,6 +290,10 @@ impl BrowserStream {
         // The optional dispatch retires after the guard, including cancellation.
         // A retained hit creates no dispatch owner.
         let mut dispatch = None;
+        #[cfg(test)]
+        self.inner
+            .observation_locks
+            .set(self.inner.observation_locks.get() + 1);
         let mut cache = self.inner.cache.lock().await;
         // Only completed durable replay certifies this cache. A cancelled
         // transaction can leave tentative results in an invalid provider.
