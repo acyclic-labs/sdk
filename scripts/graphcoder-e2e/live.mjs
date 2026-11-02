@@ -173,7 +173,7 @@ async function campaign(signal) {
   const results = [];
   sampling: for (let sample = 1; sample <= samples; sample++) {
     for (const name of names) {
-      signal.throwIfAborted();
+      if (signal.aborted) break sampling;
       results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal) });
       if (signal.aborted) break sampling;
     }
