@@ -64,7 +64,12 @@ export function assertNativeCompletion(host,result,answer,selection) {
      nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
     }
    }
-   if(event.type==='result')terminal=event;
+   if(event.type==='result') {
+    if(event.subtype!=='success'||event.is_error!==false) {
+     nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Claude turn failed',event);
+    }
+    terminal=event;
+   }
   } else if(host==='pi') {
    const message=event.type==='message_end'?event.message:undefined;
    if(message?.role!=='assistant')continue;
@@ -80,8 +85,6 @@ export function assertNativeCompletion(host,result,answer,selection) {
  else if(host==='claude-code') {
   if(selection)assert.equal(initialized,true,'native Claude initialization missing');
   assert.ok(terminal,'native Claude terminal missing');
-  assert.equal(terminal.subtype,'success','native Claude turn failed');
-  assert.equal(terminal.is_error,false,'native Claude turn failed');
   text=terminal.result;
  } else {
   assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
