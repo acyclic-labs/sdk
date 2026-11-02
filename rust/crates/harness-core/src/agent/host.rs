@@ -295,49 +295,55 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     }
 
     /// Replays and follows conversation, including before its first turn.
-    /// Every conversation append atomically publishes status. Arm that existing
-    /// stream before retrying a missing conversation so publication cannot fall
-    /// between the observation and its wait. Other Streams refusals stay typed.
+    /// First publication is observed through the original actor checkpoint;
+    /// same-phase turns need no extra status record. A terminal checkpoint with
+    /// no conversation preserves the original missing-stream refusal.
     pub async fn follow_conversation(
         &self,
         agent: &AgentPath,
         from: u64,
     ) -> Result<acyclic_stream::RecordStream, Error> {
         let conversation = agent.conversation()?;
-        // Follow transports may defer NotFound to their first item. The tail
-        // observation establishes existence before opening any such transport.
         match self.provider.tail(conversation.clone()).await {
             Ok(_) => return self.conversation_cursor(conversation, from).await,
             Err(StreamError::NotFound) if from == 0 => {}
             Err(error) => return Err(Error::Stream(error)),
         }
-        let status = agent.status()?;
-        let tail = self
-            .provider
-            .tail(status.clone())
-            .await
-            .map_err(Error::Stream)?;
-        // Include the current state: an agent that already finished without a
-        // conversation will never publish another readiness notification.
-        let mut committed = acyclic_stream::records_only(
-            self.provider
-                .follow(acyclic_stream::FollowRequest::new(
-                    status,
-                    tail.saturating_sub(1),
-                ))
+        let actor = self.actor(agent)?;
+        loop {
+            let snapshot = self
+                .runtime
+                .store()
+                .load(&actor)
                 .await
-                .map_err(Error::Stream)?,
-        );
-        while let Some(record) = committed.try_next().await.map_err(Error::Stream)? {
-            let status = <super::StatusRecord as super::AgentRecord>::decode(&record.value)?;
-            match self.provider.tail(conversation.clone()).await {
-                Ok(_) => return self.conversation_cursor(conversation, from).await,
-                Err(StreamError::NotFound)
-                    if !matches!(status.phase, super::Phase::Done { .. }) => {}
-                Err(error) => return Err(Error::Stream(error)),
+                .map_err(actor_error)?;
+            let state = snapshot
+                .state()
+                .ok_or(Error::Stream(StreamError::NotFound))?;
+            if let Some(checkpoint) = state.checkpoint() {
+                let observed = super::checkpoint_state(checkpoint)?;
+                if &observed.path != agent || observed.parent != agent.parent() {
+                    return Err(Error::Record("agent state binding differs"));
+                }
+                if observed.conversation_tail > 0 {
+                    return self.conversation_cursor(conversation, from).await;
+                }
+                if matches!(observed.phase, super::Phase::Done { .. }) {
+                    return Err(Error::Stream(StreamError::NotFound));
+                }
             }
+            let mut committed = acyclic_stream::records_only(
+                self.provider
+                    .follow(snapshot.follow_request())
+                    .await
+                    .map_err(Error::Stream)?,
+            );
+            committed
+                .try_next()
+                .await
+                .map_err(Error::Stream)?
+                .ok_or(Error::Stream(StreamError::Unavailable))?;
         }
-        Err(Error::Stream(StreamError::Unavailable))
     }
 
     async fn conversation_cursor(

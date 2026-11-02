@@ -221,27 +221,29 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
 }
 
 /// The root's conversation after the original checkpoint settles every accepted input.
-pub(super) async fn settled(harness: &LocalHarness, agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+pub(super) async fn settled(
+    harness: &LocalHarness,
+    agents: &LocalAgents,
+    root: &AgentPath,
+) -> Result<Vec<Vec<u8>>> {
     let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
         .await
         .map_err(agent)?;
     let observed = async {
-    loop {
-        let (settled, cut) = agents
-            .input_progress(root, inbox.saturating_sub(1))
-            .await
-            .map_err(agent)?;
-        if settled {
-            return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
+        loop {
+            let (settled, cut) = agents
+                .input_progress(root, inbox.saturating_sub(1))
+                .await
+                .map_err(agent)?;
+            if settled {
+                return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
+            }
+            let mut changes =
+                acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
+            changes.try_next().await.map_err(agent)?.ok_or_else(|| {
+                Error::Storage("agent state follow ended before settlement".into())
+            })?;
         }
-        let mut changes =
-            acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
-        changes
-            .try_next()
-            .await
-            .map_err(agent)?
-            .ok_or_else(|| Error::Storage("agent state follow ended before settlement".into()))?;
-    }
     };
     tokio::select! {
         result = observed => result,

@@ -972,17 +972,35 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
 }
 
 #[tokio::test]
-async fn conversation_follow_waits_on_actual_status_publication_and_preserves_refusals() -> Result {
-    use acyclic_stream::{
-        CommitMutation, CommitOutcome, CommitRequest, FollowRequest, StreamError, StreamProvider,
-        StreamProviderExt,
-    };
+async fn conversation_follow_waits_on_the_original_checkpoint_and_preserves_refusals() -> Result {
+    use acyclic_stream::{FollowRequest, StreamError, StreamProvider, StreamProviderExt};
     use futures::TryStreamExt;
 
     let provider = Arc::new(MemoryStream::default());
+    let entry = ConversationEntry {
+        inbox: 1,
+        input: TurnInput::Message {
+            from: user(),
+            id: intent("message"),
+            body: Box::new(super::driver::file("input")?),
+            attachments: None,
+        },
+        output: super::driver::file("output")?,
+        outcome: Default::default(),
+        goal: None,
+        targets: None,
+        tool_results: None,
+        notices: None,
+    }
+    .encode()?;
     let host = AgentHost::new(
         provider.clone(),
-        Spawner(AtomicUsize::new(1)),
+        super::script(vec![TurnStep {
+            checkpoint: None,
+            outs: vec![Out::Conversation(entry.clone())],
+            wait: Wait::Input,
+            drops: None,
+        }]),
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
@@ -1016,50 +1034,21 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
         std::future::poll_fn(|cx| std::task::Poll::Ready(following.as_mut().poll(cx).is_pending()))
             .await
     );
-    let entry = ConversationEntry {
-        inbox: 1,
-        input: TurnInput::Message {
-            from: user(),
-            id: intent("message"),
-            body: Box::new(super::driver::file("input")?),
-            attachments: None,
-        },
-        output: super::driver::file("output")?,
-        outcome: Default::default(),
-        goal: None,
-        targets: None,
-        tool_results: None,
-        notices: None,
-    }
-    .encode()?;
-    assert!(matches!(
-        provider
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![
-                    CommitMutation::Append {
-                        path: root.conversation()?,
-                        records: vec![entry.clone().into()]
-                    },
-                    CommitMutation::Append {
-                        path: root.status()?,
-                        records: vec![
-                            StatusRecord {
-                                phase: Phase::Idle,
-                                cursor: 2,
-                                conversation: 1
-                            }
-                            .encode()?
-                            .into()
-                        ]
-                    },
-                ],
-                idempotency_key: intent_key("conversation-follow", &["publish"])?,
-            })
-            .await?,
-        CommitOutcome::Committed(_)
-    ));
+    host.send(
+        &root,
+        &user(),
+        &InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: root.child(&id(2))?,
+            id: intent("publish"),
+        }),
+    )
+    .await?;
+    assert!(host.runtime().drain().await.is_empty());
+    assert_eq!(
+        provider.tail(root.status()?).await?,
+        1,
+        "same-phase publication adds no status"
+    );
     let mut records = following.await?;
     let first = records
         .try_next()
@@ -1466,7 +1455,6 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
     }
     Ok(())
 }
-
 
 #[tokio::test]
 async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {

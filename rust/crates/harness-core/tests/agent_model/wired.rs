@@ -156,6 +156,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
             host,
             AuthorityRoot::new(
                 "agents",
@@ -541,6 +542,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
+        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
         host,
         AuthorityRoot::new(
             "agents",
@@ -665,6 +667,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
             host,
             AuthorityRoot::new(
                 "agents",
@@ -795,6 +798,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     host.create_volume(&own).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
+        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
         host,
         AuthorityRoot::new(
             "agents",
@@ -946,6 +950,7 @@ async fn admitted_root_after_its_child(
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
                 host.clone(),
                 issuer.clone(),
                 TurnAdmission::Admitted {
@@ -1152,6 +1157,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 Arc::new(MemoryStream::default()),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
                 host,
                 root,
                 TurnAdmission::Admitted { audience, scope },
@@ -1328,6 +1334,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let stream = Arc::new(Refusing::default());
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
                 host,
                 root,
                 TurnAdmission::Admitted {
@@ -1646,6 +1653,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
             filesystem.clone(),
             AuthorityRoot::new(
                 "agents",
@@ -1888,7 +1896,6 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     Ok(())
 }
 
-
 #[tokio::test]
 async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Result {
     use acyclic_harness_core::{
@@ -1925,7 +1932,6 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             &authority.scope,
             &binding.volume,
             VolumeOperation::Write,
-            LIMITS.maximum_bytes,
             &mut None,
         )?;
         let file = filesystem
