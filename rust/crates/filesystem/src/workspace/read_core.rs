@@ -1,5 +1,4 @@
 use super::*;
-use crate::facade::FsWork as _;
 
 pub(super) async fn lookup_paths<
     A: AsyncAuthorityStore + 'static,
@@ -11,7 +10,7 @@ pub(super) async fn lookup_paths<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(crate::kernel::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
-    let mut scope = accounting.allocation_scope();
+    let mut scope = accounting.allocation_scope()?;
     let result = async {
         let mut checkout = workspace
             .open_checkout(
@@ -56,39 +55,50 @@ pub(super) async fn read_selected<
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        let lookup = {
-            let (lookup, _allocation) = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
                 .await?;
-            lookup
-        };
-        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-        if record.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
+            let lookup = {
+                let (lookup, _allocation) = checkout
+                    .value
+                    .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
+                    .await?;
+                lookup
+            };
+            let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+            if record.kind != FileKind::Regular {
+                return Err(WorkspaceError::NotRegularFile);
+            }
+            let length = regular_file_bytes(record)?;
+            if length > maximum_bytes {
+                return Err(WorkspaceError::ReadLimitExceeded);
+            }
+            if length > checkout.value.volume_config().limits.maximum_read_bytes {
+                return Err(crate::FsError::FileRead(
+                    crate::kernel::FileRangeReadError::InvalidRange,
+                )
+                .into());
+            }
+            let range = crate::ByteRange { offset: 0, length };
+            let read = checkout
+                .value
+                .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
+                .await?;
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            Ok::<_, WorkspaceError>(read.bytes)
         }
-        let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
-            return Err(WorkspaceError::ReadLimitExceeded);
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
         }
-        if length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(
-                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-            );
-        }
-        let range = crate::ByteRange { offset: 0, length };
-        checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
-            .await
-            .map(|read| read.bytes)
-            .map_err(WorkspaceError::from)
+        result
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    work.finish(result, &accounting)
 }
 
 pub(super) async fn read_range<
@@ -108,50 +118,63 @@ pub(super) async fn read_range<
     let unchanged_since =
         unchanged_since.filter(|original| selector != GenerationSelector::Exact(*original));
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        if range.length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into());
-        }
-        let record = checkout
-            .value
-            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
-            .await?
-            .0
-            .record
-            .ok_or(WorkspaceError::NotFound)?;
-        if let Some(original) = unchanged_since {
-            let mut original = workspace
-                .open_checkout(
-                    GenerationSelector::Exact(original),
-                    CheckoutMode::read_only_pinned(),
-                    &mut accounting,
-                    cancellation,
-                )
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
                 .await?;
-            let expected = original
+            if range.length > checkout.value.volume_config().limits.maximum_read_bytes {
+                return Err(
+                    FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
+                );
+            }
+            let record = checkout
                 .value
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
+                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
                 .await?
                 .0
                 .record
                 .ok_or(WorkspaceError::NotFound)?;
-            let matches = expected.kind == record.kind && expected.payload == record.payload;
-            original.retire(&mut accounting)?;
-            if !matches {
-                return Err(WorkspaceError::StaleIdentity);
+            if let Some(original) = unchanged_since {
+                let mut original = workspace
+                    .open_checkout(
+                        GenerationSelector::Exact(original),
+                        CheckoutMode::read_only_pinned(),
+                        &mut scope,
+                        cancellation,
+                    )
+                    .await?;
+                let expected = original
+                    .value
+                    .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, false)
+                    .await?
+                    .0
+                    .record
+                    .ok_or(WorkspaceError::NotFound)?;
+                let matches = expected.kind == record.kind && expected.payload == record.payload;
+                original.retire(&mut scope)?;
+                if !matches {
+                    return Err(WorkspaceError::StaleIdentity);
+                }
             }
+            let read = checkout
+                .value
+                .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
+                .await?;
+            let bytes = read.logical_owned_bytes();
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
         }
-        let read = checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
-            .await?;
-        let bytes = read.logical_owned_bytes();
-        Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    work.finish(result, &accounting)
 }
 
 pub(super) async fn matches_content<
@@ -170,60 +193,65 @@ pub(super) async fn matches_content<
 ) -> W::Output<bool, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(
-                GenerationSelector::Exact(selected),
-                path,
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-        let record = checkout
-            .value
-            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
-            .await?
-            .0
-            .record;
-        let mut original = workspace
-            .open_checkout(
-                GenerationSelector::Exact(original),
-                CheckoutMode::read_only_pinned(),
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-        let expected = original
-            .value
-            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
-            .await?
-            .0
-            .record;
-        let matches = match (record, expected) {
-            (Some(record), Some(expected)) if exact_payload => {
-                record.file_id == expected.file_id
-                    && record.kind == expected.kind
-                    && record.payload == expected.payload
-            }
-            (Some(record), Some(expected)) => {
-                crate::kernel::records_match_content(
-                    workspace.volume.fs.objects(),
-                    record,
-                    expected,
-                    workspace.volume_config(),
-                    &mut accounting,
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(
+                    GenerationSelector::Exact(selected),
+                    path,
+                    &mut scope,
                     cancellation,
                 )
+                .await?;
+            let record = checkout
+                .value
+                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, false)
                 .await?
-            }
-            (None, None) => allow_absent,
-            _ => false,
-        };
-        original.retire(&mut accounting)?;
-        checkout.retire(&mut accounting)?;
-        Ok(matches)
+                .0
+                .record;
+            let mut original = workspace
+                .open_checkout(
+                    GenerationSelector::Exact(original),
+                    CheckoutMode::read_only_pinned(),
+                    &mut scope,
+                    cancellation,
+                )
+                .await?;
+            let expected = original
+                .value
+                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, false)
+                .await?
+                .0
+                .record;
+            let matches = match (record, expected) {
+                (Some(record), Some(expected)) if exact_payload => {
+                    record.file_id == expected.file_id
+                        && record.kind == expected.kind
+                        && record.payload == expected.payload
+                }
+                (Some(record), Some(expected)) => {
+                    crate::kernel::records_match_content(
+                        workspace.volume.fs.objects(),
+                        record,
+                        expected,
+                        workspace.volume_config(),
+                        &mut scope,
+                        cancellation,
+                    )
+                    .await?
+                }
+                (None, None) => allow_absent,
+                _ => false,
+            };
+            original.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            Ok(matches)
+        }
+        .await;
+        authorize(workspace, result, &mut scope, cancellation).await
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    work.finish(result, &accounting)
 }
 
 pub(super) async fn read_link<
@@ -239,17 +267,28 @@ pub(super) async fn read_link<
 ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        checkout
-            .value
-            .read_symbolic_link_with_accounting(&path.value, &mut accounting, cancellation)
-            .await
-            .map_err(WorkspaceError::from)
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
+                .await?;
+            let read = checkout
+                .value
+                .read_symbolic_link_with_accounting(&path.value, &mut scope, cancellation)
+                .await?;
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            Ok::<_, WorkspaceError>(read)
+        }
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    work.finish(result, &accounting)
 }
 
 async fn lookup_stat<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
@@ -302,10 +341,15 @@ pub(super) async fn stat<
     cancellation: &CancellationToken,
 ) -> W::Output<WorkspaceStat, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = lookup_stat(workspace, selector, path, &mut accounting, cancellation)
-        .await
-        .and_then(|value| value.ok_or(WorkspaceError::NotFound));
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
+        let result = lookup_stat(workspace, selector, path, &mut scope, cancellation)
+            .await
+            .and_then(|value| value.ok_or(WorkspaceError::NotFound));
+        authorize(workspace, result, &mut scope, cancellation).await
+    }
+    .await;
+    work.finish(result, &accounting)
 }
 
 pub(super) async fn list<
@@ -323,108 +367,128 @@ pub(super) async fn list<
 ) -> W::Output<(crate::kernel::DirectoryPage, crate::AuthorityAllocation), WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        let (page, allocation) = checkout
-            .value
-            .list_directory_with_accounting(
-                &path.value,
-                after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                maximum,
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-        let allocation = workspace_allocation(allocation, &accounting)?;
-        Ok::<_, WorkspaceError>((page, allocation))
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
+                .await?;
+            let (page, allocation) = checkout
+                .value
+                .list_directory_with_accounting(
+                    &path.value,
+                    after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                    maximum,
+                    &mut scope,
+                    cancellation,
+                )
+                .await?;
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            let allocation = workspace_allocation(allocation, &scope)?;
+            Ok::<_, WorkspaceError>((page, allocation))
+        }
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, cancellation).await
+    let result = result.map(|(mut page, allocation)| {
+        page.work = accounting.spent();
+        (page, allocation)
+    });
+    work.finish(result, &accounting)
 }
 
-pub(super) async fn plan<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+pub(super) async fn plan<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    W: crate::facade::FsWork,
+>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
     offset: u64,
     length: u64,
     maximum_spans: u32,
-) -> Result<WorkspaceExtentPlan, WorkspaceError> {
-    let work = WorkBudget::UNBOUNDED;
-    let cancellation = CancellationToken::new();
-    let mut accounting = work.accounting(&cancellation);
+    work: W,
+    cancellation: &CancellationToken,
+) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
+    let mut accounting = work.accounting(cancellation);
     let result = async {
-        let mut checkout = workspace
-            .checkout(
-                selector,
-                CheckoutMode::read_only_pinned(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let path = customer_path(path, checkout.volume_config())?;
-        let plan = checkout
-            .plan_file_extents(
-                &path,
-                crate::ByteRange { offset, length },
-                maximum_spans,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        let spans = match plan {
-            Some(plan) => plan
-                .spans
-                .into_iter()
-                .map(|span| WorkspaceExtentSpan {
-                    offset: span.offset,
-                    length: span.length,
-                    source_end: span.source_end,
-                    kind: match span.kind {
-                        ExtentKind::Hole => WorkspaceExtentKind::Hole,
-                        ExtentKind::AllocatedZero => WorkspaceExtentKind::AllocatedZero,
-                        ExtentKind::Content { .. } => WorkspaceExtentKind::Content,
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
+                .await?;
+            let (plan, allocation) = checkout
+                .value
+                .plan_file_extents_projected_with_accounting(
+                    &path.value,
+                    crate::ByteRange { offset, length },
+                    maximum_spans,
+                    |span| WorkspaceExtentSpan {
+                        offset: span.offset,
+                        length: span.length,
+                        source_end: span.source_end,
+                        kind: match span.kind {
+                            ExtentKind::Hole => WorkspaceExtentKind::Hole,
+                            ExtentKind::AllocatedZero => WorkspaceExtentKind::AllocatedZero,
+                            ExtentKind::Content { .. } => WorkspaceExtentKind::Content,
+                        },
                     },
-                })
-                .collect(),
-            None if length == 0 => Vec::new(),
-            None => vec![WorkspaceExtentSpan {
-                offset,
-                length,
-                source_end: offset
-                    .checked_add(length)
-                    .ok_or_else(|| WorkspaceError::Engine("file range overflows".to_owned()))?,
-                kind: WorkspaceExtentKind::Content,
-            }],
-        };
-        Ok(WorkspaceExtentPlan { spans })
+                    &mut scope,
+                    cancellation,
+                )
+                .await?;
+            let spans = match plan {
+                Some(plan) => crate::kernel::Owned::new(
+                    plan.spans,
+                    allocation,
+                    plan.retained_allocation_bytes,
+                ),
+                None => {
+                    drop(allocation);
+                    let mut spans = crate::kernel::Owned::<Vec<WorkspaceExtentSpan>>::allocate(
+                        usize::from(length != 0),
+                        &mut scope,
+                    )?;
+                    if length != 0 {
+                        let returned = crate::WorkCounters {
+                            items_returned: 1,
+                            ..crate::WorkCounters::UNCHARGED
+                        };
+                        scope.admit(returned)?;
+                        let source_end = offset
+                            .checked_add(length)
+                            .ok_or(crate::WorkError::Overflow)?;
+                        spans.value.push(WorkspaceExtentSpan {
+                            offset,
+                            length,
+                            source_end,
+                            kind: WorkspaceExtentKind::Content,
+                        });
+                        scope.record_completed(returned)?;
+                    }
+                    spans
+                }
+            };
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            let allocation = workspace_allocation(spans.allocation, &scope)?;
+            Ok::<_, WorkspaceError>((WorkspaceExtentPlan { spans: spans.value }, allocation))
+        }
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
     .await;
-    finish(workspace, &work, result, &mut accounting, &cancellation)
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-}
-
-async fn finish<
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-    W: crate::facade::FsWork,
-    T,
->(
-    workspace: &Workspace<A, O>,
-    work: &W,
-    result: Result<T, WorkspaceError>,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> W::Output<T, WorkspaceError> {
-    let result = authorize(workspace, result, accounting, cancellation).await;
-    work.finish(result, accounting)
+    work.finish(result, &accounting)
 }
 
 async fn authorize<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, T>(

@@ -271,6 +271,8 @@ where
     C: Fn(&F::Key) -> std::cmp::Ordering,
     P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
 {
+    let mut scope = accounting.allocation_scope()?;
+    let accounting = &mut *scope;
     accounting.check()?;
     if root.kind != F::kind() {
         return Err(query_error(Error::WrongRootKind));
@@ -385,7 +387,10 @@ where
             })();
             let retirement = decoded.retire(accounting);
             match step {
-                Ok(Some(value)) => return finish_projection(Ok(value), retirement, accounting),
+                Ok(Some(value)) => {
+                    retirement?;
+                    return Ok(value);
+                }
                 step => {
                     retirement?;
                     step?;
@@ -397,24 +402,11 @@ where
     let lower = lower.map_or(Ok(()), |lower| lower.retire(accounting));
     let upper = upper.map_or(Ok(()), |upper| upper.retire(accounting));
     let visited = visited.retire(accounting);
-    finish_projection(result, lower.and(upper).and(visited), accounting)
-}
-
-fn finish_projection<T>(
-    result: Result<Option<Owned<T>>, crate::FsError>,
-    retirement: Result<(), crate::FsError>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<Owned<T>>, crate::FsError> {
-    match (result, retirement) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Ok(value), Err(error)) => {
-            if let Some(value) = value {
-                value.retire(accounting)?;
-            }
-            Err(error)
-        }
-        (Err(error), _) => Err(error),
-    }
+    let retirement = lower.and(upper).and(visited);
+    let value = result?;
+    retirement?;
+    scope.keep();
+    Ok(value)
 }
 
 pub(super) fn query_error(error: Error) -> crate::FsError {

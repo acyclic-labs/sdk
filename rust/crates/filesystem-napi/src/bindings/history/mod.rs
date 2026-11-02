@@ -237,15 +237,16 @@ impl NativeGeneration {
     ) -> Result<NativeWorkspaceExtentPlan> {
         let maximum_spans = maximum_spans.into_inner();
 
-        Box::pin(self.inner.plan_extents(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-            maximum_spans,
-        ))
-        .await
-        .map(native_workspace_extent_plan)
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            plan_extents(
+                &path,
+                bigint_u64(&offset, "offset")?,
+                bigint_u64(&length, "length")?,
+                maximum_spans,
+            )
+        )))
+        .map(|value| native_workspace_extent_plan(value.0))
     }
 
     #[napi]

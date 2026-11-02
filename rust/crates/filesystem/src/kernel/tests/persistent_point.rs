@@ -26,6 +26,130 @@ fn record(byte: u8) -> FileRecord {
 
 use crate::test_support::put_file_table_page as put;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::retained::Retained;
+    use std::sync::{Arc, Mutex};
+
+    let store = crate::test_support::PausedStore {
+        inner: Arc::new(MemoryObjectStore::default()),
+        release: Mutex::new(None),
+    };
+    let first = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]), 8).await?;
+    let last = put(&store, &FileTablePage::Leaf(vec![record(3)]), 8).await?;
+    let root = put(
+        &store,
+        &FileTablePage::Internal(vec![
+            Child {
+                first: record(1).file_id,
+                page: first,
+            },
+            Child {
+                first: record(3).file_id,
+                page: last,
+            },
+        ]),
+        8,
+    )
+    .await?;
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    for native in [false, true] {
+        for outcome in 0..4 {
+            let cancellation = CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let mut accounting = if native {
+                KernelAccounting::native(&original, &cancellation)
+            } else {
+                KernelAccounting::standalone(budget, &cancellation)
+            };
+            let live = |accounting: &mut KernelAccounting<'_>| {
+                accounting.standalone_parts().map_or_else(
+                    || original.live_allocation_bytes(),
+                    |(ledger, ..)| ledger.live_bytes(),
+                )
+            };
+            let held = Owned::<Vec<u8>>::allocate(4096, &mut accounting)?;
+            let held = Retained::from_owned(held, &mut accounting)?;
+            // The ordinary ledger's shared control lives until the ledger drops.
+            let ledger_baseline = live(&mut accounting) - held.value.capacity() as u64;
+            let mut earlier = Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
+            earlier.value.push(7);
+            accounting.charge_items(1)?;
+            let baseline = live(&mut accounting);
+            let before = accounting.spent();
+            let selected = record(if outcome == 1 { 7 } else { 2 }).file_id;
+            let (producer, completion) = tokio::sync::oneshot::channel();
+            *store.release.lock().unwrap() = Some(completion);
+            let mut operation = Box::pin(lookup_projected_with_accounting::<
+                _,
+                FileTableFormat,
+                _,
+                _,
+                _,
+            >(
+                &store,
+                root,
+                |candidate| candidate.cmp(&selected),
+                |value, accounting| {
+                    assert_eq!(*value, record(2));
+                    let mut output = Owned::<Vec<u8>>::allocate(37, accounting)?;
+                    output.value.push(2);
+                    Ok(output)
+                },
+                DecodeLimits::default(),
+                &mut accounting,
+                &cancellation,
+                None,
+            ));
+            assert!(futures::poll!(operation.as_mut()).is_pending());
+            assert!(store.release.lock().unwrap().is_none());
+            match outcome {
+                0 | 1 => {
+                    producer.send(()).map_err(|_| "point read receiver lost")?;
+                    let output = operation.await?;
+                    if outcome == 0 {
+                        let output = output.ok_or("selected point is absent")?;
+                        assert_eq!(output.value, [2]);
+                        assert_eq!(
+                            live(&mut accounting),
+                            baseline + output.value.capacity() as u64
+                        );
+                        output.retire(&mut accounting)?;
+                    } else {
+                        assert!(output.is_none());
+                    }
+                }
+                2 => {
+                    drop(producer);
+                    assert!(matches!(
+                        operation.await,
+                        Err(crate::FsError::Object(crate::ObjectStoreError::Rejected(message)))
+                            if message == "cache fill producer lost"
+                    ));
+                }
+                _ => {
+                    cancellation.cancel();
+                    drop(operation);
+                    drop(producer);
+                }
+            }
+            accounting.spent().verify(budget)?;
+            let pages = if outcome < 2 { 2 } else { 1 };
+            assert_eq!(accounting.spent().page_reads, before.page_reads + pages);
+            assert!(accounting.spent().items_examined >= before.items_examined);
+            assert_eq!(live(&mut accounting), baseline);
+            assert_eq!(earlier.value, [7]);
+            earlier.retire(&mut accounting)?;
+            drop(held);
+            assert_eq!(live(&mut accounting), ledger_baseline);
+        }
+    }
+    Ok(())
+}
+
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,

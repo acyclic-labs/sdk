@@ -198,11 +198,10 @@ impl BrowserGeneration {
     ) -> Result<Ts<BrowserWorkspaceExtentPlan>, JsValue> {
         let maximum_spans = wasm_u32(&maximum_spans)?;
 
-        let value = self
-            .engine
-            .plan_extents(&path, offset, length, maximum_spans)
-            .await
-            .map_err(js_error)?;
+        let (value, _allocation) = sdk_value!(unbounded_future!(
+            self.engine,
+            plan_extents(&path, offset, length, maximum_spans)
+        ))?;
         ts(browser_workspace_extent_plan(value))
     }
 

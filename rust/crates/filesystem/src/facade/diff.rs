@@ -49,7 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
         use crate::workspace::WorkspaceError;
-        let mut accounting = accounting.allocation_scope();
+        let mut accounting = accounting.allocation_scope()?;
         let result = async {
             if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             {

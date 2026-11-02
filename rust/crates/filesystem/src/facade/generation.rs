@@ -189,8 +189,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         accounting: &mut KernelAccounting<'_>,
         _cancellation: &CancellationToken,
     ) -> Result<(ObjectId, Head), FsError> {
+        // Head payload and replay storage retire after decoding the scalar root.
+        // Preserve earlier scratch and independently retained provider backing.
+        let mut scope = accounting.allocation_scope()?;
         let authority_id = volume_authority_id(self.id);
-        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut scope)?;
         let result = self
             .fs
             .inner
@@ -207,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
         let latest = latest.ok_or(FsError::InvalidAuthorityHistory)?;
         Ok((
-            generation_from_head_payload(head.sequence, &latest, self.id, accounting)?,
+            generation_from_head_payload(head.sequence, &latest, self.id, &mut scope)?,
             head,
         ))
     }

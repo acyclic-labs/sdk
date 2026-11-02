@@ -34,12 +34,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         if let Some(original) = accounting.native_work() {
             self.validate_native_work(original)?;
         }
+        let mut accounting = accounting.allocation_scope()?;
         lookup_path_async_with_accounting(
             &self.volume.fs.inner.objects,
             &self.root,
             path,
             self.volume.config,
-            accounting,
+            &mut accounting,
             cancellation,
             None,
         )
@@ -461,6 +462,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRecord, FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            self.validate_native_work(original)?;
+        }
         let record = match file.address() {
             ContentAddress::Path(path) => {
                 let lookup = {
@@ -485,18 +490,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileRecord>, FsError> {
-        let before = readonly_standalone_live(accounting);
-        let result = crate::kernel::lookup_file_record_async_with_accounting(
+        let mut accounting = accounting.allocation_scope()?;
+        crate::kernel::lookup_file_record_async_with_accounting(
             &self.volume.fs.inner.objects,
             self.root.file_table,
             file_id,
             DecodeLimits::for_volume(self.volume.config),
-            accounting,
+            &mut accounting,
             cancellation,
             Some(&self.dependencies.data_custody),
         )
-        .await;
-        readonly_cleanup_standalone(accounting, before, 0)?;
-        result.map(|(record, _allocation)| record)
+        .await
+        .map(|(record, _allocation)| record)
     }
 }
