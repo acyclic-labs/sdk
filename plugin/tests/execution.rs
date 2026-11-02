@@ -3,6 +3,41 @@
 mod binary;
 
 #[test]
+fn execution_reopen_keeps_the_named_agent_without_ambient_selection()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_harness::{
+        agent::{AgentId, AgentPath},
+        local::host_owner::HostAction,
+    };
+    let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
+    for expected in [root.clone(), root.child(&AgentId::from_bytes([2; 16]))?] {
+        let arguments = ["reopen".into(), expected.to_string()];
+        let action = acyclic_plugin::ingress::workspace_action(&arguments, || {
+            panic!("explicit reopen consulted the ambient workspace")
+        })?;
+        let HostAction::Reopen { task } = action else {
+            panic!("explicit reopen changed its operation")
+        };
+        assert_eq!(task, expected);
+    }
+    // A current-agent command must still use the original resolver and retain
+    // its refusal. This distinguishes bypassing selection from dropping it.
+    let cause = std::io::Error::other("selected agent refused");
+    let error =
+        acyclic_plugin::ingress::workspace_action(&["agents".into()], || Err(Box::new(cause)))
+            .err()
+            .ok_or("current-agent command dropped the original refusal")?;
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::Other)
+    );
+    assert_eq!(error.to_string(), "selected agent refused");
+    Ok(())
+}
+
+#[test]
 fn execution_dispatch_precedes_workspace_lookup() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     for args in [
