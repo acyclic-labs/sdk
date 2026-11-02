@@ -15,7 +15,7 @@ const disposition = (site, classification, producer, terminal, negativeControl) 
 });
 
 test('source decoder fuzz target preserves raw candidates, escapes and comment boundaries', () => {
- fuzz(Buffer.from("printf ''"));
+ for (const text of ["printf ''", '\\', '\\u{']) fuzz(Buffer.from(text));
  for (let byte = 0; byte < 256; byte++) {
   fuzz(Uint8Array.from({length: byte}, (_, index) => (byte + index) & 255));
  }
