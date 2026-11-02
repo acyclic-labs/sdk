@@ -2,6 +2,15 @@
   "$schema": "../compatibility/schemas/provenance.schema.json",
   "imports": [
     {
+      "sourceRepository": "https://github.com/DelSkayn/rquickjs",
+      "sourceCommit": "d7ef5eeae702fea24c03643064de454f1c1dd4b0",
+      "sourcePath": "core (rquickjs-core 0.14.0 registry snapshot) and LICENSE",
+      "destinationPath": "rust/vendor/rquickjs-core-0.14.0",
+      "license": "MIT",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs runtime allocation-refusal source audit"
+    },
+    {
       "sourceRepository": "https://github.com/google-gemini/gemini-cli",
       "sourceCommit": "6814e00d6b148c3a1d57244d5d7040f7c541009d",
       "sourcePath": "packages/core/src/tools/definitions",
