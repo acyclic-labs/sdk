@@ -41,6 +41,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         tail: u64,
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<(
         ResponseProjection,
         Option<ContextAccounting>,
@@ -81,8 +82,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    steering: journal
-                        .model_boundary()
+                    steering: boundary
                         .map(|boundary| boundary.selection(input.operation_id, step))
                         .transpose()?,
                 },
@@ -101,6 +101,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -126,7 +127,7 @@ impl StockExecution<'_> {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                self.capture_response(journal, input, step, prior_messages, tail)
+                self.capture_response(journal, input, step, prior_messages, tail, boundary)
                     .await?
             }
             Some(reference) => {

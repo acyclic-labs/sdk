@@ -170,7 +170,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
         .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
         .await?;
     let (projection, accounting, prepared) = execution
-        .capture_response(journal, &input, 0, &[], tail)
+        .capture_response(journal, &input, 0, &[], tail, None)
         .await?;
     let (_, records) = execution
         .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
@@ -201,7 +201,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     assert_eq!(counts.load(Ordering::SeqCst), 1);
     assert!(provider.requests().is_empty());
     let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(journal, &input, 0, &[])
+        .prepared_response(journal, &input, 0, &[], None)
         .await?;
     assert_eq!(recovered.bytes(), prepared.bytes());
     assert_eq!(

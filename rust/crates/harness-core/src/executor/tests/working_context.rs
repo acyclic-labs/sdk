@@ -78,12 +78,12 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;
     let first = execution
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], None)
         .await?;
     assert!(first.bytes().len() < 2_000);
     let restarted = StockExecution::ordinary(&executor);
     let replayed = restarted
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], None)
         .await?;
     assert_eq!(replayed.bytes(), first.bytes());
     assert_eq!(provider.request_count(), 0, "the backstop called a model");

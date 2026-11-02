@@ -22,6 +22,14 @@ struct PreparedDispatchStep {
     started: bool,
 }
 
+/// Only the response loop owns an inbox boundary. Borrowed standalone and
+/// summary requests keep the same journal without inheriting that boundary.
+#[derive(Clone, Copy)]
+struct ModelStepScope<'a> {
+    purpose: ModelPurpose,
+    boundary: Option<&'a dyn crate::agent::ModelBoundary>,
+}
+
 impl StockExecution<'_> {
     /// Cancellation covers boundary reads, preparation, headers and chunks.
     pub(super) async fn cancellable_model_step(
@@ -37,8 +45,15 @@ impl StockExecution<'_> {
         let cancellation = journal.model_cancellation();
         let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
             Box::pin(async {
+                let scope = ModelStepScope {
+                    purpose,
+                    boundary: match &prior_messages {
+                        request::ModelStepHistory::Turn(_) => journal.model_boundary(),
+                        request::ModelStepHistory::Selected(_) => None,
+                    },
+                };
                 if let request::ModelStepHistory::Turn(history) = &mut prior_messages
-                    && let Some(boundary) = journal.model_boundary()
+                    && let Some(boundary) = scope.boundary
                 {
                     let (_, records) = self
                         .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -70,7 +85,7 @@ impl StockExecution<'_> {
                     request::ModelStepHistory::Turn(history) => history.as_slice(),
                     request::ModelStepHistory::Selected(history) => history,
                 };
-                self.dispatch_model_step(journal, input, step, history, purpose, phase)
+                self.dispatch_model_step(journal, input, step, history, scope, phase)
                     .await
             });
         completion
@@ -89,13 +104,13 @@ impl StockExecution<'_> {
     }
 
     /// Replays or resolves one model step.
-    pub(super) async fn dispatch_model_step(
+    async fn dispatch_model_step(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        purpose: ModelPurpose,
+        scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
@@ -105,13 +120,14 @@ impl StockExecution<'_> {
             events: replayed,
             started,
         } = self
-            .prepare_dispatch_step(journal, input, step, prior_messages, purpose, phase)
+            .prepare_dispatch_step(journal, input, step, prior_messages, scope, phase)
             .await?;
+        let purpose = scope.purpose;
         let request_digest = request.request_digest();
         let purpose_key = model_purpose_key(purpose);
         if started
             && purpose == ModelPurpose::Response
-            && let Some(boundary) = journal.model_boundary()
+            && let Some(boundary) = scope.boundary
         {
             boundary.admitted(input.operation_id, step).await?;
         }
@@ -161,7 +177,7 @@ impl StockExecution<'_> {
                     self.claim_model_dispatch(
                         journal,
                         input,
-                        (step, purpose, purpose_key),
+                        (step, scope, purpose_key),
                         &request,
                         phase,
                     ),
@@ -217,9 +233,10 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        purpose: ModelPurpose,
+        scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<PreparedDispatchStep> {
+        let purpose = scope.purpose;
         self.require_model_producer().await?;
         let RetainedModelStep {
             request,
@@ -236,7 +253,7 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let preparation =
-            self.resolve_model_request(journal, input, (step, prior_messages, purpose), request);
+            self.resolve_model_request(journal, input, (step, prior_messages, scope), request);
         let request = if started {
             preparation.await?
         } else {
@@ -312,10 +329,11 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        turn: (u32, &[ModelMessage], ModelPurpose),
+        turn: (u32, &[ModelMessage], ModelStepScope<'_>),
         retained_request: Option<crate::model::PreparedModelRequest>,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (step, prior_messages, purpose) = turn;
+        let (step, prior_messages, scope) = turn;
+        let purpose = scope.purpose;
         let mut request = match retained_request {
             Some(recorded) => {
                 if purpose == ModelPurpose::Summary
@@ -332,7 +350,7 @@ impl StockExecution<'_> {
                 recorded
             }
             None if purpose == ModelPurpose::Response => {
-                self.prepared_response(journal, input, step, prior_messages)
+                self.prepared_response(journal, input, step, prior_messages, scope.boundary)
                     .await?
             }
             None => self.prepare_request(input, step, prior_messages).await?,
@@ -377,11 +395,12 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        turn: (u32, ModelPurpose, &str),
+        turn: (u32, ModelStepScope<'_>, &str),
         request: &crate::model::PreparedModelRequest,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
-        let (step, purpose, purpose_key) = turn;
+        let (step, scope, purpose_key) = turn;
+        let purpose = scope.purpose;
         let io = self.io;
         let request_digest = request.request_digest();
         if self.stock.reconciliation_only {
@@ -448,7 +467,7 @@ impl StockExecution<'_> {
             }
         }
         if purpose == ModelPurpose::Response
-            && let Some(boundary) = journal.model_boundary()
+            && let Some(boundary) = scope.boundary
         {
             boundary.admitted(input.operation_id, step).await?;
         }

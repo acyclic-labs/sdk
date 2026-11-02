@@ -156,7 +156,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     ));
                 }
                 builder.recipient(to)?;
-                if matches!(record, InboxRecord::Message(_)) && to != path {
+                if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
+                    && to != path
+                {
                     builder.offer(to.inbox()?, to.closed()?, record.encode()?);
                 } else {
                     builder.append(to.inbox()?, record.encode()?);
