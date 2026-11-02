@@ -168,13 +168,12 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
 #[test]
 fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
-    let portable = PortablePath::parse("/é/𝄞", limits)?;
     for (profile, encoding) in [
         (FilesystemProfile::Portable, NameEncoding::Utf8),
         (FilesystemProfile::Posix, NameEncoding::PosixBytes),
         (FilesystemProfile::Windows, NameEncoding::WindowsUtf16Le),
     ] {
-        let path = NamespacePath::from_portable_in_profile(&portable, profile, limits)?;
+        let path = NamespacePath::from_text_in_profile("/é/𝄞", profile, limits)?;
         assert_eq!(
             path.components()
                 .first()
@@ -495,4 +494,60 @@ fn canonical_case_keys_preserve_native_byte_grammar() -> Result<(), Box<dyn std:
         );
     }
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+    #[test]
+    fn canonical_name_copies_preserve_bytes_and_refuse_before_allocation(
+        text in "[a-zA-Z0-9é中𝄞]{1,24}",
+        raw in proptest::collection::vec(1_u8..=255, 1..48),
+    ) {
+        use crate::kernel::codec::{CanonicalDecodeError, CanonicalInvariant, ReadAllocationStep};
+        let mut posix = vec![b'n', 0xff];
+        posix.extend(raw.into_iter().map(|byte| if byte == b'/' { b'x' } else { byte }));
+        let mut wide: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        wide.extend_from_slice(&0xd800_u16.to_le_bytes());
+        for (encoding, bytes) in [
+            (NameEncoding::Utf8, text.into_bytes()),
+            (NameEncoding::PosixBytes, posix),
+            (NameEncoding::WindowsUtf16Le, wide),
+        ] {
+            let maximum = u32::try_from(bytes.len()).expect("small generated name");
+            let name = LogicalName::new(encoding, bytes, maximum)
+                .expect("generator produces admitted names, including opaque native names");
+            let mut allocations = 0;
+            let mut capacity = 0;
+            let mut copied = 0;
+            let copy = name.try_clone::<CanonicalDecodeError>(maximum, &mut |step| {
+                match step {
+                    ReadAllocationStep::Allocate { operations, .. } => allocations += operations,
+                    ReadAllocationStep::Capacity { actual_bytes, .. } => capacity = actual_bytes,
+                    ReadAllocationStep::Copied(bytes) => copied += bytes,
+                    _ => {}
+                }
+                Ok(())
+            }).expect("exact bound funds the canonical copy");
+            proptest::prop_assert_eq!(&copy, &name);
+            proptest::prop_assert_eq!(allocations, 1);
+            proptest::prop_assert_eq!(capacity, copy.logical_owned_bytes());
+            proptest::prop_assert_eq!(copied, u64::from(maximum));
+
+            // The old copy-then-validate path reaches this observer before
+            // refusing, so restoring it fails here without allocating.
+            let refused = name.try_clone::<CanonicalDecodeError>(maximum - 1, &mut |_| {
+                panic!("short name bound reached allocation admission")
+            });
+            let exact_cause = matches!(refused, Err(CanonicalDecodeError::Invariant(
+                CanonicalInvariant::Name(TreePageError::NameTooLarge)
+            )));
+            proptest::prop_assert!(exact_cause);
+            let denied = name.try_clone::<CanonicalDecodeError>(maximum, &mut |_| {
+                Err(CanonicalDecodeError::AllocationFailed)
+            });
+            let original_refusal = matches!(denied, Err(CanonicalDecodeError::AllocationFailed));
+            proptest::prop_assert!(original_refusal);
+        }
+    }
 }

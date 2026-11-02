@@ -103,12 +103,15 @@ impl LogicalName {
         maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
+        if u32::try_from(self.bytes.len()).map_or(true, |length| length > maximum_bytes) {
+            return Err(E::from(CanonicalDecodeError::Invariant(
+                crate::kernel::codec::CanonicalInvariant::Name(TreePageError::NameTooLarge),
+            )));
+        }
+        // The original name already passed canonical admission. Only the
+        // destination's byte bound needs checking before its funded copy.
         let bytes = crate::kernel::codec::copy_bytes(&self.bytes, 1, steps)?;
-        Self::new(self.encoding, bytes, maximum_bytes).map_err(|error| {
-            E::from(CanonicalDecodeError::Invariant(
-                crate::kernel::codec::CanonicalInvariant::Name(error),
-            ))
-        })
+        Ok(Self::from_validated_bytes(self.encoding, bytes))
     }
 
     pub(crate) fn clone_with_accounting(

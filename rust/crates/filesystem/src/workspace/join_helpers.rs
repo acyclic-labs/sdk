@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 pub(super) fn binding_conflict_view<A, O>(
     plan: &JoinPlan<A, O>,
     conflict: MergeConflict,
@@ -66,11 +69,7 @@ pub(super) fn record_conflict_view<A, O>(
 
 fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     let mut key = Vec::with_capacity(name.as_bytes().len().saturating_add(1));
-    key.push(match name.encoding() {
-        crate::kernel::NameEncoding::Utf8 => 1,
-        crate::kernel::NameEncoding::PosixBytes => 2,
-        crate::kernel::NameEncoding::WindowsUtf16Le => 3,
-    });
+    key.push(name.encoding().tag());
     key.extend_from_slice(name.as_bytes());
     key
 }
@@ -91,12 +90,13 @@ pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, Worksp
     if path.is_root() {
         return Ok("/".to_owned());
     }
-    let components = path
-        .components()
-        .iter()
-        .map(logical_name_text)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(format!("/{}", components.join("/")))
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    path.unicode_text_with_accounting(&mut accounting, &cancellation)
+        .map(|(text, _)| text)
+        .map_err(|_| {
+            WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+        })
 }
 
 pub(super) fn kernel_conflict(
@@ -113,12 +113,8 @@ pub(super) fn kernel_conflict(
         | ConflictKey::Rename { file_id, .. } => Ok(MergeConflict::File(*file_id)),
         ConflictKey::Binding { directory_id, name } => {
             let (&tag, bytes) = name.split_first().ok_or(DrivenJoinError::StaleCandidate)?;
-            let encoding = match tag {
-                1 => crate::kernel::NameEncoding::Utf8,
-                2 => crate::kernel::NameEncoding::PosixBytes,
-                3 => crate::kernel::NameEncoding::WindowsUtf16Le,
-                _ => return Err(DrivenJoinError::StaleCandidate),
-            };
+            let encoding = crate::kernel::NameEncoding::from_tag(tag)
+                .map_err(|_| DrivenJoinError::StaleCandidate)?;
             let name = LogicalName::new(encoding, bytes.to_vec(), maximum_component_bytes)
                 .map_err(|_| DrivenJoinError::StaleCandidate)?;
             Ok(MergeConflict::Binding {
