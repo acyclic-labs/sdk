@@ -298,35 +298,29 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> W::Output<FileRecord, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let before = readonly_standalone_live(&accounting);
-        let result = async {
-            let record = {
-                let (record, _allocation) =
-                    crate::kernel::lookup_file_record_async_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        self.root.file_table,
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            async {
+                let record = self
+                    .lookup_file_record_by_id_with_accounting(
                         file_id,
-                        DecodeLimits::for_volume(self.volume.config),
                         &mut accounting,
                         cancellation,
-                        Some(&self.dependencies.data_custody),
                     )
                     .await?;
-                record
-            };
-            let record = record.ok_or(FsError::NotFound)?;
-            if self.tracks_observations() {
-                self.observe_identity_regions_with_accounting(
-                    [Some(DependencyRegion::FileRecord(file_id)), None],
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
+                let record = record.ok_or(FsError::NotFound)?;
+                if self.tracks_observations() {
+                    self.observe_identity_regions_with_accounting(
+                        [Some(DependencyRegion::FileRecord(file_id)), None],
+                        &mut accounting,
+                        cancellation,
+                    )
+                    .await?;
+                }
+                Ok(record)
             }
-            Ok(record)
-        }
-        .await;
-        let result = readonly_cleanup_standalone(&mut accounting, before, 0).and(result);
+            .await
+        };
         budget.finish(result, &accounting)
     }
 

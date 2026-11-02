@@ -30,6 +30,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
             held: Mutex::new(None),
         };
         *authority.observation.lock().unwrap() = Some(Observation {
+            skip_heads: 0,
             minimum: 4096,
             completion: None,
         });
@@ -60,6 +61,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         held: Mutex::new(None),
     };
     *authority.observation.lock().unwrap() = Some(Observation {
+        skip_heads: 0,
         minimum: 4096,
         completion: None,
     });
@@ -125,6 +127,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         let before = accounting.spent();
         let (producer, completion) = tokio::sync::oneshot::channel();
         *authority.observation.lock().unwrap() = Some(Observation {
+            skip_heads: 0,
             minimum: baseline,
             completion: Some(completion),
         });

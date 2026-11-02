@@ -139,36 +139,31 @@ pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<FileMetadata, FsError> {
-    let before = readonly_standalone_live(accounting);
-    let result = async {
-        let (read, _retained_bytes) = crate::kernel::read_object_with_accounting(
-            &volume.fs.inner.objects,
-            record.metadata,
-            volume.config.limits.maximum_object_bytes,
-            accounting,
-            cancellation,
+    let mut accounting = accounting.allocation_scope();
+    let (read, _retained_bytes) = crate::kernel::read_object_with_accounting(
+        &volume.fs.inner.objects,
+        record.metadata,
+        volume.config.limits.maximum_object_bytes,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| match error {
+        FsError::BlobRead(BlobReadError::Storage(error)) => match error {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::ObjectStoreError::Native(error) => FsError::NativeKernel(error),
+            error => FsError::Object(error),
+        },
+        error => error,
+    })?;
+    crate::kernel::decode_owned(&mut accounting, |observe| {
+        crate::kernel::decode_file_metadata(
+            &read.bytes,
+            DecodeLimits::for_volume(volume.config),
+            &mut |step| observe(step),
         )
-        .await
-        .map_err(|error| match error {
-            FsError::BlobRead(BlobReadError::Storage(error)) => match error {
-                #[cfg(not(target_arch = "wasm32"))]
-                crate::ObjectStoreError::Native(error) => FsError::NativeKernel(error),
-                error => FsError::Object(error),
-            },
-            error => error,
-        })?;
-        crate::kernel::decode_owned(accounting, |observe| {
-            crate::kernel::decode_file_metadata(
-                &read.bytes,
-                DecodeLimits::for_volume(volume.config),
-                &mut |step| observe(step),
-            )
-        })
-        .map(|(metadata, _)| metadata)
-    }
-    .await;
-    readonly_cleanup_standalone(accounting, before, 0)?;
-    result
+    })
+    .map(|(metadata, _)| metadata)
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
@@ -307,39 +302,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
+        let mut accounting = accounting.allocation_scope();
         match file.address() {
             ContentAddress::Path(path) => self
-                .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+                .lookup_no_follow_with_metadata_with_accounting(path, &mut accounting, cancellation)
                 .await?
                 .map(|lookup| lookup.metadata)
                 .ok_or(FsError::NotFound),
             ContentAddress::File(id) => {
-                let before = readonly_standalone_live(accounting);
-                let result = async {
-                    let record = self
-                        .lookup_file_record_by_id_with_accounting(id, accounting, cancellation)
-                        .await?
-                        .ok_or(FsError::NotFound)?;
-                    let metadata = read_record_metadata_to_file_root_with_accounting(
-                        &self.volume,
-                        record,
-                        accounting,
+                let record = self
+                    .lookup_file_record_by_id_with_accounting(id, &mut accounting, cancellation)
+                    .await?
+                    .ok_or(FsError::NotFound)?;
+                let metadata = read_record_metadata_to_file_root_with_accounting(
+                    &self.volume,
+                    record,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+                if self.tracks_observations() {
+                    self.observe_base_metadata_ids_with_accounting(
+                        std::slice::from_ref(&id),
+                        &mut accounting,
                         cancellation,
                     )
                     .await?;
-                    if self.tracks_observations() {
-                        self.observe_base_metadata_ids_with_accounting(
-                            std::slice::from_ref(&id),
-                            accounting,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Ok(metadata)
                 }
-                .await;
-                readonly_cleanup_standalone(accounting, before, 0)?;
-                result
+                Ok(metadata)
             }
         }
     }

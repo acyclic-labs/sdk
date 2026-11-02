@@ -93,7 +93,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     assert_eq!(second.entries.len(), 3);
     assert!(!second.has_more);
 
-    let extents = workspace.plan_extents("/tree/sparse", 0, 400, 16).await?;
+    let extents = unbounded!(workspace, plan_extents("/tree/sparse", 0, 400, 16))?.0;
     assert!(
         extents
             .spans
@@ -342,6 +342,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
         let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
         let (producer, completion) = tokio::sync::oneshot::channel();
         *authority.observation.lock().unwrap() = Some(Observation {
+            skip_heads: 0,
             minimum: baseline,
             completion: Some(completion),
         });

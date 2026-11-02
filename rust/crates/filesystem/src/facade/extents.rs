@@ -6,96 +6,126 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
         &self,
         range: ByteRange,
         maximum_spans: u32,
-        budget: W,
+        work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
-        self.reader
-            .plan_record_extents(self.record, range, maximum_spans, budget, cancellation)
-            .await
+        let mut accounting = work.accounting(cancellation);
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            let result = async {
+                validate_extent_plan_request(self.reader.volume.config, range, maximum_spans)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    self.reader.validate_native_work(original)?;
+                }
+                plan_record_extents_with_accounting(
+                    &self.reader.volume,
+                    self.record,
+                    range,
+                    maximum_spans,
+                    std::convert::identity,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            if result.is_ok() {
+                accounting.keep();
+            }
+            result
+        };
+        work.finish_owned(result, &accounting)
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Plans actual sparse spans, returning the original-owned span vector.
-    async fn plan_record_extents<W: FsWork>(
+    /// Plans sparse physical spans without reading content bodies.
+    pub async fn plan_file_extents<W: FsWork>(
         &self,
-        record: FileRecord,
+        path: &NamespacePath,
         range: ByteRange,
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            if maximum_spans == 0
-                || range.length > self.volume.config.limits.maximum_generation_bytes
-            {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            accounting.check()?;
-            let (logical_bytes, root) = match record.payload {
-                FilePayload::InlineRegular(data) => {
-                    validate_planned_file_range(usize_to_u64(data.as_bytes().len()), range)?;
-                    return Ok((None, accounting.claim_owned(0, 0)?));
-                }
-                FilePayload::Regular {
-                    logical_bytes,
-                    extents,
-                } => (logical_bytes, extents),
-                _ => return Err(FsError::FileRead(FileRangeReadError::NotRegular)),
-            };
-            let (plan, allocation) = plan_extent_range_with_accounting(
-                &self.volume.fs.inner.objects,
-                ExtentRangeRequest {
-                    root,
-                    file_size: logical_bytes,
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            let result = async {
+                validate_extent_plan_request(self.volume.config, range, maximum_spans)?;
+                let record = self
+                    .resolve_file(path, &mut accounting, cancellation)
+                    .await?;
+                plan_record_extents_with_accounting(
+                    &self.volume,
+                    record,
                     range,
                     maximum_spans,
-                    limits: DecodeLimits::for_volume(self.volume.config),
-                    budget: accounting.remaining()?,
-                },
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-            Ok((Some(plan), allocation))
-        }
-        .await;
+                    std::convert::identity,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            if result.is_ok() {
+                accounting.keep();
+            }
+            result
+        };
         work.finish_owned(result, &accounting)
     }
+}
 
-    /// Plans sparse physical spans without reading content bodies.
-    pub async fn plan_file_extents(
-        &self,
-        path: &NamespacePath,
-        range: ByteRange,
-        maximum_spans: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Option<ExtentPlan>> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = self.resolve_file(path, &mut accounting, cancellation).await;
-        let work = accounting.spent();
-        let record = result.map_err(|error| OperationFailure::new(error, work))?;
-        let plan = self
-            .plan_record_extents(
-                record,
-                range,
-                maximum_spans,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        Ok(OperationReceipt {
-            value: plan.value,
-            work: add(work, plan.work)?,
-        })
+fn validate_extent_plan_request(
+    config: VolumeConfig,
+    range: ByteRange,
+    maximum_spans: u32,
+) -> Result<(), FsError> {
+    if maximum_spans == 0 || range.length > config.limits.maximum_generation_bytes {
+        return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
     }
+    Ok(())
+}
+
+async fn plan_record_extents_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore, T>(
+    volume: &Volume<A, O>,
+    record: FileRecord,
+    range: ByteRange,
+    maximum_spans: u32,
+    project: impl Fn(crate::kernel::ExtentSlice) -> T,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Option<ExtentPlan<T>>, KernelOwnedAllocation), FsError> {
+    accounting.check()?;
+    let (logical_bytes, root) = match record.payload {
+        FilePayload::InlineRegular(data) => {
+            validate_planned_file_range(usize_to_u64(data.as_bytes().len()), range)?;
+            return Ok((None, accounting.claim_owned(0, 0)?));
+        }
+        FilePayload::Regular {
+            logical_bytes,
+            extents,
+        } => (logical_bytes, extents),
+        _ => return Err(FsError::FileRead(FileRangeReadError::NotRegular)),
+    };
+    let (plan, allocation) = ExtentPlan::project_with_accounting(
+        &volume.fs.inner.objects,
+        ExtentRangeRequest {
+            root,
+            file_size: logical_bytes,
+            range,
+            maximum_spans,
+            limits: DecodeLimits::for_volume(volume.config),
+            budget: accounting.remaining()?,
+        },
+        project,
+        accounting,
+        cancellation,
+    )
+    .await?;
+    Ok((Some(plan), allocation))
 }
 
 pub(crate) async fn seek_record_extent_with_accounting<
@@ -128,8 +158,7 @@ pub(crate) async fn seek_record_extent_with_accounting<
             if offset > logical_bytes {
                 return Ok(None);
             }
-            let before = readonly_standalone_live(accounting);
-            let result = crate::kernel::seek_extent_with_accounting(
+            crate::kernel::seek_extent_with_accounting(
                 &volume.fs.inner.objects,
                 ExtentSeekRequest {
                     root: extents,
@@ -142,9 +171,7 @@ pub(crate) async fn seek_record_extent_with_accounting<
                 accounting,
                 cancellation,
             )
-            .await;
-            readonly_cleanup_standalone(accounting, before, 0)?;
-            result
+            .await
         }
         _ => Err(FsError::FileRead(FileRangeReadError::NotRegular)),
     }
@@ -159,33 +186,36 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Option<ExtentPlan>, KernelOwnedAllocation), FsError> {
-        let mut planned = match record.payload {
-            FilePayload::InlineRegular(data) => {
-                validate_planned_file_range(data.as_bytes().len() as u64, range)?;
-                (None, KernelOwnedAllocation::Standalone)
-            }
-            FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } => {
-                let (plan, allocation) = crate::kernel::plan_extent_range_with_accounting(
-                    &self.volume.fs.inner.objects,
-                    ExtentRangeRequest {
-                        root: extents,
-                        file_size: logical_bytes,
-                        range,
-                        maximum_spans,
-                        limits: DecodeLimits::for_volume(self.volume.config),
-                        budget: accounting.remaining()?,
-                    },
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-                (Some(plan), allocation)
-            }
-            _ => return Err(FsError::FileRead(FileRangeReadError::NotRegular)),
-        };
+        self.plan_record_extents_projected(
+            record,
+            range,
+            maximum_spans,
+            std::convert::identity,
+            accounting,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn plan_record_extents_projected<T>(
+        &mut self,
+        record: FileRecord,
+        range: ByteRange,
+        maximum_spans: u32,
+        project: impl Fn(crate::kernel::ExtentSlice) -> T,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<ExtentPlan<T>>, KernelOwnedAllocation), FsError> {
+        let mut planned = plan_record_extents_with_accounting(
+            &self.volume,
+            record,
+            range,
+            maximum_spans,
+            project,
+            accounting,
+            cancellation,
+        )
+        .await?;
         if self.tracks_observations() && range.length != 0 {
             self.observe_base_regular_range_with_accounting(
                 record.file_id,
@@ -202,30 +232,57 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Plans the sparse physical representation of one exact regular-file range.
-    pub async fn plan_file_extents<F: ContentFile>(
+    pub async fn plan_file_extents<F: ContentFile, W: FsWork>(
         &mut self,
         file: F,
         range: ByteRange,
         maximum_spans: u32,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Option<ExtentPlan>> {
-        if maximum_spans == 0 || range.length > self.volume.config.limits.maximum_generation_bytes {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            let record = self
-                .lookup_content_record(&file, &mut accounting, cancellation)
-                .await?;
-            self.plan_record_extents(record, range, maximum_spans, &mut accounting, cancellation)
-                .await
-                .map(|(plan, _allocation)| plan)
-        }
-        .await;
-        measured(result, &accounting)
+    ) -> W::OwnedOutput<Option<ExtentPlan>> {
+        let mut accounting = work.accounting(cancellation);
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            let result = self
+                .plan_file_extents_projected_with_accounting(
+                    &file,
+                    range,
+                    maximum_spans,
+                    std::convert::identity,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await;
+            if result.is_ok() {
+                accounting.keep();
+            }
+            result
+        };
+        work.finish_owned(result, &accounting)
+    }
+
+    pub(crate) async fn plan_file_extents_projected_with_accounting<F: ContentFile, T>(
+        &mut self,
+        file: &F,
+        range: ByteRange,
+        maximum_spans: u32,
+        project: impl Fn(crate::kernel::ExtentSlice) -> T,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<ExtentPlan<T>>, KernelOwnedAllocation), FsError> {
+        validate_extent_plan_request(self.volume.config, range, maximum_spans)?;
+        let record = self
+            .lookup_content_record(file, accounting, cancellation)
+            .await?;
+        self.plan_record_extents_projected(
+            record,
+            range,
+            maximum_spans,
+            project,
+            accounting,
+            cancellation,
+        )
+        .await
     }
 
     /// Finds the first sparse data or hole boundary after one logical offset.

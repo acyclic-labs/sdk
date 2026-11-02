@@ -559,7 +559,12 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         limits: DecodeLimits::default(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let machine = RangeMachine::new(request, TraversalMode::Plan, &mut accounting)?;
+    let machine = RangeMachine::new(
+        request,
+        TraversalMode::Plan,
+        std::convert::identity::<ExtentSlice>,
+        &mut accounting,
+    )?;
     let incomplete = machine
         .finish_plan(&mut accounting)
         .err()

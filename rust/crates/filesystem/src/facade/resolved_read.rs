@@ -39,7 +39,7 @@ pub struct FileDescription {
 /// }
 /// ```
 /// Nor can its extents be planned through an arbitrary reader.
-/// ```compile_fail,E0624
+/// ```compile_fail,E0599
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
 /// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
 /// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(

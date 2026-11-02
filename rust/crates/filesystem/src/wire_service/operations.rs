@@ -347,9 +347,13 @@ where
                 range.offset,
                 range.length,
                 request.maximum_extents,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .0;
         let truncated =
             u32::try_from(plan.spans.len()).unwrap_or(u32::MAX) == request.maximum_extents;
         Ok(Response::new(wire::PlanExtentsResponse {

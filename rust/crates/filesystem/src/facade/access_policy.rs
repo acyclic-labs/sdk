@@ -242,18 +242,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 // additional future layer.
 macro_rules! policy_revision {
     ($volume:expr, $accounting:ident, $cancellation:ident) => {{
-        let before = readonly_standalone_live($accounting);
-        let result = async {
+        let mut scope = $accounting.allocation_scope();
+        async {
             let volume = $volume;
             let (generation, observed) = volume
-                .resolve_head_generation($accounting, $cancellation)
+                .resolve_head_generation(&mut scope, $cancellation)
                 .await?;
             let metadata = {
                 let (root, _root_allocation) = read_generation_root_with_accounting(
                     &volume.fs.inner.objects,
                     generation,
                     volume.config,
-                    $accounting,
+                    &mut scope,
                     $cancellation,
                 )
                 .await?;
@@ -265,7 +265,7 @@ macro_rules! policy_revision {
                     root.file_table,
                     root.root_file_id,
                     DecodeLimits::for_volume(volume.config),
-                    $accounting,
+                    &mut scope,
                     $cancellation,
                     None,
                 )
@@ -273,12 +273,12 @@ macro_rules! policy_revision {
                 read_record_metadata_to_file_root_with_accounting(
                     volume,
                     record.ok_or(FsError::NotFound)?,
-                    $accounting,
+                    &mut scope,
                     $cancellation,
                 )
                 .await?
             };
-            let mut authority = crate::async_storage::AuthorityFrame::borrow($accounting)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut scope)?;
             let current = volume
                 .fs
                 .inner
@@ -293,8 +293,7 @@ macro_rules! policy_revision {
                 )),
             )
         }
-        .await;
-        readonly_cleanup_standalone($accounting, before, 0).and(result)
+        .await
     }};
 }
 

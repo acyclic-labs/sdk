@@ -28,9 +28,9 @@ pub struct ExtentSlice {
 
 /// Bounded range plan and exact page-read evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExtentPlan {
+pub struct ExtentPlan<T = ExtentSlice> {
     /// Ordered contiguous spans covering the requested range.
-    pub spans: Vec<ExtentSlice>,
+    pub spans: Vec<T>,
     /// Exact completed work in the supplied accounting context.
     pub work: WorkCounters,
     /// Logical owned capacity retained by `spans` in this returned plan.
@@ -121,15 +121,36 @@ pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
-    run_range_async(
+    ExtentPlan::project_with_accounting(
         store,
         request,
-        TraversalMode::Plan,
+        std::convert::identity,
         accounting,
         cancellation,
     )
-    .await?
-    .finish_plan(accounting)
+    .await
+}
+
+impl<T> ExtentPlan<T> {
+    /// Projects each validated span directly into its original funded output.
+    pub(crate) async fn project_with_accounting<S: AsyncObjectStore>(
+        store: &S,
+        request: ExtentRangeRequest,
+        project: impl Fn(ExtentSlice) -> T,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), FsError> {
+        run_range_async(
+            store,
+            request,
+            TraversalMode::Plan,
+            project,
+            accounting,
+            cancellation,
+        )
+        .await?
+        .finish_plan(accounting)
+    }
 }
 
 /// Finds a data or hole boundary without reading content objects.
@@ -139,18 +160,7 @@ pub async fn seek_extent<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
-    let result = match seek_request(request) {
-        Ok(range) => run_range_async(
-            store,
-            range,
-            TraversalMode::Seek(request.target),
-            &mut accounting,
-            cancellation,
-        )
-        .await
-        .and_then(|machine| machine.finish_seek(&mut accounting)),
-        Err(error) => Err(error),
-    };
+    let result = seek_extent_with_accounting(store, request, &mut accounting, cancellation).await;
     match result {
         Ok(value) => Ok(OperationReceipt {
             value,
@@ -166,15 +176,17 @@ pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<u64>, FsError> {
+    let mut scope = accounting.allocation_scope();
     run_range_async(
         store,
         seek_request(request)?,
         TraversalMode::Seek(request.target),
-        accounting,
+        std::convert::identity::<ExtentSlice>,
+        &mut scope,
         cancellation,
     )
     .await?
-    .finish_seek(accounting)
+    .finish_seek(&mut scope)
 }
 
 fn seek_request(request: ExtentSeekRequest) -> Result<ExtentRangeRequest, FsError> {
@@ -195,7 +207,7 @@ fn seek_request(request: ExtentSeekRequest) -> Result<ExtentRangeRequest, FsErro
     })
 }
 
-struct RangeMachine {
+struct RangeMachine<T, P> {
     input: PlanInput,
     mode: TraversalMode,
     seek_result: Option<u64>,
@@ -204,7 +216,9 @@ struct RangeMachine {
     pending: Vec<PendingPage>,
     pending_capacity: LogicalVecCapacity,
     visited: Option<super::persistent_point::Owned<VisitedObjectSet>>,
-    spans: Vec<ExtentSlice>,
+    spans: Vec<T>,
+    covered_end: u64,
+    project: P,
     spans_capacity: LogicalVecCapacity,
     successor_page: Option<(u64, ResidencyHint)>,
     // Data fields precede their original physical allocation guards.
@@ -212,10 +226,11 @@ struct RangeMachine {
     spans_custody: KernelOwnedAllocation,
 }
 
-impl RangeMachine {
+impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
     fn new(
         request: ExtentRangeRequest,
         mode: TraversalMode,
+        project: P,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, FsError> {
         accounting.check()?;
@@ -253,6 +268,8 @@ impl RangeMachine {
             pending_capacity: LogicalVecCapacity::default(),
             visited: Some(visited),
             spans: Vec::new(),
+            covered_end: request.range.offset,
+            project,
             spans_capacity: LogicalVecCapacity::default(),
             successor_page: None,
             pending_custody: accounting.claim_owned(0, 0)?,
@@ -362,6 +379,9 @@ impl RangeMachine {
                             let start = extent.offset.max(self.input.range.offset);
                             let clipped_end = end.min(self.range_end);
                             if start < clipped_end {
+                                if start != self.covered_end {
+                                    return Err(range_failure(ExtentReadError::IncompleteCoverage));
+                                }
                                 if self.spans.len()
                                     >= usize::try_from(self.input.maximum_spans)
                                         .unwrap_or(usize::MAX)
@@ -382,12 +402,13 @@ impl RangeMachine {
                                     items_returned: 1,
                                     ..WorkCounters::UNCHARGED
                                 })?;
-                                self.spans.push(ExtentSlice {
+                                self.spans.push((self.project)(ExtentSlice {
                                     offset: start,
                                     length: clipped_end - start,
                                     source_end: end,
                                     kind,
-                                });
+                                }));
+                                self.covered_end = clipped_end;
                                 accounting.record_completed(WorkCounters {
                                     items_returned: 1,
                                     ..WorkCounters::UNCHARGED
@@ -452,22 +473,11 @@ impl RangeMachine {
     fn finish_plan(
         mut self,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
+    ) -> Result<(ExtentPlan<T>, KernelOwnedAllocation), FsError> {
         if !matches!(self.mode, TraversalMode::Plan) {
             return Err(range_failure(ExtentReadError::TraversalState));
         }
-        if self.input.range.length != 0
-            && (self.spans.first().map(|span| span.offset) != Some(self.input.range.offset)
-                || self
-                    .spans
-                    .last()
-                    .and_then(|span| span.offset.checked_add(span.length))
-                    != Some(self.range_end)
-                || self.spans.windows(2).any(|pair| match pair {
-                    [a, b] => a.offset.checked_add(a.length) != Some(b.offset),
-                    _ => false,
-                }))
-        {
+        if self.covered_end != self.range_end {
             return Err(range_failure(ExtentReadError::IncompleteCoverage));
         }
         let plan = ExtentPlan {
@@ -490,11 +500,11 @@ impl RangeMachine {
             .map(|(value, _)| value)
     }
 
-    fn finish_output<T>(
+    fn finish_output<V>(
         mut self,
-        value: T,
+        value: V,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(T, KernelOwnedAllocation), FsError> {
+    ) -> Result<(V, KernelOwnedAllocation), FsError> {
         let output = ReadOwned {
             value,
             custody: std::mem::replace(&mut self.spans_custody, KernelOwnedAllocation::Standalone),
@@ -509,14 +519,15 @@ impl RangeMachine {
     }
 }
 
-async fn run_range_async<S: AsyncObjectStore>(
+async fn run_range_async<S: AsyncObjectStore, T, P: Fn(ExtentSlice) -> T>(
     store: &S,
     request: ExtentRangeRequest,
     mode: TraversalMode,
+    project: P,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<RangeMachine, FsError> {
-    let mut machine = RangeMachine::new(request, mode, accounting)?;
+) -> Result<RangeMachine<T, P>, FsError> {
+    let mut machine = RangeMachine::new(request, mode, project, accounting)?;
     while !machine.pending.is_empty() {
         let expected = machine.prepare(accounting)?;
         let key = DecodedCacheKey::new::<ExtentPage>(expected.page, request.limits);

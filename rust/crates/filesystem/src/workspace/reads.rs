@@ -85,13 +85,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     }
 
     /// Plans clipped sparse spans without reading file bodies.
-    pub async fn plan_extents(
+    /// Retains the output on the supplied original work; keep its allocation
+    /// guard until the returned spans have been destroyed.
+    pub async fn plan_extents<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
         length: u64,
         maximum_spans: u32,
-    ) -> Result<WorkspaceExtentPlan, WorkspaceError> {
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
         plan(
             self,
             GenerationSelector::Head,
@@ -99,6 +103,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             offset,
             length,
             maximum_spans,
+            work,
+            cancellation,
         )
         .await
     }
