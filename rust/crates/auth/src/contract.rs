@@ -9,6 +9,8 @@ mod caller;
 pub use caller::*;
 mod secrets;
 pub use secrets::*;
+mod issuance;
+pub use issuance::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -547,9 +549,13 @@ pub enum TipProof {
         CallerKeyRevocationProto,
         CallerRevocationProto,
         CallerAuthorityProto,
-        CallerContextProto
+        CallerContextProto,
+        IssuanceRequestProto,
+        IssuanceRejectedProto,
+        IssuanceUnknownProto,
+        IssuanceReplyProto
     ),
-    enums(PrincipalKind, AuditDecision, SecretKind)
+    enums(PrincipalKind, AuditDecision, SecretKind, IssuanceRefusal)
 )]
 pub struct AuthFile;
 

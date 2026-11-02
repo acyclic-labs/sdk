@@ -5,13 +5,17 @@
 //! nor creates a journal, signer, trust follower or transport retry policy.
 
 use crate::{
-    contract::{CertificateChain, CertificateChainProto, CertifiedKey, CertifiedKeyProto},
+    contract::{
+        CertificateChain, CertificateChainProto, CertifiedKeyProto, IssuanceRequest,
+        IssuanceRequestProto,
+    },
     crypto::BlockId,
     operation::{BudgetError, Context},
     verify::{CertificateVerifier, Trust, VerifyError},
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
+mod wire;
 
 /// An immutable public request. Renewals use a new operation key; recovery keeps
 /// this exact request, including the original leaf public key and issuer epoch.
@@ -22,6 +26,7 @@ pub struct Request {
     environment: String,
     claims: CertifiedKeyProto,
     digest: BlockId,
+    encoded: Vec<u8>,
 }
 
 impl Request {
@@ -37,28 +42,36 @@ impl Request {
         environment: String,
         claims: CertifiedKeyProto,
     ) -> Result<Self, VerifyError> {
-        crate::crypto::public_key(&issuer)?;
-        let claims = CertifiedKey::try_from(claims)?;
-        crate::crypto::public_key(&claims.public_key)?;
-        if environment.is_empty() || claims.parent_key_id.is_some() {
-            return Err(VerifyError::Malformed);
-        }
-        let claims = CertifiedKeyProto::from(claims);
-        let encoded = claims.encode_to_vec();
+        Self::from_proto(IssuanceRequestProto {
+            version: 1,
+            operation_key: operation_key.to_vec(),
+            issuer: issuer.to_vec(),
+            environment,
+            claims: Some(claims),
+        })
+    }
+
+    fn from_proto(value: IssuanceRequestProto) -> Result<Self, VerifyError> {
+        let admitted = IssuanceRequest::try_from(value)?;
+        let value = IssuanceRequestProto::from(admitted);
+        let encoded = value.encode_to_vec();
         let mut hash = Sha256::new();
         hash.update(b"acyclic.auth.v1/issuance\0");
-        hash.update(operation_key);
-        hash.update(issuer);
-        hash.update((environment.len() as u64).to_le_bytes());
-        hash.update(environment.as_bytes());
-        hash.update((encoded.len() as u64).to_le_bytes());
         hash.update(&encoded);
+        let claims = value.claims.ok_or(VerifyError::Malformed)?;
         Ok(Self {
-            operation_key,
-            issuer,
-            environment,
+            operation_key: value
+                .operation_key
+                .try_into()
+                .map_err(|_| VerifyError::Malformed)?,
+            issuer: value
+                .issuer
+                .try_into()
+                .map_err(|_| VerifyError::Malformed)?,
+            environment: value.environment,
             claims,
             digest: hash.finalize().into(),
+            encoded,
         })
     }
 
@@ -86,6 +99,28 @@ impl Request {
     /// Providers compare this before signing or replaying a retained result.
     pub fn digest(&self) -> &BlockId {
         &self.digest
+    }
+
+    /// Canonical v1 public envelope, encoded once during admission. Dispatch
+    /// and explicit recovery borrow the same bytes without copying claims.
+    pub fn wire(&self) -> &[u8] {
+        &self.encoded
+    }
+
+    /// Admit a canonical envelope supplied by an authenticated transport.
+    /// This does not authorize the caller or prove durable acceptance.
+    ///
+    /// # Errors
+    /// Rejects unsupported versions, malformed claims and noncanonical bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, VerifyError> {
+        wire::version(bytes)?;
+        let request = Self::from_proto(
+            IssuanceRequestProto::decode(bytes).map_err(|_| VerifyError::Malformed)?,
+        )?;
+        if request.wire() != bytes {
+            return Err(VerifyError::Malformed);
+        }
+        Ok(request)
     }
 }
 

@@ -136,13 +136,18 @@ impl IssuerModel {
 
 impl Provider for Mutex<IssuerModel> {
     fn issue<'a>(&'a self, _: &'a Context, request: &'a Request) -> Pending<'a> {
-        Box::pin(async move { self.lock().unwrap().issue(request) })
+        Box::pin(async move {
+            let request = Request::decode(request.wire()).map_err(|_| Unknown::InvalidReply)?;
+            let reply = self.lock().unwrap().issue(&request)?;
+            Reply::decode(&reply.into_wire()).map_err(|_| Unknown::InvalidReply)
+        })
     }
     fn recover<'a>(&'a self, _: &'a Context, request: &'a Request) -> Pending<'a> {
         Box::pin(async move {
             let mut owner = self.lock().unwrap();
             owner.lookups += 1;
-            Ok(owner.lookup(request))
+            let request = Request::decode(request.wire()).map_err(|_| Unknown::InvalidReply)?;
+            Reply::decode(&owner.lookup(&request).into_wire()).map_err(|_| Unknown::InvalidReply)
         })
     }
 }
@@ -157,6 +162,39 @@ fn same_key_recovery_preserves_original_issuance_and_current_authority() {
             Mutex::new(model),
             context(clock.clone()),
             request(8, epoch, |_| {}),
+        );
+        // Mutations of the actual admitted envelope cannot create another
+        // spelling of its operation identity or bypass version admission.
+        let mut changed = client.request.wire().to_vec();
+        changed[1] = 2;
+        assert_eq!(
+            Request::decode(&changed).err(),
+            Some(VerifyError::Version(2))
+        );
+        let mut duplicate = client.request.wire().to_vec();
+        duplicate.extend_from_slice(&client.request.wire()[..2]);
+        assert_eq!(
+            Request::decode(&duplicate).err(),
+            Some(VerifyError::Malformed)
+        );
+        let missing = crate::contract::IssuanceReplyProto {
+            version: 1,
+            request_digest: client.request.digest().to_vec(),
+            decision: None,
+        };
+        assert_eq!(
+            Reply::decode(&missing.encode_to_vec()).err(),
+            Some(VerifyError::Malformed)
+        );
+        let invalid = crate::contract::IssuanceReplyProto {
+            decision: Some(crate::contract::IssuanceDecisionProto::Refused(
+                crate::contract::IssuanceRejectedProto { reason: 99 },
+            )),
+            ..missing
+        };
+        assert_eq!(
+            Reply::decode(&invalid.encode_to_vec()).err(),
+            Some(VerifyError::Malformed)
         );
         assert!(matches!(
             client.issue(&trust).await.unwrap(),
