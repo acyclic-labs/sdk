@@ -26,8 +26,8 @@ use std::os::windows::io::{
     AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
 };
 use std::os::windows::process::CommandExt as _;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle,
     ERROR_ALREADY_EXISTS, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, GetLastError, HANDLE,
@@ -35,7 +35,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::IO::{
-    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
+    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
 };
 use windows_sys::Win32::System::JobObjects::{
     IsProcessInJob, JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
@@ -48,15 +48,22 @@ use windows_sys::Win32::System::Threading::{
     WaitForMultipleObjects, WaitForSingleObject,
 };
 
+mod input;
 mod wait;
+use input::Input;
 use wait::ExitWait;
 
 /// The environment variable that makes a process a custodian.
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
 /// The line a custodian writes once it can take trees.
 const READY: &str = "ready";
-/// A native startup failure, on the same pipe as the readiness response.
+/// A producer failure, on the same pipe as the readiness response.
 const FAILED: &str = "failed ";
+const FAILURE_KINDS: [(&str, io::ErrorKind); 3] = [
+    ("invalid-data ", io::ErrorKind::InvalidData),
+    ("broken-pipe ", io::ErrorKind::BrokenPipe),
+    ("other ", io::ErrorKind::Other),
+];
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 /// The kernel completion key delivered once the owner has exited.
@@ -66,8 +73,8 @@ const OWNER_EXITED: usize = usize::MAX;
 const MEMBER_EXITED: usize = usize::MAX - 1;
 /// The completion key the input reader posts for each tree it reads.
 const OPENED: usize = usize::MAX - 3;
-/// The completion key the input reader posts once the owner's input ends.
-const INPUT_CLOSED: usize = usize::MAX - 4;
+/// The kernel completion key delivered when the original input thread exits.
+const INPUT_EXITED: usize = usize::MAX - 4;
 
 /// The owner's handle on its running custodian.
 pub(super) struct Custodian {
@@ -75,6 +82,16 @@ pub(super) struct Custodian {
     input: Mutex<Option<ChildStdin>>,
     identity: String,
     endpoint: String,
+    health: Mutex<Health>,
+}
+
+/// The original startup pipe stays with this exact custodian. Only after its
+/// process exits may a waiter consume the failure response; every later waiter
+/// retains that same outcome. Exit without a complete response remains loss.
+#[derive(Debug)]
+struct Health {
+    output: BufReader<ChildStdout>,
+    failure: Option<Arc<io::Error>>,
 }
 
 /// One tree's standing with the custodian: `done` is set once every member
@@ -121,15 +138,21 @@ pub(super) fn current() -> io::Result<Arc<Custodian>> {
 
 fn launch() -> io::Result<Custodian> {
     let mut child = launch_child()?;
-    let started = hand_over(&mut child).and_then(|(input, endpoint)| {
-        Ok((input, endpoint, identity(child.as_raw_handle().cast())?))
+    let started = hand_over(&mut child).and_then(|(input, endpoint, health)| {
+        Ok((
+            input,
+            endpoint,
+            health,
+            identity(child.as_raw_handle().cast())?,
+        ))
     });
     match started {
-        Ok((input, endpoint, identity)) => Ok(Custodian {
+        Ok((input, endpoint, health, identity)) => Ok(Custodian {
             child,
             input: Mutex::new(Some(input)),
             identity,
             endpoint,
+            health: Mutex::new(health),
         }),
         Err(error) => {
             let _ = child.kill();
@@ -154,7 +177,7 @@ fn launch_child() -> io::Result<Child> {
     )
 }
 
-fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
+fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String, Health)> {
     let target: HANDLE = custodian.as_raw_handle().cast();
     // SAFETY: a synchronize-only handle to this process, for the custodian.
     let owner = unsafe { duplicate(GetCurrentProcess(), target, PROCESS_SYNCHRONIZE, 0) }?;
@@ -162,7 +185,10 @@ fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
 }
 
 /// `owner` is the original process handle already transferred to this child.
-fn hand_over_owner(custodian: &mut Child, owner: HANDLE) -> io::Result<(ChildStdin, String)> {
+fn hand_over_owner(
+    custodian: &mut Child,
+    owner: HANDLE,
+) -> io::Result<(ChildStdin, String, Health)> {
     let target: HANDLE = custodian.as_raw_handle().cast();
     let output = duplicate_output(target, STD_OUTPUT_HANDLE)?;
     let error = duplicate_output(target, STD_ERROR_HANDLE)?;
@@ -174,14 +200,15 @@ fn hand_over_owner(custodian: &mut Child, owner: HANDLE) -> io::Result<(ChildStd
         output.expose_provenance(),
         error.expose_provenance()
     )?;
-    Ok((input, startup_response(custodian)?))
+    let (endpoint, health) = startup_response(custodian)?;
+    Ok((input, endpoint, health))
 }
 
 /// Reads this original child's one complete startup response.
-fn startup_response(custodian: &mut Child) -> io::Result<String> {
+fn startup_response(custodian: &mut Child) -> io::Result<(String, Health)> {
     let mut ready = String::new();
-    BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?)
-        .read_line(&mut ready)?;
+    let mut output = BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?);
+    output.read_line(&mut ready)?;
     let response = ready.strip_suffix('\n').ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::BrokenPipe,
@@ -191,13 +218,7 @@ fn startup_response(custodian: &mut Child) -> io::Result<String> {
     // A complete failure response precedes any tree admission. A truncated
     // response remains producer loss, never an inferred native cause.
     if let Some(code) = response.strip_prefix(FAILED) {
-        let code = code
-            .parse::<i32>()
-            .map_err(|_| io::ErrorKind::InvalidData)?;
-        if code == 0 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        return Err(io::Error::from_raw_os_error(code));
+        return Err(failure_response(code)?);
     }
     let Some(endpoint) = response
         .strip_prefix(READY)
@@ -211,7 +232,55 @@ fn startup_response(custodian: &mut Child) -> io::Result<String> {
     if !address.ip().is_loopback() {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    Ok(endpoint.to_owned())
+    Ok((
+        endpoint.to_owned(),
+        Health {
+            output,
+            failure: None,
+        },
+    ))
+}
+
+/// Native failures retain their original numeric startup representation. The
+/// reader's non-native failures retain both kind and message on that same pipe.
+fn failure_response(code: &str) -> io::Result<io::Error> {
+    for (prefix, kind) in FAILURE_KINDS {
+        if let Some(message) = code.strip_prefix(prefix) {
+            let message: String =
+                serde_json::from_str(message).map_err(|_| io::ErrorKind::InvalidData)?;
+            return Ok(io::Error::new(kind, message));
+        }
+    }
+    let code = code
+        .parse::<i32>()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    if code == 0 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(io::Error::from_raw_os_error(code))
+}
+
+impl Health {
+    /// Called only after the retained process handle signals, so its original
+    /// private response pipe cannot wait for a still-running response writer.
+    fn exited(&mut self) -> io::Error {
+        let failure = self.failure.get_or_insert_with(|| {
+            let mut read = || -> io::Result<io::Error> {
+                let mut line = String::new();
+                self.output.read_line(&mut line)?;
+                let response = line.strip_suffix('\n').ok_or_else(|| io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "process custodian exited without a complete failure response; retirement is unresolved",
+                ))?;
+                failure_response(response.strip_prefix(FAILED).ok_or(io::ErrorKind::InvalidData)?)
+            };
+            Arc::new(read().unwrap_or_else(|error| error))
+        });
+        failure.raw_os_error().map_or_else(
+            || io::Error::new(failure.kind(), Arc::clone(failure)),
+            io::Error::from_raw_os_error,
+        )
+    }
 }
 
 /// Observes the original process once. A refused wait cannot admit a new
@@ -230,6 +299,11 @@ fn process_running(process: BorrowedHandle<'_>) -> io::Result<bool> {
 }
 
 impl Custodian {
+    fn exited(&self) -> io::Error {
+        self.health
+            .lock()
+            .map_or_else(|_| poisoned(), |mut health| health.exited())
+    }
     /// The PID and creation time that name this custodian in each record.
     pub(super) fn identity(&self) -> &str {
         &self.identity
@@ -286,7 +360,7 @@ impl Custodian {
                 done,
             }),
             1 => Err(io::Error::other("the process custodian refused the tree")),
-            _ => Err(io::Error::other("the process custodian exited")),
+            _ => Err(self.exited()),
         }
     }
 }
@@ -378,10 +452,7 @@ impl Link {
             self.custodian.child.as_raw_handle().cast(),
         ])? {
             0 => Ok(()),
-            _ => Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "process tree retirement producer exited before completion",
-            )),
+            _ => Err(self.custodian.exited()),
         }
     }
 }
@@ -585,23 +656,41 @@ struct Tree {
     secret: Secret,
 }
 
-/// The custodian: watches each tree's Job, kills every tree when the owner
-/// exits, and exits once the owner has and no member of any tree remains.
+/// A partial readiness write cannot be followed by a failure response.
+enum Response {
+    Unstarted,
+    Writing,
+    Ready,
+}
+
+/// Watches each tree's Job, kills every tree when the owner exits, and exits
+/// once the owner has and no member of any tree remains, or on producer failure.
 fn serve() -> io::Result<()> {
-    let mut ready_started = false;
-    let result = run(&mut ready_started);
-    if !ready_started && let Some(code) = result.as_ref().err().and_then(io::Error::raw_os_error) {
-        // No tree can have been handed over before READY. Deliver this
-        // original native cause through the existing startup response; a
-        // failed response write remains loss of that response producer.
+    let mut response = Response::Unstarted;
+    let result = run(&mut response);
+    if !matches!(response, Response::Writing)
+        && let Err(error) = &result
+    {
+        // The same pipe carries startup refusal or the running producer's
+        // original native failure. A partial READY cannot acquire a suffix.
+        // No response means incomplete observation, never inferred retirement.
         let mut output = io::stdout();
-        writeln!(output, "{FAILED}{code}")?;
-        output.flush()?;
+        if let Some(code) = error.raw_os_error() {
+            writeln!(output, "{FAILED}{code}")?;
+            output.flush()?;
+        } else if let Some((prefix, _)) =
+            FAILURE_KINDS.iter().find(|(_, kind)| *kind == error.kind())
+        {
+            write!(output, "{FAILED}{prefix}")?;
+            serde_json::to_writer(&mut output, &error.to_string())?;
+            writeln!(output)?;
+            output.flush()?;
+        }
     }
     result
 }
 
-fn run(ready_started: &mut bool) -> io::Result<()> {
+fn run(response: &mut Response) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin());
     let mut line = String::new();
     input.read_line(&mut line)?;
@@ -636,12 +725,13 @@ fn run(ready_started: &mut bool) -> io::Result<()> {
     let admission = super::custodian_admission::Server::bind()?;
     let endpoint = admission.endpoint.clone();
     let requests = admission.start(port)?;
-    let opened = read_trees(input, port)?;
+    let mut opened = Input::start(input, port)?;
     let mut output = io::stdout();
     // A partial readiness write must never be followed by a failure frame.
-    *ready_started = true;
+    *response = Response::Writing;
     writeln!(output, "{READY} {endpoint}")?;
     output.flush()?;
+    *response = Response::Ready;
     let mut state = State {
         trees: IndexMap::new(),
         members: Members::new(port),
@@ -669,11 +759,23 @@ fn run(ready_started: &mut bool) -> io::Result<()> {
         }
         let touched = match key {
             OPENED => {
-                let tree = opened.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
-                state.open(tree, port)?;
-                Some(tree.tree)
+                if let Ok(tree) = opened.receive.try_recv() {
+                    state.open(tree, port)?;
+                    Some(tree.tree)
+                } else {
+                    // The terminal packet may already have consumed the one
+                    // credited record. Never wait for a producer that exited.
+                    None
+                }
             }
-            INPUT_CLOSED => {
+            INPUT_EXITED => {
+                opened.finish()?;
+                // One record can remain regardless of packet ordering. Its
+                // original handles transfer before admitting ordinary EOF.
+                if let Ok(tree) = opened.receive.try_recv() {
+                    state.open(tree, port)?;
+                    state.settle(Some(tree.tree))?;
+                }
                 state.input_closed = true;
                 None
             }
@@ -866,40 +968,6 @@ impl State {
     }
 }
 
-/// Reads each tree the owner hands over and posts it to `port`; posts the
-/// end of the owner's input once it closes.
-fn read_trees(mut input: BufReader<io::Stdin>, port: HANDLE) -> io::Result<mpsc::Receiver<Opened>> {
-    let (send, receive) = mpsc::channel();
-    let port = port.expose_provenance();
-    std::thread::Builder::new()
-        .name("custodian-input".into())
-        .spawn(move || {
-            let port: HANDLE = std::ptr::with_exposed_provenance_mut(port);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let tree = match input.read_line(&mut line) {
-                    Ok(0) | Err(_) => None,
-                    Ok(_) => line.strip_suffix('\n').and_then(Opened::parse),
-                };
-                let key = if let Some(tree) = tree {
-                    if send.send(tree).is_err() {
-                        return;
-                    }
-                    OPENED
-                } else {
-                    INPUT_CLOSED
-                };
-                // SAFETY: the custodian owns this completion port until exit.
-                unsafe { PostQueuedCompletionStatus(port, 0, key, std::ptr::null()) };
-                if key == INPUT_CLOSED {
-                    return;
-                }
-            }
-        })?;
-    Ok(receive)
-}
-
 fn transport_lease(handle: HANDLE) -> Option<OwnedHandle> {
     if handle.is_null() {
         None
@@ -1023,7 +1091,9 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
 mod handoff_tests {
     use super::*;
     use std::os::windows::io::IntoRawHandle as _;
-    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetHandleInformation};
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_DATA, GetHandleInformation,
+    };
     use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
@@ -1073,6 +1143,57 @@ mod handoff_tests {
         let _ = running.child.kill();
         running.child.wait()?;
         assert!(live?);
+        assert_eq!(running.exited().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(running.exited().raw_os_error(), None);
+
+        // A running reader's native framing refusal travels over that SAME
+        // original pipe. Active and late Link waiters retain the first cause;
+        // neither may mistake process loss for the tree's retirement event.
+        for (bytes, native) in [
+            (
+                b"invalid handover\n".as_slice(),
+                Some(ERROR_INVALID_DATA.cast_signed()),
+            ),
+            (b"\xff\n".as_slice(), None),
+        ] {
+            let running = Arc::new(launch()?);
+            let done = event(true, None)?;
+            let active = Link {
+                custodian: Arc::clone(&running),
+                done: done.try_clone()?,
+            };
+            let waiter = std::thread::spawn(move || active.await_members());
+            running
+                .input
+                .lock()
+                .map_err(|_| poisoned())?
+                .as_mut()
+                .ok_or(io::ErrorKind::BrokenPipe)?
+                .write_all(bytes)?;
+            let error = waiter.join().unwrap().unwrap_err();
+            assert_eq!(error.raw_os_error(), native);
+            if native.is_none() {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            }
+            let late = Link {
+                custodian: Arc::clone(&running),
+                done: done.try_clone()?,
+            };
+            let retained = late.await_members().unwrap_err();
+            assert_eq!(retained.raw_os_error(), error.raw_os_error());
+            assert_eq!(retained.kind(), error.kind());
+            assert_eq!(retained.to_string(), error.to_string());
+            // SAFETY: this exact retained event never received retirement.
+            assert_eq!(
+                unsafe { WaitForSingleObject(done.as_raw_handle(), 0) },
+                WAIT_TIMEOUT
+            );
+            drop(late);
+            let mut running = Arc::try_unwrap(running)
+                .ok()
+                .expect("all original observers retired");
+            assert!(!running.child.wait()?.success());
+        }
         Ok(())
     }
 
