@@ -27,10 +27,10 @@ export async function conversation(processes, binary, fixture, input, capture, b
     }
   } catch (error) {
     failures = [new Error(`step=drive JSONL conversation: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`, { cause: error })];
-    // The failed turn must release the original owner before joining exit.
-    // EOF alone need not stop an executable that still owns external work.
+    // Retire only this executable: the owner may also hold other cases and
+    // their provider. EOF alone need not stop work owned by this executable.
     active.child.stdin.end();
-    try { await processes.close(); }
+    try { active.killExecutable(); }
     catch (error) { failures.push(error); }
   } finally {
     if (!failures) active.child.stdin.end();
