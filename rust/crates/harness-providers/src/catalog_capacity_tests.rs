@@ -63,7 +63,8 @@ proptest! {
 #[test]
 fn catalog_default_and_provider_overrides_commit_together() -> Result<()> {
     let (_, script) = provider(Adapter::Responses, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script)
+        .expect("stock provider settings");
     let original = registry.catalog()["openai"].models["gpt-5"];
     let mut spec = registry.catalog()["openai"].as_ref().clone();
     spec.models.get_mut("gpt-5").unwrap().capacity = ModelContextCapacity {
@@ -94,7 +95,8 @@ fn alloy_capacity(a: ModelContextCapacity, b: ModelContextCapacity) -> ModelCont
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([("openai".into(), "fixture".into())])),
         script,
-    );
+    )
+    .expect("stock provider settings");
     let mut spec = registry.catalog()["openai"].as_ref().clone();
     let mut model = spec.models["gpt-5"];
     model.capacity = a;

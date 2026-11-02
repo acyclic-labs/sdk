@@ -35,7 +35,8 @@ fn fixture() -> (Registry, Arc<Mutex<Sources>>) {
 }
 
 fn specification(counted: bool) -> ProviderSpec {
-    let mut spec = crate::catalog::default_catalog()["openai"].clone();
+    let mut spec =
+        crate::catalog::default_catalog().expect("stock provider settings")["openai"].clone();
     if !counted {
         spec.token_counter = None;
     }

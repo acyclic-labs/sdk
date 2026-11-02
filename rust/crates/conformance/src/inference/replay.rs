@@ -269,7 +269,7 @@ fn provider(
             "conformance-public-test-key".into(),
         )])),
         transport.clone(),
-    );
+    )?;
     let mut config = manifest.endpoint.clone();
     require(
         config.adapter == manifest.adapter,
@@ -388,7 +388,7 @@ impl Backend for Local {
         } else {
             BTreeMap::from([("local".into(), "conformance-public-test-key".into())])
         };
-        let mut registry = Registry::with_transport(Credentials::explicit(keys), transport);
+        let mut registry = Registry::with_transport(Credentials::explicit(keys), transport)?;
         let url = if matches!(scenario, Scenario::RateLimit) {
             &self.rate_url
         } else {

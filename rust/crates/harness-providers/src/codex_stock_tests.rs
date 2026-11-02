@@ -91,6 +91,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
     });
     let provider =
         Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
+            .expect("stock provider settings")
             .with_codex_login(login)
             .resolve("openai/gpt-5")?;
     let (request, _) = crate::tests::request(&provider)?;
@@ -160,6 +161,7 @@ async fn stock(broken: bool) -> Result<()> {
     });
     let mut registry =
         Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
+            .expect("stock provider settings")
             .with_codex_login(login);
     let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
     std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
@@ -175,10 +177,10 @@ async fn stock(broken: bool) -> Result<()> {
         // base_url. Disable the new local choice to expose precisely that route.
         provider.codex_login = None;
         provider.key = Some("fixture-key".into());
-        Arc::make_mut(&mut provider.config).token_counter =
-            crate::catalog::default_catalog()["openai"]
-                .token_counter
-                .clone();
+        Arc::make_mut(&mut provider.config).token_counter = crate::catalog::default_catalog()
+            .expect("stock provider settings")["openai"]
+            .token_counter
+            .clone();
     }
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.

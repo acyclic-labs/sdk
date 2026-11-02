@@ -8,7 +8,7 @@ use crate::{
     model::NativeToolProfile,
     tool::{Tool, ToolDefinition, ToolRegistry},
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
 mod adapter;
@@ -28,13 +28,23 @@ pub const fn declarations(profile: NativeToolProfile) -> &'static str {
     }
 }
 
+/// Decode the original native declaration objects for settings or capability binding.
+/// Each consumer moves fields only when its own output representation needs them.
+///
+/// # Errors
+/// Malformed embedded declaration data or a non-object declaration.
+pub fn declaration_data(profile: NativeToolProfile) -> Result<Vec<Map<String, Value>>> {
+    serde_json::from_str(declarations(profile)).map_err(|error| Error::Invalid(format!(
+        "native declaration admission failed: {error}; recovery: restore the original sys/native declaration source"
+    )))
+}
+
 /// Decodes one profile's public declarations into model-visible definitions,
 /// in the profile layer's frozen order. The revision is the profile layer's
 /// pinned revision; output and projection schemas belong to the capability
 /// executor that binds each declaration, so they are left empty here.
 pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
-    let mut source: Vec<Value> = serde_json::from_str(declarations(profile))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let source = declaration_data(profile)?;
     let revisions = profile.tools()?;
     if revisions.len() != source.len() {
         return Err(Error::Invalid(
@@ -43,9 +53,9 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
     }
     revisions
         .iter()
-        .zip(source.iter_mut())
-        .map(|(revision, entry)| {
-            let name = take_string(entry, "name")?;
+        .zip(source)
+        .map(|(revision, mut entry)| {
+            let name = take_string(&mut entry, "name")?;
             if name != revision.variant {
                 return Err(Error::Invalid(
                     "native declaration order differs from its profile layer".into(),
@@ -54,10 +64,9 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
             Ok(ToolDefinition {
                 name,
                 revision: revision.revision.clone(),
-                description: take_string(entry, "description")?,
+                description: take_string(&mut entry, "description")?,
                 input_schema: entry
-                    .get_mut("parametersJsonSchema")
-                    .map(Value::take)
+                    .remove("parametersJsonSchema")
                     .ok_or_else(|| Error::Invalid("native input contract is absent".into()))?,
                 output_schema: Value::Bool(true),
                 projection_schema: Value::Bool(true),
@@ -153,8 +162,8 @@ pub fn bind(tools: &mut ToolRegistry, profile: NativeToolProfile) -> Result<()> 
     NativeTools::new(profile)?.bind(tools)
 }
 
-fn take_string(value: &mut Value, key: &str) -> Result<String> {
-    match value.get_mut(key).map(Value::take) {
+fn take_string(value: &mut Map<String, Value>, key: &str) -> Result<String> {
+    match value.remove(key) {
         Some(Value::String(text)) => Ok(text),
         _ => Err(Error::Invalid("native declaration string is absent".into())),
     }

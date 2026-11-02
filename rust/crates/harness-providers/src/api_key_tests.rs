@@ -118,7 +118,8 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 "fixture-api-key".into(),
             )])),
             transport.clone(),
-        );
+        )
+        .expect("stock provider settings");
         assert!(
             registry.resolve("openai/unregistered-model").is_err(),
             "unregistered context capacity is never guessed"

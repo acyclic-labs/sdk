@@ -129,7 +129,7 @@ impl HttpTransport for Protected {
 }
 
 fn specification(origin: &str, authentication: Authentication) -> crate::ProviderSpec {
-    let mut spec = crate::default_catalog()["openai"].clone();
+    let mut spec = crate::default_catalog().expect("stock provider settings")["openai"].clone();
     spec.adapter = crate::Adapter::Chat;
     spec.base_url = format!("{origin}/v1");
     spec.authentication = authentication;
@@ -172,6 +172,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         )])),
         Arc::new(ReqwestTransport::new()?),
     )
+    .expect("stock provider settings")
     .with_credential_resolver(host.clone());
     let native = registry.resolve("openai/gpt-5")?;
     assert_eq!(native.key.as_deref(), Some("native-key"));
@@ -350,6 +351,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         Credentials::explicit(Default::default()),
         Arc::new(ReqwestTransport::new()?),
     )
+    .expect("stock provider settings")
     .with_credential_resolver(leaky);
     refused.register("openai".into(), spec)?;
     assert!(

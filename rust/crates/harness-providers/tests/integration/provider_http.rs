@@ -194,7 +194,8 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
         Protocol::Chat => Adapter::Chat,
         Protocol::Gemini => Adapter::Gemini,
     };
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+        .expect("stock provider settings");
     registry.register(
         "recorded".into(),
         ProviderSpec {

@@ -166,7 +166,8 @@ mod tests {
         let mut registry = Registry::with_transport(
             Credentials::explicit(BTreeMap::from([("gemini".into(), "fixture".into())])),
             transport.clone(),
-        );
+        )
+        .expect("stock provider settings");
         let mut catalog = registry.catalog()["gemini"].as_ref().clone();
         // Alias support is a catalog fact, rather than a model-name heuristic.
         let advertised = catalog.models["gemini-4-argon"];

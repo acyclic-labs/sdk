@@ -53,7 +53,8 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
         sent: Mutex::new(Vec::new()),
     });
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone())
+            .expect("stock provider settings");
     for ((name, adapter), &context_tokens) in MEMBERS.iter().zip(capacities) {
         registry
             .register(

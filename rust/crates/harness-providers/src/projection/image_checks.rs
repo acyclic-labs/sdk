@@ -91,6 +91,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 Credentials::explicit(Default::default()),
                 Arc::new(NoHttp),
             )
+            .expect("stock provider settings")
             .with_content(reader.clone(), maximum_bytes * 2);
             registry.register("image-test".into(), serde_json::from_value(json!({
                 "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",

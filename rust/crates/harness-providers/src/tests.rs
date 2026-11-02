@@ -656,7 +656,8 @@ async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
 #[test]
 fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script)
+        .expect("stock provider settings");
     let mut config = ProviderSpec {
         settings: None,
         adapter: Adapter::Chat,

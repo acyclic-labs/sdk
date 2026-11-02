@@ -619,7 +619,8 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
         script.sent.lock().expect("fixture")[0].headers["x-owner"],
         "project"
     );
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script)
+        .expect("stock provider settings");
     for header in [
         "Authorization",
         "x-api-key",

@@ -237,7 +237,8 @@ fn resolve(
     adapter: Adapter,
     transport: Arc<Scripted>,
 ) -> TestResult<acyclic_harness_providers::ResolvedModel> {
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+        .expect("stock provider settings");
     registry.register(
         "recorded".into(),
         ProviderSpec {

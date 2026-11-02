@@ -5,7 +5,8 @@ use proptest::prelude::*;
 async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone())
+            .expect("stock provider settings");
     let mut spec = ProviderSpec {
         settings: None,
         adapter: Adapter::Chat,
@@ -59,35 +60,59 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
 #[test]
 fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
-    let catalog = default_catalog();
+    let catalog = default_catalog().expect("stock provider settings");
     let encoded = serde_json::to_vec(&catalog).expect("catalog");
     let catalog: BTreeMap<String, ProviderSpec> =
         serde_json::from_slice(&encoded).expect("catalog round trip");
     let mut registry = Registry::with_transport(
-        Credentials::explicit(BTreeMap::from([("openai".into(), "fixture".into())])),
+        Credentials::explicit(BTreeMap::from([
+            ("openai".into(), "fixture".into()),
+            ("configured-alias".into(), "fixture".into()),
+        ])),
         script.clone(),
-    );
+    )
+    .expect("stock provider settings");
     for (id, spec) in catalog {
         registry.register(id, spec)?;
     }
     let mut openai = registry.catalog()["openai"].as_ref().clone();
-    let native: Vec<serde_json::Value> = serde_json::from_slice(
-        acyclic_harness_core::seed::file("sys/native/openai/tools.json").unwrap(),
-    )
-    .unwrap();
-    openai.settings = Some(acyclic_harness_core::config::ProviderEntry {
-        path: "plugins/openai/provider.ts".into(),
-        base: acyclic_harness_core::config::provider::decode(json!({
-            "tools": native.into_iter().map(|definition| {
-                json!({"name": definition["name"], "definition": definition})
-            }).collect::<Vec<_>>(),
-            "cache": {"breakpoints": ["header", "segments"], "ttl": "5m"},
-            "compaction": "native-when-available",
-            "summaryHeader": "keep",
-            "effort": {"low": {}, "medium": {}, "high": {}},
-            "sampling": {"temperature": null, "topP": null, "maxOutputTokens": null}
-        }))?,
-    });
+    // Stock construction supplies the original declarations as ordinary data;
+    // catalogue serialization and an arbitrary endpoint alias preserve them.
+    for (id, family) in [
+        ("openai", "openai"),
+        ("anthropic", "anthropic"),
+        ("gemini", "google"),
+    ] {
+        let stock = registry.catalog()[id].as_ref();
+        let entry = stock.settings.as_ref().expect("explicit stock settings");
+        assert_eq!(entry.path, format!("plugins/{id}/provider.ts"));
+        let source: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_slice(
+            acyclic_harness_core::seed::file(&format!("sys/native/{family}/tools.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            entry
+                .base
+                .tools
+                .iter()
+                .map(|tool| &tool.definition)
+                .collect::<Vec<_>>(),
+            source.iter().collect::<Vec<_>>()
+        );
+        assert!(
+            entry
+                .base
+                .tools
+                .iter()
+                .all(|tool| tool.definition["name"] == tool.name)
+        );
+    }
+    registry.register("configured-alias".into(), openai.clone())?;
+    let alias = registry.resolve("configured-alias/gpt-5")?;
+    assert_eq!(
+        alias.provider_settings(alias.model())?,
+        openai.settings.as_ref()
+    );
     openai.models.clear();
     registry.register("openai".into(), openai.clone())?;
     assert!(registry.resolve("openai/gpt-5").is_err());
@@ -165,7 +190,8 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
             ("gemini".into(), "fixture".into()),
         ])),
         script,
-    );
+    )
+    .expect("stock provider settings");
     for selection in [
         "openai/gpt-5",
         "anthropic/claude-sonnet-4-5",
@@ -198,7 +224,8 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
 #[test]
 fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<()> {
     let (_, transport) = provider(Adapter::Responses, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+        .expect("stock provider settings");
     let before = registry.catalog().keys().cloned().collect::<Vec<_>>();
     let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"capacity":{"context_tokens":4096,"output_tokens":512}}},"max_event_bytes":4096});
     let mut bad = valid.clone();
@@ -235,7 +262,8 @@ fn stock_registry() -> (Registry, Arc<Script>) {
             ("gemini".into(), "fixture".into()),
         ])),
         transport.clone(),
-    );
+    )
+    .expect("stock provider settings");
     (registry, transport)
 }
 

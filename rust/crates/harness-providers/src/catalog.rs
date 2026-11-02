@@ -1,54 +1,84 @@
 use crate::{
     Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCountField, TokenCounterSpec,
 };
-use acyclic_harness_core::context::ModelContextCapacity;
+use acyclic_harness_core::{
+    Result,
+    config::{
+        ProviderEntry, ProviderProfile,
+        provider::{
+            CacheBreakpoint, CacheTtl, Compaction, NativeTool, ProviderCache, ProviderEffort,
+            ProviderSampling, SummaryHeader,
+        },
+    },
+    context::ModelContextCapacity,
+    model::NativeToolProfile,
+};
+use serde_json::Map;
 use std::collections::BTreeMap;
 
 pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 
-const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
-    (
-        "anthropic",
-        Adapter::Anthropic,
-        Authentication::ApiKey,
-        "https://api.anthropic.com/v1",
-    ),
-    (
-        "openai",
-        Adapter::Responses,
-        Authentication::ApiKeyOrCodexLogin,
-        "https://api.openai.com/v1",
-    ),
-    (
-        "openrouter",
-        Adapter::Chat,
-        Authentication::ApiKey,
-        "https://openrouter.ai/api/v1",
-    ),
-    (
-        "ollama",
-        Adapter::Chat,
-        Authentication::Optional,
-        "http://localhost:11434/v1",
-    ),
-    (
-        "lmstudio",
-        Adapter::Chat,
-        Authentication::Optional,
-        "http://localhost:1234/v1",
-    ),
-    (
-        "vllm",
-        Adapter::Chat,
-        Authentication::Optional,
-        "http://localhost:8000/v1",
-    ),
-    (
-        "gemini",
-        Adapter::Gemini,
-        Authentication::ApiKey,
-        "https://generativelanguage.googleapis.com/v1beta",
-    ),
+struct Endpoint {
+    id: &'static str,
+    adapter: Adapter,
+    authentication: Authentication,
+    base_url: &'static str,
+    settings: Option<(&'static str, NativeToolProfile)>,
+}
+
+const ENDPOINTS: &[Endpoint] = &[
+    Endpoint {
+        id: "anthropic",
+        adapter: Adapter::Anthropic,
+        authentication: Authentication::ApiKey,
+        base_url: "https://api.anthropic.com/v1",
+        settings: Some((
+            "plugins/anthropic/provider.ts",
+            NativeToolProfile::Anthropic,
+        )),
+    },
+    Endpoint {
+        id: "openai",
+        adapter: Adapter::Responses,
+        authentication: Authentication::ApiKeyOrCodexLogin,
+        base_url: "https://api.openai.com/v1",
+        settings: Some(("plugins/openai/provider.ts", NativeToolProfile::Openai)),
+    },
+    Endpoint {
+        id: "openrouter",
+        adapter: Adapter::Chat,
+        authentication: Authentication::ApiKey,
+        base_url: "https://openrouter.ai/api/v1",
+        settings: None,
+    },
+    Endpoint {
+        id: "ollama",
+        adapter: Adapter::Chat,
+        authentication: Authentication::Optional,
+        base_url: "http://localhost:11434/v1",
+        settings: None,
+    },
+    Endpoint {
+        id: "lmstudio",
+        adapter: Adapter::Chat,
+        authentication: Authentication::Optional,
+        base_url: "http://localhost:1234/v1",
+        settings: None,
+    },
+    Endpoint {
+        id: "vllm",
+        adapter: Adapter::Chat,
+        authentication: Authentication::Optional,
+        base_url: "http://localhost:8000/v1",
+        settings: None,
+    },
+    Endpoint {
+        id: "gemini",
+        adapter: Adapter::Gemini,
+        authentication: Authentication::ApiKey,
+        base_url: "https://generativelanguage.googleapis.com/v1beta",
+        settings: Some(("plugins/gemini/provider.ts", NativeToolProfile::Google)),
+    },
 ];
 
 const COUNTERS: &[(&str, &str, Adapter, TokenCountField)] = &[
@@ -266,66 +296,103 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
 ];
 
 /// Standard endpoint policies, model capacities and capabilities as ordinary data.
-pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
+///
+/// # Errors
+/// An embedded native declaration cannot be admitted as provider settings.
+pub fn default_catalog() -> Result<BTreeMap<String, ProviderSpec>> {
     ENDPOINTS
         .iter()
-        .map(|(id, adapter, authentication, base_url)| {
-            let (id, adapter, base_url) = (*id, *adapter, *base_url);
-            let authentication = authentication.clone();
-            let models = MODELS
-                .iter()
-                .filter(|(provider, ..)| *provider == id)
-                .map(
-                    |&(_, name, context_tokens, output_tokens, features, thinking_levels)| {
-                        (
-                            name.into(),
-                            crate::ModelSpec {
-                                tool_profile: match id {
-                                    "anthropic" => Some(
-                                        acyclic_harness_core::model::NativeToolProfile::Anthropic,
-                                    ),
-                                    "openai" => {
-                                        Some(acyclic_harness_core::model::NativeToolProfile::Openai)
-                                    }
-                                    "gemini" => {
-                                        Some(acyclic_harness_core::model::NativeToolProfile::Google)
-                                    }
-                                    _ => None,
+        .map(
+            |Endpoint {
+                 id,
+                 adapter,
+                 authentication,
+                 base_url,
+                 settings,
+             }| {
+                let (id, adapter, base_url) = (*id, *adapter, *base_url);
+                let authentication = authentication.clone();
+                let models = MODELS
+                    .iter()
+                    .filter(|(provider, ..)| *provider == id)
+                    .map(
+                        |&(_, name, context_tokens, output_tokens, features, thinking_levels)| {
+                            (
+                                name.into(),
+                                crate::ModelSpec {
+                                    tool_profile: settings.map(|(_, profile)| profile),
+                                    thinking_levels,
+                                    max_context_tokens: None,
+                                    capacity: ModelContextCapacity {
+                                        context_tokens,
+                                        output_tokens: Some(output_tokens),
+                                    },
+                                    features,
                                 },
-                                thinking_levels,
-                                max_context_tokens: None,
-                                capacity: ModelContextCapacity {
-                                    context_tokens,
-                                    output_tokens: Some(output_tokens),
-                                },
-                                features,
-                            },
-                        )
-                    },
-                )
-                .collect();
-            (
-                id.into(),
-                ProviderSpec {
-                    settings: None,
-                    adapter,
-                    authentication,
-                    base_url: base_url.into(),
-                    headers: BTreeMap::new(),
-                    models,
-                    token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
-                        |&(_, path, adapter, response_field)| TokenCounterSpec {
-                            path: path.into(),
-                            adapter,
-                            response_field,
-                            framing_tokens: 0,
+                            )
                         },
-                    ),
-                    max_event_bytes: 1024 * 1024,
-                    retry: crate::RetrySpec::DEFAULT,
-                    timeouts: crate::TimeoutSpec::DEFAULT,
-                },
-            )
-        })
+                    )
+                    .collect();
+                Ok((
+                    id.into(),
+                    ProviderSpec {
+                        settings: settings
+                            .map(|(path, profile)| stock_settings(path, profile))
+                            .transpose()?,
+                        adapter,
+                        authentication,
+                        base_url: base_url.into(),
+                        headers: BTreeMap::new(),
+                        models,
+                        token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
+                            |&(_, path, adapter, response_field)| TokenCounterSpec {
+                                path: path.into(),
+                                adapter,
+                                response_field,
+                                framing_tokens: 0,
+                            },
+                        ),
+                        max_event_bytes: 1024 * 1024,
+                        retry: crate::RetrySpec::DEFAULT,
+                        timeouts: crate::TimeoutSpec::DEFAULT,
+                    },
+                ))
+            },
+        )
         .collect()
+}
+
+fn stock_settings(path: &str, profile: NativeToolProfile) -> Result<ProviderEntry> {
+    let tools = acyclic_harness_core::tools::native::declaration_data(profile)?
+        .into_iter().map(|definition| {
+            let name = definition.get("name").and_then(serde_json::Value::as_str).ok_or_else(|| crate::invalid(format!(
+                "stock provider settings admission failed: {path} has a nameless declaration; recovery: restore the original sys/native declaration source"
+            )))?.to_owned();
+            Ok(NativeTool { name, definition })
+        }).collect::<Result<_>>()?;
+    let entry = ProviderEntry {
+        path: path.into(),
+        base: ProviderProfile {
+            tools,
+            cache: ProviderCache {
+                breakpoints: vec![CacheBreakpoint::Header, CacheBreakpoint::Segments],
+                ttl: CacheTtl::FiveMinutes,
+            },
+            compaction: Compaction::NativeWhenAvailable,
+            summary_header: SummaryHeader::StripExecutableBuiltins,
+            // No explicit effort field means the selected model's provider default.
+            effort: ProviderEffort {
+                low: Map::new(),
+                medium: Map::new(),
+                high: Map::new(),
+            },
+            sampling: ProviderSampling {
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+            },
+        },
+    };
+    entry.validate()?;
+    Ok(entry)
 }
