@@ -118,7 +118,7 @@ impl StockExecution<'_> {
         let funded: Option<acyclic_stream::OwnedBytes> = None;
         let table = match funded {
             Some(bytes) => bytes,
-            None => serde_json::to_vec(tools)
+            None => serde_json::to_vec(&tools)
                 .map(Into::into)
                 .map_err(|_| invalid("tool table encoding failed"))?,
         };
