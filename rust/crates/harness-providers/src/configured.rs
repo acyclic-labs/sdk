@@ -1,12 +1,12 @@
 use crate::Registry;
 use acyclic_harness::{
+    approvals::ApprovalPolicy,
     local::{LocalHarnessConfig, ModelResolver},
-    preset::Preset,
 };
 use std::{path::PathBuf, sync::Arc};
 
 impl Registry {
-    /// Builds the shared GraphCoder preset over this registry's catalog and credentials.
+    /// Builds the shared GraphCoder configuration over this registry's catalog and credentials.
     ///
     /// The local harness resolves the explicit selection, then native settings, then
     /// the catalog default when it opens. Approval models use the same resolver.
@@ -23,7 +23,7 @@ impl Registry {
             Ok((provider.model().clone(), provider as _))
         });
         LocalHarnessConfig::resolving(workspace, Arc::new(models), selection)
-            .preset(&Preset::graphcoder())
+            .approval_policy(ApprovalPolicy::accept_all("graphcoder-default"))
             .web_tools()
     }
 }

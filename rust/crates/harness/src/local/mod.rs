@@ -95,7 +95,7 @@ pub struct LocalHarness {
     verifier: AuthorityVerifier,
     signed: Scope,
     /// The agents' shared approval policy.
-    preset: crate::preset::Preset,
+    approval_policy: crate::approvals::ApprovalPolicy,
     /// The original host registry selection for tools bound to each turn.
     agent_tools: Vec<String>,
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,

@@ -8,7 +8,7 @@ import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmObjects, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmObjects, type WasmFileRefWire, type ApprovalPolicy } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { fixtureAuthority } from "./fixture-authority.mjs";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
@@ -24,7 +24,7 @@ const options = {
     model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
   principal: "do-conformance",
   // This host explicitly accepts every action its agents take.
-  preset: { model: null, prompt: null, tools: [], web_tools: false, approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
+  approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] },
   handler_timeout_ms: 30_000n,
   // This host places and wakes children.
   children: true,
@@ -123,7 +123,7 @@ export class Agent extends DurableObject {
         fixed_tokens: bytes.byteLength, message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0) }),
       { kind: "disabled" });
   }
-  private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
+  private host(approval_policy: ApprovalPolicy = options.approval_policy): ReturnType<typeof openCloudflareAgent> {
     if (this.agent) return this.agent;
     const custody = this.custody ??= fixtureAuthority("00112233-4455-6677-8899-aabbccddeeff", this.grants);
     const owner = this.owner ??= new WasmAgentAuthority(custody.capability);
@@ -148,7 +148,7 @@ export class Agent extends DurableObject {
       open: (operation: string, input: Uint8Array, preceding: Uint8Array) => domain.open(operation, input, preceding),
       objects: new WasmObjects({ port: rpcPort(domain) }) };
     return this.agent = openCloudflareAgent(context, ledger, name,
-      { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, owner, this.registry,
+      { ...options, approval_policy, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, owner, this.registry,
       { trust: { trust: new TextEncoder().encode(hostFixtureTrust()), audience: "workers:/test", holder: "account" },
       credential: hostFixtureCredential(), policy: () => true });
   }
@@ -157,7 +157,7 @@ export class Agent extends DurableObject {
     await this.ctx.storage.put("fixture-grants", grants);
     this.grants = grants;
   }
-  configureProtocol(policy: Preset["approval_policy"]) { this.host({ ...options.preset, approval_policy: policy }); }
+  configureProtocol(policy: ApprovalPolicy) { this.host(policy); }
   failNextAlarmClear() { this.failAlarmClear = true; }
   alarmFailureRetainedRecovery() { return this.retainedRecoveryAlarm; }
   binding() { return this.host().binding(); }
@@ -187,7 +187,7 @@ interface Env {
   AGENT: DurableObjectNamespace<Agent>;
 }
 
-async function endpoint(env: Env, policy: Preset["approval_policy"], name = `protocol-${crypto.randomUUID()}`) {
+async function endpoint(env: Env, policy: ApprovalPolicy, name = `protocol-${crypto.randomUUID()}`) {
   const agent = env.AGENT.getByName(name);
   await agent.configureProtocol(policy);
   await agent.create("protocol-root");
@@ -246,7 +246,7 @@ export class Suite extends DurableObject {
 
   async fetch(): Promise<Response> {
     const started = Date.now();
-    const hosted = (policy: Preset["approval_policy"]) => endpoint(this.env, policy);
+    const hosted = (policy: ApprovalPolicy) => endpoint(this.env, policy);
     await qualifyCloudflare(() => new SqliteJournal(this.ctx.storage, crypto.randomUUID()), hosted);
     const sqlite = Date.now() - started;
     await qualifyCloudflareRpc(() => streamLedgerPort(this.env.LEDGER.getByName(crypto.randomUUID()), ""), hosted);
@@ -361,7 +361,7 @@ export default {
       if (path !== await agent.create("valid-root")) {
         throw new Error("STEP valid-create recovery failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
-      const fixture = await spawnAdoptionFixture((policy: Preset["approval_policy"]) => endpoint(env, policy, "adoption-parent")) as { child: string; grants: string[] };
+      const fixture = await spawnAdoptionFixture((policy: ApprovalPolicy) => endpoint(env, policy, "adoption-parent")) as { child: string; grants: string[] };
       const { child } = fixture;
       const adoption = env.AGENT.getByName("invalid-adopt");
       await adoption.configureAdmission(fixture.grants);

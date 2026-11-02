@@ -12,7 +12,6 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
     model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
-    preset::Preset,
     tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::StreamProviderExt as _;
@@ -106,9 +105,6 @@ pub async fn open<B: Backend + ?Sized>(
         None,
         &mut None,
     )?;
-    let preset = Preset {
-        approval_policy: policy,
-    };
     let effects = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
     tools.register(
@@ -156,7 +152,7 @@ pub async fn open<B: Backend + ?Sized>(
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
-            approval_policy: preset.approval_policy,
+            approval_policy: policy,
         },
     )?;
     let handler = backend.handler(bound.handler())?;

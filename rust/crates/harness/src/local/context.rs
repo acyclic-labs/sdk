@@ -136,7 +136,7 @@ impl LocalHarness {
                 .instructions(binding, &policy.instruction_names, publisher, &mut work)
                 .await?;
             let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
-            let mode = match self.preset.approval_policy.approvers.as_slice() {
+            let mode = match self.approval_policy.approvers.as_slice() {
                 [
                     crate::approvals::Approver::Rules {
                         rules,

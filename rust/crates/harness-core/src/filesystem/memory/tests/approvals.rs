@@ -86,10 +86,12 @@ async fn human_decision_settles_a_waiting_approval() -> Result<()> {
 }
 
 #[tokio::test]
-async fn graphcoder_preset_opens_an_approval_it_accepts() -> Result<()> {
+async fn accept_all_policy_opens_an_approval_it_accepts() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
         .await?
-        .with_approval_policy(crate::preset::Preset::graphcoder().approval_policy)?;
+        .with_approval_policy(crate::approvals::ApprovalPolicy::accept_all(
+            "graphcoder-default",
+        ))?;
     assert_eq!(
         open(&storage).await?.1,
         Some(InteractionOutcome::Approved {})

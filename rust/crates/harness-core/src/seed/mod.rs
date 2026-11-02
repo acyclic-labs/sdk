@@ -38,6 +38,14 @@ macro_rules! skill {
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
     (
+        "plugins/compaction/hooks/after-usage.ts",
+        include_bytes!("plugins/compaction/hooks/after-usage.ts"),
+    ),
+    (
+        "plugins/compaction/plugin.ts",
+        include_bytes!("plugins/compaction/plugin.ts"),
+    ),
+    (
         "plugins/spawn/plugin.ts",
         include_bytes!("plugins/spawn/plugin.ts"),
     ),
@@ -67,35 +75,35 @@ pub const TREE: &[(&str, &[u8])] = &[
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
     (
         "templates/advisor/AGENT.md",
-        include_bytes!("templates/advisor/AGENT.md"),
+        include_bytes!("plugins/spawn/templates/advisor/AGENT.md"),
     ),
     (
         "templates/advisor/agent.ts",
-        include_bytes!("templates/advisor/agent.ts"),
+        include_bytes!("plugins/spawn/templates/advisor/agent.ts"),
     ),
     (
         "templates/orchestrator/AGENT.md",
-        include_bytes!("templates/orchestrator/AGENT.md"),
+        include_bytes!("plugins/spawn/templates/orchestrator/AGENT.md"),
     ),
     (
         "templates/orchestrator/agent.ts",
-        include_bytes!("templates/orchestrator/agent.ts"),
+        include_bytes!("plugins/spawn/templates/orchestrator/agent.ts"),
     ),
     (
         "templates/reviewer/AGENT.md",
-        include_bytes!("templates/reviewer/AGENT.md"),
+        include_bytes!("plugins/spawn/templates/reviewer/AGENT.md"),
     ),
     (
         "templates/reviewer/agent.ts",
-        include_bytes!("templates/reviewer/agent.ts"),
+        include_bytes!("plugins/spawn/templates/reviewer/agent.ts"),
     ),
     (
         "templates/worker/AGENT.md",
-        include_bytes!("templates/worker/AGENT.md"),
+        include_bytes!("plugins/spawn/templates/worker/AGENT.md"),
     ),
     (
         "templates/worker/agent.ts",
-        include_bytes!("templates/worker/agent.ts"),
+        include_bytes!("plugins/spawn/templates/worker/agent.ts"),
     ),
 ];
 

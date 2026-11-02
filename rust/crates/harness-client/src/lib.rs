@@ -7,10 +7,6 @@ pub use connection::{
     EndpointTransport, resolve_connection_options,
 };
 
-/// The same preset and defaults applied by local and hosted harnesses.
-#[cfg(any(feature = "agents", feature = "wasm"))]
-pub use acyclic_harness_core::preset::Preset;
-
 #[cfg(any(feature = "agents", feature = "wasm"))]
 mod control;
 #[cfg(any(feature = "agents", feature = "wasm"))]

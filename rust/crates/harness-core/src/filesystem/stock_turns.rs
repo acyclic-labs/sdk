@@ -259,9 +259,11 @@ impl TurnExecutors for StockExecutors {
                 (true, Some(creation)) => {
                     let digest = creation.template.as_ref().map_or_else(
                         || {
-                            blake3::hash(include_bytes!("../seed/templates/orchestrator/AGENT.md"))
-                                .to_hex()
-                                .to_string()
+                            blake3::hash(include_bytes!(
+                                "../seed/plugins/spawn/templates/orchestrator/AGENT.md"
+                            ))
+                            .to_hex()
+                            .to_string()
                         },
                         |file| hex::encode(file.descriptor().sha256()),
                     );

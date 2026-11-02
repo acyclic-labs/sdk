@@ -107,7 +107,7 @@ impl HostWorkspaceOwner {
         };
         let arguments = input.get("tool_input").unwrap_or(&Value::Null);
         let mut verdict = RuleVerdict::Deny;
-        for approver in &self.local.preset.approval_policy.approvers {
+        for approver in &self.local.approval_policy.approvers {
             let Approver::Rules {
                 rules, fallback, ..
             } = approver

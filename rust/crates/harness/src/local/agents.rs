@@ -356,7 +356,7 @@ impl LocalHarness {
                 },
                 actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 clock: Arc::new(SystemClock),
-                approval_policy: self.preset.approval_policy.clone(),
+                approval_policy: self.approval_policy.clone(),
             },
         )
         .map_err(storage)?;
@@ -391,7 +391,7 @@ impl LocalHarness {
         &self,
         root: &crate::agent::AgentId,
     ) -> Result<crate::conversation::FileRef> {
-        let policy = crate::contract::canonical_json_bytes(&self.preset.approval_policy)
+        let policy = crate::contract::canonical_json_bytes(&self.approval_policy)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
         hasher.update(root.as_str().as_bytes());
@@ -430,7 +430,7 @@ impl LocalHarness {
             },
             actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
             clock: Arc::new(SystemClock),
-            approval_policy: self.preset.approval_policy.clone(),
+            approval_policy: self.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
             turns

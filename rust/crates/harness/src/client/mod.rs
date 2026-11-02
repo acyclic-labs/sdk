@@ -6,7 +6,6 @@
 pub use acyclic_harness_client::{
     AgentCommand, AgentPageRequest, AgentReply, EventCursor, ExecutionPosition, MAX_READ_BYTES,
 };
-pub use acyclic_harness_core::preset::Preset;
 
 mod command_result;
 pub use command_result::{HeadlessOutcome, encode_command_result};

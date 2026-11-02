@@ -152,7 +152,7 @@ pub struct Turns {
     /// Alarm clock.
     pub clock: Arc<dyn Clock>,
     /// The approval policy of every agent with no policy file of its own:
-    /// the host's preset ([`crate::preset::Preset::approval_policy`]).
+    /// the host's admitted [`crate::approvals::ApprovalPolicy`].
     pub approval_policy: crate::approvals::ApprovalPolicy,
 }
 
@@ -349,7 +349,7 @@ where
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
         let maximum_bytes = turns.limits.maximum_bytes;
-        // The preset's policy binds before any agent runs under it.
+        // The host's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
@@ -421,7 +421,7 @@ where
         Ok(self)
     }
 
-    /// The handler composed from this binding's preset and exact admission.
+    /// The handler composed from this binding's policy and exact admission.
     /// A guest boundary may wrap it before passing it to [`Self::hosting`].
     #[must_use]
     pub fn handler(&self) -> Arc<dyn acyclic_actors::guest::Handler> {
