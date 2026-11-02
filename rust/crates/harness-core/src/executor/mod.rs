@@ -35,6 +35,8 @@ pub(crate) use native_stock::{
 pub(crate) mod execution_claim;
 mod journal;
 pub use execution_claim::{ExecutionAttempt, ExecutionClaim, ExecutionClaims};
+#[cfg(feature = "research")]
+pub use journal::SequencedExecutionJournal;
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
@@ -69,6 +71,9 @@ pub use model_cost::{
 #[cfg(feature = "metrics-export")]
 pub mod metrics;
 pub(crate) mod model_usage;
+/// Original research read receipts and bounded artifact source.
+#[cfg(feature = "research")]
+pub mod read_set;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page};
@@ -485,9 +490,27 @@ pub struct ExecutionReplay {
     keys: Vec<[u8; 32]>,
 }
 
+/// Original accepted execution-journal cut, independent of the current tail.
+#[cfg(feature = "research")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionJournalCut {
+    /// Original cut format, currently one.
+    pub version: u32,
+    /// Original execution operation, distinct from an actor inbox cursor.
+    pub operation: OperationId,
+    /// Accepted one-based terminal model observation, including exact replay.
+    pub sequence: u64,
+}
+
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct TurnOutput {
+    /// Original accepted terminal observation. Missing means the executor or
+    /// journal supplied no cut; it never certifies an empty complete read set.
+    #[cfg(feature = "research")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal_cut: Option<ExecutionJournalCut>,
     /// User-visible assistant text.
     pub text: String,
     /// Ordered, already staged assistant attachments or published artifacts.
@@ -630,6 +653,8 @@ pub(crate) struct ContextAccounting {
 
 /// Validated retained model artifacts without provider dispatch.
 pub(crate) struct RetainedModelStep {
+    #[cfg(feature = "research")]
+    pub(crate) journal_cut: Option<ExecutionJournalCut>,
     pub(crate) request: Option<crate::model::PreparedModelRequest>,
     pub(crate) admission: ModelEventAdmission,
     pub(crate) events: Vec<ModelEvent>,

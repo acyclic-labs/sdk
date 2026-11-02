@@ -8,6 +8,39 @@ pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurp
         if *recorded == step && *recorded_purpose == purpose)
 }
 
+#[derive(Debug)]
+pub(crate) struct ModelObservationReceipt {
+    #[cfg(feature = "research")]
+    pub(crate) journal_cut: Option<ExecutionJournalCut>,
+}
+
+async fn commit(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    key: &str,
+    event: &ExecutionEvent,
+    model: &ModelEvent,
+    io: Option<&PreparationIo>,
+) -> Result<ModelObservationReceipt> {
+    #[cfg(feature = "research")]
+    if matches!(model, ModelEvent::Completed { .. })
+        && let Some(sequenced) = journal.sequenced_appends()
+    {
+        return sequenced
+            .append_with_sequence(operation, key, event, io)?
+            .await
+            .map(|sequence| ModelObservationReceipt {
+                journal_cut: journal::completion_cut(Some(sequenced), operation, sequence),
+            });
+    }
+    let _ = model;
+    journal.append(operation, key, event, io)?.await?;
+    Ok(ModelObservationReceipt {
+        #[cfg(feature = "research")]
+        journal_cut: None,
+    })
+}
+
 pub(crate) async fn append(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
@@ -16,7 +49,7 @@ pub(crate) async fn append(
     model: &ModelEvent,
     usage: Option<&super::model_usage::ModelCallUsage<'_>>,
     original: Option<&PreparationIo>,
-) -> Result<()> {
+) -> Result<ModelObservationReceipt> {
     validate_journal(journal, original)?;
     let maximum = journal.inline_model_event_bytes();
     let (step, purpose) = turn;
@@ -34,19 +67,20 @@ pub(crate) async fn append(
     };
     if maximum == 0 {
         let event = stage_json(journal, operation, key, model, original).await?;
-        return journal
-            .append(
-                operation,
-                key,
-                &ExecutionEvent::Model {
-                    step,
-                    purpose,
-                    event,
-                    usage,
-                },
-                original,
-            )?
-            .await;
+        return commit(
+            journal,
+            operation,
+            key,
+            &ExecutionEvent::Model {
+                step,
+                purpose,
+                event,
+                usage,
+            },
+            model,
+            original,
+        )
+        .await;
     }
     #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
@@ -88,7 +122,7 @@ pub(crate) async fn append(
             usage,
         }
     };
-    journal.append(operation, key, &event, io)?.await
+    commit(journal, operation, key, &event, model, io).await
 }
 
 pub(crate) async fn load(

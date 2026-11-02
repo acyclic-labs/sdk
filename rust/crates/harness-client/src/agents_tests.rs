@@ -609,7 +609,8 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
                 "unflushed output advanced resume"
             );
             let cursor = event.after.clone();
-            projection.accepted(resource.clone(), cursor);
+            assert!(projection.accepted(&resource, cursor.clone()));
+            assert!(!projection.accepted(&resource, cursor));
             drain.accepted(&delivery);
             assert!(!drain.complete(), "an unobserved source was skipped");
             assert!(
@@ -681,7 +682,7 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
             assert_eq!(event.value, Some(serde_json::json!({"after":records})));
         }
         let after = event.after.clone();
-        restored.accepted(resource.clone(), after);
+        restored.accepted(&resource, after);
         drain.accepted(&delivery);
         if matches!(&delivery.frame.body, Some(wire::session_frame::Body::Watermark(mark)) if mark.opening_tail == Some(4))
             && !appended
@@ -707,7 +708,7 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
             frame: source.next().await.ok_or("missing later cut")??.into_wire(),
         };
         let after = restored.event(&delivery).after;
-        restored.accepted(resource.clone(), after);
+        restored.accepted(&resource, after);
         drain.accepted(&delivery);
     }
     assert_eq!(restored.cursor(&resource).next, 5);

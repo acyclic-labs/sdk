@@ -136,7 +136,10 @@ fn malformed_prior_version_index_is_rejected_without_mutation() {
     write_bundle(&candidate, &output, false).unwrap();
     let index_path = output.join("sdk-docs-versions.v1.json");
     let canonical: VersionIndex = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
-    assert_eq!(load_version_index(&output).unwrap(), canonical);
+    assert_eq!(
+        load_version_index(&output, &DocsSchema::new().unwrap()).unwrap(),
+        canonical
+    );
     for misplaced_release in [true, false] {
         let mut malformed = canonical.clone();
         let entry = malformed.release_candidates[0].clone();
@@ -149,7 +152,7 @@ fn malformed_prior_version_index_is_rejected_without_mutation() {
         let bytes = serde_json::to_vec_pretty(&malformed).unwrap();
         fs::write(&index_path, &bytes).unwrap();
         assert!(matches!(
-            load_version_index(&output),
+            load_version_index(&output, &DocsSchema::new().unwrap()),
             Err(Error::Invalid(_))
         ));
         assert_eq!(fs::read(&index_path).unwrap(), bytes);
@@ -308,7 +311,7 @@ fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
     fs::write(&index_path, index_before_sidecar_failure).unwrap();
     write_bundle(&next, &output, false).unwrap();
     assert_eq!(
-        load_version_index(&output)
+        load_version_index(&output, &DocsSchema::new().unwrap())
             .unwrap()
             .release_candidates
             .len(),
@@ -483,13 +486,19 @@ fn concurrent_publications_preserve_both_entries_and_index_hashes() {
     let first_barrier = Arc::clone(&barrier);
     let first = thread::spawn(move || {
         first_barrier.wait();
-        write_bundle(&first_data, &first_output, false)
+        let before = versions::schema_generations();
+        write_bundle(&first_data, &first_output, false)?;
+        assert_eq!(versions::schema_generations() - before, 1);
+        Ok::<_, Error>(())
     });
     let second_output = output.clone();
     let second_barrier = Arc::clone(&barrier);
     let second = thread::spawn(move || {
         second_barrier.wait();
-        write_bundle(&second_data, &second_output, false)
+        let before = versions::schema_generations();
+        write_bundle(&second_data, &second_output, false)?;
+        assert_eq!(versions::schema_generations() - before, 1);
+        Ok::<_, Error>(())
     });
     first
         .join()
@@ -518,7 +527,24 @@ fn concurrent_publications_preserve_both_entries_and_index_hashes() {
     );
     for entry in &index.release_candidates {
         let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
-        assert_eq!(sha256_hex(&bytes), entry.data_sha256);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.data_sha256);
     }
+    // Reusing canonical schema bytes must not trust mutable external sidecars.
+    let schema = DocsSchema::new().unwrap();
+    let before = versions::schema_generations();
+    load_version_index(&output, &schema).unwrap();
+    assert_eq!(versions::schema_generations(), before);
+    let sidecar = output.join("release-candidates/1.0.0/sdk-docs-data.v1.schema.json");
+    fs::write(sidecar, b"{}").unwrap();
+    let index_bytes = fs::read(output.join("sdk-docs-versions.v1.json")).unwrap();
+    let error = write_bundle(&publication_data("3.0.0", 'c'), &output, false).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("does not match the pinned schema"));
+    assert_eq!(
+        fs::read(output.join("sdk-docs-versions.v1.json")).unwrap(),
+        index_bytes
+    );
+    assert!(!output.join("release-candidates/3.0.0").exists());
     directory.close().expect("test output should be removable");
 }

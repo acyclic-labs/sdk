@@ -19,6 +19,16 @@ pub struct FileDescriptor {
 }
 
 impl FileDescriptor {
+    /// Replaces only the streamed byte identity after metadata admission.
+    #[cfg(feature = "filesystem")]
+    fn with_content_identity(mut self, sha256: [u8; 32], byte_length: u64) -> Result<Self> {
+        if byte_length > MAX_EXACT_JS_INTEGER {
+            return Err(Error::Invalid("streamed file length exceeds portable precision; recovery: publish content within MAX_EXACT_JS_INTEGER".into()));
+        }
+        self.sha256 = sha256;
+        self.byte_length = byte_length;
+        Ok(self)
+    }
     #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.media_type.capacity() as u64
@@ -292,6 +302,18 @@ impl FileRef {
     #[must_use]
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Binds original streamed bytes after reference metadata was admitted.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_content_identity(
+        mut self,
+        sha256: [u8; 32],
+        byte_length: u64,
+    ) -> Result<Self> {
+        self.descriptor = self.descriptor.with_content_identity(sha256, byte_length)?;
+        self.publication = None;
+        Ok(self)
     }
 
     /// Binds verified staged metadata to its authenticated storage generation.

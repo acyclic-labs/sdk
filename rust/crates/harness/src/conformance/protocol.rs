@@ -2,7 +2,8 @@
 //! use these identical commands, fixtures and assertions.
 use crate::conformance::{Backend, Result};
 use acyclic_harness_client::{
-    AgentBinding, AgentCommand, AgentControlFailure, AgentReply, PreparedCommand,
+    AgentBinding, AgentCommand, AgentControlFailure, AgentPageRequest, AgentReply, PreparedCommand,
+    encode_agent_reply,
 };
 use acyclic_harness_core::{
     agent::{
@@ -318,6 +319,76 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             || next.is_some()
         {
             return Err("the committed child was not listed exactly once".into());
+        }
+        let AgentReply::Spawned { agent: other, .. } = call(
+            endpoint,
+            &AgentCommand::Spawn {
+                parent: root.clone(),
+                id: IntentId::try_from("spawn-page")?,
+                brief: ModelContent::Text("Also wait for explicit placement".into()),
+                role: "worker".into(),
+            },
+        )
+        .await??
+        else {
+            return Err("second spawn reply shape differs".into());
+        };
+        let children = |items, bytes, cursor| {
+            Ok::<_, acyclic_harness_client::CommandError>(AgentCommand::Children {
+                agent: root.clone(),
+                page: AgentPageRequest::new(items, bytes, cursor)?,
+            })
+        };
+        let first_command = children(1, AgentPageRequest::default().bytes(), None)?;
+        let first = Ok(call(endpoint, &first_command).await??);
+        // The actual serving reply defines credit, including its opaque cursor
+        // and canonical wire framing; the fixture invents neither encoding.
+        let credit = u32::try_from(encode_agent_reply(&first, &first_command)?.len())?;
+        let AgentReply::Children {
+            items: first_items,
+            next: Some(cursor),
+        } = first?
+        else {
+            return Err("one-row discovery omitted its continuation".into());
+        };
+        let first_child = first_items.first().ok_or("first children page is empty")?;
+        let AgentReply::Children { items, next } =
+            call(endpoint, &children(2, credit, None)?).await??
+        else {
+            return Err("byte-credit children reply shape differs".into());
+        };
+        if items.len() != 1
+            || items.first().map(|row| (&row.agent, &row.status))
+                != Some((&first_child.agent, &first_child.status))
+            || next.as_ref() != Some(&cursor)
+        {
+            return Err("children byte credit did not retain exactly its fitting prefix".into());
+        }
+        let AgentReply::Children { items, next } =
+            call(endpoint, &children(2, credit, Some(cursor))?).await??
+        else {
+            return Err("continued children reply shape differs".into());
+        };
+        let last_child = items.first().ok_or("continued children page is empty")?;
+        if items.len() != 1
+            || next.is_some()
+            || first_child.agent == last_child.agent
+            || [child, &other]
+                .into_iter()
+                .any(|agent| agent != &first_child.agent && agent != &last_child.agent)
+            || last_child.status.as_ref().map(|status| &status.phase) != Some(&Phase::Idle)
+            || endpoint.effects().await? != 1
+        {
+            return Err("children continuation skipped, repeated or activated a child".into());
+        }
+        if !matches!(
+            call(endpoint, &children(1, credit - 1, None)?).await?,
+            Err(AgentControlFailure::Refused { code, .. })
+                if code == acyclic_harness_core::agent::Error::Stream(StreamError::Capacity).code()
+        ) {
+            return Err(
+                "insufficient child credit did not refuse before an empty continuation".into(),
+            );
         }
         let outside = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]));
         let refused = call(

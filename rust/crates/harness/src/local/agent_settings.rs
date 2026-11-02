@@ -32,6 +32,7 @@ pub(super) struct Volumes<'a> {
 struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
+    generation: crate::resources::GenerationRef,
 }
 
 impl Tree<'_> {
@@ -55,7 +56,7 @@ impl Tree<'_> {
                 self.volumes.home,
                 &self.read,
                 path,
-                None,
+                Some(&self.generation),
                 self.volumes.maximum_bytes,
                 ContentAccess::default(),
             )
@@ -105,7 +106,7 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree::new(volumes)?;
+    let tree = Tree::new(volumes).await?;
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -148,16 +149,23 @@ pub(super) async fn admit(
 }
 
 impl<'a> Tree<'a> {
-    fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+    async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+        let read = ContentGrant::verify_directory_read(
+            volumes.verifier,
+            volumes.signed,
+            volumes.home,
+            "",
+            &mut None,
+        )?;
+        let workspace = crate::filesystem::workspace_ref(
+            volumes.home.provider().clone(),
+            &volumes.home.storage_name(&mut None)?,
+        )?;
+        let generation = volumes.files.resolve(&workspace, None).await?.generation;
         Ok(Self {
             volumes,
-            read: ContentGrant::verify_directory_read(
-                volumes.verifier,
-                volumes.signed,
-                volumes.home,
-                "",
-                &mut None,
-            )?,
+            read,
+            generation,
         })
     }
 }
@@ -219,7 +227,7 @@ pub(super) async fn plugins(
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
-    let tree = Tree::new(volumes)?;
+    let tree = Tree::new(volumes).await?;
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -325,12 +333,6 @@ async fn settle(
         ));
     }
     if let Some(sampling) = settings.sampling {
-        crate::model::ModelSampling {
-            seed: None,
-            temperature: sampling.temperature,
-            top_p: sampling.top_p,
-        }
-        .validate()?;
         if sampling.max_output_tokens == Some(0) {
             return Err(rejected("sampling.maxOutputTokens must be positive"));
         }
@@ -344,6 +346,19 @@ async fn settle(
         })?;
         resolve(&settings.model)?
     };
+    if let Some(sampling) = settings.sampling {
+        crate::model::ModelSampling::admit(
+            Some(crate::model::ModelSampling {
+                seed: None,
+                temperature: sampling.temperature,
+                top_p: sampling.top_p,
+            }),
+            model
+                .1
+                .model_profile(&model.0)?
+                .map(|profile| profile.sampling()),
+        )?;
+    }
     let compaction = if unchanged_model {
         compaction.0.clone()
     } else {
@@ -368,4 +383,72 @@ async fn settle(
         model,
         sampling: settings.sampling,
     })
+}
+
+#[cfg(all(test, feature = "hooks"))]
+mod tests {
+    use super::*;
+    use crate::local::tests::{settings::write, text, volume, volume_config};
+
+    #[tokio::test]
+    async fn a_settings_tree_keeps_one_generation_across_concurrent_home_edits() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let project = volume(directory.path()).await?;
+        let harness = LocalHarness::open(
+            volume_config(directory.path(), project, text())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?;
+        for (path, source) in [
+            (
+                "plugins.ts",
+                "import {enabled} from './switch'; export default {guard: {enabled}};",
+            ),
+            ("switch.ts", "export const enabled = true;"),
+            (
+                "plugins/guard/plugin.ts",
+                "export default {name: 'guard', description: 'Guard every tool'};",
+            ),
+            (
+                "plugins/guard/hooks/before-tool.sh",
+                "printf '%s' '{\"decision\":\"deny\"}'",
+            ),
+        ] {
+            write(&harness, path, source).await?;
+        }
+        let volumes = Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: u64::MAX,
+        };
+        let original = Tree::new(&volumes).await?;
+        for (path, source) in [
+            ("switch.ts", "export const enabled = false;"),
+            (
+                "plugins/guard/plugin.ts",
+                "export default {name: 'changed', description: 'Changed'};",
+            ),
+            ("plugins/guard/hooks/before-tool.sh", "\0"),
+        ] {
+            write(&harness, path, source).await?;
+        }
+        let enabler = harness.root.to_string();
+        let (version, bytes) = original.entry(crate::plugins::MANIFEST).await?.unwrap();
+        let layers = [Layer {
+            name: "home",
+            generation: &version,
+            bytes: Some(&bytes),
+        }];
+        let enabled = crate::plugins::load(&original, &layers, &enabler).await?;
+        assert_eq!(enabled.names, ["guard"]);
+        assert!(!enabled.rules.is_empty());
+        let current = Tree::new(&volumes).await?;
+        let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
+        assert!(disabled.names.is_empty());
+        assert!(disabled.rules.is_empty());
+        Ok(())
+    }
 }

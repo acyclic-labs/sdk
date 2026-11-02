@@ -3,6 +3,41 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
+/// Whether no-follow metadata identifies a symlink or a Windows reparse point.
+pub fn is_linked(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Inspects the path and its ancestors without following their final component.
+/// Missing components are permitted; other failures preserve the caller's error.
+/// This is a path inspection, not a retained guarantee against later replacement.
+pub fn reject_linked_ancestors<E>(
+    path: &Path,
+    linked: impl FnOnce(&Path) -> E,
+    failed: impl FnOnce(&Path, io::Error) -> E,
+) -> Result<(), E> {
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_linked(&metadata) => return Err(linked(ancestor)),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(failed(ancestor, error)),
+        }
+    }
+    Ok(())
+}
+
 pub fn cached<K: Ord, S: Clone + Eq, V: Clone, E>(
     values: &std::cell::RefCell<std::collections::BTreeMap<K, (S, V)>>,
     key: K,

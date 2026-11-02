@@ -138,6 +138,11 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
             };
             assert_eq!(output.text, "done");
             assert_eq!(output.steps, turns + 1);
+            #[cfg(feature = "research")]
+            assert!(
+                output.journal_cut.is_none(),
+                "unsupported receipts cannot certify closure"
+            );
             assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
             assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
         }
@@ -216,6 +221,32 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     let (_, records) = execution
         .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
         .await?;
+    #[cfg(feature = "research")]
+    {
+        let cut = resumed
+            .journal_cut
+            .expect("original terminal append receipt");
+        assert_eq!(cut.version, 1);
+        assert_eq!(cut.operation, input.operation_id);
+        let terminal = records
+            .iter()
+            .find(|record| {
+                matches!(
+                    &record.event,
+                    ExecutionEvent::Model { usage: Some(_), .. }
+                        | ExecutionEvent::ModelInline { usage: Some(_), .. }
+                )
+            })
+            .expect("original terminal usage");
+        assert_eq!(cut.sequence, terminal.sequence);
+        let replayed = executor.execute(input.clone(), journal).await?;
+        assert_eq!(replayed.journal_cut, Some(cut));
+        assert_eq!(
+            provider.requests().len(),
+            1,
+            "replay must not generate again"
+        );
+    }
     assert_eq!(
         records
             .iter()

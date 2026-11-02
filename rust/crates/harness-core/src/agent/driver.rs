@@ -583,6 +583,8 @@ async fn stage_text(
     text: String,
 ) -> Result<FileRef, Error> {
     let output = TurnOutput {
+        #[cfg(feature = "research")]
+        journal_cut: None,
         text,
         attachments: Vec::new(),
         metadata: serde_json::Value::Null,

@@ -11,6 +11,8 @@ pub use contract::{
     validate_fork, validate_update,
 };
 
+/// The one invocation protocol: a caller-owned call journal.
+pub mod call;
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 

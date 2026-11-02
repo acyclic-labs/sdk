@@ -85,6 +85,8 @@ impl StockExecution<'_> {
                 }
                 let transcript = self.settled_transcript(prior_messages, parts, &text)?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
+                    #[cfg(feature = "research")]
+                    journal_cut: phase.1.take(),
                     text,
                     attachments: Vec::new(),
                     metadata,
