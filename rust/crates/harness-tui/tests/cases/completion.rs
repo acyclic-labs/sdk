@@ -278,7 +278,7 @@ fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
 
 #[test]
 fn keyed_selection_keeps_identity_and_visible_windows_across_file_changes() {
-    for count in [16, 1024] {
+    for count in [16usize, 1024] {
         let mut editor = Editor::new("@file");
         let mut menu = CompletionMenu::default();
         for index in 0..count {
