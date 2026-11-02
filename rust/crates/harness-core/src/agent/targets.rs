@@ -18,6 +18,12 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+#[cfg(not(test))]
+type RosterHasher = std::collections::hash_map::RandomState;
+#[cfg(test)]
+type RosterHasher = crate::test_support::CountedHashState;
+type Positions = std::collections::HashMap<String, usize, RosterHasher>;
+
 /// The `target` prefix that names a user's home device instead of a device.
 pub const USER_PREFIX: &str = "user:";
 /// Longest target name, in bytes.
@@ -143,6 +149,11 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 }
 
 /// Every target visible to an agent, in attach order, and its home.
+///
+/// Admission builds the name and first-owner positions once. Named selection
+/// hashes only the selected name or owner and performs an expected constant
+/// table lookup; the home position needs neither. Refusal output still visits
+/// the online roster entries it must describe.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(try_from = "RosterWire")]
@@ -152,9 +163,17 @@ pub struct Roster {
     #[serde(skip)]
     home_position: usize,
     #[serde(skip)]
+    positions: std::sync::Arc<RosterPositions>,
+    #[serde(skip)]
     canonical: std::sync::Arc<[u8]>,
     #[serde(skip)]
     digest: [u8; 32],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RosterPositions {
+    names: Positions,
+    owners: Positions,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -226,12 +245,17 @@ impl Roster {
     /// # Errors
     /// When a record is malformed, a name repeats or the home is unlisted.
     pub fn new(home: &str, targets: Vec<TargetRecord>) -> Result<Self, super::Error> {
-        let mut names = std::collections::BTreeSet::new();
+        let mut names = Positions::with_capacity_and_hasher(targets.len(), RosterHasher::default());
+        let mut owners = Positions::default();
         let mut home_position = None;
         for (position, target) in targets.iter().enumerate() {
             super::AgentRecord::check(target)?;
-            if !names.insert(target.name.as_str()) {
+            if names.insert(target.name.clone(), position).is_some() {
                 return Err(super::Error::Record("target name repeats in the roster"));
+            }
+            // Only the first attachment owns the user's home, even offline.
+            if !owners.contains_key(&target.owner) {
+                owners.insert(target.owner.clone(), position);
             }
             if target.name == home {
                 home_position = Some(position);
@@ -251,6 +275,7 @@ impl Roster {
             home: wire.home,
             targets: wire.targets,
             home_position,
+            positions: std::sync::Arc::new(RosterPositions { names, owners }),
             canonical: bytes.into(),
             digest: *hasher.finalize().as_bytes(),
         })
@@ -306,8 +331,8 @@ impl Roster {
             Some(self.home_position)
         } else {
             match named.strip_prefix(USER_PREFIX) {
-                Some(owner) => self.targets.iter().position(|record| record.owner == owner),
-                None => self.targets.iter().position(|record| record.name == named),
+                Some(owner) => self.positions.owners.get(owner).copied(),
+                None => self.positions.names.get(named).copied(),
             }
         };
         let refused = match found {
@@ -397,6 +422,44 @@ mod tests {
             alone.select(None).expect_err("offline").to_string(),
             "target 'pc' is offline; online: none"
         );
+
+        for count in [1, 100_000] {
+            let targets = (0..count)
+                .map(|position| {
+                    device(
+                        &format!("host-{position}"),
+                        &format!("owner-{position}"),
+                        TargetState::Online,
+                    )
+                })
+                .collect();
+            let roster = Roster::new("host-0", targets).expect("admit roster once");
+            let name = format!("host-{}", count - 1);
+            let owner = format!("user:owner-{}", count - 1);
+            for (selected, entrances) in [
+                (None, 0),
+                (Some(&name), usize::from(count > 1)),
+                (Some(&owner), 1),
+            ] {
+                let before = crate::test_support::hash_calls();
+                let found = roster
+                    .select(selected.map(String::as_str))
+                    .expect("original target");
+                assert_eq!(crate::test_support::hash_calls() - before, entrances);
+                assert_eq!(
+                    found.name,
+                    if selected.is_none() { "host-0" } else { &name }
+                );
+            }
+            // Negative control: the former selected-name scan visits every
+            // attachment when the requested target was attached last.
+            let mut scanned = 0;
+            assert!(roster.targets.iter().any(|target| {
+                scanned += 1;
+                target.name == name
+            }));
+            assert_eq!(scanned, count);
+        }
     }
 
     #[test]
