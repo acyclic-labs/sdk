@@ -8,6 +8,23 @@ import { PassThrough } from "node:stream";
 import { finished } from "node:stream/promises";
 import { Processes, Spool, SpoolEnded } from "./process.mjs";
 import { failureReport } from "./report.mjs";
+import { fuzz as fuzzSpool } from "./process.fuzz.mjs";
+
+test("Spool byte fuzz preserves captured native replies and refusal terminals", async () => {
+  const shipped = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8"));
+  const killed = JSON.parse(readFileSync(new URL("./fixtures/rejected-conversation-reply.json", import.meta.url), "utf8"));
+  for (const original of [shipped.captures["jsonl-reopen"], killed.capture]) {
+    const bytes = Buffer.from(original.stdout);
+    const terminal = { code: original.code, signal: original.signal };
+    await fuzzSpool(bytes, terminal);
+    for (const at of [0, 1, Math.floor(bytes.length / 2), bytes.length - 1]) {
+      const mutation = Buffer.from(bytes);
+      mutation[at] ^= 255;
+      await fuzzSpool(mutation, terminal);
+      await fuzzSpool(bytes.subarray(0, at), terminal);
+    }
+  }
+});
 
 test("native event callback failures end unmatched waits with the original cause", async () => {
   const root = mkdtempSync(join(tmpdir(), "spool-consumer-"));
