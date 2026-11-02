@@ -288,7 +288,11 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             project::<w::ReadKeySeek, _, _>(
                 bytes,
                 |value| c::read_key_from_wire(Some(value)),
-                |value| c::read_key_to_wire(&value).expect("present seek remains present"),
+                |value| {
+                    c::read_key_to_wire(value)
+                        .expect("decoded ordinary key transfers without admission")
+                        .expect("present seek remains present")
+                },
             );
         }
         "acyclic.stream.v1.ReadResponse" => {

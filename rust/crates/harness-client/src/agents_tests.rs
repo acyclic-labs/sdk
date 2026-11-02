@@ -598,7 +598,8 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
     pool.register_credential(0, session::testing::credential())?;
     let resource = wire_codec::session::stream_resource(path.as_str());
     let mut projection = crate::EventProjection::new("projection-operation".into());
-    let mut drain = crate::EventDrain::new([(resource.clone(), 0), ("not-yet-followed".into(), 0)]);
+    let mut unobserved =
+        crate::EventDrain::new([(resource.clone(), 0), ("not-yet-followed".into(), 0)]);
     let mut selected = crate::EventDrain::new([(resource.clone(), 0)]);
     let mut source = pool.subscribe(subscription(&path, 0, 0, false)).await?;
     loop {
@@ -625,8 +626,8 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
             let cursor = event.after.clone();
             assert!(projection.accepted(&resource, cursor.clone()));
             assert!(!projection.accepted(&resource, cursor));
-            drain.accepted(&delivery);
-            assert!(!drain.complete(), "an unobserved source was skipped");
+            unobserved.accepted(&delivery);
+            assert!(!unobserved.complete(), "an unobserved source was skipped");
             assert!(
                 !selected.complete(),
                 "one record was mistaken for the opening tail"
@@ -677,10 +678,10 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
     let mut request = subscription(&path, 0, 0, false);
     request.resume = Some(restored.cursor(&resource).wire()?);
     let mut resumed = pool.subscribe(request).await?;
-    let mut drain = crate::EventDrain::new([(resource.clone(), 1)]);
+    let mut resumed_cut = crate::EventDrain::new([(resource.clone(), 1)]);
     let mut records = 0;
     let mut appended = false;
-    while !drain.complete() {
+    while !resumed_cut.complete() {
         let delivery = AgentDelivery {
             resource: resource.clone(),
             frame: resumed
@@ -697,7 +698,8 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
         }
         let after = event.after.clone();
         restored.accepted(&resource, after);
-        drain.accepted(&delivery);
+        resumed_cut.accepted(&delivery);
+        unobserved.accepted(&delivery);
         if matches!(&delivery.frame.body, Some(wire::session_frame::Body::Watermark(mark)) if mark.opening_tail == Some(4))
             && !appended
         {
@@ -706,6 +708,10 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
         }
     }
     assert_eq!(records, 3);
+    assert!(
+        !unobserved.complete(),
+        "completing one source retired an unobserved selection"
+    );
     assert!(
         appended,
         "the provider did not expose its fixed opening cut"
@@ -724,6 +730,8 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
         let after = restored.event(&delivery).after;
         restored.accepted(&resource, after);
         drain.accepted(&delivery);
+        resumed_cut.accepted(&delivery);
+        assert!(resumed_cut.complete(), "a later append reopened the cut");
     }
     assert_eq!(restored.cursor(&resource).next, 5);
     drop(source);

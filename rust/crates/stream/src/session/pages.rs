@@ -17,12 +17,12 @@ impl Visibility {
         &self,
         capability: &acyclic_auth::verify::VerifiedCapability,
         action: &'static str,
-        path: &StreamPath,
+        path: &str,
     ) -> Result<bool, StreamError> {
         match self.authority.permits(
             capability,
             action,
-            &authority::stream_resource(Some(path)),
+            &wire_codec::session::stream_resource(path),
             self.channels,
         ) {
             Ok(()) => Ok(true),
@@ -36,20 +36,21 @@ impl Visibility {
         tail_stream: Option<&crate::RelativePath>,
     ) -> Result<crate::ChildrenPage, StreamError> {
         let capability = self.authorization.current()?;
+        let filter = std::cell::LazyCell::new(|| {
+            crate::FollowFilter::authorized(wire::SessionFilter::default(), &capability)
+        });
         let mut children = Vec::with_capacity(page.children.len());
         for mut child in page.children {
-            if !self.permits(&*capability, "streams/list", &child.path)? {
+            if !self.permits(&*capability, "streams/list", child.path.as_str())? {
                 continue;
             }
             if let (Some(_), Some(relative)) = (child.tail, tail_stream) {
-                let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
+                let target = format!("{}/{}", child.path, relative);
+                StreamPath::validate(&target)?;
                 if self.permits(&*capability, "streams/follow", &target)? {
                     if let Some(record) = child.tail_record.take() {
-                        child.tail_record = crate::FollowFilter::authorized(
-                            wire::SessionFilter::default(),
-                            &capability,
-                        )?
-                        .project(record)?;
+                        child.tail_record =
+                            filter.as_ref().map_err(Clone::clone)?.project(record)?;
                         if child.tail_record.is_none() {
                             child.tail = None;
                         }
@@ -105,19 +106,18 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
                 wire::SessionFilter::default(),
                 &*authorization.current()?,
             )?;
-            for head in view.heads.iter().flatten() {
-                if let Some(record) = &head.last {
-                    if filter.project(record.clone())? != Some(record.clone()) {
-                        return Err(StreamError::AccessDenied);
-                    }
-                }
-            }
             for record in view
-                .retained
+                .heads
                 .iter()
-                .filter_map(|selected| selected.record.as_ref())
+                .flatten()
+                .filter_map(|head| head.last.as_ref())
+                .chain(
+                    view.retained
+                        .iter()
+                        .filter_map(|selected| selected.record.as_ref()),
+                )
             {
-                if filter.project(record.clone())? != Some(record.clone()) {
+                if !filter.preserves(record)? {
                     return Err(StreamError::AccessDenied);
                 }
             }

@@ -487,25 +487,25 @@ impl Client {
         request: crate::ReadRequest,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
-        crate::memory::validate_limit(request.limit)?;
-        let path = request.path.clone();
+        let request = request.validate()?.into_request();
+        let path = request.path;
+        let (read_limit, until) = request.key.as_ref().map_or_else(
+            || (0, request.from.saturating_add(u64::from(request.limit))),
+            |key| (request.limit, key.before),
+        );
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
             opening_cut: false,
-            key: wire_codec::read_key_to_wire(&request.key),
-            read_limit: request.key.as_ref().map_or(0, |_| request.limit),
+            key: wire_codec::read_key_to_wire(request.key)?,
+            read_limit,
             bootstrap_head: false,
             when_absent: Default::default(),
-            resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
+            resource: crate::wire_codec::session::stream_resource(path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
-            until: Some(request.key.as_ref().map_or_else(
-                || request.from.saturating_add(u64::from(request.limit)),
-                |key| key.before,
-            )),
+            until: Some(until),
             at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
-        wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
         let mut source = self
             .open_subscription(
