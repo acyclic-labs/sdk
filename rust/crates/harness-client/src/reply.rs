@@ -392,7 +392,7 @@ fn validate_reply(
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
         (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
-            // An answer is the entry of exactly the requested message.
+            // Correlate the original prompt or verified in-turn steering message.
             return match reply {
                 Reply::Answered {
                     entry,
