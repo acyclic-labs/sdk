@@ -3,42 +3,21 @@
 //! These types do not issue revisions, aggregate a subtree, reserve budget or
 //! publish records. The original producer supplies those facts in its admitting
 //! commit. A reader never substitutes a clock, a request digest or zero for a
-//! missing fact. Public file values are versionless; their stored envelope is
-//! versioned independently.
+//! missing fact. Public file values are versionless; the original source keeps
+//! its own versioned encoding. No extra live record is published.
 
 use crate::executor::{ModelPriceError, ModelPriceRecord, ModelUsageRecord};
 use crate::model::ModelDispatch;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Persisted live-source envelope. File readers expose only `value`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Record<T> {
-    version: u32,
-    value: T,
-}
-
-impl<T> Record<T> {
-    /// Wrap a value for the original producer's atomic publication.
-    pub const fn new(value: T) -> Self {
-        Self { version: 1, value }
-    }
-
-    /// Refuse unsupported layouts instead of migrating them on read.
-    pub fn into_value(self) -> Result<T, Error> {
-        if self.version != 1 {
-            return Err(Error::Version);
-        }
-        Ok(self.value)
-    }
-}
-
 /// A projection cannot supply the requested original fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// Stored source layout is unsupported.
-    #[error("live source version is unsupported; recovery: use a source with record version 1")]
+    #[error(
+        "live source version is unsupported; recovery: use the original producer's current record format"
+    )]
     Version,
     /// Usage and admission must name the same actual dispatch.
     #[error(
@@ -204,7 +183,10 @@ impl ContextAdmission {
         if self.dispatch != usage.dispatch {
             return Err(Error::CallMismatch);
         }
-        if usage.version != ModelUsageRecord::VERSION || !usage.completed {
+        if usage.version != ModelUsageRecord::VERSION {
+            return Err(Error::Version);
+        }
+        if !usage.completed {
             return Err(Error::IncompleteCall);
         }
         Ok(())
