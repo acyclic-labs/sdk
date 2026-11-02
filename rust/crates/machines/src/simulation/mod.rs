@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-enum MemoryIntent {
+pub(crate) enum MemoryIntent {
     Create(CreateMachine),
     Attach(Platform),
     Checkpoint(MachineId),

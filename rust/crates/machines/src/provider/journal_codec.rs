@@ -77,52 +77,56 @@ pub mod codec_fuzz {
             && check_type::<MachineObservation>(bytes)
     }
 
-    /// Capture the production encoder, using stable public contract values.
+    /// Capture the shipped simulator's public create/fork/recovery outcomes
+    /// through the production journal encoder. These are process-local
+    /// simulation records, not physical guest or deployed transport captures.
     pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, ProviderError> {
-        let id = MachineId::from_digest([1; 32]);
-        let machine = MachineObservation {
-            id,
-            state: MachineState::Running,
-            contract: MachineContract {
-                image: Image::custom([2; 32])
-                    .map_err(|error| ProviderError::Invalid(error.to_string()))?,
-                selected_volume_ref: None,
-                capabilities: BTreeSet::new(),
-                compatibility: CompatibilityPolicy::BestEffort,
-                compatibility_revision: [3; 32],
-                suspension: SuspensionPolicy::Manual,
-                expiration: ExpirationPolicy::Never,
-                network_policy_digest: [4; 32],
-                budgets: Budgets::default(),
-                platform: Platform {
-                    os: OperatingSystem::Linux,
-                    arch: Architecture::X64,
-                    device_kind: DeviceKind::VirtualMachine,
-                    shell: Shell::Bash,
-                    path_style: PathStyle::Posix,
-                },
-                lifecycle: LifecycleClass::Provisioned,
-            },
-            endpoints: Vec::new(),
-            last_checkpoint: None,
-            created_at_unix_ms: 42,
-            changed_at_unix_ms: 42,
-        };
-        Ok(vec![
-            ("machine", encode(&machine)?),
-            (
-                "result-observation",
-                crate::results::record(&machine)?.value.to_vec(),
-            ),
-            ("pending", encode(&Intent { digest: [5; 32] })?),
-            (
-                "settled",
-                encode(&Completed {
-                    digest: [5; 32],
-                    outcome: MutationOutcome::Created(machine),
-                })?,
-            ),
-        ])
+        use crate::{SimulatedMachines, simulation::MemoryIntent};
+
+        futures::executor::block_on(async {
+            let provider = SimulatedMachines::default();
+            let key = IdempotencyKey::from_digest([5; 32]);
+            let request = CreateMachine::new(key, Some(Image::custom([2; 32])?), [4; 32]);
+            let digest = intent_digest(&MemoryIntent::Create(request.clone()))?;
+            provider.create(request).await?;
+            let created = provider.recover(key).await?;
+            let MutationOutcome::Created(machine) = &created else {
+                return Err(ProviderError::Rejected("Machine corpus create recovery has no original observation; recovery: run the original simulator create before capture".into()));
+            };
+            let fork_key = IdempotencyKey::from_digest([6; 32]);
+            let count = NonZeroU32::MIN.saturating_add(1);
+            let fork_digest = intent_digest(&MemoryIntent::ForkMachine(machine.id, count.get()))?;
+            provider.fork_machine(machine.id, count, fork_key).await?;
+            let forked = provider.recover(fork_key).await?;
+            Ok(vec![
+                ("machine", encode(machine)?),
+                (
+                    "result-observation",
+                    crate::results::record(machine)?.value.to_vec(),
+                ),
+                ("pending", encode(&Intent { digest })?),
+                (
+                    "settled",
+                    encode(&Completed {
+                        digest,
+                        outcome: created,
+                    })?,
+                ),
+                (
+                    "fork-pending",
+                    encode(&Intent {
+                        digest: fork_digest,
+                    })?,
+                ),
+                (
+                    "fork-settled",
+                    encode(&Completed {
+                        digest: fork_digest,
+                        outcome: forked,
+                    })?,
+                ),
+            ])
+        })
     }
 }
 
@@ -143,7 +147,10 @@ mod tests {
         let seeds = codec_fuzz::seeds()?;
         let mut created = false;
         let mut forked = false;
-        for (_, bytes) in seeds {
+        for (name, bytes) in seeds {
+            // The capture tool can retain these original producer bytes without
+            // a second execution or a hand-written wire fixture.
+            println!("machine_journal/{name}\t{}", hex::encode(&bytes));
             assert!(codec_fuzz::check(&bytes));
             if let Ok(terminal) = decode::<Completed>(&bytes) {
                 for end in 0..bytes.len() {

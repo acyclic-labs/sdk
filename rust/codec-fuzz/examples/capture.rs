@@ -502,7 +502,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "machine_journal",
             name,
             &bytes,
-            "machines::provider::journal or results::record production envelope encoder",
+            "SimulatedMachines public create/fork_machine/recover -> production journal/results encoder; ProcessLocalSimulation only, not physical guest or deployed wire evidence",
             &mut manifest,
         )?;
     }
