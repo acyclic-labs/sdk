@@ -2,7 +2,9 @@
 mod applied;
 mod state_binding;
 pub use state_binding::{ActorStateBinding, ActorStateTransaction};
+mod disposition;
 mod invoke;
+pub use disposition::{FailedDelivery, FailureDisposition, FailureEntry, FailureResolution};
 pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
@@ -584,7 +586,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// unplaced (epoch 0) `child` inside a caller-built commit, exactly as
     /// [`Self::create`] makes one: a Streams fork of the parent's state
     /// subtree, so its checkpoint, metadata, journal, alarm and pause state are
-    /// shared rather than copied, plus the child's activation-log entry.
+    /// shared rather than copied, plus the child's activation-log entry. Host-owned
+    /// failed-input dispositions stay with the parent and are excluded.
     /// `subscriptions` binds the child's own inputs under the parent's exact
     /// subscription ids, as create binds a new actor's. The commit conflicts
     /// if the parent moved past `parent`'s cut or `child` already exists.
@@ -623,7 +626,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     CommitCondition::Absent { path: path.clone() },
                 ],
                 mutation: CommitMutation::Fork {
-                    exclude: Vec::new(),
+                    exclude: vec![acyclic_stream::RelativePath::new(disposition::DIRECTORY)?],
                     source: parent.path.clone(),
                     destination: path,
                     at_tail: parent.tail,
@@ -715,7 +718,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             && envelope.mutations.len() == 2
             && envelope.mutations.iter().any(|mutation| {
                 matches!(mutation, acyclic_stream::CommittedMutation::Fork(fork)
-                    if fork.source == *parent && fork.destination == *child && fork.exclude.is_empty())
+                    if fork.source == *parent && fork.destination == *child
+                        && fork.exclude.len() == 1
+                        && fork.exclude[0].as_str() == disposition::DIRECTORY)
             })
         {
             return Ok(true);

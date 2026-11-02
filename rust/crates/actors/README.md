@@ -63,6 +63,25 @@ explicitly restart after observing either refusal. The running dispatcher
 returns these failures to its owner, and unknown acknowledgements retain the
 original publication and participant custody.
 
+Explicit failed-input handling uses `local::Store::prepare_failed_input`: the
+original cursor advance, typed guest cause, input metadata and retained value
+are one conditional publication. Checkpoints and alarms remain at their
+previous committed values. Cancellation, producer loss and indeterminate
+external effects are not failed-input dispositions. The existing invocation
+failure path uses this same publication and includes its original terminal reply.
+
+Failures live in ordinary child streams at `Store::failures_path`. Page their
+current tails with `children_page`, decode `local::FailureEntry`, and follow the
+selected streams for changes. Values and headers remain in a separate
+co-committed input record, fetched only for inspection or replay. Forks exclude
+this host-owned failure subtree. An explicit `prepare_disposition` appends one
+terminal under the original failure head condition: purge retires the entry;
+replay also appends the retained input and original owner wake in that same
+commit. Competing choices conflict. Accepted invocation identities require a
+new invocation instead of replay. Retry an uncertain sealed publication with
+its original key. Physical retention remains owned by Streams. The persisted
+format is version one, with no migration path or separate queue service.
+
 Delivery also returns a lost claim, changed admission cut or refused checkpoint
 as `Conflict`, releasing this placement. It does not claim another epoch or
 invoke the handler again within that delivery. A new placement or explicit

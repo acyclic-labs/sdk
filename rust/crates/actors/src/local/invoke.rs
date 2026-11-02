@@ -352,10 +352,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         else {
             return Ok(None);
         };
-        let original = super::owned(previous, epoch)?;
-        let mut state = original.clone();
-        super::consume(&mut state, &original.alarm, trigger)?;
-        let mut prepared = self.prepare(previous, state, vec![reply], key)?;
+        let mut prepared = self.prepare_failed_input(
+            previous,
+            epoch,
+            trigger,
+            delivered.ok_or(Error::Invalid("missing failed input"))?,
+            failure,
+            key,
+        )?;
+        prepared.join(reply)?;
         prepared.reply = Some(path);
         Ok(Some(prepared))
     }

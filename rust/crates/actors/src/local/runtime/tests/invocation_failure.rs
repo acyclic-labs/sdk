@@ -1,6 +1,9 @@
 use super::*;
 use crate::guest::{CancellationToken, GuestError};
 use crate::invocation::Invocation;
+use crate::local::{FailureDisposition, FailureEntry};
+use acyclic_stream::{ChildrenPageRequest, ReadRequest, RevisionCut};
+use futures::TryStreamExt as _;
 
 struct Rejects {
     package: Package,
@@ -151,6 +154,42 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         1,
         "terminal failure cannot re-enter the guest"
     );
+    let page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(store.failures_path(&address)?),
+            after: None,
+            hierarchy_version: None,
+            tail_stream: None,
+            limit: 1,
+        })
+        .await?;
+    let child = page.children.first().ok_or("missing failed invocation")?;
+    let entry = child.tail_record.as_ref().ok_or("missing failure record")?;
+    assert_eq!(entry.commit_id, receipt.reply().commit_id);
+    let FailureEntry::Failed(failed) = FailureEntry::decode(&child.path, entry)? else {
+        return Err("failed invocation already resolved".into());
+    };
+    let captured = provider
+        .read(ReadRequest {
+            path: failed.input_path()?,
+            key: None,
+            from: 0,
+            limit: 1,
+            at_least: RevisionCut::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing captured invocation")?;
+    assert_eq!(failed.input(&captured)?, *ticket.record());
+    assert!(matches!(
+        store.prepare_disposition(
+            &failed,
+            FailureDisposition::Replay(&captured),
+            key("terminal-failure/replay")?
+        ),
+        Err(Error::Invalid("replay requires a new invocation identity"))
+    ));
 
     let cancelled = Invocation::new(
         address.clone(),
