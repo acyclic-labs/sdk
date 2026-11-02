@@ -226,7 +226,7 @@ impl StreamProvider for Remote {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        Ok(Box::pin(self.sessions.follow(request).await?))
+        self.sessions.follow(request).await
     }
 
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
