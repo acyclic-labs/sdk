@@ -59,7 +59,7 @@ fn assert_status(data: &wire::SessionData, sequence: u64, attention: bool) {
 struct Counted {
     memory: Arc<MemoryStream>,
     pulled: AtomicUsize,
-    changed: tokio::sync::Notify,
+    completion: std::sync::Mutex<Option<(u64, tokio::sync::oneshot::Sender<()>)>>,
 }
 #[async_trait::async_trait]
 impl StreamProvider for Arc<Counted> {
@@ -96,14 +96,27 @@ impl StreamProvider for Arc<Counted> {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        let status = request.path.as_str() == "status";
+        if request.path.as_str() != "status" {
+            return self.memory.follow(request).await;
+        }
+        let mut completion = self
+            .completion
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take();
         let counted = Arc::clone(self);
         Ok(self.memory.follow(request).await?.map_cursor(|cursor| {
             cursor
-                .inspect(move |_| {
-                    if status {
+                .inspect(move |item| {
+                    if let Ok(crate::FollowUpdate::Record(record)) = item {
                         counted.pulled.fetch_add(1, Ordering::Relaxed);
-                        counted.changed.notify_one();
+                        if completion
+                            .as_ref()
+                            .is_some_and(|(sequence, _)| *sequence == record.sequence)
+                            && let Some((_, completed)) = completion.take()
+                        {
+                            let _ = completed.send(());
+                        }
                     }
                 })
                 .boxed()
@@ -112,14 +125,34 @@ impl StreamProvider for Arc<Counted> {
 }
 
 #[tokio::test]
+async fn saturation_completion_ends_when_its_source_cursor_is_dropped() -> TestResult {
+    let memory = Arc::new(MemoryStream::default());
+    status(&memory, 0, false).await?;
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let counted = Arc::new(Counted {
+        memory,
+        pulled: AtomicUsize::new(0),
+        completion: std::sync::Mutex::new(Some((9, completed))),
+    });
+    let source = counted
+        .follow(crate::FollowRequest::new(StreamPath::new("status")?, 1))
+        .await?;
+    drop(source);
+    assert!(completion.await.is_err());
+    assert_eq!(counted.pulled.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all() -> TestResult {
     let memory = Arc::new(MemoryStream::default());
     status(&memory, 0, false).await?;
     append(&memory, "events", 1).await?;
+    let (completed, completion) = tokio::sync::oneshot::channel();
     let counted = Arc::new(Counted {
         memory: Arc::clone(&memory),
         pulled: AtomicUsize::new(0),
-        changed: tokio::sync::Notify::new(),
+        completion: std::sync::Mutex::new(Some((9, completed))),
     });
     let fixture = Fixture::open(Arc::new(Arc::clone(&counted)), "node").await?;
     let client = fixture.client()?;
@@ -149,13 +182,9 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
         )
         .await?;
     }
-    loop {
-        let changed = counted.changed.notified();
-        if counted.pulled.load(Ordering::Relaxed) == 9 {
-            break;
-        }
-        changed.await;
-    }
+    // Only the original source cursor owns the producer. Losing that cursor
+    // before the selected record ends this wait with RecvError.
+    completion.await?;
     // The actual per-channel frame grant is exhausted before testing a sibling.
     let traffic = fixture
         .counts
@@ -354,6 +383,8 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
     assert_status(&delivery(&mut raw).await?, 5, true);
     assert_eq!(old.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(new.counts.sessions.load(Ordering::Relaxed), 2);
-    assert_eq!(new.counts.connections.load(Ordering::Relaxed), 1);
+    // Reset closes the original OS socket, so recovery must accept one new
+    // connection as well as opening the replacement Session.
+    assert_eq!(new.counts.connections.load(Ordering::Relaxed), 2);
     Ok(())
 }

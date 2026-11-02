@@ -133,12 +133,10 @@ async fn refused_channel_does_not_close_the_shared_session() -> TestResult {
         .follow(crate::FollowRequest::new(StreamPath::new("fast")?, 1))
         .map_ok(crate::records_only)
         .await?;
-    let mut refused = client
+    let refused = client
         .follow(crate::FollowRequest::new(StreamPath::new("missing")?, 0))
-        .map_ok(crate::records_only)
-        .await?;
-    assert_eq!(refused.next().await, Some(Err(StreamError::NotFound)));
-    assert!(refused.next().await.is_none());
+        .await;
+    assert!(matches!(refused, Err(StreamError::NotFound)));
     append(&provider, "fast", 1).await?;
     assert_eq!(next(&mut fast).await?.sequence, 1);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
