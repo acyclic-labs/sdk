@@ -21,5 +21,5 @@ SHA-256:
 - Codex: `570f3b075daf21ce326fb22b28df4f512f1d21436d9152ec339ff0a147e9a160`.
 - Claude Code: `a4c4a86ed094e949983389230343a95ba9129df847235366541a9b6cda75d7ae`.
 
-The refusal control mutates the captured Claude success flag in memory; that
-derived negative is not presented as captured native output.
+The refusal controls mutate the captured Claude success flag and Codex terminal
+type in memory; those derived negatives are not captured native output.

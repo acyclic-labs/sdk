@@ -14,17 +14,19 @@ impl NativeAnswer {
         match event.get("type").and_then(Value::as_str) {
             Some("turn.started") => *self = Self::default(),
             Some("item.completed")
-                if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message") =>
+                if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+                    && self.outcome.is_none() =>
             {
                 self.pending = event
                     .pointer("/item/text")
                     .and_then(Value::as_str)
                     .map(|text| bounded([text]));
             }
-            Some("turn.completed") => {
+            Some("turn.completed") if self.outcome.is_none() => {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
             }
             Some("turn.failed" | "error") => {
+                self.pending = None;
                 self.outcome = Some(Outcome::Failed {
                     message: event
                         .pointer("/error/message")
@@ -123,6 +125,23 @@ mod tests {
                         refused["is_error"] = Value::Bool(true);
                         answer.record(&refused);
                         assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
+                    } else {
+                        // Derived negative: a late completion cannot erase a
+                        // failed turn. Only the captured next turn-start can
+                        // release it for another attempt.
+                        let mut refused = event.clone();
+                        refused["type"] = Value::String("turn.failed".into());
+                        answer.record(&refused);
+                        answer.record(&event);
+                        assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
+                        for line in captured.lines() {
+                            answer
+                                .record(&serde_json::from_str(line).expect("captured native JSON"));
+                        }
+                        assert_eq!(
+                            answer.outcome,
+                            Some(Outcome::Succeeded("PAIRED_NATIVE_DONE".into()))
+                        );
                     }
                 }
             }
