@@ -164,6 +164,8 @@ async fn clock_schedule(
         Some(120)
     );
 
+    let mut retained = clock.sleep_until(130);
+    assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
     assert_eq!(control.advance_to(109), Err(ClockError::Reversed));
     control.advance_to(110)?;
@@ -223,7 +225,8 @@ async fn clock_schedule(
     } else {
         Some(pending)
     };
-    let mut retained = clock.sleep_until(130);
+    // Consume the 120 advance and rearm this same retained subscriber before
+    // checking the producer-close notification.
     assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
     drop(control);
