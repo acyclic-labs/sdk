@@ -64,11 +64,12 @@ impl Client {
     /// credited input sender and the SAME reply projection as a finite call.
     /// The handler may consume input and reply before EOF. No body collector,
     /// automatic replay or second authenticated connection is created.
+    /// `None` imposes no total reply byte limit.
     pub async fn actor_call_input(
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: impl Into<Option<usize>>,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<
         (
             CallInputSender,
@@ -80,7 +81,6 @@ impl Client {
         ),
         StreamError,
     > {
-        let maximum_reply_bytes = maximum_reply_bytes.into();
         validate_call(invocation, maximum_reply_bytes)?;
         let cursor = self
             .open_cursor(
