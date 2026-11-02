@@ -583,6 +583,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     assert!(tails > 1, "repeated filter construction must be observable");
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
     let mut construction = acyclic_test_support::AllocationInfo::default();
+    let mut saved_owners = acyclic_test_support::AllocationInfo::default();
     for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
         let credential = acyclic_auth::testing::root(|block| {
             let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
@@ -645,11 +646,88 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             .children
             .as_ref()
             .and_then(|page| page.tail_stream.as_ref());
+        let mut original_owned_cost = None;
+        if !follow && !predicate {
+            let capability = visibility.authorization.current()?;
+            let relative = tail_stream.ok_or("missing tail path")?;
+            // Independent original owned-path flow on the actual provider page.
+            // Follow is denied, so neither flow projects a record or builds a filter.
+            let mut owned = original.clone();
+            let mut baseline = None;
+            let owned_cost = acyclic_test_support::measure(|| {
+                baseline = Some((|| -> Result<_, StreamError> {
+                    let mut children = Vec::with_capacity(owned.children.len());
+                    for mut child in owned.children {
+                        visibility
+                            .authority
+                            .permits(
+                                &capability,
+                                "streams/list",
+                                &crate::session::authority::stream_resource(Some(&child.path)),
+                                visibility.channels,
+                            )
+                            .map_err(|_| StreamError::AccessDenied)?;
+                        if child.tail.is_some() {
+                            let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
+                            assert!(matches!(
+                                visibility.authority.permits(
+                                    &capability,
+                                    "streams/follow",
+                                    &crate::session::authority::stream_resource(Some(&target)),
+                                    visibility.channels,
+                                ),
+                                Err(crate::session::authority::Rejection::Forbidden)
+                            ));
+                            child.tail = None;
+                            child.tail_record = None;
+                        }
+                        children.push(child);
+                    }
+                    owned.children = children;
+                    Ok(owned)
+                })());
+            });
+            assert_eq!(baseline.ok_or("missing owned page")??, expected);
+            // Measure only the removed owners, with join storage prepared first.
+            for child in original
+                .children
+                .iter()
+                .filter(|child| child.tail.is_some())
+            {
+                let target = format!("{}/{}", child.path, relative);
+                let mut owner = None;
+                let cost = acyclic_test_support::measure(|| {
+                    owner = Some(StreamPath::new(&target));
+                });
+                owner.ok_or("missing measured path")??;
+                saved_owners.count_total += cost.count_total;
+                saved_owners.bytes_total += cost.bytes_total;
+            }
+            assert!(saved_owners.count_total > 0);
+            original_owned_cost = Some(owned_cost);
+            // Each input is valid alone; the joined length still fails before a
+            // denied follow could hide it. Mutate only the captured request path.
+            let oversized = StreamPath::new("x".repeat(crate::MAX_PATH_BYTES))?;
+            assert_eq!(
+                visibility.page(original.clone(), Some(&oversized)),
+                Err(StreamError::InvalidPath)
+            );
+        }
         let mut projected = None;
         costs[usize::from(follow)][usize::from(predicate)] = acyclic_test_support::measure(|| {
             projected = Some(visibility.page(selected, tail_stream));
         });
         assert_eq!(projected.ok_or("missing measured page")??, expected);
+        if let Some(owned_cost) = original_owned_cost {
+            assert_eq!(
+                costs[0][0].count_total + saved_owners.count_total,
+                owned_cost.count_total
+            );
+            assert_eq!(
+                costs[0][0].bytes_total + saved_owners.bytes_total,
+                owned_cost.bytes_total
+            );
+        }
         assert_eq!(client.children_page(page("tree", 10)?, 1).await?, expected);
         let view = client.heads(request.clone(), 1).await?;
         assert_eq!(view.snapshot, direct.snapshot);
@@ -673,6 +751,10 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
         "page tails={tails} filter allocations: per-tail={} shared={}; denied-follow extra=0",
         tails as u64 * construction.count_total,
         costs[1][1].count_total - costs[1][0].count_total,
+    );
+    eprintln!(
+        "tail path owners removed: allocations={} bytes={}",
+        saved_owners.count_total, saved_owners.bytes_total,
     );
     // The same Session still returns the unfiltered original cut and records.
     assert_eq!(client.heads(request, 0).await?, direct);

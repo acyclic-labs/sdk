@@ -17,12 +17,12 @@ impl Visibility {
         &self,
         capability: &acyclic_auth::verify::VerifiedCapability,
         action: &'static str,
-        path: &StreamPath,
+        path: &str,
     ) -> Result<bool, StreamError> {
         match self.authority.permits(
             capability,
             action,
-            &authority::stream_resource(Some(path)),
+            &wire_codec::session::stream_resource(path),
             self.channels,
         ) {
             Ok(()) => Ok(true),
@@ -41,11 +41,12 @@ impl Visibility {
         });
         let mut children = Vec::with_capacity(page.children.len());
         for mut child in page.children {
-            if !self.permits(&*capability, "streams/list", &child.path)? {
+            if !self.permits(&*capability, "streams/list", child.path.as_str())? {
                 continue;
             }
             if let (Some(_), Some(relative)) = (child.tail, tail_stream) {
-                let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
+                let target = format!("{}/{}", child.path, relative);
+                StreamPath::validate(&target)?;
                 if self.permits(&*capability, "streams/follow", &target)? {
                     if let Some(record) = child.tail_record.take() {
                         child.tail_record =
