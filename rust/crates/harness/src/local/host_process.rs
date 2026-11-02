@@ -334,18 +334,14 @@ impl HostSessionProcess {
             .map_err(storage)
     }
 
-    /// Appends one native event line to the turn's log, which its settlement
-    /// appends to the conversation. The decoder bounds each frame; turn
-    /// duration never discards later events.
-    pub fn record_event(&mut self, line: &[u8]) -> Result<()> {
+    /// Appends the original stdout page before decoding. Settlement publishes
+    /// the same bytes, including malformed frames and incomplete final lines.
+    pub fn record_output(&mut self, bytes: &[u8]) -> Result<()> {
         let log = self
             .events
             .as_mut()
             .ok_or_else(|| Error::Conflict("native event log absent before spawn".into()))?;
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        bytes.extend_from_slice(line);
-        bytes.push(b'\n');
-        std::io::Write::write_all(log, &bytes).map_err(storage)?;
+        std::io::Write::write_all(log, bytes).map_err(storage)?;
         Ok(())
     }
 

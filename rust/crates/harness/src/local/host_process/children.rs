@@ -30,9 +30,6 @@ use answer::{EVENT_LIMIT, NativeAnswer};
 mod tools;
 pub use tools::serve;
 
-/// The saved log's line where framing or decoding dropped one native event.
-const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-
 struct Running {
     process: HostSessionProcess,
     claim: TurnClaim,
@@ -707,18 +704,15 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
         let bytes = buffer
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
+        running.process.record_output(bytes)?;
         for line in running.events.push(bytes) {
-            let Some((line, event)) = answer::decode(line) else {
+            let Some((_, event)) = answer::decode(line) else {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.
                 running.answer.omit();
-                // The saved log marks where the event was dropped.
-                running.process.record_event(EVENT_OMITTED)?;
                 continue;
             };
-            // The whole event stream joins the conversation at settlement.
-            running.process.record_event(line.as_bytes())?;
             running.answer.record(&event);
         }
     }
