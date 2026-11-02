@@ -79,7 +79,7 @@ export async function runCase(binary, login, root, name, signal) {
   const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
-  let step = "prepare workspace and isolated settings", env, childHooks, begin, hooksPending = false;
+  let step = "prepare workspace and isolated settings", env, childHooks, begin, receipt, hooksPending = false;
   const invoke = async (prompt, format = "text") => {
     hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
@@ -116,7 +116,7 @@ export async function runCase(binary, login, root, name, signal) {
     } }));
   };
   try {
-    const receipt = await withOwnedCase({ processes, signal, origin: setupBegin, prepare,
+    receipt = await withOwnedCase({ processes, signal, origin: setupBegin, prepare,
       onPhase: phase => phases.push(phase), run: async () => {
       begin = performance.now();
       step = "invoke shipping GraphCoder";
@@ -156,16 +156,25 @@ export async function runCase(binary, login, root, name, signal) {
         requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, workspace);
       } else assert.fail(`unknown case ${name}`);
     } });
-    assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
+    step = "assert completed case latency";
+    if (!(receipt.seconds < 10)) throw new assert.AssertionError({
+      actual: receipt.seconds, expected: 10, operator: "<", message: "case exceeded ten seconds",
+    });
     return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds,
       setup_seconds: receipt.preparation_seconds, total_seconds: receipt.total_seconds, phases, captures, hooks: childHooks };
   } catch (error) {
+    // Completed measurements belong to the original owner. For an interrupted
+    // case, stop the fallback clock before formatting its diagnostic.
+    const ended = receipt === undefined ? performance.now() : undefined;
     let result = { case: name, platform: process.platform, status: "fail", code: error.code,
       failure: failureReport(error),
-      phase: phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run"),
-      ...(begin === undefined ? {} : { seconds: (performance.now() - begin) / 1000 }),
-      setup_seconds: phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
-      total_seconds: (performance.now() - setupBegin) / 1000, phases,
+      phase: receipt === undefined
+        ? phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run")
+        : "latency",
+      ...(begin === undefined ? {} : { seconds: receipt?.seconds ?? (ended - begin) / 1000 }),
+      setup_seconds: receipt?.preparation_seconds
+        ?? phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
+      total_seconds: receipt?.total_seconds ?? (ended - setupBegin) / 1000, phases,
       error: `step=${step}: ${error.message}; recovery=${recovery}`, captures, hooks: childHooks };
     // The original process and retirement have joined. A rejected answer can
     // precede the tool assertions, but cannot discard their recorded evidence.
