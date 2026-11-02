@@ -136,6 +136,13 @@ pub(super) struct Quantiles {
 
 impl Quantiles {
     pub(super) fn new(values: &mut [f64]) -> Result<Self> {
+        Self::with_order(values, f64::total_cmp)
+    }
+
+    fn with_order(
+        values: &mut [f64],
+        mut compare: impl FnMut(&f64, &f64) -> std::cmp::Ordering,
+    ) -> Result<Self> {
         if values.is_empty()
             || values
                 .iter()
@@ -143,23 +150,29 @@ impl Quantiles {
         {
             return Err("quantiles require nonnegative finite samples".into());
         }
-        values.sort_unstable_by(f64::total_cmp);
-        let rank = |percent: usize| -> Result<f64> {
-            let index = values
+        let rank = |percent: usize| -> Result<usize> {
+            Ok(values
                 .len()
                 .checked_mul(percent)
                 .ok_or("sample rank overflow")?
                 .div_ceil(100)
-                .saturating_sub(1);
-            values
-                .get(index)
-                .copied()
-                .ok_or_else(|| "sample rank missing".into())
+                .saturating_sub(1))
+        };
+        let samples = values.len();
+        let (median, tail) = (rank(50)?, rank(99)?);
+        // Partition only the requested ranks. The lower partition still
+        // contains the median; no complete sample ordering is required.
+        let (lower, tail_value, _) = values.select_nth_unstable_by(tail, &mut compare);
+        let p99_ns = *tail_value;
+        let p50_ns = if median == tail {
+            p99_ns
+        } else {
+            *lower.select_nth_unstable_by(median, compare).1
         };
         Ok(Self {
-            samples: values.len(),
-            p50_ns: rank(50)?,
-            p99_ns: rank(99)?,
+            samples,
+            p50_ns,
+            p99_ns,
         })
     }
 }
@@ -173,6 +186,40 @@ pub(super) fn check_observations() -> Result {
     let small = Quantiles::new(&mut [5.0, 1.0, 4.0, 2.0, 3.0])?;
     if small.samples != 5 || small.p50_ns != 3.0 || small.p99_ns != 5.0 {
         return Err("small-cohort quantiles changed".into());
+    }
+    let singleton = Quantiles::new(&mut [7.0])?;
+    if singleton.samples != 1 || singleton.p50_ns != 7.0 || singleton.p99_ns != 7.0 {
+        return Err("coincident quantile ranks changed".into());
+    }
+    // Deterministic shuffled observations, independent of clock resolution.
+    let original: Vec<_> = (0..4096)
+        .map(|index| f64::from((index * 251) % 4096))
+        .collect();
+    let mut selected = original.clone();
+    let mut selection_comparisons = 0;
+    let mut result = None;
+    let allocations = acyclic_test_support::measure(|| {
+        result = Some(Quantiles::with_order(&mut selected, |left, right| {
+            selection_comparisons += 1;
+            left.total_cmp(right)
+        }));
+    });
+    let selected = result.ok_or("quantile selection did not complete")??;
+    let mut sorted = original;
+    let mut sort_comparisons = 0;
+    // Restore the former full sort as an independent work negative.
+    sorted.sort_unstable_by(|left, right| {
+        sort_comparisons += 1;
+        left.total_cmp(right)
+    });
+    if selected.samples != sorted.len()
+        || selected.p50_ns != sorted[2047]
+        || selected.p99_ns != sorted[4055]
+        || allocations.count_total != 0
+        || allocations.bytes_total != 0
+        || selection_comparisons >= sort_comparisons
+    {
+        return Err("quantile selection changed ranks or retained full-sort work".into());
     }
     // A timestamp pair can occupy one clock tick. Preserve that observation
     // rather than fabricating a positive elapsed duration.
@@ -326,9 +373,11 @@ pub(super) fn check_observations() -> Result {
         },
         "raw samples",
     )?;
-    emit(
-        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
-    )
+    emit(serde_json::json!({
+        "schema": 1, "kind": "negative_control",
+        "control": "invalid quantile observations and mismatched floor terms", "result": "rejected",
+        "rank_comparisons": {"selection": selection_comparisons, "full_sort_negative": sort_comparisons},
+    }))
 }
 
 fn check_borrowed_serialization(evidence: impl Serialize, kind: &str) -> Result {
