@@ -375,10 +375,10 @@ mod worker_context_tests {
                         .iter()
                         .map(|(parent, _)| parent.as_deref())
                         .collect::<Vec<_>>(),
-                    [if disabled {
+                    // Both global and per-layer filtering retain the caller.
+                    // Losing that ancestry must never look like a root event.
+                    [if filtered {
                         Some("drop_caller")
-                    } else if filtered {
-                        None
                     } else {
                         Some("drop_operation")
                     }],
