@@ -70,15 +70,17 @@ impl StreamProvider for HeldHead {
         let loss = self.follow_loss.lock().unwrap().take();
         Ok(match loss {
             None => original,
-            Some(loss) => stream::select(
-                original,
-                stream::once(async move {
-                    let _ = loss.await;
-                    Err(StreamError::Unavailable)
-                })
-                .boxed(),
-            )
-            .boxed(),
+            Some(loss) => original.map_cursor(|cursor| {
+                stream::select(
+                    cursor,
+                    stream::once(async move {
+                        let _ = loss.await;
+                        Err(StreamError::Unavailable)
+                    })
+                    .boxed(),
+                )
+                .boxed()
+            }),
         })
     }
     async fn read_commit(
