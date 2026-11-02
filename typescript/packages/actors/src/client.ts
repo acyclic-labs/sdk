@@ -331,8 +331,10 @@ interface WasmActorsModule extends ActorsNominalBinding {
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
 }
 
-/** Validate an env declaration through the same Rust admission as deployment RPCs. */
-export async function validateDeploymentBinding(binding: import("./generated/semantic/actors/readonly.js").Binding): Promise<void> {
+type DeploymentDeclaration = import("./generated/semantic/actors/readonly.js").Binding;
+
+function captureDeploymentBinding(input: DeploymentDeclaration): DeploymentDeclaration {
+  const binding = { ...input };
   for (const value of [binding.name, binding.capability, binding.resource]) {
     if (typeof value !== "string") throw new TypeError("binding fields must be text");
   }
@@ -340,12 +342,32 @@ export async function validateDeploymentBinding(binding: import("./generated/sem
     if (value !== undefined && typeof value !== "string") throw new TypeError("binding targets must be text");
   }
   if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
-  const account = new Uint8Array(binding.targetAccount);
-  const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
+  binding.targetAccount = new Uint8Array(binding.targetAccount);
   const stateTransaction = binding.stateTransaction ?? false;
   if (typeof stateTransaction !== "boolean") throw new TypeError("binding state selector must be boolean");
-  const wasm = await loadWasmModule();
-  wasm.validateDeploymentBinding(name, capability, resource, account, actorNamespace, workerService, stateTransaction, guestAdmission);
+  return Object.freeze(binding);
+}
+
+function validateCapturedBinding(wasm: WasmActorsModule, binding: DeploymentDeclaration): void {
+  const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
+  wasm.validateDeploymentBinding(name, capability, resource, binding.targetAccount, actorNamespace, workerService, binding.stateTransaction ?? false, guestAdmission);
+}
+
+/** Validate an env declaration through the same Rust admission as deployment RPCs. */
+export async function validateDeploymentBinding(input: DeploymentDeclaration): Promise<void> {
+  const binding = captureDeploymentBinding(input);
+  validateCapturedBinding(await loadWasmModule(), binding);
+}
+
+/** Capture declarations before initialization, then admit them through one loaded
+ * Rust module. The returned snapshots retain exactly the fields Rust checked. */
+export async function admitDeploymentBindings(input: readonly DeploymentDeclaration[]): Promise<readonly DeploymentDeclaration[]> {
+  const selected = input.map(captureDeploymentBinding);
+  if (selected.length !== 0) {
+    const wasm = await loadWasmModule();
+    for (const binding of selected) validateCapturedBinding(wasm, binding);
+  }
+  return Object.freeze(selected);
 }
 
 let wasmModulePromise: Promise<WasmActorsModule> | undefined;
