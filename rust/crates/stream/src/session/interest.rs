@@ -455,23 +455,31 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         }
         if self.records.is_none() {
             let confirmation = self.preceding;
-            let mut records = self.provider.follow(crate::FollowRequest {
-                bootstrap_head: self.bootstrap_head,
-                until: self.until,
-                when_absent: self.when_absent,
-                path: self.path.clone(),
-                from: self.next,
-                preceding: self.preceding,
-                filter: self.filter.clone(),
-                progress: true,
-                at_least: self.at_least.clone(),
-            }).await?;
+            let mut records = self
+                .provider
+                .follow(crate::FollowRequest {
+                    bootstrap_head: self.bootstrap_head,
+                    until: self.until,
+                    when_absent: self.when_absent,
+                    path: self.path.clone(),
+                    from: self.next,
+                    preceding: self.preceding,
+                    filter: self.filter.clone(),
+                    progress: true,
+                    at_least: self.at_least.clone(),
+                })
+                .await?;
             self.bootstrap_head = false;
             self.next = records.selection.from;
             self.preceding = records.selection.preceding;
             self.end = records.selection.end;
-            records.selection.bootstrap = records.selection.bootstrap.take()
-                .map(|record| self.filter.project(record)).transpose()?.flatten();
+            records.selection.bootstrap = records
+                .selection
+                .bootstrap
+                .take()
+                .map(|record| self.filter.project(record))
+                .transpose()?
+                .flatten();
             let selection = wire_codec::selection_to_wire(&records.selection);
             self.bootstrap = records.selection.bootstrap.take();
             let applied = wire_codec::revision_to_wire(&records.snapshot);

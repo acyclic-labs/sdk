@@ -3,9 +3,9 @@ use super::*;
 /// Preserves original observer failure separately from the provider's error.
 pub type NativeStreamResult<T, E = StreamError> = std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
-/// A finite cursor preserves late original failures after its actual prefix.
+/// The selected finite cut and original cursor preserve late native failures.
 pub type NativeRecordStream =
-    BoxProviderStream<'static, std::io::Result<Result<NativeStreamOutput<Record>, StreamError>>>;
+    crate::Opened<Result<NativeStreamOutput<Record>, StreamError>, std::io::Error>;
 
 /// Object-safe provider future whose real heap frame is admitted before boxing.
 pub enum NativeProviderFuture<'a, T, E = StreamError> {

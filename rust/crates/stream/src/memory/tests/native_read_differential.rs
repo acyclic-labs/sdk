@@ -30,6 +30,13 @@ fn baseline_native_read<'a>(
         let end = path
             .tail
             .min(request.from.saturating_add(u64::from(request.limit)));
+        let snapshot = provider.revisions.at(state.decision);
+        let selection = crate::StreamSelection {
+            from: request.from,
+            preceding: None,
+            end: Some(end),
+            bootstrap: None,
+        };
         if let Some(window) = path.prefix_window(request.from, end) {
             meter.admit_examination(1, 0)?;
             windows.push(window);
@@ -93,7 +100,7 @@ fn baseline_native_read<'a>(
         let mut frame =
             acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of_val(&cursor))?;
         allocation.absorb(&mut frame)?;
-        let cursor: crate::NativeRecordStream = Box::pin(cursor);
+        let cursor = crate::Opened::new(snapshot, selection, Box::pin(cursor));
         drop(state);
         Ok(Ok(crate::NativeStreamOutput::new(cursor, allocation)))
     })

@@ -1,4 +1,4 @@
-//! Independent old handlers plus exact work on the production receive path.
+//! Exact work on the production receive path, with a redundant-lookup control.
 use super::*;
 use acyclic_test_support::{
     AllocationInfo,
@@ -167,20 +167,14 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
             message: "server diagnostic".into(),
         })
     } else {
-        Body::Opened(wire::SessionOpened {
-            selection: None,
-            resume: Some(super::super::super::cursor(if kind == 5 {
-                2
-            } else {
-                route.received
-            })),
-            preceding_commit_id: if checked {
+        Body::Opened(fixture::opened(
+            super::super::super::cursor(if kind == 5 { 2 } else { route.received }),
+            if checked {
                 vec![if kind == 3 { 8 } else { 7 }; 32].into()
             } else {
                 Bytes::new()
             },
-            applied: None,
-        })
+        ))
     };
     if kind == 7 {
         route.node = "bad".into();
@@ -204,7 +198,7 @@ struct Output {
     deliveries: Vec<Vec<Delivered>>,
 }
 
-fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, AllocationInfo) {
+fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
     let mut results = Vec::with_capacity(state.input.len());
     let mut allocations = AllocationInfo::default();
     let before = state.pool.routes.searches();
@@ -214,11 +208,7 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
             if redundant {
                 assert!(state.pool.routes.get_mut(&input.channel_id).is_some());
             }
-            results.push(if old {
-                old_receive(&mut state.pool, "good", input)
-            } else {
-                state.pool.receive("good", input)
-            });
+            results.push(state.pool.receive("good", input));
         });
     }
     let searches = state.pool.routes.searches() - before;
@@ -292,42 +282,36 @@ fn run(mut state: State, old: bool, redundant: bool) -> (Output, usize, Allocati
     )
 }
 
-fn compare(n: usize, kind: u8, redundant: bool) -> bool {
+fn required_searches(n: usize, kind: u8) -> usize {
+    n * if matches!(kind, 6 | 7) { 1 } else { 2 }
+}
+
+fn redundant_search_is_rejected(n: usize, kind: u8) -> bool {
     let [
-        ((before, old_searches, old_allocations), old_trace),
-        ((after, searches, allocations), trace),
+        ((before, searches, before_allocations), before_trace),
+        ((after, extra_searches, allocations), trace),
     ] = pair::<_, _, Trace>(
         || initialize(n, kind),
-        |state, old| run(state, old, !old && redundant),
+        |state, baseline| run(state, !baseline),
     );
     assert_eq!(
         after, before,
-        "complete results, readiness, route state, wire bytes and ordered deliveries"
+        "redundant lookup changes no observable result"
     );
-    assert_eq!(trace, old_trace, "operation/observer trace");
-    assert_eq!(
-        allocations.count_total, old_allocations.count_total,
-        "exact allocations"
-    );
-    assert_eq!(
-        allocations.bytes_total, old_allocations.bytes_total,
-        "exact allocated bytes"
-    );
-    let expected = n * if matches!(kind, 5..=7) { 1 } else { 2 };
-    assert_eq!(
-        old_searches,
-        expected + if matches!(kind, 6 | 7) { 0 } else { n }
-    );
-    searches == expected
+    assert_eq!(trace, before_trace, "operation/observer trace");
+    assert_eq!(allocations.count_total, before_allocations.count_total);
+    assert_eq!(allocations.bytes_total, before_allocations.bytes_total);
+    assert_eq!(searches, required_searches(n, kind));
+    extra_searches != required_searches(n, kind)
 }
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn route_dispatch_uses_only_required_searches(n in 1_usize..17, kind in 0_u8..10) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let _entered = runtime.enter();
-        prop_assert!(compare(n, kind, false));
+        let (_, searches, _) = run(initialize(n, kind), false);
+        prop_assert_eq!(searches, required_searches(n, kind));
     }
 }
 
@@ -340,165 +324,8 @@ fn redundant_route_search_fails_the_same_contract() {
     let _entered = runtime.enter();
     for kind in 0..10 {
         assert!(
-            !compare(3, kind, true),
+            redundant_search_is_rejected(3, kind),
             "redundant search escaped kind {kind}"
         );
     }
-}
-
-#[test]
-fn route_dispatch_paired_measurement() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _entered = runtime.enter();
-    for kind in [0, 1] {
-        let mut elapsed = [std::time::Duration::ZERO; 2];
-        let [
-            ((before, old_searches, _), old_trace),
-            ((after, searches, _), trace),
-        ] = pair::<_, _, Trace>(
-            || initialize(256, kind),
-            |state, old| {
-                let start = std::time::Instant::now();
-                let result = run(state, old, false);
-                let [before, after] = &mut elapsed;
-                *if old { before } else { after } = start.elapsed();
-                result
-            },
-        );
-        assert_eq!(after, before);
-        assert_eq!(trace, old_trace);
-        assert_eq!(old_searches, 768);
-        assert_eq!(searches, 512);
-        eprintln!(
-            "route dispatch kind={kind} n=256 old={:?} new={:?} lookups=768->512",
-            elapsed[0], elapsed[1]
-        );
-    }
-}
-
-fn old_receive(pool: &mut Pool, node: &str, input: wire::SessionFrame) -> Result<(), StreamError> {
-    let id = input.channel_id;
-    if id == 0 {
-        return pool.control(node, input.generation, input.body.as_ref());
-    }
-    if matches!(input.body, Some(Body::Data(_))) {
-        let link = pool.links.get_mut(node).ok_or(StreamError::Unavailable)?;
-        wire_codec::session::consume_credit(&mut link.credit, &input)?;
-    }
-    let epoch = pool.links.get(node).ok_or(StreamError::Unavailable)?.epoch;
-    let length = input.encoded_len() as u64;
-    let Some(route) = pool
-        .routes
-        .get_mut(&id)
-        .filter(|route| route.node == node && route.generation == input.generation)
-    else {
-        // Return aggregate credit for fenced data without touching its successor.
-        if matches!(input.body, Some(Body::Data(_))) {
-            pool.release(node, epoch, length)?;
-        }
-        return Ok(());
-    };
-    if matches!(input.body, Some(Body::Data(_))) {
-        wire_codec::session::consume_credit(&mut route.credit, &input)?;
-    }
-    if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
-        && let Some(link) = pool.links.get(node)
-    {
-        link.channel.cancel_channel(wire::SessionChannel {
-            channel_id: id,
-            generation: input.generation,
-        });
-    }
-    match input.body {
-        Some(Body::Opened(opened)) => old_opened(pool, id, &opened),
-        Some(Body::Data(data)) => pool.data(
-            node,
-            id,
-            input.generation,
-            frame(id, input.generation, Body::Data(data)).into(),
-            length,
-            epoch,
-        ),
-        Some(Body::Closed(closed)) => old_closed(pool, id, &closed),
-        Some(Body::Moved(moved)) => {
-            let destination = moved.node.ok_or(StreamError::Unavailable)?;
-            if destination.node_id.is_empty()
-                || destination.placement_epoch <= route.placement_epoch
-            {
-                return Err(StreamError::Unavailable);
-            }
-            route.placement_epoch = destination.placement_epoch;
-            route.generation = route.progress.fence()?;
-            route.opened = false;
-            pool.routes
-                .rehome(&id, &destination.node_id)
-                .ok_or(StreamError::Unavailable)?;
-            if pool.links.contains_key(&destination.node_id) {
-                pool.subscribe(id)
-            } else {
-                pool.dial(destination, None);
-                Ok(())
-            }
-        }
-        Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
-            if route.raw {
-                route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
-                pool.flush_watermark(id)
-            } else {
-                Ok(())
-            }
-        }
-        _ => Err(StreamError::Unavailable),
-    }
-}
-/// Accept an Open reply that resumes exactly where the route left off.
-fn old_opened(pool: &mut Pool, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
-    let route = pool.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-    if opened.resume.as_ref().is_none_or(|resume| {
-        resume.next != route.received || resume.opaque != route.received_opaque
-    }) {
-        return Err(StreamError::Unavailable);
-    }
-    if let Kind::Follow(follow) = &route.kind {
-        let preceding = wire_codec::session::preceding_follow(
-            follow,
-            opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
-        )?;
-        if let Err(error) = wire_codec::session::confirm_follow(preceding, opened) {
-            if let Some(ready) = route.ready.take() {
-                let _ = ready.send(Err(error.clone()));
-            }
-            let records = route.records.clone();
-            pool.remove(id)?;
-            pool.executor.spawn(Box::pin(async move {
-                let _ = records.send(Err(error)).await;
-            }));
-            return Ok(());
-        }
-    }
-    if let Some(ready) = route.ready.take() {
-        let _ = ready.send(Ok((id, None)));
-    }
-    route.observation.record("generation", route.generation);
-    route.opened = true;
-    pool.grant(id)
-}
-/// End a route with the server's status after its earlier records.
-fn old_closed(pool: &mut Pool, id: u64, closed: &wire::SessionClosed) -> Result<(), StreamError> {
-    let route = pool.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-    let error = StreamError::from_session_close(&closed.code);
-    if let Some(ready) = route.ready.take() {
-        let _ = ready.send(Err(error));
-        pool.routes.remove(&id);
-        return Ok(());
-    }
-    // Errors are delivered after all earlier records, using one reserved slot.
-    let route = pool.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-    pool.executor.spawn(Box::pin(async move {
-        let _ = route.records.send(Err(error)).await;
-    }));
-    Ok(())
 }

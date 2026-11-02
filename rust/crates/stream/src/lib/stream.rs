@@ -175,8 +175,8 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         Ok(records_only(
             self.provider
                 .follow(FollowRequest {
-            bootstrap_head: false,
-            until: None,
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: self.path.clone(),
                     from,

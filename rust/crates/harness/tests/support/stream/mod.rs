@@ -1,8 +1,4 @@
 //! Shared Stream fault fixture; all successful operations use the real provider.
-#![allow(
-    dead_code,
-    reason = "shared fault fixtures expose controls used by different test modules"
-)]
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
@@ -463,6 +459,8 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 &original,
                 std::mem::size_of::<NativeFaultRecordCursor>(),
             )?;
+            let snapshot = source.value().snapshot.clone();
+            let selection = source.value().selection.clone();
             let cursor = NativeFaultRecordCursor {
                 source,
                 meter: original,
@@ -472,7 +470,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 previous: None,
             };
             Ok(Ok(acyclic_stream::NativeStreamOutput::new(
-                Box::pin(cursor) as acyclic_stream::NativeRecordStream,
+                acyclic_stream::Opened::new(snapshot, selection, Box::pin(cursor)),
                 allocation,
             )))
         })

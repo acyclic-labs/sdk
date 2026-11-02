@@ -1,5 +1,27 @@
 use super::*;
 
+/// One valid live Streams receipt for the shared pool controls and models.
+pub(in crate::session::client) fn opened(
+    resume: wire::SessionCursor,
+    preceding: Bytes,
+) -> wire::SessionOpened {
+    wire::SessionOpened {
+        selection: Some(wire::SessionSelection {
+            from: resume.next,
+            end: None,
+            preceding_commit_id: preceding.clone(),
+            has_bootstrap: false,
+        }),
+        resume: Some(resume),
+        preceding_commit_id: preceding,
+        applied: Some(wire_codec::revision_to_wire(&crate::Revision {
+            scope: crate::RevisionScope::new(b"fixture".to_vec()),
+            incarnation: 1,
+            index: 0,
+        })),
+    }
+}
+
 pub(in crate::session::client) fn fixture(
     channel: &TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {

@@ -406,6 +406,7 @@ impl Fixture {
             cancellation,
         )
         .await
+        .map(|(follow, _)| follow)
         .map_err(|error| error.message.into())
     }
     async fn outage(&self, cursor: &NativeStreamFollow) -> TestResult {

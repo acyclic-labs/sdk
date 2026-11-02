@@ -51,10 +51,16 @@ impl LocalStream {
             done: false,
             span: span.clone(),
         });
-        Ok(crate::Opened::new(snapshot, selection, span
-            .scope(stream::try_unfold(state, |mut state| async move {
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
+            span.scope(stream::try_unfold(state, |mut state| async move {
                 loop {
-                if state.cursor.finished() { state.done = true; state.span.record("terminal", "end"); return Ok(None); }
+                    if state.cursor.finished() {
+                        state.done = true;
+                        state.span.record("terminal", "end");
+                        return Ok(None);
+                    }
                     #[cfg(loom)]
                     let retain_pending = state.provider.inner.retain_pending_read;
                     let (next, record) = crate::snapshot::read(
@@ -68,7 +74,11 @@ impl LocalStream {
                         Ok(Some(record)) => {
                             return Ok(Some((crate::FollowUpdate::Record(record), state)));
                         }
-                        Ok(None) if state.cursor.finished() => { state.done = true; state.span.record("terminal", "end"); return Ok(None); },
+                        Ok(None) if state.cursor.finished() => {
+                            state.done = true;
+                            state.span.record("terminal", "end");
+                            return Ok(None);
+                        }
                         Ok(None) => state.wait().await,
                         Err(error) => Err(error),
                     };
@@ -78,6 +88,7 @@ impl LocalStream {
                     }
                 }
             }))
-            .boxed()))
+            .boxed(),
+        ))
     }
 }

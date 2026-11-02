@@ -762,38 +762,43 @@ pub struct StreamSelection {
 ///
 /// Forwarders preserve this receipt together with the original cursor. The
 /// revision is available before the first item, including empty and quiet opens.
-pub struct Opened<T> {
+pub struct Opened<T, E = StreamError> {
     /// Revision of the original selected snapshot, never a later applied sample.
     pub snapshot: Revision,
     /// Bounds, anchor and bootstrap from that same snapshot.
     pub selection: StreamSelection,
-    cursor: BoxProviderStream<'static, Result<T, StreamError>>,
+    cursor: BoxProviderStream<'static, Result<T, E>>,
 }
 
-impl<T> Opened<T> {
+impl<T, E> Opened<T, E> {
     /// Couples a selected snapshot with its original retained cursor.
     #[must_use]
     pub fn new(
         snapshot: Revision,
         selection: StreamSelection,
-        cursor: BoxProviderStream<'static, Result<T, StreamError>>,
+        cursor: BoxProviderStream<'static, Result<T, E>>,
     ) -> Self {
-        Self { snapshot, selection, cursor }
+        Self {
+            snapshot,
+            selection,
+            cursor,
+        }
     }
 
     /// Projects cursor items without replacing their selection or ownership.
     #[must_use]
     pub fn map_cursor<U>(
         self,
-        project: impl FnOnce(BoxProviderStream<'static, Result<T, StreamError>>)
-            -> BoxProviderStream<'static, Result<U, StreamError>>,
-    ) -> Opened<U> {
+        project: impl FnOnce(
+            BoxProviderStream<'static, Result<T, E>>,
+        ) -> BoxProviderStream<'static, Result<U, E>>,
+    ) -> Opened<U, E> {
         Opened::new(self.snapshot, self.selection, project(self.cursor))
     }
 }
 
-impl<T> futures::Stream for Opened<T> {
-    type Item = Result<T, StreamError>;
+impl<T, E> futures::Stream for Opened<T, E> {
+    type Item = Result<T, E>;
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.cursor.size_hint()
@@ -810,11 +815,13 @@ impl<T> futures::Stream for Opened<T> {
 /// Projects records from an existing follow without subscribing again.
 pub fn records_only(updates: FollowStream) -> RecordStream {
     use futures::StreamExt as _;
-    updates.map_cursor(|updates| Box::pin(updates.filter_map(|update| {
-        futures::future::ready(match update {
-            Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
-            Ok(FollowUpdate::Progress { .. } | FollowUpdate::Opening { .. }) => None,
-            Err(error) => Some(Err(error)),
-        })
-    })))
+    updates.map_cursor(|updates| {
+        Box::pin(updates.filter_map(|update| {
+            futures::future::ready(match update {
+                Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
+                Ok(FollowUpdate::Progress { .. } | FollowUpdate::Opening { .. }) => None,
+                Err(error) => Some(Err(error)),
+            })
+        }))
+    })
 }

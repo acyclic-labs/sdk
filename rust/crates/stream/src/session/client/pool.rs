@@ -450,17 +450,7 @@ impl Pool {
         }
         match input.body {
             Some(Body::Opened(opened)) => {
-                let refused = match opened
-                    .applied
-                    .clone()
-                    .map(wire_codec::revision_from_wire)
-                    .transpose()
-                {
-                    // An open that does not prove the route's minimum, including
-                    // one carrying no applied revision, serves nothing.
-                    Ok(applied) if !Self::proves(&route.kind, applied.as_ref()) => {
-                        Some(StreamError::InvalidResponse)
-                    }
+                let refused = match Self::open_revision(route, &opened) {
                     // Every open, including a resume on another replica, raises the floor.
                     Ok(applied) => {
                         let conflict = applied.and_then(|applied| {
@@ -476,7 +466,7 @@ impl Pool {
                         if let Some(error) = conflict {
                             Some(error)
                         } else {
-                            Self::opened(route, id, &opened)?
+                            Self::opened(route, id, &opened).err()
                         }
                     }
                     Err(error) => Some(error),
@@ -589,36 +579,38 @@ impl Pool {
             Ok(false)
         }
     }
-    /// Accept an Open reply that resumes exactly where the route left off.
-    /// Whether `applied` covers every entry of the route's minimum cut. No
-    /// minimum is always proven; a missing revision proves no minimum.
-    fn proves(kind: &Kind, applied: Option<&crate::Revision>) -> bool {
-        match kind {
-            Kind::Follow(follow) => wire_codec::cut_proven_by(&follow.at_least, applied),
-            _ => true,
-        }
-    }
-    fn opened(
-        route: &mut Route,
-        id: u64,
+    /// Validate the whole open before it can raise either revision floor.
+    fn open_revision(
+        route: &Route,
         opened: &wire::SessionOpened,
-    ) -> Result<Option<StreamError>, StreamError> {
-        if opened.resume.as_ref().is_none_or(|resume| {
-            resume.next != route.received || resume.opaque != route.received_opaque
-        }) {
-            return Err(StreamError::Unavailable);
+    ) -> Result<Option<crate::Revision>, StreamError> {
+        let resume = opened.resume.as_ref().ok_or(StreamError::InvalidResponse)?;
+        if resume.next != route.received || resume.opaque != route.received_opaque {
+            return Err(StreamError::InvalidResponse);
         }
         if let Kind::Follow(follow) = &route.kind {
-            let preceding = wire_codec::session::preceding_follow(
-                follow,
-                opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
-            )?;
-            if let Err(error) = wire_codec::session::confirm_follow(preceding, opened) {
-                if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Err(error.clone()));
-                }
-                return Ok(Some(error));
+            let preceding = wire_codec::session::preceding_follow(follow, resume)?;
+            wire_codec::session::confirm_follow(preceding, opened)?;
+            if wire_codec::session::tracks_revisions(follow) {
+                return wire_codec::selection_for_follow(opened, follow, resume.next)
+                    .map(|(snapshot, _, _)| Some(snapshot));
             }
+        }
+        let applied = opened
+            .applied
+            .clone()
+            .map(wire_codec::revision_from_wire)
+            .transpose()
+            .map_err(|_| StreamError::InvalidResponse)?;
+        if let Kind::Follow(follow) = &route.kind
+            && !wire_codec::cut_proven_by(&follow.at_least, applied.as_ref())
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(applied)
+    }
+    fn opened(route: &mut Route, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
+        if let Kind::Follow(follow) = &route.kind {
             if follow.bootstrap_head && route.received == 0 {
                 let selected = opened
                     .selection
@@ -639,7 +631,7 @@ impl Pool {
         }
         route.observation.record("generation", route.generation);
         route.opened = true;
-        Ok(None)
+        Ok(())
     }
     /// End a route with the server's status after its earlier records.
     fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {

@@ -174,6 +174,15 @@ struct FiniteRead {
 }
 
 impl FiniteRead {
+    fn selection(&self) -> crate::StreamSelection {
+        crate::StreamSelection {
+            from: self.next,
+            preceding: None,
+            end: Some(self.history.tail),
+            bootstrap: None,
+        }
+    }
+
     fn new(path: &PathState, request: ReadRequest) -> Self {
         let tail = request.key.as_ref().map_or_else(
             || {

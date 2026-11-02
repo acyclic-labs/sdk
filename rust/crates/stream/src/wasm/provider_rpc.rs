@@ -165,7 +165,6 @@ impl InjectedStream {
         let Some(wire::session_frame::Body::Opened(opened)) = opened.body else {
             return Err(StreamError::InvalidResponse);
         };
-        let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(opened)?;
         let (minimum, bootstrap, until) = match operation {
             "read" => {
                 let request = wire::ReadRequest::decode(input.as_slice())
@@ -186,18 +185,15 @@ impl InjectedStream {
             }
             _ => return Err(StreamError::InvalidArgument),
         };
-        if !wire_codec::cut_proven_by(&minimum, Some(&snapshot))
-            || (!bootstrap && selection.from != from)
-            || (!bootstrap && selection.preceding != preceding)
-            || (has_bootstrap && !bootstrap)
-            || selection.end.is_some() != until.is_some()
-            || selection
-                .end
-                .zip(until)
-                .is_some_and(|(selected, requested)| selected > requested)
-        {
-            return Err(StreamError::InvalidResponse);
-        }
+        let follow = wire::SessionFollow {
+            at_least: minimum,
+            bootstrap_head: bootstrap,
+            until,
+            preceding_commit_id: anchor.into(),
+            ..Default::default()
+        };
+        let (snapshot, mut selection, has_bootstrap) =
+            wire_codec::selection_for_follow(&opened, &follow, from)?;
         if has_bootstrap {
             let frame = cursor.next().await?.ok_or(StreamError::InvalidResponse)?;
             let Some(wire::session_frame::Body::Data(data)) = frame.body else {
@@ -210,6 +206,7 @@ impl InjectedStream {
             if frame.channel_id != 1
                 || frame.generation != 1
                 || record.sequence.checked_add(1) != Some(selection.from)
+                || Some(record.commit_id) != selection.preceding
             {
                 return Err(StreamError::InvalidResponse);
             }
@@ -520,15 +517,9 @@ impl super::WasmStream {
         let opened = wire::SessionFrame {
             channel_id: 1,
             generation: 1,
-            body: Some(wire::session_frame::Body::Opened(wire::SessionOpened {
-                resume: Some(wire::SessionCursor {
-                    next: updates.selection.from,
-                    opaque: bytes::Bytes::new(),
-                }),
-                preceding_commit_id: bytes::Bytes::copy_from_slice(preceding),
-                applied: Some(wire_codec::revision_to_wire(&updates.snapshot)),
-                selection: Some(wire_codec::selection_to_wire(&updates.selection)),
-            })),
+            body: Some(wire::session_frame::Body::Opened(
+                wire_codec::opened_to_wire(&updates),
+            )),
         }
         .encode_length_delimited_to_vec();
         let bootstrap = updates

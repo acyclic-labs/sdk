@@ -11,11 +11,14 @@ impl LocalStream {
     ) -> Result<crate::FollowStream, StreamError> {
         let failed = self.inner.failed.subscribe();
         let (snapshot, selection, changed, cursor) = self
-            .accepted(
-                self.inner
-                    .provider
-                    .prepare_progress(&path, from, anchor, when_absent, bootstrap_head, until),
-            )
+            .accepted(self.inner.provider.prepare_progress(
+                &path,
+                from,
+                anchor,
+                when_absent,
+                bootstrap_head,
+                until,
+            ))
             .await??;
         let anchor = selection.preceding;
         let state = Box::new(LocalProgress {
@@ -27,34 +30,42 @@ impl LocalStream {
             changed,
             failed,
         });
-        Ok(crate::Opened::new(snapshot, selection, stream::try_unfold(state, |mut state| async move {
-            loop {
-                if state.cursor.finished() { return Ok(None); }
-                #[cfg(loom)]
-                let retain_pending = state.provider.inner.retain_pending_read;
-                let (next, update) = crate::snapshot::read(
-                    state,
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
+            stream::try_unfold(state, |mut state| async move {
+                loop {
+                    if state.cursor.finished() {
+                        return Ok(None);
+                    }
                     #[cfg(loom)]
-                    retain_pending,
-                )
-                .await;
-                state = next;
-                if let Some(update) = update? {
-                    return Ok(Some((update, state)));
-                }
-                if state.cursor.finished() { return Ok(None); }
-                let changed = state.changed.changed();
-                let failed = LocalInner::unavailable(&mut state.failed);
-                futures::pin_mut!(changed, failed);
-                match futures::future::select(failed, changed).await {
-                    futures::future::Either::Left((error, _)) => return Err(error),
-                    futures::future::Either::Right((result, _)) => {
-                        result.map_err(|_| StreamError::Unavailable)?;
+                    let retain_pending = state.provider.inner.retain_pending_read;
+                    let (next, update) = crate::snapshot::read(
+                        state,
+                        #[cfg(loom)]
+                        retain_pending,
+                    )
+                    .await;
+                    state = next;
+                    if let Some(update) = update? {
+                        return Ok(Some((update, state)));
+                    }
+                    if state.cursor.finished() {
+                        return Ok(None);
+                    }
+                    let changed = state.changed.changed();
+                    let failed = LocalInner::unavailable(&mut state.failed);
+                    futures::pin_mut!(changed, failed);
+                    match futures::future::select(failed, changed).await {
+                        futures::future::Either::Left((error, _)) => return Err(error),
+                        futures::future::Either::Right((result, _)) => {
+                            result.map_err(|_| StreamError::Unavailable)?;
+                        }
                     }
                 }
-            }
-        })
-        .boxed()))
+            })
+            .boxed(),
+        ))
     }
 }
 struct LocalProgress {

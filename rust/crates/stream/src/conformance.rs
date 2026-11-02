@@ -4,8 +4,8 @@ mod absence;
 mod atomic;
 mod backend;
 pub(crate) mod key_seek;
-mod soft;
 pub(crate) mod selected;
+mod soft;
 mod views;
 #[path = "conformance"]
 mod histories {

@@ -548,8 +548,8 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
         })?;
         let mut followed = streams
             .follow(acyclic_stream::FollowRequest {
-                    bootstrap_head: false,
-                    until: None,
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path,
                 from: 0,

@@ -7,7 +7,15 @@ impl MemoryStream {
         when_absent: crate::WhenAbsent,
         bootstrap_head: bool,
         until: Option<u64>,
-    ) -> Result<(crate::Revision, crate::StreamSelection, watch::Receiver<u64>, HistoryCursor), StreamError> {
+    ) -> Result<
+        (
+            crate::Revision,
+            crate::StreamSelection,
+            watch::Receiver<u64>,
+            HistoryCursor,
+        ),
+        StreamError,
+    > {
         let state = self.state.write().await;
         let snapshot = state.paths.get(path).cloned();
         let revision = self.revisions.at(state.decision);
@@ -38,28 +46,28 @@ impl MemoryStream {
         filter: &crate::FollowFilter,
     ) -> Result<Option<crate::FollowUpdate>, StreamError> {
         if cursor.end.is_none() {
-        let state = self.state.read().await;
-        let snapshot = state.paths.get(path).cloned();
-        drop(state);
-        let path = snapshot.as_ref();
-        if !cursor.observe_creation(path, *anchor).await? {
-            return Ok(cursor
-                .opening_tail
-                .take()
-                .map(|tail| crate::FollowUpdate::Opening { tail }));
-        }
-        let path = path.ok_or(if anchor.is_some() {
-            StreamError::PrefixNotRetained
-        } else {
-            StreamError::NotFound
-        })?;
-        if cursor.position() > path.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        if let Some(anchor) = anchor {
-            cursor.check_anchor(path, *anchor).await?;
-        }
-        cursor.sync(path);
+            let state = self.state.read().await;
+            let snapshot = state.paths.get(path).cloned();
+            drop(state);
+            let path = snapshot.as_ref();
+            if !cursor.observe_creation(path, *anchor).await? {
+                return Ok(cursor
+                    .opening_tail
+                    .take()
+                    .map(|tail| crate::FollowUpdate::Opening { tail }));
+            }
+            let path = path.ok_or(if anchor.is_some() {
+                StreamError::PrefixNotRetained
+            } else {
+                StreamError::NotFound
+            })?;
+            if cursor.position() > path.tail {
+                return Err(StreamError::OutOfRange);
+            }
+            if let Some(anchor) = anchor {
+                cursor.check_anchor(path, *anchor).await?;
+            }
+            cursor.sync(path);
         }
         if let Some(tail) = cursor.opening_tail.take() {
             return Ok(Some(crate::FollowUpdate::Opening { tail }));
@@ -123,32 +131,40 @@ impl MemoryStream {
             filter,
             changed,
         });
-        Ok(crate::Opened::new(snapshot, selection, stream::try_unfold(state, |mut state| async move {
-            loop {
-                if state.cursor.finished() { return Ok(None); }
-                #[cfg(loom)]
-                let retain_pending = state.provider.retain_pending_read;
-                let (next, update) = crate::snapshot::read(
-                    state,
-                    #[cfg(loom)]
-                    retain_pending,
-                )
-                .await;
-                state = next;
-                if let Some(update) = update? {
-                    return Ok(Some((update, state)));
-                }
-                if state.cursor.finished() { return Ok(None); }
-                state.changed.changed().await.map_err(|_| {
-                    if state.anchor.is_some() {
-                        StreamError::PrefixNotRetained
-                    } else {
-                        StreamError::Unavailable
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
+            stream::try_unfold(state, |mut state| async move {
+                loop {
+                    if state.cursor.finished() {
+                        return Ok(None);
                     }
-                })?;
-            }
-        })
-        .boxed()))
+                    #[cfg(loom)]
+                    let retain_pending = state.provider.retain_pending_read;
+                    let (next, update) = crate::snapshot::read(
+                        state,
+                        #[cfg(loom)]
+                        retain_pending,
+                    )
+                    .await;
+                    state = next;
+                    if let Some(update) = update? {
+                        return Ok(Some((update, state)));
+                    }
+                    if state.cursor.finished() {
+                        return Ok(None);
+                    }
+                    state.changed.changed().await.map_err(|_| {
+                        if state.anchor.is_some() {
+                            StreamError::PrefixNotRetained
+                        } else {
+                            StreamError::Unavailable
+                        }
+                    })?;
+                }
+            })
+            .boxed(),
+        ))
     }
 }
 

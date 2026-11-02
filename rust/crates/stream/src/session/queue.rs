@@ -18,7 +18,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Ok(());
         };
         let (frame, key) = match record {
-                Ok(Event::Opened(preceding, applied, selection)) => {
+            Ok(Event::Opened(preceding, applied, selection)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
                     identity.generation,

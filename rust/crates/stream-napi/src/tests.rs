@@ -409,8 +409,8 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
         )?;
         let request = wire::FollowRequest {
-                    bootstrap_head: false,
-                    until: None,
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             filter: None,
             path: "accounts/events".to_owned(),
@@ -425,7 +425,8 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
                 None,
             )
             .await
-            .map_err(|error| error.message)?,
+            .map_err(|error| error.message)?
+            .0,
         );
         let pending = tokio::spawn({
             let follow = Arc::clone(&follow);

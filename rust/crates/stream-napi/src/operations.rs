@@ -93,25 +93,19 @@ pub(super) async fn read(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
+) -> std::result::Result<(NativeStreamFollow, Buffer), NativeStreamErrorMetadata> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
     let path = request.path.clone();
     let records = run_operation!(client.read(request), cancellation).await?;
-    Ok(NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records, path)))),
-            token: cancellation_state(cancellation).unwrap_or_default(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    })
+    Ok(selected_follow(records, path, cancellation))
 }
 
 pub(super) async fn open_follow(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
+) -> std::result::Result<(NativeStreamFollow, Buffer), NativeStreamErrorMetadata> {
     let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(&request, "follow")?)
         .map_err(|error| stream_error(&error))?;
     if request.progress {
@@ -124,13 +118,25 @@ pub(super) async fn open_follow(
         acyclic_stream::records_only
     )
     .await?;
-    Ok(NativeStreamFollow {
+    Ok(selected_follow(records, path, cancellation))
+}
+
+fn selected_follow(
+    mut records: acyclic_stream::RecordStream,
+    path: acyclic_stream::StreamPath,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> (NativeStreamFollow, Buffer) {
+    let opened = wire_codec::opened_to_wire(&records);
+    let bootstrap = records.selection.bootstrap.take().map(Ok);
+    let records = futures::stream::iter(bootstrap).chain(records);
+    let follow = NativeStreamFollow {
         state: FollowState {
             records: Arc::new(Mutex::new(Some(record_frames(records, path)))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },
-    })
+    };
+    (follow, Buffer::from(opened.encode_to_vec()))
 }
 
 /// Encodes the records of `path`, spelling only an origin other than it.

@@ -474,8 +474,6 @@ impl Client {
         };
         wire_codec::session::validate_follow(&follow, &cursor(request.from))?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
-        let minimum = follow.at_least.clone();
-        let until = follow.until;
         let mut source = self
             .open_subscription(
                 Kind::Follow(follow),
@@ -487,18 +485,9 @@ impl Client {
             )
             .await?;
         let (snapshot, selection, has_bootstrap) = wire_codec::selection_from_opened(
-            source.opened.take().ok_or(StreamError::InvalidResponse)?,
+            &source.opened.take().ok_or(StreamError::InvalidResponse)?,
         )?;
-        if has_bootstrap
-            || selection.from != request.from
-            || selection.preceding.is_some()
-            || selection.end.is_none()
-            || selection
-                .end
-                .zip(until)
-                .is_some_and(|(selected, requested)| selected > requested)
-            || !wire_codec::cut_proven_by(&minimum, Some(&snapshot))
-        {
+        if has_bootstrap {
             return Err(StreamError::InvalidResponse);
         }
         let records = data::Data::new(source).map(move |item| item?.into_record(&path));
@@ -530,9 +519,6 @@ impl Client {
     ) -> Result<crate::FollowStream, StreamError> {
         let filter = Some(request.filter.transport_filter()?);
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
-        let (bootstrap, until, preceding) =
-            (request.bootstrap_head, request.until, request.preceding);
-        let minimum = wire_codec::cut_to_wire(&request.at_least);
         let mut source = self
             .open_subscription(
                 follow_kind(request),
@@ -544,17 +530,8 @@ impl Client {
             )
             .await?;
         let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(
-            source.opened.take().ok_or(StreamError::InvalidResponse)?,
+            &source.opened.take().ok_or(StreamError::InvalidResponse)?,
         )?;
-        if (!bootstrap && selection.from != from)
-            || (!bootstrap && selection.preceding != preceding)
-            || (has_bootstrap && !bootstrap)
-            || selection.end.is_some() != until.is_some()
-            || selection.end.zip(until).is_some_and(|(selected, requested)| selected > requested)
-            || !wire_codec::cut_proven_by(&minimum, Some(&snapshot))
-        {
-            return Err(StreamError::InvalidResponse);
-        }
         let mut updates = super::runtime::boxed(source.flat_map(move |item| {
             let opening = match &item {
                 Ok(frame) if progress => match frame.wire().body.as_ref() {
@@ -590,7 +567,9 @@ impl Client {
             let crate::FollowUpdate::Record(record) = update else {
                 return Err(StreamError::InvalidResponse);
             };
-            if record.sequence.checked_add(1) != Some(selection.from) {
+            if record.sequence.checked_add(1) != Some(selection.from)
+                || Some(record.commit_id) != selection.preceding
+            {
                 return Err(StreamError::InvalidResponse);
             }
             selection.bootstrap = Some(record);
