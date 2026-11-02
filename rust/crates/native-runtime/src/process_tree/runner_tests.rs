@@ -197,6 +197,15 @@ fn exec_image(image: &std::os::fd::OwnedFd) -> Option<std::io::Error> {
 fn a_runner_image_made_while_another_thread_forks_always_execs() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    // A successful exec is insufficient: the image must also reach its normal
+    // no-control exit. This real executable exposes a status-blind oracle.
+    let unsuccessful: std::os::fd::OwnedFd = fs::File::open("/bin/false")
+        .expect("unsuccessful native program")
+        .into();
+    assert!(
+        exec_image(&unsuccessful).is_some(),
+        "an image that execs but fails was accepted"
+    );
     // Control: on this kernel, does a writable description fail the exec?
     let image = make_image().expect("image");
     let writable = std::fs::OpenOptions::new().write(true).open(format!(
