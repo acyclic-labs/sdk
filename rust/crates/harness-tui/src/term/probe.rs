@@ -174,7 +174,7 @@ impl Probe {
             } else if multiplexer != Multiplexer::Screen
                 || !query.windows(2).any(|x| x == b"\x1b\\")
             {
-                batch.extend_from_slice(&multiplexer.wrap(query));
+                multiplexer.wrap_into(query, &mut batch);
             }
         }
         batch.extend_from_slice(b"\x1b[c");
@@ -458,7 +458,7 @@ pub fn detect(
         // including when the original startup deadline has already expired.
         let mut cancel = vec![0x18];
         if multiplexer != Multiplexer::None {
-            cancel.extend_from_slice(&multiplexer.wrap(b"\x18"));
+            multiplexer.wrap_into(b"\x18", &mut cancel);
         }
         let _ = io.send(&cancel, Instant::now() + Duration::from_millis(1));
         return Err(error);

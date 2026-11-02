@@ -69,10 +69,17 @@ pub enum Multiplexer {
 impl Multiplexer {
     /// Wrap one complete OSC, DCS or APC sequence for the outer multiplexer.
     pub fn wrap(self, bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        self.wrap_into(bytes, &mut output);
+        output
+    }
+
+    /// Append one wrapped sequence, preserving the buffer's existing prefix.
+    pub fn wrap_into(self, bytes: &[u8], output: &mut Vec<u8>) {
         match self {
-            Self::None => bytes.to_vec(),
+            Self::None => output.extend_from_slice(bytes),
             Self::Tmux => {
-                let mut output = b"\x1bPtmux;".to_vec();
+                output.extend_from_slice(b"\x1bPtmux;");
                 for &byte in bytes {
                     output.push(byte);
                     if byte == 0x1b {
@@ -80,14 +87,12 @@ impl Multiplexer {
                     }
                 }
                 output.extend_from_slice(b"\x1b\\");
-                output
             }
             Self::Screen => {
                 // screen does not accept a nested ST; OSC callers use BEL.
-                let mut output = b"\x1bP".to_vec();
+                output.extend_from_slice(b"\x1bP");
                 output.extend_from_slice(bytes);
                 output.extend_from_slice(b"\x1b\\");
-                output
             }
         }
     }
