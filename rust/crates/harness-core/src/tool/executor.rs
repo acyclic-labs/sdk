@@ -90,13 +90,24 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// grant before dispatch. Unsupported adapters must refuse, never drop it.
     /// An implementation returning success must consume the context's grant
     /// at its original launch boundary and preserve any narrower host ceiling.
+    /// Native checks must use the caller's original work, without an ordinary
+    /// fallback when its operation, allocation or cancellation checks refuse.
     #[cfg(not(target_arch = "wasm32"))]
     fn authorize_execution_grant(
         &self,
         _invocation: &ToolInvocation,
         _context: &crate::runtime::ToolContext,
         _grant: &acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch",
+            });
+        }
+        let _ = work;
         Err(Error::Unsupported(
             "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch".into(),
         ))

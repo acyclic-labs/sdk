@@ -20,6 +20,10 @@ Checkout shell execution forwards that per-call grant to the original native
 capture. If the executor already has a host grant, the selected grant must
 pass the same object-bound attenuation proof against that ceiling. The proof
 checks existing grants without rebuilding roots or compiling another filter.
+Stock admission forwards its original native work through the selected executor;
+checkout ceiling proofs use that work's existing runtime meter for root opens,
+identity queries and descendant path storage. A refused budget or cancellation
+does not select an ordinary proof. Unbounded admission creates no meter.
 When no grant is selected, the executor retains its existing host boundary. File operations
 continue to use their original filesystem authority; a physical shell grant
 cannot replace it. Existing policies default to no per-call grant. This API

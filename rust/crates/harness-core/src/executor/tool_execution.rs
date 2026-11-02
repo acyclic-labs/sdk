@@ -699,7 +699,9 @@ impl<'io> StockExecution<'io> {
                     let context = context.ok_or_else(|| Error::Unauthorized(
                         "physical admission requires the original task context; recovery: bind the task before dispatch".into(),
                     ))?;
-                    tool.executor.authorize_execution_grant(invocation, context, &grant)?;
+                    tool.executor.authorize_execution_grant(
+                        invocation, context, &grant, self.native_work(),
+                    )?;
                     context.execution_grant = Some(grant);
                 }
                 Ok(())
