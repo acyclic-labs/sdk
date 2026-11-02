@@ -38,17 +38,6 @@ pub(super) fn encode(secret: &Secret) -> String {
     secret.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub(super) fn decode(text: &str) -> Option<Secret> {
-    let mut secret = [0; 16];
-    if text.len() != 32 {
-        return None;
-    }
-    for (byte, pair) in secret.iter_mut().zip(text.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(secret)
-}
-
 /// Compares secrets in time independent of where they first differ.
 pub(super) fn matches(expected: &Secret, presented: &Secret) -> bool {
     expected

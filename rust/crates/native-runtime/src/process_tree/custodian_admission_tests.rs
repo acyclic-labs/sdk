@@ -4,6 +4,17 @@ use super::*;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 
+fn decode(text: &str) -> Option<Secret> {
+    let mut secret = [0; 16];
+    if text.len() != 32 {
+        return None;
+    }
+    for (byte, pair) in secret.iter_mut().zip(text.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(secret)
+}
+
 /// Asks the custodian at `address` to admit `pid` into `tree`.
 fn admit(address: &str, pid: u32, tree: u64, secret: &Secret) -> bool {
     let mut stream = TcpStream::connect(address).expect("connect");
