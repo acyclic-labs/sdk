@@ -55,6 +55,9 @@ pub(crate) fn key(path: &NamespacePath, config: VolumeConfig) -> PathKey {
         if index != 0 {
             key.push(b"/");
         }
+        if key.len == key.bytes.len() {
+            break;
+        }
         component_key(name, config, &mut key);
     }
     key
