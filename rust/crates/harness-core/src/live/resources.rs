@@ -1,7 +1,8 @@
 //! Borrowed resource files under `live/agents/<p>/resources/`.
 //!
-//! The existing authorized reader supplies the original committed record and
-//! its decoded value once. Projection never discovers a machine, re-reads a
+//! The existing authorized reader supplies the original committed record.
+//! Producer values are decoded once at their shared admission; projection
+//! never discovers a machine, re-reads a
 //! source, polls a provider, walks descendants or publishes another record.
 //! Subtree counters require the original indexed aggregate at its admitted cut;
 //! inherited history and shared physical allocations are not added as new work.

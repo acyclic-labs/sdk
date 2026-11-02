@@ -393,6 +393,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                     source: path.clone(),
                     destination: selected.clone(),
                     at_tail: Some(2),
+                    exclude: Vec::new(),
                     idempotency_key: IdempotencyKey::unique(),
                 })
                 .await
