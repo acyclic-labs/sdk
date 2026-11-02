@@ -30,7 +30,7 @@ async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_closed_pid_producer_ends_admission() -> Result {
+async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Result {
     served("codex", |host, cwd| {
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
         let (mut running, view) = claim(
@@ -41,24 +41,32 @@ async fn a_closed_pid_producer_ends_admission() -> Result {
                 prompt: "closed producer".into(),
             },
         )?;
-        let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-        command
-            .args(["-c", "exit 0"])
-            .current_dir(&view)
-            .stdin(ProcessStdio::null())
-            .stdout(ProcessStdio::piped())
-            .stderr(ProcessStdio::piped());
+        let mut command = native_fixture(&view, "", "0");
         running
             .process
             .spawn(&mut command, running.claim.operation)?;
-        let error = shell_pid(&mut running).expect_err("a closed producer has no PID");
+        let pid = shell_pid(&mut running)?;
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{pid}/fd/1"))?;
+        running.process.queue_stdin(b"exit\n".to_vec())?;
+        assert!(
+            running.process.pump_stdin()?,
+            "the empty pipe accepts five bytes"
+        );
+        let error = shell_pid(&mut running).expect_err("an exited producer has no next PID");
         assert!(
             error
                 .to_string()
-                .contains("read native fixture PID: closed producer")
+                .contains("read native fixture PID: process exited before PID")
+        );
+        assert!(
+            running.process.read_stdout(&mut [0])?.is_none(),
+            "the external writer withholds stdout EOF"
         );
         wait_exit(&mut running)?;
         assert!(sessions.refresh("closed", &mut running)?.is_some());
+        drop(writer);
         Ok(())
     })
     .await
@@ -263,11 +271,25 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
                 }
             }
             None => {
+                running.process.drain_stderr()?;
+                if running.process.try_wait()?.is_some() {
+                    return Err(failed(
+                        "read native fixture PID",
+                        "process exited before PID",
+                    ));
+                }
                 futures::executor::block_on(running.process.readiness()?).into_result()?;
             }
             _ => return Err(failed("read native fixture PID", "closed producer")),
         }
     }
+}
+
+fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
+    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+        .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
+    command
 }
 
 fn exercise(host: &str, cwd: &Path) -> Result {
@@ -293,9 +315,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     } else {
         ("", "17")
     };
-    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
-        .arg(events).arg(exit).current_dir(&view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
+    let mut command = native_fixture(&view, events, exit);
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
     let pid = shell_pid(&mut running)?;
