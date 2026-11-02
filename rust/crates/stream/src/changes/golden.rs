@@ -30,12 +30,12 @@ fn qualify_marker(
             }))
     };
     assert_eq!(original, expected);
-    MARKER_PROBES.with(|count| count.set(0));
+    take_marker_probes();
     assert_eq!(
         reader_format(headers).map(|format| format.is_some()),
         original
     );
-    let after = MARKER_PROBES.with(|count| count.replace(0));
+    let after = take_marker_probes();
     assert!(after <= before);
     if expected.is_ok() && !headers.attributes().is_empty() {
         assert!(
@@ -44,31 +44,31 @@ fn qualify_marker(
         );
     }
     assert_eq!(filter.matches(headers), expected == Ok(true));
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
     assert_eq!(FollowFilter::default().matches(headers), expected.is_ok());
-    MARKER_PROBES.with(|count| count.set(0));
+    take_marker_probes();
     assert_eq!(validate(value, headers), expected.clone().map(|_| ()));
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
     assert_eq!(
         decode(value, headers),
         expected.clone().map(|_| decoded.clone())
     );
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
 
     // The former validation and decode paths selected the reader by looking
     // up the same immutable marker again (twice more during typed decoding).
     if expected == Ok(true) {
         let _ = reader_format(headers).unwrap();
         let _ = compact(headers);
-        assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), 2 * after);
+        assert_eq!(take_marker_probes(), 2 * after);
         let _ = reader_format(headers).unwrap();
         let _ = compact(headers);
         let _ = compact(headers);
-        assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), 3 * after);
+        assert_eq!(take_marker_probes(), 3 * after);
     }
 
     assert_eq!(decode(&[], headers), Err(StreamError::InvalidArgument));
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
     assert_eq!(
         validate(&[], headers),
         if expected == Ok(false) {
@@ -77,7 +77,7 @@ fn qualify_marker(
             Err(StreamError::InvalidArgument)
         }
     );
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
 
     // A valid body alone cannot establish its immutable index. Bypassing
     // validation would accept the same decoded value under a forged key.
@@ -98,7 +98,7 @@ fn qualify_marker(
             Err(StreamError::InvalidArgument)
         }
     );
-    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(take_marker_probes(), after);
     eprintln!(
         "marker {:?}, {} attributes: {before} -> {after} name probes",
         expected,

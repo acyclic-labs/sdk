@@ -34,6 +34,11 @@ pub(crate) fn take_parsed_bytes() -> usize {
     PARSED_BYTES.with(|count| count.replace(0))
 }
 
+#[cfg(test)]
+pub(crate) fn take_marker_probes() -> usize {
+    MARKER_PROBES.with(|count| count.replace(0))
+}
+
 /// Borrowed path-local facts used by a provider's funded change producer.
 pub struct ChangeEntryRef<'a> {
     /// Canonical indexed key, with the same order as the resulting headers.
@@ -405,7 +410,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
 
 // Keep the admitted marker borrowed through reader selection. Decoding still
 // validates the complete value and index before allocating any decoded entries.
-fn validated_format<'a>(
+pub(crate) fn validated_format<'a>(
     bytes: &[u8],
     headers: &'a RecordHeaders,
 ) -> Result<Option<&'a [u8]>, StreamError> {
