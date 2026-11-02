@@ -79,6 +79,7 @@ cases! {
     authority_missing: authority(AuthorityStoreError::Missing) => NotFound;
     authority_retired: authority(AuthorityStoreError::Retired) => NotFound;
     authority_cancelled: authority(AuthorityStoreError::Cancelled) => Cancelled;
+    authority_handoff: authority(AuthorityStoreError::AccountingHandoffActive) => FailedPrecondition;
     authority_stream: authority(AuthorityStoreError::NativeStream(acyclic_stream::StreamError::AccessDenied)) => PermissionDenied;
     authority_codec: authority(AuthorityStoreError::DurableCodec(crate::StreamsAuthorityRecordError::InvalidDomain)) => DataLoss;
     authority_corrupt_static: authority(AuthorityStoreError::CorruptStatic("invalid durable state")) => DataLoss;

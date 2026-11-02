@@ -223,6 +223,14 @@ fn kernel_admission_visits_the_original_leaf_once() {
                 });
                 result.unwrap();
                 assert!(exactly_one(locks).is_err());
+                let mut authority = crate::AuthorityWork::native(&work, &caller_cancel);
+                let ((result, heap), locks) = root
+                    .state
+                    .count_locks(|| measured(|| authority.operation()));
+                let operation = result.unwrap();
+                assert!(std::ptr::eq(operation.original.unwrap(), &work));
+                exactly_one(locks).unwrap();
+                no_heap_work(heap).unwrap();
             }
         }
     }

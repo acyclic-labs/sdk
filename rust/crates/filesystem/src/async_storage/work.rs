@@ -219,19 +219,9 @@ impl<'a> AuthorityWork<'a> {
         self.work
     }
 
-    /// Returns the remaining operation budget.
-    pub fn remaining(&self) -> Result<WorkBudget, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            return original.remaining().map_err(Into::into);
-        }
-        let mut remaining = self.work.remaining(self.budget)?;
-        remaining.peak_allocation_bytes = self
-            .budget
-            .peak_allocation_bytes
-            .checked_sub(self.allocations.live_bytes())
-            .ok_or(WorkError::Overflow)?;
-        Ok(remaining)
+    /// Admits the remaining operation budget against its original custody and stop state.
+    pub fn remaining(&mut self) -> Result<WorkBudget, AuthorityStoreError> {
+        self.accounting().remaining().map_err(authority_error)
     }
 
     /// Attaches actual work to a completed operation.
@@ -249,7 +239,7 @@ impl<'a> AuthorityWork<'a> {
 
     /// Admits a read against the original ledger, including live and resident bytes.
     pub fn read_budget(&mut self) -> Result<WorkBudget, ObjectStoreError> {
-        let mut remaining = self.accounting().remaining().map_err(super::object_error)?;
+        let mut remaining = self.remaining().map_err(ObjectStoreError::from)?;
         if let Some((_, standing)) = self.read_observation {
             let Some(peak) = remaining.peak_allocation_bytes.checked_sub(standing) else {
                 self.read_observation = None;
@@ -308,10 +298,10 @@ impl<'a> AuthorityWork<'a> {
         self.work.admit(&delta, &self.budget).map_err(Into::into)
     }
 
-    pub(crate) fn operation(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
-        self.check()?;
+    pub(crate) fn operation(&mut self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
+            self.check()?;
             return Ok(Self::native(original, self.cancellation));
         }
         Ok(Self::new(self.remaining()?, self.cancellation))
@@ -541,6 +531,7 @@ pub(crate) fn authority_error(error: crate::FsError) -> AuthorityStoreError {
         crate::FsError::NativeKernel(error) => AuthorityStoreError::NativeOriginal(error),
         crate::FsError::Work(error) => error.into(),
         crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled,
+        crate::FsError::AccountingHandoffActive => AuthorityStoreError::AccountingHandoffActive,
         crate::FsError::WorkspaceDeleted => AuthorityStoreError::Retired,
         _ => AuthorityStoreError::RejectedStatic("authority allocation failed"),
     }

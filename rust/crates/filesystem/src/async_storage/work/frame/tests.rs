@@ -1,5 +1,5 @@
 use super::*;
-use crate::kernel::allocation::retained::RetainedAllocation;
+use crate::kernel::allocation::retained::{OwnedAccounting, RetainedAllocation};
 
 #[tokio::test]
 async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
@@ -41,6 +41,24 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
                 ..
             }))
         ));
+        let held = OwnedAccounting::take_branch(&mut borrowed.accounting(), &cancellation)?;
+        let before = borrowed.spent();
+        assert!(matches!(
+            borrowed.remaining(),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            borrowed.operation(),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert_eq!(borrowed.spent(), before);
+        held.restore(&mut borrowed.accounting())?;
+        let remaining = borrowed.remaining()?;
+        assert_eq!(remaining.items_examined, 0);
+        assert_eq!(
+            remaining.peak_allocation_bytes,
+            borrowed.budget.peak_allocation_bytes - borrowed.allocations.live_bytes()
+        );
     }
     assert_eq!(original.spent().items_examined, 2);
     assert_eq!(
@@ -69,6 +87,12 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     drop(producer);
     assert_eq!(original.spent(), before);
     assert!(AuthorityFrame::borrow(&mut original).is_err());
+    let mut stopped = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        stopped.remaining(),
+        Err(AuthorityStoreError::Cancelled)
+    ));
+    assert_eq!(stopped.spent(), WorkCounters::UNCHARGED);
     assert_eq!(original.spent(), before);
     drop(first);
     drop(second);
@@ -98,6 +122,20 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             ..WorkCounters::UNCHARGED
         })?;
         assert_eq!(native.receipt().items_examined, 2);
+        let caller_cancel = CancellationToken::new();
+        let mut caller = AuthorityWork::native(&native, &caller_cancel);
+        let before = native.receipt();
+        caller_cancel.cancel();
+        assert!(matches!(
+            caller.remaining(),
+            Err(AuthorityStoreError::Cancelled)
+        ));
+        assert!(matches!(
+            caller.operation(),
+            Err(AuthorityStoreError::Cancelled)
+        ));
+        assert_eq!(native.receipt(), before);
+        assert!(borrowed.remaining().is_ok());
         cancellation.cancel();
         drop(borrowed);
         assert_eq!(original.spent(), native.receipt());

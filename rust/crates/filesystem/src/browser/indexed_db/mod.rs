@@ -114,6 +114,7 @@ fn corrupt(error: impl std::fmt::Display) -> AuthorityStoreError {
 fn object_error(error: AuthorityStoreError) -> ObjectStoreError {
     match error {
         AuthorityStoreError::Cancelled => ObjectStoreError::Cancelled,
+        AuthorityStoreError::AccountingHandoffActive => ObjectStoreError::AccountingHandoffActive,
         AuthorityStoreError::Work(error) => ObjectStoreError::Work(error),
         AuthorityStoreError::Missing => ObjectStoreError::Missing,
         AuthorityStoreError::Corrupt(_) => ObjectStoreError::Corrupt,
