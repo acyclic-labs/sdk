@@ -148,8 +148,10 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Retains a filesystem command's saved result while its original file
+    /// under `directory/requests` exists. Later commands may prune that result
+    /// after withdrawal; the file bridge owns durable reply and withdrawal
+    /// ordering. This does not store every host action's encoded reply.
     #[must_use]
     pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
         self.requests = Some(directory);
