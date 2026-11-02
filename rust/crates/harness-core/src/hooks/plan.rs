@@ -256,6 +256,65 @@ impl<'a> Plan<'a> {
         Ok(plan)
     }
 
+    /// A plugin hook's decision (`BeforeHook` in `sys/types`): exit 2
+    /// denies with stderr as the reason; exit 0 with no output allows;
+    /// otherwise stdout is `{allow: true, input?}`, `{allow: false, reason}`
+    /// or `{ask, to}`.
+    pub(super) fn decision(
+        code: Option<i32>,
+        stdout: &'a [u8],
+        stderr: &'a [u8],
+    ) -> std::result::Result<Self, &'static str> {
+        let mut plan = Self::empty();
+        if code == Some(2) {
+            plan.blocked = Some(Text::Stderr(stderr));
+            return Ok(plan);
+        }
+        let text = std::str::from_utf8(stdout)
+            .map_err(|_| "hook stdout is not UTF-8")?
+            .trim();
+        if text.is_empty() {
+            return Ok(plan);
+        }
+        let [allow, input, reason, ask, to] =
+            fields(text, ["allow", "input", "reason", "ask", "to"])
+                .map_err(|_| "a hook decision must be a JSON object")?;
+        for raw in [reason, ask] {
+            string(raw)?;
+        }
+        if let Some(ask) = ask {
+            if allow.is_some() || input.is_some() || reason.is_some() {
+                return Err("an ask decision has only `ask` and `to`");
+            }
+            choice(to, &["person", "parent", "model", "command"])?
+                .ok_or("an ask decision names `to`")?;
+            plan.approval = Some(Text::Json(ask));
+            return Ok(plan);
+        }
+        if to.is_some() {
+            return Err("`to` belongs to an ask decision");
+        }
+        match allow.map(RawValue::get) {
+            Some("true") if reason.is_none() => {
+                plan.input = input
+                    .map(|raw| {
+                        if !raw.get().starts_with('{') {
+                            return Err("a hook's `input` must be an object");
+                        }
+                        canonical_size(raw)
+                            .map(|size| (raw, size))
+                            .ok_or("invalid hook `input`")
+                    })
+                    .transpose()?;
+            }
+            Some("false") if input.is_none() => {
+                plan.blocked = Some(Text::Json(reason.ok_or("a denial names its `reason`")?));
+            }
+            _ => return Err("a hook decision is {allow: true, input?}, {allow: false, reason} or {ask, to}"),
+        }
+        Ok(plan)
+    }
+
     pub(super) fn invalid(message: &'static str, blocking: bool, code: Option<i32>) -> Self {
         Self {
             failure: Some((
