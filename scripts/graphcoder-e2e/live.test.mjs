@@ -16,6 +16,7 @@ const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-re
 const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
 const codeFailure = JSON.parse(readFileSync(new URL("./fixtures/live-code-failure.json", import.meta.url), "utf8")).event;
 const nestedFailures = JSON.parse(readFileSync(new URL("./fixtures/live-nested-settlement-failure.json", import.meta.url), "utf8")).cases;
+const childMessage = JSON.parse(readFileSync(new URL("./fixtures/live-child-message.json", import.meta.url), "utf8"));
 const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
 
@@ -269,6 +270,32 @@ test("collaboration requires the spawned child's exact settled public result", (
       mutate(events);
       assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
     }
+  }
+});
+
+test("child message settlement follows its original selected send", () => {
+  const { events: original, expected } = childMessage;
+  const check = events => requireTools(events, ["spawn", "send", "wait"], expected);
+  check(original);
+  const selectedSend = events => events.find(event => event.tool_name === "send" && event.tool_input.message === expected);
+  for (const mutate of [
+    events => events.pop(),
+    events => { events.splice(events.indexOf(selectedSend(events)), 1); },
+    events => { selectedSend(events).hook_event_name = "PreToolUse"; },
+    events => { selectedSend(events).tool_input.agent += "/other"; },
+    events => { selectedSend(events).tool_response.sent += "/other"; },
+    events => { selectedSend(events).tool_response.status = "refused"; },
+    events => { selectedSend(events).tool_response.error = "message refused"; },
+    events => { events.at(-1).tool_response.settled[0].answer = "READY"; },
+    events => { events.at(-1).tool_response.settled[0].agent += "/other"; },
+    events => { events.at(-1).tool_input.agents = ["other"]; },
+    events => { events.splice(1, 0, events.pop()); },
+    events => { events.push(structuredClone(events.find(event => event.tool_input?.message === "READY"))); },
+    events => { events[1].tool_response.error = "earlier wait refused"; },
+  ]) {
+    const events = structuredClone(original);
+    mutate(events);
+    assert.throws(() => check(events));
   }
 });
 
