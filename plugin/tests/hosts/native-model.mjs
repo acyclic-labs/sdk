@@ -6,9 +6,16 @@ import {randomUUID} from 'node:crypto';
 import {readFile,realpath,stat,writeFile} from 'node:fs/promises';
 import {dirname,delimiter,isAbsolute,join,relative,sep,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost,nativeProvider} from './native-host.mjs';
+
+const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
+function nativeFailure(host,code,message,cause) {
+ throw Object.assign(new Error('step=validate native '+host+' completion: '+message+
+  '; recovery='+completionRecovery,{cause}),{code});
+}
 
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer,selection) {
@@ -20,7 +27,20 @@ export function assertNativeCompletion(host,result,answer,selection) {
   if(host==='codex') {
    if(event.type==='turn.started') {text=undefined;completed=false;}
    if(event.type==='turn.failed'||event.type==='error') {
-    const error=new Error('native Codex turn failed',{cause:event});error.code='NATIVE_HOST_MODEL_FAILED';throw error;
+    nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Codex turn failed',event);
+   }
+   if(event.type==='item.completed') {
+    const item=event.item;
+    if(item.type==='command_execution'||item.type==='mcp_tool_call') {
+     try {
+      toolOutcome(item,undefined,completionRecovery);
+      assert.equal(item.status,'completed','native tool terminal is not successful');
+      if(item.type==='command_execution')assert.equal(item.exit_code,0,'native shell exit is missing or unsuccessful');
+     } catch(cause) {
+      nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Codex '+item.type+' failed (status='+item.status+
+       ', exit_code='+item.exit_code+')',{item,cause});
+     }
+    }
    }
    if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
    if(event.type==='turn.completed')completed=true;
@@ -45,9 +65,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    if(message?.role!=='assistant')continue;
    terminal=message;
    if(message.stopReason==='error') {
-    const error=new Error(message.errorMessage,{cause:message});
-    error.code='NATIVE_HOST_MODEL_FAILED';
-    throw error;
+    nativeFailure(host,'NATIVE_HOST_MODEL_FAILED',message.errorMessage,message);
    }
   } else {
    throw new Error('step=validate native terminal; recovery=select codex, claude-code or pi');
