@@ -21,9 +21,7 @@ impl WasmProviderRequest {
 }
 
 impl WasmProviderRequest {
-    fn new(
-        request: impl std::future::Future<Output = Result<JsValue, JsValue>> + 'static,
-    ) -> Self {
+    fn new(request: impl std::future::Future<Output = Result<JsValue, JsValue>> + 'static) -> Self {
         Self {
             state: Rc::new(crate::pull::PullCursor::new(
                 futures::stream::once(request).boxed_local(),

@@ -131,7 +131,10 @@ impl WasmSession {
         let client = self.client.clone();
         let acknowledge = self.acknowledge;
         Ok(WasmProviderRequest::new(async move {
-            let records = client.read_with_ack(request, acknowledge).await.map_err(js_error)?;
+            let records = client
+                .read_with_ack(request, acknowledge)
+                .await
+                .map_err(js_error)?;
             Ok(JsValue::from(WasmOpened::records(records, path)))
         }))
     }

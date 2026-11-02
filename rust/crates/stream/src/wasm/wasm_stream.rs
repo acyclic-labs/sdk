@@ -319,8 +319,8 @@ impl WasmStream {
     /// Opens a finite read without materializing its selected history.
     pub fn read(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
-        let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(input)?)
-            .map_err(js_error)?;
+        let request =
+            wire_codec::read_from_wire(decode::<wire::ReadRequest>(input)?).map_err(js_error)?;
         let path = request.path.clone();
         let provider = self.provider.clone();
         Ok(WasmProviderRequest::new(async move {
@@ -341,8 +341,12 @@ impl WasmStream {
         let filter = request.filter.clone();
         let provider = self.provider.clone();
         Ok(WasmProviderRequest::new(async move {
-            let mut records = crate::records_only(provider.follow(request).await.map_err(js_error)?);
-            records.selection.bootstrap = records.selection.bootstrap.take()
+            let mut records =
+                crate::records_only(provider.follow(request).await.map_err(js_error)?);
+            records.selection.bootstrap = records
+                .selection
+                .bootstrap
+                .take()
                 .map(|record| filter.project(record))
                 .transpose()
                 .map_err(js_error)?
