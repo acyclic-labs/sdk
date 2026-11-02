@@ -257,9 +257,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 source: source.path.to_string(),
                 input: Some(wire_codec::record_wire(
                     Record {
+                        sequence: input.sequence,
+                        commit_id: input.commit_id,
+                        committed_at_micros: input.committed_at_micros,
+                        origin: input.origin.clone(),
                         value: bytes::Bytes::new().into(),
                         headers: RecordHeaders::default(),
-                        ..input.clone()
                     },
                     None,
                 )),
