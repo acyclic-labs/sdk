@@ -578,15 +578,11 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     assert_eq!(turn["prompt"], "first");
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
-        outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
-            #[cfg(feature = "research")]
-            journal_cut: None,
-            text: "done".into(),
-            metadata: Value::Null,
-            steps: 1,
-            transcript: Vec::new(),
-            attachments: Vec::new(),
-        }),
+        outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
+            "done".into(),
+            Value::Null,
+            1,
+        )),
     };
     fixture.session("child", complete).await?;
     let answered = fixture.session("child", first).await?;
