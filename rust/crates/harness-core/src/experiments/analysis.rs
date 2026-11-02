@@ -3,11 +3,12 @@
 
 use super::{
     Error, Observation,
+    reports::{CostReport, Costs},
     stats::{Cluster, Estimate, PairedStats},
 };
 use serde::Serialize;
 
-/// Version-1 coverage and estimates for one declared arm contrast.
+/// Version-2 coverage, arm costs and estimates for one declared arm contrast.
 #[derive(Debug, Serialize)]
 pub struct AnalysisReport {
     /// Persisted output format.
@@ -24,6 +25,10 @@ pub struct AnalysisReport {
     pub score: MetricReport,
     /// Complete-cost coverage, independent of score validity.
     pub cost_usd: MetricReport,
+    /// Baseline costs over all assignments, independently of matched coverage.
+    pub baseline_cost: CostReport,
+    /// Treatment costs over all assignments, independently of matched coverage.
+    pub treatment_cost: CostReport,
 }
 
 /// A measured subset cannot establish uncertainty for excluded assignments.
@@ -143,6 +148,7 @@ impl Contrast {
         let mut last: Option<([u8; 32], u64)> = None;
         let (mut assigned_pairs, mut assigned_clusters) = (0u64, 0u64);
         let (mut score, mut cost) = (Metric::default(), Metric::default());
+        let (mut baseline_cost, mut treatment_cost) = (Costs::default(), Costs::default());
         while let Some(baseline) = rows.next() {
             let baseline = baseline?;
             if assigned_pairs == expected_pairs {
@@ -150,6 +156,7 @@ impl Contrast {
                     "input exceeds the declared assignment count",
                 ));
             }
+            let next_assigned = assigned_pairs.checked_add(1).ok_or(Error::Overflow)?;
             let treatment = rows
                 .next()
                 .ok_or(Error::Analysis("unpaired baseline at end of input"))??;
@@ -167,7 +174,9 @@ impl Contrast {
             }
             score.push(pair.score()?)?;
             cost.push(pair.cost())?;
-            assigned_pairs = assigned_pairs.checked_add(1).ok_or(Error::Overflow)?;
+            baseline_cost.push_admitted(baseline.0.cost_usd)?;
+            treatment_cost.push_admitted(treatment.0.cost_usd)?;
+            assigned_pairs = next_assigned;
         }
         if assigned_pairs != expected_pairs {
             return Err(Error::Analysis("input omits declared assignments"));
@@ -175,13 +184,15 @@ impl Contrast {
         score.finish_cluster()?;
         cost.finish_cluster()?;
         Ok(AnalysisReport {
-            version: 1,
+            version: 2,
             baseline_arm,
             treatment_arm,
             assigned_pairs,
             assigned_clusters,
             score: score.report()?,
             cost_usd: cost.report()?,
+            baseline_cost: baseline_cost.report(assigned_pairs),
+            treatment_cost: treatment_cost.report(assigned_pairs),
         })
     }
 }
@@ -287,6 +298,44 @@ mod tests {
     }
 
     #[test]
+    fn arm_costs_keep_unmatched_and_unscored_assignments_without_inventing_totals()
+    -> Result<(), Error> {
+        // Authored prices exercise accounting; none are measured provider costs.
+        let report = analyze(
+            [
+                Observation::new([1; 32], 0, 0, None, Some(1.0)),
+                Observation::new([1; 32], 0, 1, None, Some(0.0)),
+                Observation::new([1; 32], 1, 0, None, Some(2.0)),
+                Observation::new([1; 32], 1, 1, None, Some(4.0)),
+                Observation::new([2; 32], 0, 0, None, None),
+                Observation::new([2; 32], 0, 1, None, Some(2.0)),
+            ],
+            0,
+            1,
+            3,
+        )?;
+        assert_eq!((report.assigned_pairs, report.assigned_clusters), (3, 2));
+        assert_eq!((report.score.pairs, report.cost_usd.pairs), (0, 2));
+        assert_eq!(report.cost_usd.clusters, 1);
+        assert!(report.cost_usd.estimate.is_none());
+        assert_eq!(report.baseline_cost.assigned, 3);
+        assert_eq!(report.baseline_cost.priced_trials, 2);
+        assert_eq!(report.baseline_cost.known_cost_usd, 3.0);
+        assert_eq!(report.baseline_cost.total_cost_usd, None);
+        assert_eq!(report.baseline_cost.cost_per_assigned_usd, None);
+        assert_eq!(report.treatment_cost.assigned, 3);
+        assert_eq!(report.treatment_cost.priced_trials, 3);
+        assert_eq!(report.treatment_cost.known_cost_usd, 6.0);
+        assert_eq!(report.treatment_cost.total_cost_usd, Some(6.0));
+        assert_eq!(report.treatment_cost.cost_per_assigned_usd, Some(2.0));
+
+        let empty = analyze([], 0, 1, 0)?;
+        assert_eq!(empty.baseline_cost.total_cost_usd, Some(0.0));
+        assert_eq!(empty.baseline_cost.cost_per_assigned_usd, None);
+        Ok(())
+    }
+
+    #[test]
     fn incomplete_reordered_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
         let row = |cut, replicate, arm| Observation::new([cut; 32], replicate, arm, None, None);
         assert!(analyze([row(1, 0, 0)], 0, 1, 1).is_err());
@@ -319,6 +368,10 @@ mod tests {
             .into_iter::<Observation>()
             .map(|row| row.map_err(Error::Json));
         assert!(matches!(analyze(rows, 0, 1, 1), Err(Error::Json(_))));
+        let rows = (0..2).flat_map(|replicate| {
+            (0..2).map(move |arm| Observation::new([1; 32], replicate, arm, None, Some(f64::MAX)))
+        });
+        assert!(matches!(analyze(rows, 0, 1, 2), Err(Error::Statistics(_))));
         Ok(())
     }
 

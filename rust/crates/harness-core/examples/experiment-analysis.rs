@@ -23,7 +23,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let first = args.next().ok_or("missing baseline arm")?;
     if first == "--help" && args.next().is_none() {
         println!(
-            "Usage: experiment-analysis BASELINE_ARM TREATMENT_ARM ASSIGNED_PAIRS OBSERVATIONS.jsonl\nWrite each version-2 baseline row followed by its treatment row, in strictly increasing (population, replicate) order. ASSIGNED_PAIRS is the predeclared count, including failed trials with unknown values. Output is one version-1 JSON report on stdout."
+            "Usage: experiment-analysis BASELINE_ARM TREATMENT_ARM ASSIGNED_PAIRS OBSERVATIONS.jsonl\nWrite each version-2 baseline row followed by its treatment row, in strictly increasing (population, replicate) order. ASSIGNED_PAIRS is the predeclared count, including failed trials with unknown values. Output is one version-2 JSON report on stdout, including per-arm assigned cost coverage."
         );
         return Ok(());
     }
