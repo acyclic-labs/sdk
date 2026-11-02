@@ -550,7 +550,7 @@ impl AgentClient {
             });
         }
         let Some((agent, status, path)) = self.streams.iter().find(|(_, _, path)| {
-            wire_codec::session::stream_resource(path.as_str()) == delivery.resource
+            wire_codec::session::stream_resource_matches(&delivery.resource, path)
         }) else {
             if matches!(
                 delivery.frame.body,

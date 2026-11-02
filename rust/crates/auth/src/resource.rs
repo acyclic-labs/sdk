@@ -72,6 +72,12 @@ pub fn decode_component(value: &str) -> Result<Vec<u8>, crate::Error> {
     component_bytes(value).collect()
 }
 
+/// Compare canonical encoded bytes without allocating a decoded component.
+/// Alternate escapes and malformed input never match.
+pub fn component_matches(encoded: &str, value: &[u8]) -> bool {
+    component_bytes(encoded).eq(value.iter().copied().map(Ok))
+}
+
 // Validation consumes this iterator without collecting; decoding collects the
 // same canonical bytes. No syntax-only caller allocates a component buffer.
 fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {

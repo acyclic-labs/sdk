@@ -4,7 +4,7 @@ use crate::{CommitId, Record, StreamError, StreamProvider, wire};
 use prost::Message as _;
 
 mod resource;
-pub use resource::{stream_path, stream_resource, validate_resource};
+pub use resource::{stream_path, stream_resource, stream_resource_matches, validate_resource};
 mod framing;
 pub use framing::{FrameDecoder, encode_grpc_frame};
 

@@ -13,6 +13,20 @@ pub fn stream_resource(path: &str) -> String {
     resource
 }
 
+/// Match a canonical resource against its owning path without allocating.
+/// The shared component decoder rejects aliases and encoded separators.
+pub fn stream_resource_matches(resource: &str, path: &StreamPath) -> bool {
+    let Some(encoded) = resource.strip_prefix("streams:/") else {
+        return false;
+    };
+    let mut components = encoded.split('/');
+    path.as_str().split('/').all(|component| {
+        components
+            .next()
+            .is_some_and(|encoded| acyclic_auth::component_matches(encoded, component.as_bytes()))
+    }) && components.next().is_none()
+}
+
 /// Validates the canonical envelope before handing its name to its product owner.
 pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
     envelope(resource)?;
@@ -70,11 +84,23 @@ mod tests {
     fn resource_round_trip_preserves_reserved_names_and_literal_percent_bytes()
     -> Result<(), StreamError> {
         for path in [
+            "events",
             ".acyclic/fs/volume",
             "caf%C3%A9/release.v1",
             "literal%2F/key",
         ] {
-            assert_eq!(stream_path(&stream_resource(path))?.as_str(), path);
+            let resource = stream_resource(path);
+            let decoded = stream_path(&resource)?;
+            assert_eq!(decoded.as_str(), path);
+            assert!(stream_resource_matches(&resource, &decoded));
+            assert!(!stream_resource_matches(
+                &format!("{resource}/other"),
+                &decoded
+            ));
+            assert!(!stream_resource_matches(
+                &resource,
+                &StreamPath::new(format!("{path}/other"))?
+            ));
         }
         assert_eq!(stream_resource(".acyclic/fs/v"), "streams:/%2Eacyclic/fs/v");
         assert_eq!(
@@ -100,6 +126,12 @@ mod tests {
             "fs:/volume",
         ] {
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
+            for path in ["events", "a/b", "a.b", "caf%C3%A9", "fs/volume"] {
+                assert!(!stream_resource_matches(
+                    resource,
+                    &StreamPath::new(path).expect("valid original path")
+                ));
+            }
         }
     }
 }
