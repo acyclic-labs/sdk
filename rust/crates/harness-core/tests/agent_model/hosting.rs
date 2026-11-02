@@ -437,6 +437,8 @@ struct Evidence {
     unknown_first: std::sync::atomic::AtomicBool,
     presented: std::sync::Mutex<Vec<Attestation>>,
     published: std::sync::atomic::AtomicUsize,
+    observations: [std::sync::atomic::AtomicUsize; 3],
+    close_release_follow: std::sync::atomic::AtomicBool,
 }
 
 impl AttestedProvider for Evidence {
@@ -472,6 +474,7 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.observations[0].fetch_add(1, Ordering::SeqCst);
         self.inner.heads(request).await
     }
     fn write(
@@ -521,12 +524,21 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        self.observations[1].fetch_add(1, Ordering::SeqCst);
         self.inner.read(request).await
     }
     async fn follow(
         &self,
         request: acyclic_stream::FollowRequest,
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.observations[2].fetch_add(1, Ordering::SeqCst);
+        // Fault injection over the real provider: its release transport ends
+        // before the producer's record, rather than fabricating a receipt.
+        if request.path.as_str().starts_with("harness/releases/")
+            && self.close_release_follow.load(Ordering::SeqCst)
+        {
+            return Ok(Box::pin(futures::stream::empty()));
+        }
         self.inner.follow(request).await
     }
 
@@ -540,6 +552,267 @@ impl StreamProvider for Evidence {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for Evidence {}
+
+#[tokio::test]
+async fn spawn_observation_uses_one_follow_independent_of_actor_history() -> Result {
+    let provider = Arc::new(Evidence::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        super::runtime::Spawner(1.into()),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("root"), super::adopted(id(1))).await?;
+    let request = InboxRecord::Spawn(SpawnRequest {
+        profile: AgentProfilePin {
+            role: "worker".into(),
+            digest: [0; 32],
+            context: SpawnContext::Fork,
+        },
+        history: None,
+        by: super::user(),
+        id: intent("spawn"),
+        brief: Box::new(super::driver::file("task")?),
+    });
+    let Delivered::Committed { inbox } = host.send(&root, &super::user(), &request).await? else {
+        return Err("spawn request was not committed".into());
+    };
+    let (spawn, child) = requested_child(&root, inbox)?;
+    let calls = || {
+        provider
+            .observations
+            .each_ref()
+            .map(|count| count.load(Ordering::SeqCst))
+    };
+    for history in [0, 32] {
+        for n in 0..history {
+            host.send(&root, &super::user(), &super::cancel(&format!("later-{n}")))
+                .await?;
+        }
+        let failures = host.runtime().drain().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let before = calls();
+        assert_eq!(
+            host.spawned(&root, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        let after = calls();
+        assert_eq!(
+            std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
+            [0, 0, 1]
+        );
+        assert!(matches!(
+            host.spawned(&root, inbox, &intent("unrelated")).await,
+            Err(acyclic_harness_core::agent::Error::Conflict(_))
+        ));
+        assert_eq!(calls(), after, "a conflicting intent must perform no IO");
+    }
+    Ok(())
+}
+
+async fn settled_child(
+    provider: &Arc<Evidence>,
+) -> Result<(AgentHost<Evidence>, AgentPath, AgentPath)> {
+    struct Trial(super::runtime::Spawner);
+    impl TurnDriver for Trial {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            cursor: u64,
+            input: Option<Queued>,
+            cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                let answered = input.clone().filter(|_| agent.parent.is_some());
+                let mut turn = self.0.step(agent, cursor, input, cancellation).await?;
+                if let Some(answered) = answered {
+                    turn.outs.push(Out::Conversation(
+                        ConversationEntry {
+                            inbox: answered.inbox,
+                            input: answered.input,
+                            output: super::driver::file("answer")
+                                .map_err(|cause| Error::Turn(Box::new(cause)))?,
+                            outcome: TurnOutcome::Completed,
+                            goal: None,
+                            targets: None,
+                            tool_results: None,
+                            notices: None,
+                        }
+                        .encode()?,
+                    ));
+                }
+                Ok(turn)
+            })
+        }
+    }
+    let host = AgentHost::new(
+        provider.clone(),
+        Trial(super::runtime::Spawner::default()),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let mut adopted = super::adopted(id(1));
+    adopted.brief = Some(super::driver::file("task")?);
+    let root = host.create(&intent("root"), adopted).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+    host.drain(&child).await?;
+    host.send(
+        &child,
+        &super::user(),
+        &InboxRecord::Message(Message {
+            from: super::user(),
+            id: intent("trial-input"),
+            body: Box::new(super::driver::file("task")?),
+            attachments: None,
+        }),
+    )
+    .await?;
+    host.drain(&child).await?;
+    assert!(host.state(&root).await?.open_children.contains(&child));
+    Ok((host, root, child))
+}
+
+#[tokio::test]
+async fn release_is_the_parent_consumption_commit_and_replays_without_history_reads() -> Result {
+    let provider = Arc::new(Evidence::default());
+    let (host, root, child) = settled_child(&provider).await?;
+    let original = host.state(&child).await?;
+    let status = original.status_tail - 1;
+    let statuses = super::values(&provider.inner, child.status()?).await?;
+    let observed = StatusRecord::decode(&statuses[status as usize])?;
+    let output = super::values(&provider.inner, child.conversation()?).await?;
+    assert_eq!(output.len(), 1);
+    let by = super::user();
+    let closing = intent("release-trial");
+    let release_path =
+        acyclic_stream::StreamPath::new(format!("harness/releases/{}/{}", root.id(), child.id()))?;
+    let release = host.release_settled(&child, &by, &closing, status);
+    tokio::pin!(release);
+    assert!(futures::poll!(&mut release).is_pending());
+    assert!(matches!(provider.inner.tail(child.closed()?).await, Ok(1)));
+    assert!(matches!(
+        provider.inner.tail(release_path.clone()).await,
+        Err(StreamError::NotFound)
+    ));
+
+    // Archive has reached the child, and its report has reached the parent,
+    // but parent membership is still owned until that report is consumed.
+    host.drain(&child).await?;
+    assert!(host.state(&root).await?.open_children.contains(&child));
+    assert!(futures::poll!(&mut release).is_pending());
+    host.drain(&root).await?;
+    let (settlement, released) = release.await?;
+    assert_eq!(settlement.status, status);
+    assert_eq!(settlement.cursor, observed.cursor);
+    assert_eq!(settlement.conversation, original.conversation_tail);
+    assert_eq!(
+        super::values(&provider.inner, child.conversation()?).await?,
+        output
+    );
+    assert!(!host.state(&root).await?.open_children.contains(&child));
+    let reports = super::values(&provider.inner, root.inbox()?).await?;
+    let report = InboxRecord::decode(&reports[released.inbox as usize])?;
+    assert!(matches!(&report, InboxRecord::ChildDone(done) if done.child == child));
+    assert_eq!(provider.inner.tail(release_path.clone()).await?, 1);
+
+    // A second delivery cannot publish a second receipt or conflict its key.
+    host.send(&root, &by, &report).await?;
+    host.drain(&root).await?;
+    assert_eq!(provider.inner.tail(release_path).await?, 1);
+    let calls = || {
+        provider
+            .observations
+            .each_ref()
+            .map(|n| n.load(Ordering::SeqCst))
+    };
+    for later in [0, 32] {
+        for n in 0..later {
+            host.send(&root, &by, &super::cancel(&format!("later-{n}")))
+                .await?;
+        }
+        host.drain(&root).await?;
+        let before = calls();
+        assert_eq!(
+            host.release_settled(&child, &by, &closing, status).await?,
+            (settlement.clone(), released.clone())
+        );
+        let after = calls();
+        assert_eq!(
+            std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
+            [0, 1, 1]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn release_refuses_changed_settlement_and_transport_loss_preserves_exact_retry() -> Result {
+    let provider = Arc::new(Evidence::default());
+    let (host, root, child) = settled_child(&provider).await?;
+    let original = host.state(&child).await?;
+    let selected = original.status_tail - 1;
+    let by = super::user();
+    let closing = intent("release-trial");
+    let before = provider
+        .observations
+        .each_ref()
+        .map(|n| n.load(Ordering::SeqCst));
+    assert!(matches!(
+        host.release_settled(&root, &by, &closing, selected).await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        provider
+            .observations
+            .each_ref()
+            .map(|n| n.load(Ordering::SeqCst)),
+        before
+    );
+    host.send(&child, &by, &super::cancel("new-input")).await?;
+    for consumed in [false, true] {
+        if consumed {
+            host.drain(&child).await?;
+        }
+        assert!(matches!(
+            host.release_settled(&child, &by, &closing, selected).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            provider.inner.tail(child.closed()?).await,
+            Err(StreamError::NotFound)
+        ));
+        assert!(matches!(
+            provider
+                .inner
+                .tail(acyclic_stream::StreamPath::new(format!(
+                    "harness/settlements/{}",
+                    child.id()
+                ))?)
+                .await,
+            Err(StreamError::NotFound)
+        ));
+    }
+    let selected = host.state(&child).await?.status_tail - 1;
+    provider.close_release_follow.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        host.release_settled(&child, &by, &closing, selected).await,
+        Err(Error::Stream(StreamError::Unavailable))
+    ));
+    assert_eq!(provider.inner.tail(child.closed()?).await?, 1);
+    assert!(host.runtime().drain().await.is_empty());
+    provider.close_release_follow.store(false, Ordering::SeqCst);
+    let (settlement, _) = host
+        .release_settled(&child, &by, &closing, selected)
+        .await?;
+    assert_eq!(settlement.status, selected);
+    assert!(!host.state(&root).await?.open_children.contains(&child));
+    Ok(())
+}
 
 /// Attests each digest with itself, recording every request for evidence.
 #[derive(Default)]

@@ -552,6 +552,19 @@ where
                     delivery: agents.send(agent, by, &record).await?,
                 })
             }
+            AgentCommand::Archive { agent, id, status } => {
+                let child = self.within_tree(agent)?;
+                if child == &self.root {
+                    return Err(Error::Conflict(
+                        "release requires a child of the admitted root",
+                    ));
+                }
+                let (settlement, release) = agents.release_settled(child, by, id, *status).await?;
+                Ok(AgentReply::Released {
+                    settlement,
+                    release,
+                })
+            }
             AgentCommand::Compact {
                 agent,
                 id,
@@ -1121,6 +1134,7 @@ where
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
+                | AgentCommand::Archive { .. }
                 | AgentCommand::Compact { .. }
                 | AgentCommand::Rewind { .. }
                 | AgentCommand::Restore { .. }

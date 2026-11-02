@@ -16,12 +16,13 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
     guest::{Composer, Handler},
-    local::{Clock, Runtime, State, Store},
+    local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitCondition, CommitMutation, CommitRequest, FollowRequest, ReadRequest, StreamError,
+    StreamPath, StreamProvider, WhenAbsent,
 };
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -309,7 +310,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// What `parent`'s step did with the spawn named `intent` that its inbox
     /// record `sequence` requested: the outcome that step committed, never a
     /// guess from an earlier state, however many steps later it is asked.
-    /// Waits, on the parent's actor state stream, for that step to commit.
+    /// Follows the immutable outcome appended in that step's commit. Both
+    /// replay and observation use one record, independent of actor history.
     /// An intent not named by `sequence` is a conflict, refused before IO.
     pub async fn spawned(
         &self,
@@ -322,100 +324,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 "spawn intent differs from its inbox sequence",
             ));
         }
-        let actor = self.actor(parent)?;
-        let store = self.runtime.store();
-        let path = store.path(&actor).map_err(actor_error)?;
-        loop {
-            // Follow from the tail read before the load, so a step committing
-            // after the load is never missed.
-            let tail = match self.provider.tail(path.clone()).await {
-                Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
-                Err(error) => return Err(Error::Stream(error)),
-            };
-            let consumed = store
-                .load(&actor)
-                .await
-                .map_err(actor_error)?
-                .state()
-                .and_then(|state| state.cursor(INBOX))
-                .is_some_and(|cursor| cursor > sequence);
-            if consumed {
-                return self.applied(&path, sequence, intent).await;
-            }
-            let mut committed = acyclic_stream::records_only(
-                self.provider
-                    .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
-                    .await
-                    .map_err(Error::Stream)?,
-            );
-            match committed.next().await {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
-            }
-        }
-    }
-
-    /// The outcome of the spawn the step consuming inbox record `sequence`
-    /// applied, from the actor state history at `path`: the first state whose
-    /// inbox cursor passes `sequence` is that step's commit. History is append-only and
-    /// cursors only advance, so this is O(log history) reads.
-    async fn applied(
-        &self,
-        path: &StreamPath,
-        sequence: u64,
-        intent: &IntentId,
-    ) -> Result<SpawnOutcome, Error> {
-        let tail = self
-            .provider
-            .tail(path.clone())
-            .await
-            .map_err(Error::Stream)?;
-        let (mut low, mut high) = (0, tail);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let passed = self
-                .committed(path, middle)
-                .await?
-                .cursor(INBOX)
-                .is_some_and(|cursor| cursor > sequence);
-            if passed {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        if low == tail {
-            return Err(Error::Record("no committed step consumed the spawn"));
-        }
-        let state = self.committed(path, low).await?;
-        let checkpoint = state.checkpoint().ok_or(Error::Record(
-            "the step consuming the spawn has no checkpoint",
-        ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
-    }
-
-    /// Actor state record `sequence` of the state stream at `path`.
-    async fn committed(&self, path: &StreamPath, sequence: u64) -> Result<State, Error> {
-        let mut records = self
-            .provider
-            .read(ReadRequest {
-                key: None,
-                path: path.clone(),
-                from: sequence,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
+        let mut request = FollowRequest::new(super::spawn_result::path(parent, sequence)?, 0);
+        request.when_absent = WhenAbsent::Wait;
+        let mut records = acyclic_stream::records_only(
+            self.provider.follow(request).await.map_err(Error::Stream)?,
+        );
         let record = records
             .try_next()
             .await
             .map_err(Error::Stream)?
-            .filter(|record| record.sequence == sequence)
-            .ok_or(Error::Record("actor state history is incomplete"))?;
-        State::decode(&record.value).map_err(actor_error)
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        if record.sequence != 0 {
+            return Err(Error::Record("spawn outcome is not the first record"));
+        }
+        super::spawn_result::decode(parent, sequence, &record.value)
     }
 
     /// Prepares, without IO, the one commit creating root agent
@@ -480,6 +402,93 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         id: &IntentId,
     ) -> Result<Delivered, Error> {
         self.deliver(target, archive(target, by, id)?).await
+    }
+
+    /// Close exactly the child's settled `status` and wait for the parent
+    /// commit that releases its membership. Keeps the original output cut,
+    /// so retry/resume never substitutes the subsequent archived status.
+    ///
+    /// One immutable status read, one archive commit and one release follow.
+    /// The archive commit fences both the status tail and the inbox cursor:
+    /// intervening input or progress is a conflict, never a readiness retry.
+    /// An exact intent retry replays that commit and its original receipt.
+    /// Roots have no parent membership and are refused before IO.
+    ///
+    /// The parent consuming `ChildDone` is the sole release producer. Session
+    /// owners must race this operation with their runtime failure event, as
+    /// they do for [`Self::spawned`]; a closed follow returns `Unavailable`.
+    pub async fn release_settled(
+        &self,
+        child: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        status: u64,
+    ) -> Result<(super::Settlement, super::ChildRelease), Error> {
+        use super::{AgentRecord as _, Phase, Settlement, commit};
+        let release_path = super::release::for_child(child)?;
+        let expected = status
+            .checked_add(1)
+            .ok_or(Error::Conflict("settlement status sequence overflows"))?;
+        let status_path = child.status()?;
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                key: None,
+                path: status_path.clone(),
+                from: status,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == status)
+            .ok_or(Error::Conflict("settlement status does not exist"))?;
+        drop(records);
+        let observed = super::StatusRecord::decode(&record.value)?;
+        if !matches!(observed.phase, Phase::Idle | Phase::Done { .. }) {
+            return Err(Error::Conflict("selected status has not settled"));
+        }
+        let settlement = Settlement {
+            status,
+            cursor: observed.cursor,
+            conversation: observed.conversation,
+        };
+        let retained = Settlement::path(child)?;
+        let mut request = commit::archive_at(child, by, id, Some(settlement.cursor))?;
+        request.conditions.extend([
+            CommitCondition::Tail {
+                path: status_path,
+                expected,
+            },
+            CommitCondition::Absent {
+                path: retained.clone(),
+            },
+        ]);
+        request.mutations.push(CommitMutation::Append {
+            path: retained,
+            records: vec![settlement.encode()?.into()],
+        });
+        if self.deliver(child, request).await? == Delivered::Closed {
+            return Err(Error::Conflict("child was archived by another intent"));
+        }
+        let mut request = FollowRequest::new(release_path, 0);
+        request.when_absent = WhenAbsent::Wait;
+        let mut records = acyclic_stream::records_only(
+            self.provider.follow(request).await.map_err(Error::Stream)?,
+        );
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        if record.sequence != 0 {
+            return Err(Error::Record("child release is not the original record"));
+        }
+        Ok((settlement, super::ChildRelease::decode(&record.value)?))
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing:
@@ -560,7 +569,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             }
             Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
             Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
-            Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),
+            Submitted::Conflict(_) => Err(Error::Conflict("inbox admission changed")),
         }
     }
 }

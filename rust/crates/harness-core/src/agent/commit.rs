@@ -120,6 +120,15 @@ fn intent_of(record: &InboxRecord) -> String {
 
 /// One conditional commit closing the inbox of `target`.
 pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitRequest, Error> {
+    archive_at(target, by, id, None)
+}
+
+pub(super) fn archive_at(
+    target: &AgentPath,
+    by: &Sender,
+    id: &IntentId,
+    cursor: Option<u64>,
+) -> Result<CommitRequest, Error> {
     let control = Control {
         by: by.clone(),
         id: id.clone(),
@@ -131,8 +140,14 @@ pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitR
             CommitCondition::Absent {
                 path: closed.clone(),
             },
-            CommitCondition::Present {
-                path: target.inbox()?,
+            match cursor {
+                Some(expected) => CommitCondition::Tail {
+                    path: target.inbox()?,
+                    expected,
+                },
+                None => CommitCondition::Present {
+                    path: target.inbox()?,
+                },
             },
         ],
         mutations: vec![

@@ -150,6 +150,18 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Close an exact settled child and wait for its parent's membership
+    /// release. Retrying the same intent and status preserves the old answer.
+    Archive {
+        /// Child within this endpoint's admitted tree.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable close identity, reused after an uncertain outcome.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Original zero-based settled status sequence from its follow.
+        status: u64,
+    },
     /// Compact the agent's model context: one model request summarizes it,
     /// and later turns start from that checkpoint.
     Compact {
@@ -469,6 +481,7 @@ impl AgentCommand {
             | Self::Fork { parent: agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
+            | Self::Archive { agent, .. }
             | Self::Compact { agent, .. }
             | Self::Rewind { agent, .. }
             | Self::Restore { agent, .. }
@@ -497,6 +510,7 @@ impl AgentCommand {
             Self::Root {} => "root",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",
+            Self::Archive { .. } => "archive",
             Self::Compact { .. } => "compact",
             Self::Rewind { .. } => "rewind",
             Self::Restore { .. } => "restore",

@@ -170,6 +170,14 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         });
         builder.append(path, status.append_record()?);
     }
+    if let Some(child) = &step.released {
+        let path = super::release::path(path, child)?;
+        let inbox = cursor
+            .checked_sub(1)
+            .ok_or(Error::Record("child release has no consumed inbox record"))?;
+        builder.condition(CommitCondition::Absent { path: path.clone() });
+        builder.append(path, super::release::ChildRelease { inbox }.encode()?);
+    }
     let mut mutations = builder.forks;
     mutations.extend(
         builder

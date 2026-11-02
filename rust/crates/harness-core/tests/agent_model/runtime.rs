@@ -15,7 +15,7 @@ use std::sync::{
 
 /// Spawns child `c` on its first turn and idles afterwards.
 #[derive(Default)]
-struct Spawner(AtomicUsize);
+pub(super) struct Spawner(pub(super) AtomicUsize);
 
 impl TurnDriver for Spawner {
     fn step<'a>(

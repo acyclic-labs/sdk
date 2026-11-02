@@ -38,10 +38,13 @@ mod machine;
 mod notices;
 pub use notices::NoticeSelection;
 pub(crate) mod records;
+mod release;
 mod reply;
+pub use release::{ChildRelease, Settlement};
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
 mod slots;
+mod spawn_result;
 mod targets;
 pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,

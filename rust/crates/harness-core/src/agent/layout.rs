@@ -205,12 +205,14 @@ impl AgentPath {
     /// The agent's own id, the last path segment.
     #[must_use]
     pub fn id(&self) -> AgentId {
-        AgentId(
-            self.text
-                .rsplit_once('/')
-                .map_or(self.text.as_str(), |(_, id)| id)
-                .to_owned(),
-        )
+        AgentId(self.id_text().to_owned())
+    }
+
+    /// Canonical identity borrowed from the address, without copying it.
+    pub(crate) fn id_text(&self) -> &str {
+        self.text
+            .rsplit_once('/')
+            .map_or(self.text.as_str(), |(_, id)| id)
     }
 
     /// Nesting depth; zero for a root.

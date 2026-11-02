@@ -33,7 +33,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 8 adds explicit generation-linked file/context restoration requests.
 /// Version 9 retains the original action binding in a waiting approval's status
 /// and actor checkpoint.
-pub const RECORD_VERSION: u32 = 9;
+/// Version 10 requires same-commit spawn outcomes and parent membership-release
+/// receipts. Older producers cannot satisfy those observations.
+pub const RECORD_VERSION: u32 = 10;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
