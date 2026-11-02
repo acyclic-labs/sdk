@@ -11,7 +11,8 @@ use acyclic_harness_core::{
     model::ModelDispatch,
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, MemoryStream, StreamProvider as _, StreamProviderExt as _,
+    AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, StreamProvider as _,
+    StreamProviderExt as _,
 };
 use futures::StreamExt as _;
 use std::borrow::Cow;
@@ -283,8 +284,17 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         let Op::Head { id, stream: path } = head else {
             panic!("snapshot must request its original head")
         };
-        reader.complete(id, Outcome::Head(provider.head(path).await.unwrap()), 0);
+        let head = provider.head(path).await.unwrap();
+        let original_head = head.last.as_ref().unwrap();
+        let expected_commit = original_head.commit_id;
+        let expected_time = original_head.committed_at_micros;
+        reader.complete(id, Outcome::Head(head), 0);
         let latest = source.latest(&reader).unwrap();
+        let evidence = latest.evidence().unwrap();
+        assert_eq!(evidence.origin, stream);
+        assert_eq!(evidence.sequence, 1);
+        assert_eq!(evidence.commit, expected_commit);
+        assert_eq!(evidence.committed_at_micros, expected_time);
         assert!(std::ptr::eq(
             latest,
             reader.cache().record(&stream, 1).unwrap()
@@ -320,6 +330,121 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert!(source.page(&reader, 2, count).unwrap().next().is_none());
         assert!(matches!(source.page(&reader, 3, count), Err(Error::Range)));
         assert_eq!(source.want_page(u64::MAX, count), Err(Error::Range));
+
+        // An ordinary listing supplies fork origin, but no child tail. Its
+        // finite nonempty read must make the requested page immediately usable
+        // without a head, another request, or fabricated end-of-stream proof.
+        let child = StreamPath::new("original/forked-usage").unwrap();
+        provider
+            .fork(ForkRequest {
+                exclude: Vec::new(),
+                source: stream.clone(),
+                destination: child.clone(),
+                at_tail: Some(2),
+                idempotency_key: IdempotencyKey::new(b"inherited-usage".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let selected = Source::new(child.clone());
+        let mut listed = Reader::new(ReaderPolicy::default()).unwrap();
+        listed.plan([(
+            Want::Listing {
+                parent: StreamPath::new("original").unwrap(),
+                index: 0,
+                tail: None,
+                witness: None,
+            },
+            Priority::Visible,
+        )]);
+        let [listing]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        assert!(matches!(&listing, Op::Children { .. }));
+        let id = listing.id();
+        listed.complete(
+            id,
+            super::super::driver::execute(&provider, listing).await,
+            0,
+        );
+        assert!(listed.cache().origin_known(&child));
+        assert_eq!(listed.cache().tail(&child), None);
+        let window = NonZeroU32::new(2).unwrap();
+        let want = selected.want_page(0, window).unwrap();
+        assert_eq!(
+            selected.page(&listed, 0, window).unwrap().next(),
+            Some((0, Err(Error::Pending)))
+        );
+        listed.plan([(want.clone(), Priority::Visible)]);
+        let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        assert!(matches!(&read, Op::Read { .. }));
+        let id = read.id();
+        let loaded = super::super::driver::execute(&provider, read).await;
+        let Outcome::Records(records) = &loaded else {
+            panic!("original finite read");
+        };
+        let pointer = records[0].value.as_slice().as_ptr();
+        let origin_pointer = records[0].origin.as_str().as_ptr();
+        let expected_first = super::super::RecordEvidence {
+            origin: records[0].origin.clone(),
+            sequence: records[0].sequence,
+            commit: records[0].commit,
+            committed_at_micros: records[0].committed_at_micros,
+        };
+        listed.complete(id, loaded, 0);
+        assert_eq!(listed.cache().tail(&child), None);
+        let issued = listed.issued();
+        let mut page = selected.page(&listed, 0, window).unwrap();
+        assert_eq!(page.end, 2);
+        for sequence in 0..2 {
+            let (position, row) = page.next().unwrap();
+            let row = row.unwrap();
+            let evidence = row.evidence().unwrap();
+            assert_eq!((position, evidence.sequence), (sequence, sequence));
+            assert_eq!(
+                evidence.origin, stream,
+                "selected fork is not append origin"
+            );
+            assert_eq!(evidence.commit, expected_commit);
+            assert_eq!(evidence.committed_at_micros, expected_time);
+            if sequence == 0 {
+                assert_eq!(row.as_ptr(), pointer);
+                assert_eq!(evidence.origin.as_str().as_ptr(), origin_pointer);
+            }
+        }
+        assert!(page.next().is_none());
+        drop(page);
+        listed.plan([(want.clone(), Priority::Visible)]);
+        assert!(listed.poll(0).is_empty());
+        assert_eq!(listed.issued(), issued);
+
+        let held = listed.cache().record(&child, 0).unwrap().clone();
+        let snapshot = listed.cache().snapshot();
+        let mut restored = super::super::RecordCache::new(8 * 1024 * 1024, 4096);
+        restored.restore(&snapshot).unwrap();
+        assert!(restored.record(&child, 0).unwrap().evidence().is_none());
+        assert_eq!(restored.record(&child, 0).unwrap().as_ref(), held.as_ref());
+        listed.cache_mut().set_budget(0);
+        assert_eq!(held.as_ptr(), pointer);
+        assert_eq!(held.evidence(), Some(&expected_first));
+        assert!(listed.cache().backing_bytes() > 0);
+        drop(held);
+        assert_eq!(listed.cache().backing_bytes(), 0);
+
+        // The same row is passed through when the caller grants no cache.
+        listed.plan([(want, Priority::Visible)]);
+        let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        let id = read.id();
+        listed.complete(id, super::super::driver::execute(&provider, read).await, 0);
+        assert_eq!(listed.cache().bytes(), 0);
+        assert_eq!(
+            selected
+                .page(&listed, 0, window)
+                .unwrap()
+                .next()
+                .unwrap()
+                .1
+                .unwrap()
+                .evidence(),
+            Some(&expected_first)
+        );
 
         // An original stream follow publishes a new source record. Its
         // unsupported layout must fail, rather than serve the previous value.
