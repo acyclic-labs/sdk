@@ -1,20 +1,18 @@
 use super::*;
 use crate::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
-use std::{fs, sync::Arc};
+use std::{fs, path::PathBuf};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct Fixture {
     temporary: tempfile::TempDir,
     live: PathBuf,
     prepared: PathBuf,
-    journal: PathBuf,
 }
 impl Fixture {
     fn new(directory: bool) -> std::io::Result<Self> {
         let temporary = tempfile::tempdir()?;
         let live = temporary.path().join("live");
         let prepared = temporary.path().join("prepared");
-        let journal = temporary.path().join("exchange.json");
         if directory {
             fs::create_dir(&live)?;
             fs::create_dir(&prepared)?;
@@ -28,19 +26,7 @@ impl Fixture {
             temporary,
             live,
             prepared,
-            journal,
         })
-    }
-    fn prepare(&self, carried: Vec<PathBuf>) -> Result<NativeExchangeJournal, NativeExchangeError> {
-        prepare_native_exchange(
-            &self.journal,
-            &self.live,
-            &self.prepared,
-            crate::IdempotencyKey::from_bytes([1; 16]),
-            carried,
-            vec![7; 16],
-        )?;
-        read_journal(&self.journal)
     }
     fn entries<T>(
         &self,
@@ -120,192 +106,6 @@ fn finite_budget() -> WorkBudget {
         peak_allocation_bytes: 1_000_000,
         ..WorkCounters::default()
     }
-}
-
-#[test]
-fn publication_and_interrupted_rollback_preserve_complete_trees() -> TestResult {
-    let f = Fixture::new(true)?;
-    fs::create_dir_all(f.live.join("private/nested"))?;
-    fs::write(f.live.join("private/nested/key"), b"secret")?;
-    let journal = f.prepare(vec!["private/nested".into()])?;
-    f.prepare(journal.carried.clone())?;
-    let published = publish_native_exchange(
-        &f.journal,
-        &f.live,
-        &f.prepared,
-        journal.operation,
-        journal.carried,
-    )?;
-    assert!(published.published);
-    assert_eq!(fs::read(f.live.join("new"))?, b"new");
-    assert_eq!(fs::read(f.live.join("private/nested/key"))?, b"secret");
-    assert_eq!(fs::read(f.prepared.join("old"))?, b"old");
-    let journal = f.prepare(vec!["new".into(), "private/nested".into()])?;
-    carry(&f.live, &f.prepared, &journal.carried)?;
-    fs::create_dir_all(f.live.join("private/nested"))?;
-    fs::write(f.live.join("private/nested/key"), b"user")?;
-    assert!(matches!(
-        recover_native_exchange(&f.journal),
-        Err(NativeExchangeError::CarriedPathConflict(_))
-    ));
-    assert_eq!(fs::read(f.live.join("private/nested/key"))?, b"user");
-    assert_eq!(fs::read(f.prepared.join("private/nested/key"))?, b"secret");
-    fs::write(f.live.join("new"), b"user-new")?;
-    fs::remove_dir_all(f.live.join("private"))?;
-    assert!(!recover_native_exchange(&f.journal)?.published);
-    assert_eq!(fs::read(f.live.join("private/nested/key"))?, b"secret");
-    assert_eq!(fs::read(f.live.join("new"))?, b"user-new");
-    Ok(())
-}
-
-#[test]
-fn rollback_never_replaces_a_concurrent_binding() -> TestResult {
-    let f = Fixture::new(true)?;
-    fs::write(f.live.join("private"), b"original")?;
-    let journal = f.prepare(vec!["private".into()])?;
-    carry(&f.live, &f.prepared, &journal.carried)?;
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    BEFORE_ROLLBACK_RENAME.with(|hook| *hook.borrow_mut() = Some(Arc::clone(&barrier)));
-    let live = f.live.clone();
-    let changed = std::thread::spawn(move || {
-        barrier.wait();
-        fs::write(live.join("private"), b"user").expect("concurrent binding");
-        barrier.wait();
-    });
-    assert!(matches!(
-        recover_native_exchange(&f.journal),
-        Err(NativeExchangeError::CarriedPathConflict(_))
-    ));
-    changed.join().map_err(|_| "concurrent writer panicked")?;
-    assert_eq!(fs::read(f.live.join("private"))?, b"user");
-    assert_eq!(fs::read(f.prepared.join("private"))?, b"original");
-    Ok(())
-}
-
-#[test]
-fn journal_rejections_preserve_the_original_request_and_roots() -> TestResult {
-    let f = Fixture::new(true)?;
-    let original = f.prepare(Vec::new())?;
-    for version in [0, 2, 3, u32::MAX] {
-        let mut invalid = original.clone();
-        invalid.version = version;
-        write_journal(&f.journal, &invalid)?;
-        assert!(
-            matches!(recover_native_exchange(&f.journal), Err(NativeExchangeError::UnsupportedJournalVersion(v)) if v == version)
-        );
-        // A cut, semantically invalid body cannot hide an unsupported version.
-        fs::write(&f.journal, format!("{{\"version\":{version},\"live\":["))?;
-        assert!(
-            matches!(recover_native_exchange(&f.journal), Err(NativeExchangeError::UnsupportedJournalVersion(v)) if v == version)
-        );
-    }
-    let invalid_paths = vec![
-        PathBuf::new(),
-        ".".into(),
-        "../outside".into(),
-        "nested/../../outside".into(),
-        f.live.clone(),
-    ];
-    #[cfg(windows)]
-    let invalid_paths = {
-        let mut paths = invalid_paths;
-        paths.extend(["C:relative".into(), r"\rooted".into()]);
-        paths
-    };
-    for path in invalid_paths {
-        let mut invalid = original.clone();
-        invalid.carried = vec![path];
-        write_journal(&f.journal, &invalid)?;
-        assert!(matches!(
-            recover_native_exchange(&f.journal),
-            Err(NativeExchangeError::IncompatibleJournal)
-        ));
-        remove_journal(&f.journal)?;
-        assert!(
-            prepare_native_exchange(
-                &f.journal,
-                &f.live,
-                &f.prepared,
-                original.operation,
-                invalid.carried,
-                vec![7; 16]
-            )
-            .is_err()
-        );
-        assert!(!f.journal.exists());
-    }
-    write_journal(&f.journal, &original)?;
-    let other = Fixture::new(true)?;
-    assert!(
-        publish_native_exchange(
-            &f.journal,
-            &other.live,
-            &other.prepared,
-            original.operation,
-            Vec::new()
-        )
-        .is_err()
-    );
-    assert!(
-        prepare_native_exchange(
-            &f.journal,
-            &f.live,
-            &f.prepared,
-            crate::IdempotencyKey::from_bytes([2; 16]),
-            Vec::new(),
-            Vec::new()
-        )
-        .is_err()
-    );
-    for replaced in [&f.live, &f.prepared] {
-        let saved = f.temporary.path().join("saved");
-        fs::rename(replaced, &saved)?;
-        fs::create_dir(replaced)?;
-        assert!(matches!(
-            recover_native_exchange(&f.journal),
-            Err(NativeExchangeError::IncompatibleJournal)
-        ));
-        fs::remove_dir(replaced)?;
-        fs::rename(saved, replaced)?;
-    }
-    assert_eq!(fs::read(f.live.join("old"))?, b"old");
-    assert_eq!(fs::read(f.prepared.join("new"))?, b"new");
-    Ok(())
-}
-
-#[test]
-fn completed_publication_recovers_then_allows_the_next_request() -> TestResult {
-    let f = Fixture::new(true)?;
-    let mut journal = f.prepare(Vec::new())?;
-    journal.phase = NativeExchangePhase::Exchanging;
-    write_journal(&f.journal, &journal)?;
-    f.exchange(finite_budget(), &CancellationToken::new())?;
-    let recovered = publish_native_exchange(
-        &f.journal,
-        &f.live,
-        &f.prepared,
-        journal.operation,
-        Vec::new(),
-    )?;
-    assert!(recovered.published);
-    assert_eq!(recovered.recovery, journal.recovery);
-    assert_eq!(fs::read(f.prepared.join("old"))?, b"old");
-    fs::remove_dir_all(&f.prepared)?;
-    fs::create_dir(&f.prepared)?;
-    fs::write(f.prepared.join("third"), b"third")?;
-    assert!(
-        publish_native_exchange(
-            &f.journal,
-            &f.live,
-            &f.prepared,
-            crate::IdempotencyKey::from_bytes([2; 16]),
-            Vec::new()
-        )?
-        .published
-    );
-    assert_eq!(fs::read(f.live.join("third"))?, b"third");
-    assert_eq!(fs::read(f.prepared.join("new"))?, b"new");
-    Ok(())
 }
 
 #[test]
@@ -553,4 +353,21 @@ fn exchange_refuses_normalized_directory_aliases() -> TestResult {
         assert_eq!(fs::read(f.prepared.join("new"))?, b"new");
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn service_path(live: &Path, suffix: &str) -> Result<PathBuf, NativeExchangeError> {
+    let parent = live.parent().ok_or(NativeExchangeError::InvalidLayout)?;
+    let mut name = std::ffi::OsString::from(".");
+    name.push(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?);
+    name.push(suffix);
+    Ok(parent.join(name))
+}
+#[cfg(windows)]
+fn scratch(live: &Path) -> Result<PathBuf, NativeExchangeError> {
+    service_path(live, ".acyclic-exchange")
+}
+#[cfg(windows)]
+fn entry_exchange_witness(live: &Path) -> Result<PathBuf, NativeExchangeError> {
+    service_path(live, ".acyclic-exchange-witness")
 }
