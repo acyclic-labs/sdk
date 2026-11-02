@@ -12,6 +12,9 @@ pub use bytes::{
     ProtectedBytes, bytes_owner_allocation_bytes, protect_bytes, reserve_protected_bytes,
 };
 
+#[cfg(all(target_arch = "wasm32", feature = "js-credential"))]
+pub mod javascript;
+
 #[cfg(not(target_arch = "wasm32"))]
 /// Drop-owned native stop registration.
 pub type StopFuture = futures::future::BoxFuture<'static, Stopped>;
