@@ -257,7 +257,9 @@ where
                 .ok_or_else(|| guest("history commit is sealed"))?;
             match segment.and_then(|index| request.mutations.get_mut(index)) {
                 Some(
-                    CommitMutation::Fork { records, .. } | CommitMutation::Append { records, .. },
+                    CommitMutation::Fork { records, .. }
+                    | CommitMutation::Append { records, .. }
+                    | CommitMutation::SoftAppend { records, .. },
                 ) => {
                     records.push(append);
                 }

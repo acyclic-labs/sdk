@@ -391,7 +391,7 @@ impl<J: CommandJournal> Replicated<J> {
                     .iter()
                     .map(|mutation| {
                         (
-                            crate::request::mutation_path(mutation).clone(),
+                            crate::CommitMutation::path(mutation).clone(),
                             matches!(mutation, CommitMutation::Fork { .. }),
                         )
                     })

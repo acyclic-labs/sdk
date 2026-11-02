@@ -483,6 +483,13 @@ mod http {
                 "forks",
                 &array_js(field(item, "forks")?, fork_receipt_js)?,
             )?;
+            // Every receipt carries `skipped`; the wire omits it when empty.
+            let empty = Value::Array(Vec::new());
+            let skipped = item.get("skipped").unwrap_or(&empty);
+            for skipped in array(skipped)? {
+                path(skipped)?;
+            }
+            set(&result, "skipped", &array_js(skipped, string_js)?)?;
         } else {
             if string(field(item, "code")?)? != "conflict" {
                 return Err("invalid commit conflict code");

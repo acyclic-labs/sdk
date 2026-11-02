@@ -240,7 +240,8 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
         wire::commit_response::Outcome::Committed(receipt) => {
             crate::wire_codec::receipt_from_wire(receipt.clone())
                 .map_err(|_| "invalid_response")?;
-            json!({
+            let skipped = receipt.skipped;
+            let mut value = json!({
                 "ok": true,
                 "commitId": STANDARD.encode(receipt.commit_id),
                 "committedAtMicros": receipt.committed_at_micros.to_string(),
@@ -249,7 +250,12 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
                     "path": range.path, "start": range.start.to_string(), "tail": range.tail.to_string(),
                 })).collect::<Vec<_>>(),
                 "forks": receipt.forks.into_iter().map(fork_value).collect::<Vec<_>>(),
-            })
+            });
+            // Only a commit with soft appends can skip; others keep their shape.
+            if !skipped.is_empty() {
+                value["skipped"] = json!(skipped);
+            }
+            value
         }
         wire::commit_response::Outcome::Conflict(conflicts) => json!({
             "ok": false,

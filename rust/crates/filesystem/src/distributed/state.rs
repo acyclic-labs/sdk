@@ -246,12 +246,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             .request()
             .mutations
             .iter()
-            .any(|mutation| match mutation {
-                CommitMutation::Append {
-                    path: destination, ..
-                } => destination == path,
-                CommitMutation::Fork { destination, .. } => destination == path,
-            })
+            .any(|mutation| mutation.path() == path)
         {
             return Err(AuthorityStoreError::RejectedStatic(
                 "duplicate filesystem state contribution",

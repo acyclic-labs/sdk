@@ -101,7 +101,8 @@ impl Before {
                 .mutations
                 .iter()
                 .map(|mutation| match mutation {
-                    CommitMutation::Append { path, .. } => (path.clone(), false),
+                    CommitMutation::Append { path, .. }
+                    | CommitMutation::SoftAppend { path, .. } => (path.clone(), false),
                     CommitMutation::Fork { destination, .. } => (destination.clone(), true),
                 })
                 .collect(),

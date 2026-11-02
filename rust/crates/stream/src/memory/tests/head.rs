@@ -80,7 +80,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
                 path: request
                     .mutations
                     .first()
-                    .map(crate::request::mutation_path)
+                    .map(crate::CommitMutation::path)
                     .ok_or(StreamError::Unavailable)?
                     .clone(),
                 sequence: 0,

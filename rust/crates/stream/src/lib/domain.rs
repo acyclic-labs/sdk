@@ -544,6 +544,19 @@ pub enum CommitMutation {
         /// Opaque records.
         records: Vec<AppendRecord>,
     },
+    /// Append one nonempty batch only if `path` exists and `closed`, when
+    /// named, does not, both observed at the commit's own decision. Otherwise
+    /// the commit skips it and reports the path in [`CommitReceipt::skipped`];
+    /// the rest of the commit is unaffected. A soft append rides on a commit
+    /// with at least one other mutation, and no condition names its path.
+    SoftAppend {
+        /// Destination; never created by this mutation.
+        path: StreamPath,
+        /// Opaque records.
+        records: Vec<AppendRecord>,
+        /// Marker whose presence closes `path` to soft appends.
+        closed: Option<StreamPath>,
+    },
     /// Share the entire pre-commit subtree at a new destination. `at_tail`
     /// selects the root prefix; descendants retain their pre-commit heads. Append
     Fork {
@@ -558,6 +571,18 @@ pub enum CommitMutation {
         /// Opaque records appended after the prefix; may be empty.
         records: Vec<AppendRecord>,
     },
+}
+
+impl CommitMutation {
+    /// The one stream this mutation writes: an append's path, a fork's
+    /// destination.
+    #[must_use]
+    pub fn path(&self) -> &StreamPath {
+        match self {
+            Self::Append { path, .. } | Self::SoftAppend { path, .. } => path,
+            Self::Fork { destination, .. } => destination,
+        }
+    }
 }
 
 /// One bounded all-or-nothing optimistic commit.

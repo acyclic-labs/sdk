@@ -59,6 +59,7 @@ fn admit(
             as u64;
         for mutation in &request.mutations {
             let (acyclic_stream::CommitMutation::Append { records, .. }
+            | acyclic_stream::CommitMutation::SoftAppend { records, .. }
             | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
             vectors +=
                 (records.capacity() * std::mem::size_of::<acyclic_stream::AppendRecord>()) as u64;

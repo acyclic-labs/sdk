@@ -4,7 +4,7 @@ import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequ
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
-  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
+  ForkMutationSchema, SoftAppendMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
@@ -282,6 +282,9 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
       if ("append" in mutation) return create(CommitMutationSchema, {
         mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
       });
+      if ("softAppend" in mutation) return create(CommitMutationSchema, {
+        mutation: { case: "softAppend", value: create(SoftAppendMutationSchema, { path: mutation.softAppend.path, records: mutation.softAppend.values.map(value => create(AppendRecordSchema, { value })), closed: mutation.softAppend.closed ?? "" }) },
+      });
       if ("fork" in mutation) return create(CommitMutationSchema, {
         mutation: { case: "fork", value: create(ForkMutationSchema, {
           source: mutation.fork.source,
@@ -327,6 +330,16 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
             values: mutation.mutation.value.records.map(record => record.value.slice()),
           },
         };
+        case "softAppend": {
+          const value = mutation.mutation.value;
+          return {
+            softAppend: {
+              path: value.path,
+              values: value.records.map(record => record.value.slice()),
+              ...(value.closed === "" ? {} : { closed: value.closed }),
+            },
+          };
+        }
         case "fork": {
           const value = mutation.mutation.value;
           return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };

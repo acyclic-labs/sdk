@@ -71,6 +71,15 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
                 records: records.into_iter().map(append_record_wire).collect(),
             })
         }
+        CommitMutation::SoftAppend {
+            path,
+            records,
+            closed,
+        } => wire::commit_mutation::Mutation::SoftAppend(wire::SoftAppendMutation {
+            path: path.to_string(),
+            records: records.into_iter().map(append_record_wire).collect(),
+            closed: closed.map(|closed| closed.to_string()).unwrap_or_default(),
+        }),
         CommitMutation::Fork {
             source,
             destination,
@@ -101,6 +110,17 @@ pub(crate) fn mutation_from_wire(
                 .into_iter()
                 .map(append_record)
                 .collect::<Result<_, _>>()?,
+        }),
+        wire::commit_mutation::Mutation::SoftAppend(value) => Ok(CommitMutation::SoftAppend {
+            path: path(value.path)?,
+            records: value
+                .records
+                .into_iter()
+                .map(append_record)
+                .collect::<Result<_, _>>()?,
+            closed: (!value.closed.is_empty())
+                .then(|| path(value.closed))
+                .transpose()?,
         }),
         wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
             exclude: value

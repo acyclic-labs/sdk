@@ -311,7 +311,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             exclude: Vec::new(),
             records: Vec::new(),
         }];
-        let (facts, _facts) = provider.facts(&state, &mutations, CommitId::default(), 0)?;
+        let (facts, _facts) = provider.facts(&state, mutations.iter(), CommitId::default(), 0)?;
         let meter = Arc::new(Meter::default());
         let admitted = provider.with_context(Work::new(meter.original())?);
         let allocations = meter.allocations.load(Ordering::SeqCst);
@@ -354,7 +354,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
         path: selected.clone(),
         records: vec![Bytes::from_static(b"prepared").into()],
     }];
-    let (facts, _facts) = provider.facts(&state, &mutations, CommitId::default(), 0)?;
+    let (facts, _facts) = provider.facts(&state, mutations.iter(), CommitId::default(), 0)?;
     let (mut histories, _histories) = provider.histories(&state, &facts)?;
     bind_histories(&mut histories, CommitId::from_bytes([7; 32]), 42)?;
     let History::Batch { records, .. } = histories[0].history.as_ref() else {

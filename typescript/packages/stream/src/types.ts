@@ -38,7 +38,7 @@ type _IdempotencyKinds = AssertNever<Exclude<IdempotencyKind, "append" | "fork" 
 type ProviderConditionKind = Exclude<WireCommitCondition["condition"]["case"], undefined>;
 type _ProviderConditionKinds = AssertNever<Exclude<ProviderConditionKind, "tail" | "absent" | "head" | "present"> | Exclude<"tail" | "absent" | "head" | "present", ProviderConditionKind>>;
 type ProviderMutationKind = Exclude<WireCommitMutation["mutation"]["case"], undefined>;
-type _ProviderMutationKinds = AssertNever<Exclude<ProviderMutationKind, "append" | "fork"> | Exclude<"append" | "fork", ProviderMutationKind>>;
+type _ProviderMutationKinds = AssertNever<Exclude<ProviderMutationKind, "append" | "softAppend" | "fork"> | Exclude<"append" | "softAppend" | "fork", ProviderMutationKind>>;
 type CommitConflictKind = Exclude<WireCommitConflict["conflict"]["case"], undefined>;
 type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "exists" | "head" | "missing"> | Exclude<"tail" | "exists" | "head" | "missing", CommitConflictKind>>;
 
@@ -111,6 +111,8 @@ export type CommitCondition =
   | { readonly path: string; readonly ifPresent: true };
 export type CommitMutation =
   | { readonly append: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[] } }
+  /** Skipped and listed in the receipt's `skipped` when the stream is absent or `closed` exists; rides on another mutation. */
+  | { readonly softAppend: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[]; readonly closed?: string } }
   | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values?: readonly unknown[] } };
 export type CommittedMutation =
   | (PublicWire<WireCommittedAppend, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "append"> })
@@ -148,6 +150,7 @@ export interface ProviderCommitRequest {
   readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence; readonly ifCommitId?: CommitId } | { readonly path: string; readonly ifAbsent: true } | { readonly path: string; readonly ifPresent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
+    | { readonly softAppend: { readonly path: string; readonly values: readonly Uint8Array[]; readonly closed?: string } }
     | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly exclude?: readonly string[]; readonly values: readonly Uint8Array[] } }
   )[];
 }

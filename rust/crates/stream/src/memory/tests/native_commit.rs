@@ -228,3 +228,44 @@ async fn native_commit_projection_keeps_earliest_deadline_and_exact_retry() -> M
     assert_eq!(provider.tail(target).await?, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_native_retry_replays_the_skipped_soft_appends() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let (gone, kept) = (path("native-soft/gone")?, path("native-soft/kept")?);
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: vec![
+            CommitMutation::SoftAppend {
+                path: gone.clone(),
+                records: vec!["lost".into()],
+                closed: None,
+            },
+            CommitMutation::Append {
+                path: kept,
+                records: vec!["kept".into()],
+            },
+        ],
+        idempotency_key: crate::IdempotencyKey::unique(),
+    };
+    let mut receipts = Vec::new();
+    for _ in 0..2 {
+        let meter = Arc::new(Meter::default());
+        let accepted = provider
+            .native_commit(request.clone(), None, meter.original())
+            .await??;
+        receipts.push(accepted.value().clone());
+        drop(accepted);
+        meter.assert_refunded();
+    }
+    let CommitOutcome::Committed(receipt) = &receipts[0] else {
+        return Err("expected a committed receipt".into());
+    };
+    assert_eq!(receipt.skipped, [gone]);
+    assert_eq!(
+        receipts[0], receipts[1],
+        "the retry replays the original receipt"
+    );
+    Ok(())
+}

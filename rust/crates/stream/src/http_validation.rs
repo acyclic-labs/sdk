@@ -236,10 +236,21 @@ fn validate_commit_result(value: &Value) -> Result {
         u64_string(field(item, "committedAtMicros")?)?;
         let appends = array(field(item, "appends")?)?;
         let forks = array(field(item, "forks")?)?;
+        let skipped = match item.get("skipped") {
+            Some(skipped) => array(skipped)?.as_slice(),
+            None => &[],
+        };
         if appends.len().saturating_add(forks.len()) == 0
-            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS
+            || appends
+                .len()
+                .saturating_add(forks.len())
+                .saturating_add(skipped.len())
+                > crate::MAX_ITEMS
         {
             return Err("invalid receipt size");
+        }
+        for skipped in skipped {
+            path(skipped)?;
         }
         for range in appends {
             let range = object(range)?;

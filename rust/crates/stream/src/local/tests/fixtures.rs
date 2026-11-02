@@ -117,6 +117,7 @@ pub(super) fn request_control_capacity(request: &CommitRequest) -> usize {
             .map(|mutation| {
                 let records = match mutation {
                     crate::CommitMutation::Append { records, .. }
+                    | crate::CommitMutation::SoftAppend { records, .. }
                     | crate::CommitMutation::Fork { records, .. } => records,
                 };
                 records.capacity() * std::mem::size_of::<OwnedBytes>()

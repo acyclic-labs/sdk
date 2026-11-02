@@ -1,5 +1,5 @@
 //! Invocation uses the existing input, checkpoint publication and stream replay.
-use super::{Error, Snapshot, State, Store, covers};
+use super::{Error, Snapshot, State, Store};
 use crate::{
     guest::{Effect, GuestError, Trigger},
     invocation::Invocation,
@@ -393,10 +393,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             };
         }
         let path = reply_path(&previous.path, &invocation)?;
-        if effects.iter().any(|effect| match &effect.mutation {
-            CommitMutation::Append { path: target, .. } => target == &path,
-            CommitMutation::Fork { destination, .. } => covers(destination, &path),
-        }) {
+        if effects
+            .iter()
+            .any(|effect| super::mutation_targets(&effect.mutation, &path))
+        {
             return Err(Error::Invalid(
                 "guest effect targets the host's invocation reply",
             ));

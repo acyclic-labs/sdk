@@ -20,6 +20,15 @@ impl CommitRequest {
                     path: path.clone(),
                     records: copy_vector(records, meter, &mut allocation)?,
                 },
+                CommitMutation::SoftAppend {
+                    path,
+                    records,
+                    closed,
+                } => CommitMutation::SoftAppend {
+                    path: path.clone(),
+                    records: copy_vector(records, meter, &mut allocation)?,
+                    closed: closed.clone(),
+                },
                 CommitMutation::Fork {
                     exclude,
                     source,

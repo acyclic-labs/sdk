@@ -1,10 +1,13 @@
 //! Lowers one [`Step`] into its single Streams commit.
 //!
 //! Own streams (conversation, status) are conditioned on the exact tails in the
-//! prior state, because the agent is their only writer. Recipients are only the
-//! parent and spawned children, which exist by construction, so their appends
-//! are unconditional: a moved tail or a closed recipient (a parent archiving
-//! its subtree awaits every child's `ChildDone`) never blocks a step. Spawns fork
+//! prior state, because the agent is their only writer. A message to another
+//! agent is a Streams soft append guarded by the recipient's `closed` marker:
+//! an absent or archived recipient skips it, which the receipt reports, and
+//! never fails the step. Protocol records (a parent archiving its subtree
+//! awaits every child's `ChildDone`) go to tree members that exist by
+//! construction and stay unconditional appends, so a moved tail or a closed
+//! recipient never blocks a step. Spawns fork
 //! the agent's own subtree at its consumed cursor; the same-commit conversation
 //! append is a source-descendant write, which Streams excludes from the child's
 //! inherited cut, so the child sees exactly the conversation before this step.
@@ -22,6 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 struct Builder {
     conditions: BTreeMap<StreamPath, CommitCondition>,
     appends: BTreeMap<StreamPath, Vec<AppendRecord>>,
+    /// Soft appends and the closed marker that guards each recipient.
+    soft: BTreeMap<StreamPath, (Vec<AppendRecord>, StreamPath)>,
     forks: Vec<CommitMutation>,
     created: BTreeSet<StreamPath>,
 }
@@ -37,8 +42,26 @@ impl Builder {
         self.conditions.entry(path).or_insert(condition);
     }
 
+    /// A hard append to a path that also has soft records keeps their order
+    /// and makes them hard: the hard append decides the path in one mutation.
     fn append(&mut self, path: StreamPath, record: impl Into<AppendRecord>) {
-        self.appends.entry(path).or_default().push(record.into());
+        let records = self.appends.entry(path.clone()).or_default();
+        if let Some((soft, _)) = self.soft.remove(&path) {
+            records.extend(soft);
+        }
+        records.push(record.into());
+    }
+
+    fn offer(&mut self, path: StreamPath, closed: StreamPath, record: impl Into<AppendRecord>) {
+        match self.appends.get_mut(&path) {
+            Some(records) => records.push(record.into()),
+            None => self
+                .soft
+                .entry(path)
+                .or_insert_with(|| (Vec::new(), closed))
+                .0
+                .push(record.into()),
+        }
     }
 
     /// Rejects a write into a child this same commit forks; Streams forbids
@@ -133,7 +156,11 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     ));
                 }
                 builder.recipient(to)?;
-                builder.append(to.inbox()?, record.encode()?);
+                if matches!(record, InboxRecord::Message(_)) && to != path {
+                    builder.offer(to.inbox()?, to.closed()?, record.encode()?);
+                } else {
+                    builder.append(to.inbox()?, record.encode()?);
+                }
             }
             Out::Archive { target, id } => {
                 builder.recipient(target)?;
@@ -177,6 +204,13 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             .into_iter()
             .map(|(path, records)| CommitMutation::Append { path, records }),
     );
+    mutations.extend(builder.soft.into_iter().map(|(path, (records, closed))| {
+        CommitMutation::SoftAppend {
+            path,
+            records,
+            closed: Some(closed),
+        }
+    }));
     Ok(CommitRequest {
         deadline_unix_millis: None,
         conditions: builder.conditions.into_values().collect(),

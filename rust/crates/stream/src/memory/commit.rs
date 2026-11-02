@@ -151,17 +151,17 @@ impl MemoryStream {
         Ok((records, claim))
     }
 
-    fn facts(
+    fn facts<'a>(
         &self,
         state: &State,
-        source: &[CommitMutation],
+        source: impl Iterator<Item = &'a CommitMutation> + Clone,
         commit_id: CommitId,
         time: u64,
     ) -> Result<(Vec<CommittedMutation>, Allocation), StreamError> {
-        let (output, mut allocation) = self.vector(source.len())?;
+        let (output, mut allocation) = self.vector(source.clone().count())?;
         let facts = crate::preparation::facts(
             source,
-            |path| Ok(state.paths.get(path).map(|path| path.tail)),
+            |path| Ok(state.tail(path)),
             |origin, start, bodies, exclusions| {
                 let (records, claim) = self.records(origin, bodies, start, commit_id, time)?;
                 self.absorb(&mut allocation, claim)?;
@@ -424,17 +424,19 @@ impl MemoryStream {
         Ok(None)
     }
 
+    /// Plans `request` without its `skipped` soft appends.
     fn plan_commit(
         &self,
         state: &mut State,
         request: &CommitRequest,
+        skipped: &[StreamPath],
         commit_id: CommitId,
         time: u64,
     ) -> Result<CommitPlan, StreamError> {
-        let (facts, facts_claim) = self.facts(state, &request.mutations, commit_id, time)?;
+        let applied = crate::preparation::applied(request, skipped);
+        let (facts, facts_claim) = self.facts(state, applied.clone(), commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
-        let (paths, paths_claim) =
-            self.paths(state, request.mutations.iter().map(mutation_path))?;
+        let (paths, paths_claim) = self.paths(state, applied.map(crate::CommitMutation::path))?;
         let envelope = CommittedEnvelope {
             commit_id,
             committed_at_micros: time,
@@ -482,7 +484,8 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            let (receipt, mut claim) = self.receipt(result, self.revisions.at(replay.index))?;
+            let (receipt, mut claim) =
+                self.replayed(request, result, self.revisions.at(replay.index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
             return Ok(Decision::Returned((
                 commit_projection(CommitOutcome::Committed(receipt), envelope)?,
@@ -541,11 +544,13 @@ impl MemoryStream {
             return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
-        crate::preparation::authority(&request, |path| {
-            Ok(state.paths.get(path).map(|path| path.tail))
-        })?;
+        // The receipt carries the skipped soft appends, so their claim joins
+        // the receipt's output claim below.
+        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
+        let skipped = crate::preparation::settle(request, |path| Ok(state.tail(path)), skipped)?;
+        crate::preparation::authority(request, |path| Ok(state.tail(path)))?;
         admit_replay(state, self.limits)?;
-        reserve_coordinated(state, &request, self.limits)?;
+        reserve_coordinated(state, request, &skipped, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -562,7 +567,11 @@ impl MemoryStream {
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
         );
-        let mut plan = self.plan_commit(state, &request, commit_id, time)?;
+        let mut plan = self.plan_commit(state, request, &skipped, commit_id, time)?;
+        self.absorb(&mut plan.output_claim, skipped_claim)?;
+        if let CommitOutcome::Committed(receipt) = &mut plan.result {
+            receipt.skipped = skipped;
+        }
         plan.bind(commit_id, time, &self.revisions.at(decision))?;
         // Fund and copy only the requested result before the durable decision.
         // Acceptance subsequently binds both views to that same decision.
@@ -641,7 +650,7 @@ impl MemoryStream {
         condition: &CommitCondition,
     ) -> Result<Option<CommitConflict>, StreamError> {
         let path = condition_path(condition);
-        let actual = state.paths.get(path).map(|path| path.tail);
+        let actual = state.tail(path);
         crate::preparation::condition_conflict(condition, actual, || {
             let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
             self.preceding_commit(stream)

@@ -23,6 +23,8 @@ pub struct CommitReceipt {
     pub forks: Vec<ForkReceipt>,
     /// Committed authority revision, shared by every nested fork receipt.
     pub revision: Revision,
+    /// Soft appends the commit skipped, in canonical path order.
+    pub skipped: Vec<StreamPath>,
 }
 
 impl CommitReceipt {
@@ -32,7 +34,8 @@ impl CommitReceipt {
     /// hash or I/O. Work is linear in this bounded request, not stream history.
     ///
     /// Every append/fork must appear exactly once in canonical destination
-    /// order with its exact record count. Append starts are checked when the
+    /// order with its exact record count; a soft append appears either as an
+    /// append or in `skipped`, never both. Append starts are checked when the
     /// original destination condition supplies a tail; an unconditioned or
     /// `Present` append supplies no independent start anchor. Fork cuts and
     /// nested receipt identities must match. This does not authenticate payloads,
@@ -40,7 +43,7 @@ impl CommitReceipt {
     /// Noncanonical request controls return `InvalidArgument`; inconsistent
     /// receipt members return `InvalidResponse`. Neither owner is changed.
     pub fn validate_request(&self, request: &CommitRequest) -> Result<(), StreamError> {
-        use crate::request::{condition_path, mutation_path};
+        use crate::request::condition_path;
         if request.mutations.is_empty()
             || request.mutations.len() > MAX_ITEMS
             || request.conditions.len() > MAX_ITEMS
@@ -48,21 +51,27 @@ impl CommitReceipt {
                 .conditions
                 .windows(2)
                 .any(|pair| condition_path(&pair[0]) >= condition_path(&pair[1]))
-            || request
-                .mutations
-                .windows(2)
-                .any(|pair| mutation_path(&pair[0]) >= mutation_path(&pair[1]))
+            || request.mutations.windows(2).any(|pair| {
+                crate::CommitMutation::path(&pair[0]) >= crate::CommitMutation::path(&pair[1])
+            })
         {
             return Err(StreamError::InvalidArgument);
         }
-        if self.appends.len().checked_add(self.forks.len()) != Some(request.mutations.len()) {
+        if self
+            .appends
+            .len()
+            .checked_add(self.forks.len())
+            .and_then(|count| count.checked_add(self.skipped.len()))
+            != Some(request.mutations.len())
+        {
             return Err(StreamError::InvalidResponse);
         }
-        let mut appends = self.appends.iter();
+        let mut appends = self.appends.iter().peekable();
         let mut forks = self.forks.iter();
+        let mut skipped = self.skipped.iter().peekable();
         let mut conditions = request.conditions.iter().peekable();
         for mutation in &request.mutations {
-            let path = mutation_path(mutation);
+            let path = crate::CommitMutation::path(mutation);
             while conditions
                 .peek()
                 .is_some_and(|condition| condition_path(condition) < path)
@@ -95,6 +104,19 @@ impl CommitReceipt {
                         return Err(StreamError::InvalidResponse);
                     }
                 }
+                CommitMutation::SoftAppend { records, .. } => {
+                    if records.is_empty() || records.len() > MAX_ITEMS || condition.is_some() {
+                        return Err(StreamError::InvalidArgument);
+                    }
+                    if skipped.next_if(|skipped| *skipped == path).is_none() {
+                        let append = appends
+                            .next_if(|append| append.path == *path)
+                            .ok_or(StreamError::InvalidResponse)?;
+                        if append.start.checked_add(records.len() as u64) != Some(append.tail) {
+                            return Err(StreamError::InvalidResponse);
+                        }
+                    }
+                }
                 CommitMutation::Fork {
                     source,
                     at_tail,
@@ -120,7 +142,7 @@ impl CommitReceipt {
                 }
             }
         }
-        if appends.next().is_some() || forks.next().is_some() {
+        if appends.next().is_some() || forks.next().is_some() || skipped.next().is_some() {
             return Err(StreamError::InvalidResponse);
         }
         Ok(())
@@ -179,6 +201,7 @@ impl CommitReceipt {
             appends,
             forks,
             revision,
+            skipped: Vec::new(),
         })
     }
 
@@ -222,7 +245,17 @@ impl CommitReceipt {
             .checked_add(self.forks.len())
             .ok_or(StreamError::InvalidArgument)?;
         if count == 0
-            || count > MAX_ITEMS
+            || count.saturating_add(self.skipped.len()) > MAX_ITEMS
+            || self.skipped.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.skipped.iter().any(|path| {
+                self.appends
+                    .binary_search_by(|append| append.path.cmp(path))
+                    .is_ok()
+                    || self
+                        .forks
+                        .binary_search_by(|fork| fork.destination.cmp(path))
+                        .is_ok()
+            })
             || self
                 .appends
                 .windows(2)
