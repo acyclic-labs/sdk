@@ -135,6 +135,19 @@ pub(super) async fn host_directory_holds_unknown_entries<
     drop(reader);
     drop(cursor);
     let (absolute, _allocation) = work.display(&format_args!("/{path}"))?;
+    if names.is_empty() {
+        // Authenticate the selected directory even when there are no physical
+        // children to compare. Its authored children cannot change the answer.
+        if generation
+            .stat(&absolute, work, work.cancellation())
+            .await?
+            .kind
+            != crate::kernel::FileKind::Directory
+        {
+            return Err(crate::WorkspaceError::NotDirectory.into());
+        }
+        return Ok(crate::native_host::directory_identity(&directory, &mut &*work)? != identity);
+    }
     let mut after = None;
     let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
@@ -143,6 +156,9 @@ pub(super) async fn host_directory_holds_unknown_entries<
             .await?;
         let mut allocation = allocation.ok_or(NativeTreeMaterializationError::MissingCustody)?;
         for entry in &page.entries {
+            if names.is_empty() {
+                break;
+            }
             let (logical, _logical_allocation) =
                 match entry.name.unicode_text(work, work.cancellation()) {
                     Ok(projected) => projected,
@@ -169,7 +185,7 @@ pub(super) async fn host_directory_holds_unknown_entries<
                 names.swap_remove(index);
             }
         }
-        let next = if page.has_more {
+        let next = if page.has_more && !names.is_empty() {
             page.entries.pop().map(|entry| entry.name)
         } else {
             None
@@ -210,6 +226,9 @@ mod tests {
             .map_err(|failure| failure.error)?
             .value;
         workspace.write_text("/known", "authored").await?;
+        workspace
+            .write_text("/zzlater", "unrelated authored child")
+            .await?;
         let generation = workspace
             .head(budget, &cancellation)
             .await
@@ -231,7 +250,7 @@ mod tests {
         let (page, allocation) = generation
             .list_directory("/", None, 1024, &original, &cancellation)
             .await?;
-        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries.len(), 2);
         assert_eq!(
             page.entries[0].name.encoding(),
             crate::kernel::NameEncoding::WindowsUtf16Le
@@ -260,13 +279,41 @@ mod tests {
             NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
         let root = HostRoot::open(directory.path(), &mut &original)?;
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
-        assert!(original.receipt().bytes_encoded > 0);
+        assert_eq!(original.receipt().bytes_encoded, "known".len() as u64);
         std::fs::write(directory.path().join("foreign"), "must survive")?;
         assert!(host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
         assert_eq!(
             std::fs::read(directory.path().join("foreign"))?,
             b"must survive"
         );
+
+        // An empty physical directory still authenticates its original
+        // generation, but spends no credit projecting unrelated child names.
+        std::fs::remove_file(directory.path().join("known"))?;
+        std::fs::remove_file(directory.path().join("foreign"))?;
+        let original = NativeMaterializationWork::new(
+            crate::WorkBudget {
+                bytes_encoded: 0,
+                ..budget
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let root = HostRoot::open(directory.path(), &mut &original)?;
+        assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
+        assert_eq!(original.receipt().bytes_encoded, 0);
+
+        // Physical emptiness must not turn an authored file into a directory.
+        std::fs::create_dir(directory.path().join("known"))?;
+        let original =
+            NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        let root = HostRoot::open(directory.path(), &mut &original)?;
+        assert!(matches!(
+            host_directory_holds_unknown_entries(&root, "known", &generation, &original).await,
+            Err(NativeWorkspacePublicationError::Workspace(
+                crate::WorkspaceError::NotDirectory
+            ))
+        ));
 
         // Drive the same decision through the durable publication entry point.
         // A removed directory may disappear only if every physical child was
@@ -311,17 +358,21 @@ mod tests {
             .map_err(|failure| failure.error)?
             .value;
         let state = crate::LocalCoreStateStore::new(storage.path().join("state"));
-        for foreign in [false, true] {
+        for (label, known, foreign) in [
+            ("empty", false, false),
+            ("known", true, false),
+            ("foreign", true, true),
+        ] {
             let checkout = tempfile::tempdir()?;
             let retired = checkout.path().join("retired");
             std::fs::create_dir(&retired)?;
-            std::fs::write(retired.join("known"), "physical")?;
+            if known {
+                std::fs::write(retired.join("known"), "physical")?;
+            }
             if foreign {
                 std::fs::write(retired.join("foreign"), "must survive")?;
             }
-            let operation = storage
-                .path()
-                .join(if foreign { "foreign" } else { "known" });
+            let operation = storage.path().join(label);
             let original = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             let identity = original.root_identity(checkout.path())?;
