@@ -166,7 +166,7 @@ async fn read_reported_generation(
 
 #[tokio::test]
 async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
-    let (_temp, _root, fs, store, main) = fixture().await?;
+    let (temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     main.write(
@@ -385,6 +385,17 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             )
             .await?;
     }
+    for (workspace, bytes) in [(&main, b"ours\n".as_slice()), (&child, b"theirs\n")] {
+        workspace
+            .write(
+                "/file.txt",
+                bytes::Bytes::copy_from_slice(bytes).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
     let (plan, join) = acyclic_harness_core::filesystem::plan_agent_merge(
         &fs,
         &store,
@@ -405,6 +416,95 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .contains(&"/.acyclic-sdk/state".to_owned())
     );
     assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
+
+    // Use the configured native planner's retained join, then reopen completed
+    // proposals after retiring its preview and the original filesystem handles.
+    // This checks durable files, not recovery of an interrupted page cursor.
+    let preview = join
+        .preview_pages(
+            acyclic_fs::ApplyOptions {
+                if_target: plan.target_generation,
+                idempotency_key: IdempotencyKey::new(),
+            },
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?
+        .value;
+    let staging = fs
+        .create_workspace_with_config(
+            "merge-proposals",
+            VolumeConfig::native(Lifecycle::Durable),
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?
+        .value;
+    let mut directory = preview.directory(staging.clone(), OperationId::new())?;
+    let conflict_id = main
+        .workspace()
+        .stat("/file.txt", WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .file_id;
+    let conflict_path =
+        directory.conflict_file_path(&acyclic_fs::ConflictKey::File(conflict_id))?;
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page size")?;
+    while !directory.plan().complete {
+        let before = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        let section = if directory.plan().conflicts_complete {
+            acyclic_fs::workspace::MergeDirectorySection::Clean
+        } else {
+            acyclic_fs::workspace::MergeDirectorySection::Conflicts
+        };
+        directory
+            .write_page(section, step, PublicationPermit::Unrestricted, &stop)
+            .await?;
+        let after = directory.plan().examined_clean + directory.plan().exposed_conflicts;
+        assert!(
+            after - before <= 1,
+            "native page consumed an unbounded delta"
+        );
+    }
+    let expected = directory.plan().clone();
+    assert_eq!(expected.ours, plan.target_generation);
+    assert_eq!(expected.theirs, plan.source_generation);
+    assert_eq!(expected.base, plan.base_generation);
+    assert!(expected.clean > 1, "fixture must cross the page boundary");
+    assert!(expected.conflicts > 0, "fixture must stage a real conflict");
+    assert_eq!(
+        main.workspace()
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await?
+            .value
+            .id(),
+        expected.ours,
+        "proposal staging published the target"
+    );
+    let plan_path = format!("{}/plan.json", directory.path());
+    drop(directory);
+    drop(staging);
+    drop(child);
+    drop(main);
+    drop(fs);
+    let reopened = LocalFs::local(LocalOptions::new(temp.path().join("fs"))).await?;
+    let staging = reopened
+        .open_workspace("merge-proposals", WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let bytes = staging
+        .read(&plan_path, 16384, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let restored: acyclic_fs::workspace::MergeDirectoryPlan = serde_json::from_slice(&bytes)?;
+    assert_eq!(restored, expected);
+    let text = staging
+        .read(&conflict_path, 16384, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let text = std::str::from_utf8(&text)?;
+    assert!(text.contains("<<<<<<<") && text.contains("=======") && text.contains(">>>>>>>"));
+    assert!(text.contains("ours\n") && text.contains("theirs\n"));
     Ok(())
 }
 
