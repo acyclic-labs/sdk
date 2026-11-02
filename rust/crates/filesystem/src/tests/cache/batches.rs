@@ -1,6 +1,77 @@
 use super::*;
 
 #[tokio::test]
+async fn cached_read_withdrawal_retains_original_admission_before_provider_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inner = Arc::new(MemoryObjectStore::default());
+    let setup = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let (id, bytes) = object(b"held cached read");
+    inner
+        .put(id, bytes.clone(), &mut AuthorityWork::new(budget, &setup))
+        .await?;
+    for batch in [false, true] {
+        for close in [false, true] {
+            let (producer, receiver) = futures::channel::oneshot::channel();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let cached = CachedObjectStore::new(
+                GatedStore {
+                    inner: Arc::clone(&inner),
+                    gate: futures::FutureExt::shared(receiver),
+                    reads: Arc::clone(&reads),
+                    reads_before_gate: 0,
+                },
+                options(4, 1024),
+            )?;
+            let cancellation = CancellationToken::new();
+            let mut work = AuthorityWork::new(budget, &cancellation);
+            work.accounting().charge_items(7)?;
+            let mut earlier = work.vec_owned::<u8>(31)?;
+            earlier.value.resize(31, 7);
+            let before = work.spent();
+            let live = work.allocations.live_bytes();
+            let requests = [ObjectReadRequest {
+                object_id: id,
+                maximum_bytes: bytes.len() as u64,
+            }];
+            let mut read = Box::pin(async {
+                if batch {
+                    cached.read_many(&requests, &mut work).await.map(|_| ())
+                } else {
+                    cached
+                        .read(id, bytes.len() as u64, &mut work)
+                        .await
+                        .map(|_| ())
+                }
+            });
+            assert!(futures::poll!(read.as_mut()).is_pending());
+            assert_eq!(reads.load(Ordering::Acquire), 1);
+            let mut independent = AuthorityWork::new(budget, &setup);
+            assert!(inner.contains(id, &mut independent).await?);
+            if close {
+                drop(producer);
+                assert!(matches!(
+                    read.await,
+                    Err(ObjectStoreError::Io(error))
+                        if error.kind() == std::io::ErrorKind::BrokenPipe
+                ));
+            } else {
+                cancellation.cancel();
+                drop(read);
+                drop(producer);
+            }
+            assert!(work.spent().items_examined > before.items_examined);
+            assert!(work.spent().allocation_operations > before.allocation_operations);
+            assert_eq!(cached.stats()?.in_flight, 0);
+            assert_eq!(work.allocations.live_bytes(), live);
+            assert_eq!(earlier.value, [7; 31]);
+            earlier.retire(&mut work.accounting())?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = Arc::new(MemoryObjectStore::default());
