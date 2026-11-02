@@ -51,21 +51,21 @@ pub fn is_command(command: &str) -> bool {
 
 #[derive(Debug)]
 struct Error {
-    code: String,
+    code: &'static str,
     message: String,
     status: Option<StatusCode>,
 }
 
 impl Error {
-    fn new(code: &str, message: impl Into<String>) -> Self {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
-            code: code.to_owned(),
+            code,
             message: message.into(),
             status: None,
         }
     }
 
-    fn http(code: &str, message: impl Into<String>, status: StatusCode) -> Self {
+    fn http(code: &'static str, message: impl Into<String>, status: StatusCode) -> Self {
         Self {
             status: Some(status),
             ..Self::new(code, message)
@@ -139,6 +139,12 @@ struct Credentials {
 
 struct Store {
     path: PathBuf,
+    #[cfg(test)]
+    reads: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    agent_key_backing: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    agent_key_backing_changes: std::sync::atomic::AtomicUsize,
     /// Unlocked explicitly when dropped: a forked child can retain the open
     /// file description until exec.
     _lock: acyclic_native_runtime::FileLock,
@@ -224,7 +230,16 @@ impl Store {
         // fixed sidecar belongs to an interrupted former writer.
         private_file::validate_destination_for_upgrade(&sidecar(&path, ".next"))?;
         private_file::discard_unpublished(&sidecar(&path, ".next"))?;
-        Ok(Arc::new(Self { path, _lock: lock }))
+        Ok(Arc::new(Self {
+            path,
+            _lock: lock,
+            #[cfg(test)]
+            reads: Default::default(),
+            #[cfg(test)]
+            agent_key_backing: Default::default(),
+            #[cfg(test)]
+            agent_key_backing_changes: Default::default(),
+        }))
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
@@ -241,6 +256,9 @@ impl Store {
     fn credential_bytes(
         &self,
     ) -> Result<Option<acyclic_native_runtime::owner_record::SecretBytes>, Error> {
+        #[cfg(test)]
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match private_file::read(&self.path, u64::MAX - 1) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -364,6 +382,19 @@ impl Store {
         private_file::validate_destination(&self.path)?;
         let bytes = acyclic_auth::operation::ProtectedBytes::from_json(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
+        #[cfg(test)]
+        if let Some(
+            agent::Agent::Pending { private_key } | agent::Agent::Active { private_key, .. },
+        ) = &credentials.agent
+        {
+            use std::sync::atomic::Ordering;
+            let backing = private_key.as_ptr() as usize;
+            let previous = self.agent_key_backing.swap(backing, Ordering::Relaxed);
+            if previous != 0 && previous != backing {
+                self.agent_key_backing_changes
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let temporary = sidecar(&self.path, ".next");
         private_file::publish(
             &self.path,
@@ -502,11 +533,27 @@ impl Identity {
             )
         })?;
         if !status.is_success() {
-            // Server descriptions can contain submitted credentials; only expose the error code.
-            let code = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("identity_error");
+            // Both descriptions and arbitrary error codes can echo credentials.
+            // Retain only the protocol's fixed control vocabulary.
+            let code = match value.get("error").and_then(Value::as_str) {
+                Some("authorization_pending") => "authorization_pending",
+                Some("slow_down") => "slow_down",
+                Some("access_denied") => "access_denied",
+                Some("expired_token") => "expired_token",
+                Some("invalid_grant") => "invalid_grant",
+                Some("invalid_request") => "invalid_request",
+                Some("invalid_client") => "invalid_client",
+                Some("unauthorized_client") => "unauthorized_client",
+                Some("unsupported_grant_type") => "unsupported_grant_type",
+                Some("invalid_scope") => "invalid_scope",
+                Some("server_error") => "server_error",
+                Some("request_cancelled") => "request_cancelled",
+                Some("temporarily_unavailable") => "temporarily_unavailable",
+                Some("upstream_unavailable") => "upstream_unavailable",
+                Some("unavailable") => "unavailable",
+                Some("invalid agent upgrade proof") => "invalid agent upgrade proof",
+                _ => "identity_error",
+            };
             return Err(Error::http(
                 code,
                 format!("identity request refused (HTTP {status})"),
@@ -704,6 +751,20 @@ impl Identity {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    async fn refresh_stored(&self, store: &Arc<Store>) -> Result<Value, Error> {
+        let mut credentials = store
+            .at_endpoint(&self.endpoint, Store::credentials)
+            .await?;
+        match credentials.session.take() {
+            Some(session) => {
+                drop(credentials);
+                let session = self.refresh(store, &session).await?;
+                Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
+            }
+            None => self.renew_agent(store, credentials).await,
         }
     }
 
@@ -1068,19 +1129,7 @@ async fn execute(
                 .await?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
-        "refresh" => {
-            if store
-                .at_endpoint(&identity.endpoint, Store::credentials)
-                .await?
-                .session
-                .is_none()
-            {
-                return identity.renew_agent(&store).await;
-            }
-            let session = store.at_endpoint(&identity.endpoint, Store::read).await?;
-            let session = identity.refresh(&store, &session).await?;
-            Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
-        }
+        "refresh" => identity.refresh_stored(&store).await,
         "signup" if options.agent => identity.signup(&store).await,
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
