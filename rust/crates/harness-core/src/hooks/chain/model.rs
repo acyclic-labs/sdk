@@ -12,7 +12,7 @@ pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec 
             config: "{}".into(),
             matcher,
         },
-        timeout_ms: u64::MAX,
+        timeout_ms: None,
         failure: HookFailure::Block,
     }
 }
@@ -44,7 +44,7 @@ pub(super) async fn judge(
             HookEvent::PreToolUse,
             &original,
             &crate::tool::ToolRegistry::default(),
-            u64::MAX,
+            None,
             |hook, _, rewritten| {
                 let input = rewritten.unwrap_or(&original["tool_input"]);
                 let command = input["command"].as_str().unwrap_or_default().to_owned();

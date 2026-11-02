@@ -1,5 +1,5 @@
 //! Completion from the native host's original turn terminal.
-use super::{ANSWER_LIMIT, Outcome, Value};
+use super::{Outcome, Value};
 
 /// A preview is not a completed reply. Native hosts can also report a failed
 /// turn before exiting successfully; their original terminal owns the outcome.
@@ -31,7 +31,7 @@ impl NativeAnswer {
                 self.pending = event
                     .pointer("/item/text")
                     .and_then(Value::as_str)
-                    .map(|text| bounded([text]));
+                    .map(str::to_owned);
             }
             Some("turn.completed") if self.outcome.is_none() => {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
@@ -54,7 +54,7 @@ impl NativeAnswer {
                     event
                         .get("result")
                         .and_then(Value::as_str)
-                        .map(|text| Outcome::Succeeded(bounded([text])))
+                        .map(|text| Outcome::Succeeded(text.to_owned()))
                 } else {
                     Some(Outcome::Failed {
                         message: event
@@ -73,11 +73,12 @@ impl NativeAnswer {
                         .pointer("/message/content")
                         .and_then(Value::as_array)
                         .map(|parts| {
-                            Outcome::Succeeded(bounded(
+                            Outcome::Succeeded(
                                 parts
                                     .iter()
-                                    .filter_map(|part| part.get("text").and_then(Value::as_str)),
-                            ))
+                                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                                    .collect(),
+                            )
                         }),
                     Some("error") => Some(Outcome::Failed {
                         message: event
@@ -93,17 +94,6 @@ impl NativeAnswer {
             _ => {}
         }
     }
-}
-
-fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
-    parts
-        .into_iter()
-        .flat_map(str::chars)
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -172,17 +162,5 @@ mod tests {
         assert!(
             matches!(refused.outcome, Some(Outcome::Failed { ref message }) if message == "No API key for provider: fixture")
         );
-        // Bound across fragments without collecting the whole native message.
-        // The non-ASCII boundary must not split a codepoint or inspect the tail.
-        let prefix = "a".repeat(ANSWER_LIMIT - 1);
-        let mut visits = 0;
-        let text = bounded(
-            [prefix.as_str(), "😀"]
-                .into_iter()
-                .chain(std::iter::repeat_n("unread", 100_000))
-                .inspect(|_| visits += 1),
-        );
-        assert_eq!(text, prefix);
-        assert_eq!(visits, 2);
     }
 }

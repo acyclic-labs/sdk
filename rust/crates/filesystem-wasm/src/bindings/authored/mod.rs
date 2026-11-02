@@ -147,19 +147,8 @@ pub(in crate::bindings) fn decode_authored_transactions(
     if !js_sys::Array::is_array(&operations) {
         return Err(js_error("transaction operations must be an array"));
     }
-    let maximum = config.limits.maximum_mutations_per_batch;
-    if js_sys::Array::from(&operations).length() > maximum {
-        return Err(js_error(
-            "transaction exceeds the configured mutation bound",
-        ));
-    }
     let decoded: Vec<TransactionOperation> =
         serde_wasm_bindgen::from_value(operations).map_err(js_error)?;
-    if decoded.capacity() > usize::try_from(maximum).unwrap_or(usize::MAX) {
-        return Err(js_error(
-            "transaction exceeds the configured mutation bound",
-        ));
-    }
     decoded
         .into_iter()
         .map(|operation| authored_transaction(operation, config))

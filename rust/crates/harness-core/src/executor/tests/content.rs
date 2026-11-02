@@ -42,7 +42,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
     let narrow = RuntimeScope::new(
         grants.clone(),
         Limits {
-            file_bytes: 4,
+            file_bytes: Some(4),
             ..Limits::default()
         },
     )?;

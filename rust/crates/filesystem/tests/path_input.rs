@@ -39,7 +39,7 @@ pub const INVARIANTS: [Invariant; 5] = [
     ("utf16", |event| judge(event, "utf16")),
 ];
 pub type Parse = fn(&str, VolumeLimits) -> Result<PortablePath, acyclic_fs::path::PathError>;
-pub type New = fn(NameEncoding, Vec<u8>, u32) -> Result<LogicalName, TreePageError>;
+pub type New = fn(NameEncoding, Vec<u8>) -> Result<LogicalName, TreePageError>;
 pub type Fold = fn(&LogicalName) -> Vec<u8>;
 
 fn record<E>(
@@ -95,26 +95,18 @@ pub fn observe<E>(
     native_names(data, new, see)?;
     if let Ok(text) = std::str::from_utf8(data) {
         for component in text.split('/') {
-            let Ok(name) = LogicalName::new(
-                NameEncoding::Utf8,
-                component.as_bytes().to_vec(),
-                limits.maximum_component_bytes,
-            ) else {
+            let Ok(name) = LogicalName::new(NameEncoding::Utf8, component.as_bytes().to_vec())
+            else {
                 continue;
             };
             let alias = LogicalName::new(
                 NameEncoding::Utf8,
                 component.to_ascii_uppercase().into_bytes(),
-                limits.maximum_component_bytes,
             )
             .unwrap();
             let key = fold(&name);
             record(see, "utf8-fold", key == fold(&alias))?;
-            if let Ok(folded) = LogicalName::new(
-                NameEncoding::Utf8,
-                key.clone(),
-                limits.maximum_component_bytes,
-            ) {
+            if let Ok(folded) = LogicalName::new(NameEncoding::Utf8, key.clone()) {
                 record(see, "utf8-fold", fold(&folded) == key)?;
             }
         }
@@ -129,19 +121,9 @@ pub fn observe<E>(
         .collect();
     let text: String = parts.iter().map(|&(text, _)| text).collect();
     let expected: String = parts.iter().map(|&(_, folded)| folded).collect();
-    let name = LogicalName::new(
-        NameEncoding::Utf8,
-        text.into_bytes(),
-        limits.maximum_component_bytes,
-    )
-    .unwrap();
+    let name = LogicalName::new(NameEncoding::Utf8, text.into_bytes()).unwrap();
     record(see, "full-fold", fold(&name) == expected.as_bytes())?;
-    let folded = LogicalName::new(
-        NameEncoding::Utf8,
-        expected.into_bytes(),
-        limits.maximum_component_bytes,
-    )
-    .unwrap();
+    let folded = LogicalName::new(NameEncoding::Utf8, expected.into_bytes()).unwrap();
     record(see, "full-fold", fold(&folded) == folded.as_bytes())?;
     let path = format!(
         "/{}",
@@ -173,7 +155,6 @@ fn native_names<E>(
     new: New,
     see: &mut impl FnMut(Seen) -> Result<(), E>,
 ) -> Result<(), E> {
-    let maximum = VolumeLimits::default().maximum_component_bytes;
     // Prefixes force opaque non-Unicode cases. Empty input still tests both encodings.
     for chunk in data.chunks(64).chain(std::iter::once(&[][..])) {
         let posix: Vec<_> = [b'n', 0xff, b'\\']
@@ -197,7 +178,7 @@ fn native_names<E>(
             (NameEncoding::PosixBytes, posix, "posix"),
             (NameEncoding::WindowsUtf16Le, windows, "utf16"),
         ] {
-            let name = new(encoding, bytes.clone(), maximum);
+            let name = new(encoding, bytes.clone());
             record(see, site, name.is_ok())?;
             // A deleted admission invariant must proceed past the exposing
             // event without an unrelated unwrap becoming its detector.
@@ -205,13 +186,6 @@ fn native_names<E>(
             record(see, site, name.encoding() == encoding)?;
             record(see, site, name.as_bytes() == bytes)?;
             record(see, site, name.case_fold_key() == bytes)?;
-            let length = u32::try_from(bytes.len()).unwrap();
-            record(
-                see,
-                site,
-                new(encoding, bytes.clone(), length).is_ok_and(|other| other == name),
-            )?;
-            record(see, site, new(encoding, bytes.clone(), length - 1).is_err())?;
             for unit in [0, u16::from(b'/'), u16::from(b'\\')] {
                 if encoding == NameEncoding::PosixBytes && unit == u16::from(b'\\') {
                     continue;
@@ -222,7 +196,7 @@ fn native_names<E>(
                 } else {
                     invalid.push(u8::try_from(unit).unwrap());
                 }
-                record(see, site, new(encoding, invalid, maximum).is_err())?;
+                record(see, site, new(encoding, invalid).is_err())?;
             }
         }
     }
@@ -230,12 +204,7 @@ fn native_names<E>(
         record(
             see,
             "posix",
-            new(
-                NameEncoding::PosixBytes,
-                invalid.as_bytes().to_vec(),
-                maximum,
-            )
-            .is_err(),
+            new(NameEncoding::PosixBytes, invalid.as_bytes().to_vec()).is_err(),
         )?;
         record(
             see,
@@ -243,7 +212,6 @@ fn native_names<E>(
             new(
                 NameEncoding::WindowsUtf16Le,
                 invalid.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-                maximum,
             )
             .is_err(),
         )?;
@@ -251,7 +219,7 @@ fn native_names<E>(
     record(
         see,
         "utf16",
-        new(NameEncoding::WindowsUtf16Le, vec![b'n'], maximum).is_err(),
+        new(NameEncoding::WindowsUtf16Le, vec![b'n']).is_err(),
     )?;
     Ok(())
 }

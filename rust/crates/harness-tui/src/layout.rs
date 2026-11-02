@@ -81,98 +81,38 @@ impl Layout {
         width: usize,
         visit_fold: &mut impl FnMut(),
     ) -> Self {
-        let width = width.max(1);
-        let mut rows = vec![];
-        let mut row = Row::default();
-        let mut column = 0;
-        let mut offset = 0;
-        // Buffer keeps disjoint folds in source order. Layout walks that same
-        // order, so only the next fold can match the current source boundary.
-        let mut folds = folds.iter().peekable();
-        while offset < text.len() {
-            let fold = folds.next_if(|range| {
-                visit_fold();
-                range.start == offset
-            });
-            let (end, symbol) = if let Some(range) = fold {
-                (
-                    range.end,
-                    Cow::Owned(format!(
-                        "[Pasted {} lines]",
-                        slice(text, range.clone()).split('\n').count()
-                    )),
-                )
-            } else if let Some(grapheme) = slice(text, offset..).graphemes(true).next() {
-                (offset + grapheme.len(), Cow::Borrowed(grapheme))
-            } else {
-                break;
-            };
-            if symbol == "\n" {
-                row.end = offset;
-                rows.push(row);
-                if column == width {
-                    rows.push(Row {
-                        start: offset,
-                        end: offset,
-                        cells: vec![],
-                    });
-                }
-                row = Row {
-                    start: end,
-                    end,
-                    cells: vec![],
-                };
-                column = 0;
-            } else {
-                let symbol = if symbol == "\t" {
-                    Cow::Owned(" ".repeat((tab_width - column % tab_width).min(width)))
-                } else if symbol.chars().any(char::is_control) {
-                    Cow::Borrowed("�")
-                } else {
-                    symbol
-                };
-                let mut cell_width = UnicodeWidthStr::width(symbol.as_ref());
-                let symbol = if cell_width > width {
-                    cell_width = 1;
-                    Cow::Borrowed("�")
-                } else if cell_width == 0 {
-                    cell_width = 1;
-                    // A leading combining mark needs a printable base.
-                    Cow::Owned(format!("◌{symbol}"))
-                } else {
-                    symbol
-                };
-                if column + cell_width > width {
-                    row.end = offset;
-                    rows.push(row);
-                    row = Row {
-                        start: offset,
-                        end: offset,
-                        cells: vec![],
-                    };
-                    column = 0;
-                }
-                row.cells.push(Cell {
-                    source: offset..end,
-                    symbol: symbol.into_owned(),
-                    column,
-                    width: cell_width,
-                });
-                column += cell_width;
-                row.end = end;
-            }
-            offset = end;
+        let mut rows = Vec::new();
+        let result = visit_rows(text, folds, tab_width, width, visit_fold, |row| {
+            rows.push(row);
+            Ok::<_, std::convert::Infallible>(())
+        });
+        match result {
+            Ok(()) => Self {
+                rows,
+                width: width.max(1),
+            },
+            Err(never) => match never {},
         }
-        rows.push(row);
-        // A full final row needs a following cell for the insertion cursor.
-        if column == width {
-            rows.push(Row {
-                start: offset,
-                end: offset,
-                cells: vec![],
-            });
-        }
-        Self { rows, width }
+    }
+
+    /// Visit wrapped plain-text rows while retaining only the current row.
+    /// Uses the same grapheme, control, tab and display-width rules as the editor.
+    ///
+    /// # Errors
+    /// Stops immediately on the visitor's error.
+    pub fn visit_text_rows<E>(
+        text: &str,
+        width: usize,
+        visit: impl FnMut(Row) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit_rows(
+            text,
+            &[],
+            crate::DEFAULT_SETTINGS.tab_width,
+            width,
+            &mut || {},
+            visit,
+        )
     }
 
     /// Map a byte offset to a visual row and display column. At soft wraps,
@@ -218,6 +158,105 @@ impl Layout {
             row.end
         }
     }
+}
+
+fn visit_rows<E>(
+    text: &str,
+    folds: &[Range<usize>],
+    tab_width: usize,
+    width: usize,
+    visit_fold: &mut impl FnMut(),
+    mut visit: impl FnMut(Row) -> Result<(), E>,
+) -> Result<(), E> {
+    let width = width.max(1);
+    let mut row = Row::default();
+    let mut column = 0;
+    let mut offset = 0;
+    let mut folds = folds.iter().peekable();
+    while offset < text.len() {
+        let fold = folds.next_if(|range| {
+            visit_fold();
+            range.start == offset
+        });
+        let (end, symbol) = if let Some(range) = fold {
+            (
+                range.end,
+                Cow::Owned(format!(
+                    "[Pasted {} lines]",
+                    slice(text, range.clone()).split('\n').count()
+                )),
+            )
+        } else if let Some(grapheme) = slice(text, offset..).graphemes(true).next() {
+            (offset + grapheme.len(), Cow::Borrowed(grapheme))
+        } else {
+            break;
+        };
+        if symbol == "\n" {
+            row.end = offset;
+            visit(row)?;
+            if column == width {
+                visit(Row {
+                    start: offset,
+                    end: offset,
+                    cells: vec![],
+                })?;
+            }
+            row = Row {
+                start: end,
+                end,
+                cells: vec![],
+            };
+            column = 0;
+        } else {
+            let symbol = if symbol == "\t" {
+                Cow::Owned(" ".repeat((tab_width - column % tab_width).min(width)))
+            } else if symbol.chars().any(char::is_control) {
+                Cow::Borrowed("�")
+            } else {
+                symbol
+            };
+            let mut cell_width = UnicodeWidthStr::width(symbol.as_ref());
+            let symbol = if cell_width > width {
+                cell_width = 1;
+                Cow::Borrowed("�")
+            } else if cell_width == 0 {
+                cell_width = 1;
+                // A leading combining mark needs a printable base.
+                Cow::Owned(format!("◌{symbol}"))
+            } else {
+                symbol
+            };
+            if column + cell_width > width {
+                row.end = offset;
+                visit(row)?;
+                row = Row {
+                    start: offset,
+                    end: offset,
+                    cells: vec![],
+                };
+                column = 0;
+            }
+            row.cells.push(Cell {
+                source: offset..end,
+                symbol: symbol.into_owned(),
+                column,
+                width: cell_width,
+            });
+            column += cell_width;
+            row.end = end;
+        }
+        offset = end;
+    }
+    visit(row)?;
+    // A full final row needs a following cell for the insertion cursor.
+    if column == width {
+        visit(Row {
+            start: offset,
+            end: offset,
+            cells: vec![],
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

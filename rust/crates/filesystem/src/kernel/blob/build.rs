@@ -1,6 +1,6 @@
 use super::*;
 
-/// Hard bounds for streaming immutable-blob construction.
+/// Chunk sizes and optional source policy for streaming immutable blobs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlobBuildOptions {
     /// Positive maximum bytes per authenticated content chunk.
@@ -9,8 +9,8 @@ pub struct BlobBuildOptions {
     pub page_items: u32,
     /// Maximum canonical bytes in one authenticated blob-index page.
     pub page_bytes: u32,
-    /// Maximum logical bytes consumed from the source.
-    pub maximum_blob_bytes: u64,
+    /// Optional maximum logical bytes consumed from the source.
+    pub maximum_blob_bytes: Option<u64>,
 }
 
 /// Successful streaming blob construction.
@@ -48,7 +48,7 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
     accounting.check()?;
     if options.chunk_bytes == 0
         || effective_page_width(options, store.maximum_reference_bytes()).is_none()
-        || options.maximum_blob_bytes == 0
+        || options.maximum_blob_bytes == Some(0)
     {
         return Err(BlobBuildError::InvalidOptions.into());
     }
@@ -60,12 +60,14 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
         let mut logical_bytes = 0_u64;
         loop {
             accounting.check()?;
-            let detection_bytes = options
+            let maximum = options
                 .maximum_blob_bytes
-                .saturating_sub(logical_bytes)
-                .saturating_add(1);
-            let maximum =
-                chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
+                .map_or(chunk_capacity, |maximum| {
+                    chunk_capacity.min(
+                        usize::try_from(maximum.saturating_sub(logical_bytes).saturating_add(1))
+                            .unwrap_or(usize::MAX),
+                    )
+                });
             let owned = read_owned_blob_source(source, maximum, accounting, cancellation).await?;
             let (chunk, filled) = if let Some(chunk) = owned {
                 let filled = chunk.bytes.len();
@@ -281,7 +283,7 @@ pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     chunk: OwnedSourceChunk,
     maximum: usize,
     logical_bytes: u64,
-    maximum_blob_bytes: u64,
+    maximum_blob_bytes: Option<u64>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<u64, FsError> {
@@ -290,7 +292,12 @@ pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
         .checked_add(chunk_bytes)
         .ok_or(BlobBuildError::TooLarge);
     let end = match end {
-        Ok(end) if chunk.bytes.len() <= maximum && end <= maximum_blob_bytes => end,
+        Ok(end)
+            if chunk.bytes.len() <= maximum
+                && maximum_blob_bytes.is_none_or(|maximum| end <= maximum) =>
+        {
+            end
+        }
         _ => {
             drop_source_chunk(chunk, accounting)?;
             return Err(BlobBuildError::TooLarge.into());

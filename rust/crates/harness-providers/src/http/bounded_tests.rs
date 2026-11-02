@@ -23,7 +23,7 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
             Ok(Bytes::from(vec![b' '; ORIGINAL])),
             Ok(Bytes::from_static(b"x")),
         ]));
-        let result = futures::executor::block_on(read(body, 4 * ORIGINAL, Some(&work)));
+        let result = futures::executor::block_on(read(body, Some(4 * ORIGINAL), Some(&work)));
         if overlap {
             let body = result?;
             assert_eq!(body.bytes.len(), ORIGINAL + 1);
@@ -76,7 +76,7 @@ proptest::proptest! {
             budget.items_examined = chunks - u64::from(!admitted);
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
             let source = Box::pin(futures::stream::iter(fragments.iter().cloned().map(Ok).collect::<Vec<_>>()));
-            let result = futures::executor::block_on(read(source, recorded.len(), Some(&work)));
+            let result = futures::executor::block_on(read(source, Some(recorded.len()), Some(&work)));
             if admitted {
                 let body = result.unwrap();
                 proptest::prop_assert_eq!(body.bytes.as_slice(), recorded.as_slice());

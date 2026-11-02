@@ -144,6 +144,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_answer"
+path = "fuzz_targets/native_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "inference_http"
 path = "fuzz_targets/inference_http.rs"
 test = false

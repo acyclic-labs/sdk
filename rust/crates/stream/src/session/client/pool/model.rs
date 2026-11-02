@@ -20,7 +20,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let (mut pool, _) = fixture(&channel);
             pool.routes.clear();
             let mut links = std::mem::take(&mut pool.links);
-            let (commands, _) = mpsc::channel(2);
+            let (commands, _) = commands::channel(2);
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
@@ -32,6 +32,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                     attempt_epoch: Arc::clone(&pool.attempt_epoch),
                     abandoned: Arc::clone(&pool.abandoned),
                 },
+                registration_timeout: None,
                 revisions: Arc::default(),
             };
             let prepare = |client: &Client, id| {
@@ -134,7 +135,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         let (mut pool, _) = fixture(&channel);
         pool.routes.clear();
         let links = std::mem::take(&mut pool.links);
-        let (commands, _) = mpsc::channel(2);
+        let (commands, _) = commands::channel(2);
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
@@ -146,6 +147,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
             },
+            registration_timeout: None,
             revisions: Arc::default(),
         };
         let prepare = |id| {
@@ -246,7 +248,7 @@ pub fn verify_pool_lifetime(fault: u8) {
 /// Checks real cursor reservation/drop against an arbitrary live-cursor fold.
 pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
-        let (commands, _) = mpsc::channel(2);
+        let (commands, _) = commands::channel(2);
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
@@ -258,6 +260,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
                 attempt_epoch: Arc::new(AtomicU64::new(0)),
                 abandoned: Arc::new(gate::Gate::new()),
             },
+            registration_timeout: None,
             revisions: Arc::default(),
         };
         let mut live = BTreeMap::new();
@@ -439,7 +442,7 @@ pub fn verify_registration_cancellation(broken: bool) {
     use std::future::Future as _;
     for (complete, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
         loom::model(move || {
-            let (commands, _commands) = mpsc::channel(1);
+            let (commands, _commands) = commands::channel(1);
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
@@ -451,6 +454,7 @@ pub fn verify_registration_cancellation(broken: bool) {
                     attempt_epoch: Arc::new(AtomicU64::new(0)),
                     abandoned: Arc::new(gate::Gate::new()),
                 },
+                registration_timeout: None,
                 revisions: Arc::default(),
             };
             let (_, receiver) = mpsc::channel(2);
@@ -542,7 +546,8 @@ pub fn verify_node_dials(fault: u8) {
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
-                    commands: mpsc::channel(2).0,
+                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                    commands: commands::channel(2).0,
                     removed: Arc::clone(&pool.removed),
                     next_id: Arc::new(AtomicU64::new(5)),
                     active: Arc::clone(&pool.active),
@@ -550,6 +555,7 @@ pub fn verify_node_dials(fault: u8) {
                     attempt_epoch: Arc::clone(&pool.attempt_epoch),
                     abandoned: Arc::clone(&pool.abandoned),
                 },
+                registration_timeout: None,
                 revisions: Arc::default(),
             };
             let a = client
@@ -657,7 +663,8 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                commands: mpsc::channel(2).0,
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands: commands::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
                 active: Arc::clone(&pool.active),
@@ -665,6 +672,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
             },
+            registration_timeout: None,
             revisions: Arc::default(),
         };
         let a = client

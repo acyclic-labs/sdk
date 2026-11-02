@@ -6,7 +6,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         before: ObjectId,
         after: ObjectId,
     ) -> Result<(crate::GenerationDiff, ProofGuard), crate::FsError> {
-        let maximum = u32::try_from(self.limits.maximum_files).unwrap_or(u32::MAX);
+        // This is an optimization batch: a larger diff falls back to the
+        // complete walk, without refusing publication.
+        let maximum = self.limits.decode.maximum_page_items;
         let (diff, _allocation) = match &self.meter {
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeter::Native {
@@ -99,9 +101,6 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 file_count = file_count.checked_add(1).ok_or(WorkError::Overflow)?;
             }
         }
-        if file_count > self.limits.maximum_files {
-            return Ok(None);
-        }
         self.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
             root.file_table,
             Some(previous.root.file_table),
@@ -131,14 +130,11 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             .object_bytes
             .checked_add(self.object_bytes)
             .ok_or(WorkError::Overflow)?;
-        // These are conservative bounds; recompute the exact closure when they reach a limit.
+        // Cached totals conservatively include newly authenticated objects.
         let object_count = previous
             .object_count
             .checked_add(self.objects.len() as u64)
             .ok_or(WorkError::Overflow)?;
-        if bytes > self.limits.maximum_object_bytes || object_count > self.limits.maximum_objects {
-            return Ok(None);
-        }
         self.object_bytes = bytes;
         Ok(Some((file_count, logical_bytes, object_count)))
     }
@@ -372,14 +368,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                         {
                             continue;
                         }
-                        let lower = self
-                            .meter
-                            .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                        let lower = self.meter.clone_key::<F>(&child.first)?;
                         let upper = upper_key
-                            .map(|key| {
-                                self.meter
-                                    .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
-                            })
+                            .map(|key| self.meter.clone_key::<F>(key))
                             .transpose()?;
                         let prior = if reused || before == Some(child.page) {
                             Some(child.page)

@@ -10,6 +10,7 @@ mod harness_manifest;
 pub mod inference_http;
 pub mod log_frame;
 mod mcp;
+pub mod native_answer;
 #[cfg(feature = "storage-schedules")]
 pub mod object_schedule;
 mod objects_json;

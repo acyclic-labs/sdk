@@ -139,6 +139,7 @@ pub struct StockExecutors {
     templates: bool,
     /// Settings sampling (`agent.ts`) for every model call.
     sampling: Option<crate::config::Sampling>,
+    max_children: Option<u32>,
     context: Arc<dyn TurnContext>,
 }
 
@@ -162,6 +163,7 @@ impl StockExecutors {
             agent_tools: Vec::new(),
             templates: false,
             sampling: None,
+            max_children: None,
             context,
         }
     }
@@ -198,6 +200,14 @@ impl StockExecutors {
         self
     }
 
+    /// Configures the host's explicit open-child capacity. `None` admits any
+    /// number of children; it does not substitute a default limit.
+    #[must_use]
+    pub fn with_child_capacity(mut self, capacity: Option<u32>) -> Self {
+        self.max_children = capacity;
+        self
+    }
+
     /// Reads creation templates through the original filesystem admission.
     #[must_use]
     pub fn with_templates(mut self) -> Self {
@@ -208,7 +218,7 @@ impl StockExecutors {
 
 impl TurnExecutors for StockExecutors {
     fn render_bytes(&self) -> Option<u64> {
-        Some(self.limits.render_bytes)
+        self.limits.render_bytes
     }
 
     fn templates(&self) -> bool {
@@ -259,7 +269,11 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, authority.templates.clone()),
+                    (
+                        &self.agent_tools,
+                        self.max_children,
+                        authority.templates.clone(),
+                    ),
                 )?;
             }
             let executor = StockExecutor::new(

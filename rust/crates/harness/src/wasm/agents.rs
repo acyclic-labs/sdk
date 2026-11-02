@@ -55,11 +55,6 @@ type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>
 type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
-/// Settled turns of history in each turn's model context, as in the local host.
-const HISTORY_TURNS: u32 = 64;
-/// Backstop on one delivery, which awaits a whole turn, as in the local host.
-const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
-
 fn to_js<T: Serialize>(value: &T) -> std::result::Result<JsValue, JsValue> {
     value
         .serialize(
@@ -340,7 +335,7 @@ pub struct WasmAgents {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     sender: Sender,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     run: Option<BrowserRun>,
 }
 
@@ -399,10 +394,10 @@ impl WasmAgents {
         brief: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         IntentId::try_from(intent).map_err(agent_error)?;
-        if brief
-            .as_ref()
-            .is_some_and(|text| text.len() as u64 > self.maximum_bytes)
-        {
+        if brief.as_ref().is_some_and(|text| {
+            self.maximum_bytes
+                .is_some_and(|maximum| text.len() as u64 > maximum)
+        }) {
             return Err(js_error(Error::Invalid(
                 "agent brief exceeds file byte limit".into(),
             )));
@@ -768,7 +763,7 @@ impl WasmAgents {
         from: u64,
         limit: u32,
     ) -> std::result::Result<JsValue, JsValue> {
-        let path = record_path(agent, &stream)?;
+        let path = agent_stream_path(agent, &stream)?;
         let records = match self
             .agents
             .provider()
@@ -844,13 +839,24 @@ impl WasmAgents {
         // Rust-owned verified bytes, copied out of the reader's buffer.
         Ok(Vec::from(
             reader
-                .read(&file, self.maximum_bytes, None, None)
+                .read(&file, file.descriptor().byte_length(), None, None)
                 .map_err(js_error)?
                 .await
                 .map_err(js_error)?
                 .as_slice(),
         ))
     }
+}
+
+fn agent_stream_path(agent: String, stream: &str) -> std::result::Result<StreamPath, JsValue> {
+    let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+    match stream {
+        "inbox" => agent.inbox(),
+        "conversation" => agent.conversation(),
+        "status" => agent.status(),
+        _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
+    }
+    .map_err(agent_error)
 }
 
 impl WasmAgents {

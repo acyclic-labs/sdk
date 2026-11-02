@@ -273,6 +273,17 @@ pub(super) fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<
     serde_json::from_value(value).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Omitted optional arguments are absent; supplied values keep canonical admission.
+pub(super) fn optional_from_js<T: serde::de::DeserializeOwned>(
+    value: JsValue,
+) -> Result<Option<T>, JsValue> {
+    if value.is_undefined() {
+        Ok(None)
+    } else {
+        from_js(value)
+    }
+}
+
 pub(super) fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     serialize_js(value, false)
 }

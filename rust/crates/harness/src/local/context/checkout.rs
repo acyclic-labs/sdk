@@ -33,7 +33,7 @@ impl LocalHarness {
     ) -> Result<DiscoveredContext> {
         let mut bounds = crate::context::DiscoveryWork {
             limits: ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             },
             ..Default::default()
@@ -57,10 +57,11 @@ impl LocalHarness {
         authority: (&AuthorityVerifier, &Scope),
     ) -> Result<DiscoveredContext> {
         // Bound archive paths before asking the source for instruction bodies.
-        if names
-            .iter()
-            .any(|name| "inputs/context/".len() + 64 + 1 + name.len() > self.limits.path_bytes)
-        {
+        if names.iter().any(|name| {
+            self.limits.path_bytes.is_some_and(|maximum| {
+                "inputs/context/".len() + 64 + 1 + name.len() > maximum.get()
+            })
+        }) {
             return Err(Error::Invalid(
                 "instruction archive exceeds path bound".into(),
             ));
@@ -74,7 +75,7 @@ impl LocalHarness {
         let view = selected.as_ref().unwrap_or_else(|| workspace.view());
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -119,7 +120,7 @@ impl LocalHarness {
         &self,
         workspace: &LocalWorkspace,
         paths: &[String],
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Result<Vec<(usize, Vec<u8>)>> {
         let (selected, pending) = workspace.selected_view().await?;
         if let Some((operation, _)) = pending {
@@ -218,8 +219,14 @@ impl LocalHarness {
                 .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
                 .await?;
             remaining = remaining
-                .checked_sub(chunk.bytes.as_ref().len() as u64)
-                .ok_or_else(|| Error::Invalid("mentioned files exceed the byte bound".into()))?;
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(chunk.bytes.as_ref().len() as u64)
+                        .ok_or_else(|| {
+                            Error::Invalid("mentioned files exceed the byte bound".into())
+                        })
+                })
+                .transpose()?;
             copies.insert(path.to_owned(), chunk.bytes);
         }
         let directory = self.publish_mention_copies(base, copies).await?;
@@ -265,7 +272,12 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
         Box::pin(async move {
             let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
-            if archive_length > self.harness.limits.path_bytes {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| archive_length > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "instruction archive exceeds path bound".into(),
                 ));
@@ -280,7 +292,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await?;
             ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             }
             .validate_instruction(bytes.bytes.as_ref())?;
@@ -443,7 +455,6 @@ mod tests {
         fn archive_identity(name in prop::sample::select(vec!["AGENTS.md", "CLAUDE.md"]), bytes in prop::collection::vec(any::<u8>(), 0..128)) {
             let path = archive_path(name, &bytes);
             crate::conversation::validate_content_path(&path, &mut None)?;
-            prop_assert!(path.len() <= Limits::default().path_bytes);
             let suffix = path.strip_prefix("inputs/context/").unwrap();
             let (digest, retained_name) = suffix.split_once('/').unwrap();
             prop_assert_eq!(retained_name, name);

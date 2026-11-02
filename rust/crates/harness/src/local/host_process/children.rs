@@ -29,12 +29,8 @@ use answer::NativeAnswer;
 mod tools;
 pub use tools::serve;
 
-/// Byte bound of one native event line and of a retained answer's source.
-const EVENT_LIMIT: usize = 65_536;
-/// The saved log's line where the bounded framer dropped one native event.
+/// The saved log's marker for a malformed native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -391,7 +387,7 @@ impl NativeChildren {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: NativeAnswer::default(),
             settlement: None,
             wake,
@@ -736,22 +732,26 @@ mod framing {
     }
 
     #[test]
-    fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
-        let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
-        let mut omitted = 0;
-        for _ in 0..16 {
-            for event in events.push(&[b'x'; 8192]) {
-                assert!(event.is_err());
-                omitted += 1;
+    fn native_event_answers_survive_chunk_boundaries_and_large_lines() {
+        let text = "🌍".repeat(33_000);
+        for captured in [
+            include_str!("fixtures/codex-completed.jsonl"),
+            include_str!("fixtures/claude-code-completed.jsonl"),
+        ] {
+            // Mutate only the payload of an original captured successful turn.
+            let bytes = captured.replace("PAIRED_NATIVE_DONE", &text).into_bytes();
+            let mut events = acyclic_native_runtime::lines::LineBuffer::new(None);
+            let mut answer = NativeAnswer::default();
+            for chunk in bytes.chunks(8192) {
+                for line in events.push(chunk) {
+                    let line = line.expect("complete captured native frame");
+                    let event: Value = serde_json::from_str(&line).expect("captured frame is JSON");
+                    answer.record(&event);
+                }
             }
-            assert!(events.buffered_bytes() <= EVENT_LIMIT);
+            assert!(matches!(answer.outcome, Some(Outcome::Succeeded(answer)) if answer == text));
+            assert_eq!(events.buffered_bytes(), 0);
         }
-        assert_eq!(omitted, 1, "oversized output must be reported once");
-        let lines = events.push(b"\ncomplete frame\n");
-        let [Ok(line)] = lines.as_slice() else {
-            panic!("valid frame after omitted event: {lines:?}");
-        };
-        assert_eq!(line, "complete frame");
     }
 
     /// The ready queue holds only children whose registration fired, and a

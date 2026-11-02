@@ -8,7 +8,7 @@ impl CheckoutPublisher {
         volume: &'a VolumeRef,
         operation: OperationId,
         changes: Option<&'a [ContentChange<'a>]>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: ContentAccess<'a, 'io>,
         finish: fn(Option<ContentChanges>) -> Result<Output>,
     ) -> Result<BoundedContentFuture<'a, (Output, Option<ContentHold<'io>>)>> {
