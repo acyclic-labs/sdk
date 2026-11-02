@@ -133,6 +133,7 @@ impl Alarm {
 pub struct State {
     epoch: u64,
     placement_branch: Option<CommitId>,
+    escrow: Option<crate::escrow::Escrow>,
     checkpoint: Option<Checkpoint>,
     subscriptions: BTreeMap<String, Subscription>,
     alarm: Alarm,
@@ -580,6 +581,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let state = State {
             epoch: 0,
             placement_branch: None,
+            escrow: None,
             checkpoint,
             subscriptions,
             alarm: Alarm::default(),

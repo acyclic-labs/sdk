@@ -256,6 +256,10 @@ candidates roll back, while a committed debit never expires. Copied branch
 funding cannot be spent by a new placement. These values convey no grant or
 execution authority; suballocation and refund delivery must join their original
 owner's publication. Guest metadata packets cannot replace the balance.
+The balance occupies one host-owned state field. Reads and candidate debits
+allocate nothing and do not visit the metadata tree; encoding happens only at
+the original state publication boundary. Rollback restores the same small
+value. This does not remove the existing whole-state encoding at publication.
 `Store::observe` performs the required fresh head observation before handler
 admission. An unchanged tail and commit anchor retain the original typed state
 without decoding it again; a changed cut is decoded before delivery continues.
