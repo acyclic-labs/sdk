@@ -458,7 +458,7 @@ fn verify_staged_archive(
         _ => {
             return Err(
                 "Cargo resolution lock does not match its published or producer identity".into(),
-            )
+            );
         }
     }
     Ok((

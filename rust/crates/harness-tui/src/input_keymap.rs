@@ -1,5 +1,5 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::{named_action, Binding, KEYMAP};
+use crate::{Binding, KEYMAP, named_action};
 use std::{collections::BTreeMap, io, path::Path};
 
 /// Canonical schema-validated `{"bindings":{"Ctrl+l":"cursor.line-start"}}`
