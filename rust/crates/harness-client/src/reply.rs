@@ -1070,6 +1070,7 @@ mod tests {
             agent: agent.clone(),
             target: crate::ReadTarget::ToolOutput {
                 path: "output".into(),
+                at: None,
             },
             offset,
         };

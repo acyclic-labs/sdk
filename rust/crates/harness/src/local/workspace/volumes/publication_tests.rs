@@ -354,8 +354,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     );
     // Complete the original physical entry before holding the second slot.
     // The scope can then claim the first projection without waiting for I/O.
-    let first_root = projection_root(&scratch.destination, SCRATCH_PATH)?;
-    drop(scratch.enter(first_root, SCRATCH_PATH, false).await?);
+    let first_root = projection_root(&scratch.destination, HOME_PATH)?;
+    drop(scratch.enter(first_root, HOME_PATH, false).await?);
     assert_eq!(*scratch.users.lock().unwrap(), 0);
     let ran = std::sync::atomic::AtomicBool::new(false);
     let second_entry = blocked.native().await;
