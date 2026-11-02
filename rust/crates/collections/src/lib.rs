@@ -142,8 +142,9 @@ struct Bit {
     offset: u32,
 }
 
-fn high<const N: usize>(key: &[u8; N], bit: Bit) -> bool {
-    key.get(bit.byte)
+fn high<K: AsRef<[u8]> + ?Sized>(key: &K, bit: Bit) -> bool {
+    key.as_ref()
+        .get(bit.byte)
         .unwrap_or_else(|| unreachable!("a branch coordinate comes from this key width"))
         & (0x80 >> bit.offset)
         != 0

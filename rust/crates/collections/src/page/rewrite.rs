@@ -54,6 +54,9 @@ pub trait Work<I: ?Sized> {
     fn append(&mut self, frame: &mut Self::Frame, output: Self::Output) -> Result<(), Self::Error>;
 }
 
+/// One transition retaining the original caller's request, frame and result types.
+pub type Transition<R, F, O, E> = Result<Action<R, F, O>, E>;
+
 /// Original page IO and stack retirement for the shared iterative rewrite.
 ///
 /// The returned futures are the caller's existing physical operations. This
@@ -110,7 +113,7 @@ pub fn descend<I: ?Sized, W: Work<I>>(
     stack: &mut W::Stack,
     entered: Entered<W::Frame, W::Output>,
     input: &I,
-) -> Result<Action<W::Request, W::Frame, W::Output>, W::Error> {
+) -> Transition<W::Request, W::Frame, W::Output, W::Error> {
     match entered {
         Entered::Complete(output) => ascend(work, stack, output, input),
         Entered::Internal(frame) => follow(work, stack, frame, input),
@@ -124,7 +127,7 @@ pub fn ascend<I: ?Sized, W: Work<I>>(
     stack: &mut W::Stack,
     output: W::Output,
     input: &I,
-) -> Result<Action<W::Request, W::Frame, W::Output>, W::Error> {
+) -> Transition<W::Request, W::Frame, W::Output, W::Error> {
     let Some(mut frame) = work.pop(stack) else {
         return Ok(Action::Complete(output));
     };
@@ -137,7 +140,7 @@ fn follow<I: ?Sized, W: Work<I>>(
     stack: &mut W::Stack,
     mut frame: W::Frame,
     input: &I,
-) -> Result<Action<W::Request, W::Frame, W::Output>, W::Error> {
+) -> Transition<W::Request, W::Frame, W::Output, W::Error> {
     match work.advance(&mut frame, input)? {
         Some(request) => {
             work.push(stack, frame)?;
