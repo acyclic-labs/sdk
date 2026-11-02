@@ -16,11 +16,17 @@ test('phase pairs retain original real pipe terminals and reject incomplete or f
    preceding=order;
    const samples=[];
    for(const mode of order) {
-    const operation=randomUUID(),observed=new ProcessPhases(operation),missing=new ProcessPhases(operation);
-    collector={observe(event){observed.observe(event);if(event.phase!=='stdout-eof')missing.observe(event);}};
+    const operation=randomUUID(),observed=new ProcessPhases(operation),missing=new ProcessPhases(operation),events=[];
+    collector={observe(event){events.push(event);observed.observe(event);if(event.phase!=='stdout-eof')missing.observe(event);}};
     const result=await scope.run(process.execPath,['-e','process.stdin.pipe(process.stdout)'],{scopeOperation:operation},'original exact bytes');
     assert.equal(result.stdout,'original exact bytes');
     assert.throws(()=>missing.complete(result),/missing original phase: stdout-eof/);
+    // Corrupt one real observation's timestamp. A finite but reversed clock
+    // must not become a negative measured interval or a qualified sample.
+    const clock=new ProcessPhases(operation);
+    clock.observe(events[0]);
+    assert.ok(events[0].elapsed_seconds>0);
+    assert.throws(()=>clock.observe({...events[1],elapsed_seconds:events[0].elapsed_seconds/2}),/step=admit native process clock/);
     samples.push({mode,binding:{source:'same admitted source'},effect:result.stdout,physical:observed.complete(result)});
    }
    const pair=pairPhases(...samples);
