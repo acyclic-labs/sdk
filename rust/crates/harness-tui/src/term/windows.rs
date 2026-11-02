@@ -473,9 +473,7 @@ mod tests {
         assert_eq!(caps.mode(2004), super::super::ModeState::Reset);
         assert_eq!(caps.mode(1049), super::super::ModeState::Reset);
         assert_eq!(caps.mode(1003), super::super::ModeState::Reset);
-        std::fs::write(path.with_extension("negotiated"), b"negotiated")?;
         tty.setup(ScreenMode::Alternate)?;
-        std::fs::write(path.with_extension("setup"), b"setup")?;
         wheel_tests::read_bursts(&mut tty, &path)?;
         tty.enable_mode(1004)?;
         let blocked = std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("blocked");
@@ -486,13 +484,12 @@ mod tests {
             // The host leaves ConPTY output unread through the whole send.
             // The production-worker loom model checks that these waits do
             // not retain the owner lock used to admit another operation.
-            for index in 0..2 {
+            for _ in 0..2 {
                 let start = Instant::now();
                 assert!(
                     matches!(tty.send(&payload, start + Duration::from_millis(50)), Err(error) if error.kind() == io::ErrorKind::TimedOut)
                 );
                 assert!(start.elapsed() < Duration::from_millis(500));
-                std::fs::write(path.with_extension(format!("send{index}")), b"timed out")?;
             }
             let setting_up = Arc::clone(&tty.owner);
             let setup = std::thread::spawn(move || {
@@ -507,7 +504,6 @@ mod tests {
                     || matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut)
             );
             assert!(start.elapsed() < Duration::from_millis(50));
-            std::fs::write(path.with_extension("short-send"), b"bounded")?;
             setup_wait = Some(setup);
             let closing = Arc::clone(&tty.owner);
             close_wait = Some(std::thread::spawn(move || {

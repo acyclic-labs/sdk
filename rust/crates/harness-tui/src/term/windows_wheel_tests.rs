@@ -55,12 +55,21 @@ pub(super) fn read_bursts(tty: &mut Tty, report: &Path) -> io::Result<()> {
             })
             .is_err()
         );
+        let pending = report.with_extension(format!("wheel{count}-pending"));
         std::fs::write(
-            report.with_extension(format!("wheel{count}-done")),
+            &pending,
             format!(
                 "notches={count} effects={} allocations={allocation:?} control={control:?}",
                 effects.len()
             ),
+        )?;
+        std::fs::rename(pending, report.with_extension(format!("wheel{count}-done"))).map_err(
+            |error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("wheel{count} result publication failed: {error}"),
+                )
+            },
         )?;
     }
     Ok(())
