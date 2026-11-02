@@ -39,8 +39,16 @@ export class EntryStore {
   /** Admit once and retain the complete closure under the caller's stable intent. */
   async publishDeployment(intent: Uint8Array, selection: EntrySelection, idempotencyKey: string, signal?: AbortSignal): Promise<PublishedDeployment> {
     signal?.throwIfAborted();
-    const result = await pull(this.#inner.openPublication(intent, selection.manifest, selection.environment, selection.entry,
-      selection.artifact, selection.files.map(file => file.path), selection.files.map(file => file.bytes), idempotencyKey), signal);
+    const { manifest, environment, entry, artifact, files } = selection;
+    const length = files.length;
+    const paths = new Array<string>(length), contents = new Array<Uint8Array>(length);
+    for (let index = 0; index < length; index++) {
+      const file = files[index]!;
+      paths[index] = file.path;
+      contents[index] = file.bytes;
+    }
+    const result = await pull(this.#inner.openPublication(intent, manifest, environment, entry,
+      artifact, paths, contents, idempotencyKey), signal);
     if (!("request" in result)) throw new ObjectsV1Error(ErrorCode.UNAVAILABLE);
     return result;
   }

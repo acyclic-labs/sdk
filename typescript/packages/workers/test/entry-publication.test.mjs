@@ -164,7 +164,12 @@ test("Worker entry publication retains the selected closure through the original
     error => error.name === "AbortError");
   assert.equal(port.opened, 0);
 
-  const published = await workers.entries.publishDeployment(first, selected, "first");
+  let fileReads = 0;
+  const published = await workers.entries.publishDeployment(first, {...selected, get files() {
+    // A second projection must not substitute bytes from a different closure.
+    return ++fileReads === 1 ? selected.files : [{path: "selected.wasm", bytes: module}];
+  }}, "first");
+  assert.equal(fileReads, 1);
   assert.deepEqual(port.routes, ["blobs/put", "blobs/put", "blobs/put", "blobs/retain"]);
   assert.equal(port.opened, port.closed);
   const descriptor = fromBinary(objects.VerifiedSchema, published.object.body);
