@@ -30,6 +30,7 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
   readonly #abort = new AbortController();
   readonly #source: Promise<OpenedSource<Value>>;
   #closing: Promise<void> | undefined;
+  #done = false;
 
   constructor(open: (signal: AbortSignal) => Promise<OpenedSource<Value>>, signal?: AbortSignal) {
     const abort = (): void => { this.#abort.abort(signal?.reason); void this.close().catch(() => {}); };
@@ -52,12 +53,12 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
 
   /** Retain the original opening and cursor while adapting a provider facade. */
   static defer<Value>(open: (signal: AbortSignal) => Promise<Opened<Value>>, signal?: AbortSignal): Opened<Value> {
-    return new Opened(async signal => forwardOpening(await open(signal), signal, source => source), signal);
+    return new Opened(async signal => (await open(signal)).#forwardOpening(signal, source => source), signal);
   }
 
   /** Transform records without replacing the selected receipt or its owner. */
   through<Next>(adapt: (records: AsyncIterable<Record<Value>>) => AsyncIterable<Record<Next>>): Opened<Next> {
-    return new Opened(signal => forwardOpening(this, signal, source => adapt(source)[Symbol.asyncIterator]()));
+    return new Opened(signal => this.#forwardOpening(signal, source => adapt(source)[Symbol.asyncIterator]()));
   }
 
   map<Next>(project: (record: Record<Value>) => Record<Next>): Opened<Next> {
@@ -65,8 +66,9 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
   }
 
   async next(): Promise<IteratorResult<Record<Value>>> {
-    if (this.#closing !== undefined) { await this.#closing; return { done: true, value: undefined }; }
+    if (this.#done) return { done: true, value: undefined };
     try {
+      if (this.#closing !== undefined) { await this.#closing; return { done: true, value: undefined }; }
       const source = await this.#source;
       if (this.#abort.signal.aborted) { await this.close(); return { done: true, value: undefined }; }
       const result = await source.records.next();
@@ -76,6 +78,8 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
       }
       return result;
     } catch (error) {
+      // Iteration reports a failure once; close retains its disposal outcome.
+      this.#done = true;
       const cancelled = this.#abort.signal.aborted;
       await closeAfterFailure(error, () => this.close());
       if (cancelled) return { done: true, value: undefined };
@@ -111,23 +115,26 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
   }
 
   [Symbol.asyncDispose](): Promise<void> { return this.close(); }
-}
 
-async function forwardOpening<Value, Next>(
-  source: Opened<Value>, signal: AbortSignal, records: (source: Opened<Value>) => AsyncIterator<Record<Next>>,
-): Promise<OpenedSource<Next>> {
-  const abort = (): void => { void source.close().catch(() => {}); };
-  signal.addEventListener("abort", abort, { once: true });
-  const close = async (): Promise<void> => {
-    signal.removeEventListener("abort", abort);
-    await source.close();
-  };
-  try {
-    signal.throwIfAborted();
-    return { opening: await source.opened, records: records(source), close };
-  } catch (error) {
-    await closeAfterFailure(error, close);
-    throw error;
+  async #forwardOpening<Next>(
+    signal: AbortSignal, records: (source: Opened<Value>) => AsyncIterator<Record<Next>>,
+  ): Promise<OpenedSource<Next>> {
+    const abort = (): void => { void this.close().catch(() => {}); };
+    signal.addEventListener("abort", abort, { once: true });
+    const close = async (): Promise<void> => {
+      signal.removeEventListener("abort", abort);
+      await this.close();
+    };
+    try {
+      signal.throwIfAborted();
+      return { opening: await this.opened, records: records(this), close };
+    } catch (error) {
+      await closeAfterFailure(error, close);
+      // Only successful disposal of the original owner's exact cancellation
+      // can become this facade's cancellation. Real setup/cleanup errors stay.
+      if (signal.aborted && error === this.#abort.signal.reason) throw signal.reason;
+      throw error;
+    }
   }
 }
 

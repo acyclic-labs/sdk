@@ -973,9 +973,35 @@ describe("website Stream contract", () => {
           expect(error).toMatchObject({ code: failure.code });
           if (phase === "opened") await expect(opened.opened).rejects.toBe(error);
           expect(await opened.next()).toEqual({ done: true, value: undefined });
+          if (phase === "opened") await expect(opened.close()).rejects.toBe(error);
           expect(socket.sockets.length).toBe(1);
         } finally { socket.close(); }
       }
+    }
+  });
+
+  test("pending hosted openings close successfully through provider and typed facades", async () => {
+    for (const operation of ["read", "follow"] as const) for (const typed of [false, true]) {
+      const socket = new SessionSocket();
+      let release!: () => void;
+      let connected!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const connecting = new Promise<void>(resolve => { connected = resolve; });
+      socket.node.beforeConnect = async () => { connected(); await held; };
+      try {
+        const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+          fetcher: async () => { throw new Error("session cursor must not fetch"); } });
+        const stream = new StreamClient(provider).bytes("events");
+        const opened = operation === "read"
+          ? typed ? stream.read({ from: 0n, limit: 1 }) : provider.read("events", { from: 0n, limit: 1 })
+          : typed ? stream.follow({ from: 0n }) : provider.follow("events", { from: 0n });
+        const pulling = opened.next();
+        await connecting;
+        await expect(opened.close()).resolves.toBeUndefined();
+        await expect(pulling).resolves.toEqual({ done: true, value: undefined });
+        expect(await opened.next()).toEqual({ done: true, value: undefined });
+        await expect(opened[Symbol.asyncDispose]()).resolves.toBeUndefined();
+      } finally { release(); socket.close(); }
     }
   });
 
