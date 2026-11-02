@@ -1,4 +1,62 @@
 use super::*;
+
+#[tokio::test]
+async fn directory_link_projection_has_no_target_sized_conversion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
+    for (index, units) in [1, 1024].into_iter().enumerate() {
+        let work = setup_work()?;
+        let source = windows_checkout_source().await?;
+        let path = windows_path("link");
+        let target = [b'x', 0].repeat(units);
+        let lookup = source.create_symbolic_link(
+            &path,
+            setup_chunk(&target, &work)?,
+            FileMetadata {
+                windows_attributes: MetadataField::Value(FILE_ATTRIBUTE_NORMAL.0),
+                ..FileMetadata::default()
+            },
+            &work,
+        )?;
+        let root = tempfile::tempdir()?;
+        let runtime = callback_runtime(source, root.path(), &work)?;
+        let projection = Projection {
+            runtime: &runtime,
+            work: &work,
+            context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT::default(),
+            starting: false,
+        };
+        let directory = MountPath::root();
+        for (control, restore_conversion) in [false, true].into_iter().enumerate() {
+            let component = owned_component(projection, &windows_name("link"))?;
+            let mut result = Ok(None);
+            costs[index][control] = acyclic_test_support::measure(|| {
+                result = projected_entry(projection, &directory, component, lookup, None);
+                if restore_conversion && let Ok(Some(entry)) = &result {
+                    // Reintroduce the discarded conversion as the negative control.
+                    let target = entry.symlink_target.as_ref().expect("symbolic link");
+                    std::hint::black_box(HSTRING::from_wide(
+                        &decode_utf16_name(&target.bytes).expect("aligned target"),
+                    ));
+                }
+            });
+            let entry = result?.ok_or("missing projected link")?;
+            assert_eq!(
+                entry.symlink_target.as_ref().unwrap().bytes.as_ref(),
+                target
+            );
+            assert_eq!(entry.facts.lookup, lookup);
+            assert!(!entry.directory_link);
+        }
+    }
+    // This thread owns projection conversion; source I/O retains its own accounting.
+    assert_eq!(costs[0][0].count_total, costs[1][0].count_total);
+    assert_eq!(costs[0][0].bytes_total, costs[1][0].bytes_total);
+    let conversion_bytes = |index: usize| costs[index][1].bytes_total - costs[index][0].bytes_total;
+    assert!(conversion_bytes(0) > 0);
+    assert!(conversion_bytes(1) > conversion_bytes(0));
+    Ok(())
+}
 use crate::kernel::KernelAccounting;
 #[test]
 fn projfs_name_order_differs_from_sdk_cursor_order() {

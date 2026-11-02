@@ -37,8 +37,19 @@ pub(super) fn write_entry(
         placeholder.FileBasicInfo.IsDirectory = true;
         placeholder.FileBasicInfo.FileAttributes |= FILE_ATTRIBUTE_DIRECTORY.0;
     }
-    let (target, extended) = symlink_extended(&target.bytes)
-        .ok_or_else(|| format!("link at {path:?} is unrepresentable"))?;
+    let target = HSTRING::from_wide(
+        &decode_utf16_name(&target.bytes)
+            .ok_or_else(|| format!("link at {path:?} is unrepresentable"))?,
+    );
+    let extended = PRJ_EXTENDED_INFO {
+        InfoType: PRJ_EXT_INFO_TYPE_SYMLINK,
+        NextInfoOffset: 0,
+        Anonymous: PRJ_EXTENDED_INFO_0 {
+            Symlink: PRJ_EXTENDED_INFO_0_0 {
+                TargetName: PCWSTR::from_raw(target.as_ptr()),
+            },
+        },
+    };
     let relative = projection.runtime.projfs_name(&host);
     let size = u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX);
     // SAFETY: the name, placeholder and link target outlive these
