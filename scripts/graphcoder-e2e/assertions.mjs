@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
+// The returned native cause and physical exit are independent observations.
+// A successful exit cannot erase a selected startup or execution failure.
+export function executionSucceeded(result) {
+  assert.equal(result.termination?.startup_rejection ?? result.termination?.execution_failure,
+    undefined, "selected native execution reported failure");
+  assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
+  assert.equal(result.signal, null, "executable was interrupted");
+}
+
 // JSONL replies carry either a committed answer or an explicit message error.
 // The same contract applies to live, scripted and multi-turn acceptance.
 export function messageReply(value, id) {

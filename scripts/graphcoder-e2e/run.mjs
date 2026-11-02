@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool, schedule } from "./process.mjs";
-import { requests, subset, recordedRequests, jsonlReply } from "./assertions.mjs";
+import { executionSucceeded, requests, subset, recordedRequests, jsonlReply } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
@@ -149,7 +149,8 @@ async function execute(test, prepared) {
         running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
       } else running.child.stdin.end();
       const result = await running.closed; captures.push(result);
-      assert.equal(result.code, input.exit ?? 0, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
+      if ((input.exit ?? 0) === 0) executionSucceeded(result);
+      else assert.equal(result.code, input.exit, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {

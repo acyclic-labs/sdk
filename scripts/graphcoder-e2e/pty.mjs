@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
+import { executionSucceeded } from "./assertions.mjs";
 
 function bold(terminal, text) {
   const buffer = terminal.buffer.active;
@@ -120,7 +121,8 @@ export async function pty(processes, binary, fixture, input, capture) {
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${cause ? JSON.stringify(cause) : ""}${result.stderr}\n${result.stdout}`);
     if (!input.killed) {
       assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-      assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
+      if ((input.exit ?? 0) === 0) executionSucceeded(result);
+      else assert.equal(result.code, input.exit, result.stderr + visible);
     }
     else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
     for (const text of input.settled_contains ?? []) {
