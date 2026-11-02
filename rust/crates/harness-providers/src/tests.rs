@@ -394,6 +394,7 @@ pub(super) fn provider_with(
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: provider.model.clone(),
             messages: vec![
@@ -736,6 +737,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
+            summary: false,
             compose_tools: false,
             model: provider.model.clone(),
             sampling: Default::default(),

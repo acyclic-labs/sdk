@@ -23,6 +23,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
     let journal = journal.as_ref();
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            summary: true,
             compose_tools: false,
             model: Model::new("test".into(), "custody".into(), "1".into())?,
             messages: vec![ModelMessage {
@@ -67,6 +68,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
                 load_request_inner(journal, &file, Limits::default(), Some(&io)).await?
             };
             assert_eq!(request.bytes(), prepared.bytes());
+            assert!(request.request().summary);
             let retained = request.preparation_owned_bytes(&io)?;
             let hold = io.guard_owned(retained)?;
             drop(request);
@@ -103,6 +105,33 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             );
         }
     }
+    // Bind the altered header to its actual digest so version admission, rather
+    // than a stale digest, must refuse the unsupported persisted format.
+    let mut manifest = load_manifest(journal, &file, None).await?;
+    let (mut header, _) = load_json::<RequestHeader>(journal, &manifest.header, None).await?;
+    header.version = 2;
+    manifest.header_digest = preparation_digest(&header, None)?;
+    manifest.header = stage_json(
+        journal,
+        OperationId::new(),
+        "unsupported-header",
+        &header,
+        None,
+    )
+    .await?;
+    let unsupported = stage_json(
+        journal,
+        OperationId::new(),
+        "unsupported-request",
+        &manifest,
+        None,
+    )
+    .await?;
+    assert!(
+        load_request(journal, &unsupported, Limits::default(), None)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -122,6 +151,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
     let other = other_issuer.verifier(&mut None)?;
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("test".into(), "proof".into(), "1".into())?,
             messages: vec![ModelMessage {

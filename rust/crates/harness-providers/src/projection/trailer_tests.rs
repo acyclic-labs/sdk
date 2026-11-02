@@ -20,10 +20,28 @@ fn former(body: &Request<'_>) -> Value {
     if let Some(tools) = body.fields.tools() {
         map.insert("tools".into(), serde_json::from_str(tools.get()).unwrap());
     }
-    map.insert(
-        conversation(body.target.family).into(),
-        serde_json::to_value(&body.messages).unwrap(),
-    );
+    let mut messages = serde_json::to_value(&body.messages).unwrap();
+    if let Some(instruction) = &body.summary {
+        let instruction = instruction.as_ref();
+        messages
+            .as_array_mut()
+            .unwrap()
+            .push(if body.target.family == Adapter::Gemini {
+                json!({"role":"user","parts":[{"text":instruction}]})
+            } else {
+                json!({"role":"user","content":instruction})
+            });
+        let (key, value) = match body.target.family {
+            Adapter::Gemini => (
+                "toolConfig",
+                json!({"functionCallingConfig":{"mode":"NONE"}}),
+            ),
+            Adapter::Anthropic => ("tool_choice", json!({"type":"none"})),
+            _ => ("tool_choice", json!("none")),
+        };
+        map.insert(key.into(), value);
+    }
+    map.insert(conversation(body.target.family).into(), messages);
     Value::Object(map)
 }
 
@@ -153,11 +171,11 @@ proptest! {
             for summary in [false, true] {
                 let mut request = prepared.request().clone();
                 request.messages[1].content = ModelContent::Text(text.clone());
+                request.summary = summary;
+                request.tools.push(acyclic_harness_core::tools::catalog().find(|tool| tool.name == "code").unwrap().definition().unwrap());
                 if summary {
                     request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text("accepted reply".into()) });
                     request.messages.push(ModelMessage { role: ModelRole::User, content: ModelContent::Text("Summarize the selected context.".into()) });
-                } else {
-                    request.tools.push(acyclic_harness_core::tools::catalog().find(|tool| tool.name == "code").unwrap().definition().unwrap());
                 }
                 for changed in [false, true] {
                     request.sampling = if changed { ModelSampling {
@@ -208,7 +226,21 @@ proptest! {
                             if family == Adapter::Chat { expected.push("seed"); }
                         }
                     }
+                    if summary { expected.push(if family == Adapter::Gemini { "toolConfig" } else { "tool_choice" }); }
                     prop_assert_eq!(&keys, &expected);
+                    // Observation and direct dispatch select the same encoder.
+                    prop_assert_eq!(wire, &body.encode().unwrap());
+                    prop_assert!(actual["tools"].as_array().is_some_and(|tools| !tools.is_empty()));
+                    if summary {
+                        prop_assert!(matches!(body.summary, Some(std::borrow::Cow::Borrowed(_))));
+                        let instruction = body.summary.as_deref().unwrap();
+                        let messages = actual[conversation(family)].as_array().unwrap();
+                        prop_assert_eq!(messages.len(), body.messages.len() + 1);
+                        prop_assert_eq!(messages.last().unwrap()[if family == Adapter::Gemini { "parts" } else { "content" }].clone(),
+                            if family == Adapter::Gemini { json!([{"text":instruction}]) } else { json!(instruction) });
+                        let ordinary = acyclic_model_render::Tail::new(&body.fields).unwrap();
+                        prop_assert!(acyclic_model_render::render_summary(&body.header().unwrap(), &body.messages, instruction, &ordinary, &mut Vec::new()).is_err());
+                    }
                     let config = if family == Adapter::Gemini {
                         let raw = &object.0.iter().find(|(key, _)| key == "generationConfig").unwrap().1;
                         let _: Object = serde_json::from_str(raw.get()).unwrap();

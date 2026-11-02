@@ -26,6 +26,7 @@ struct Envelope<'a> {
     model: &'a Model,
     #[serde(skip_serializing_if = "crate::model::ModelSampling::is_default")]
     sampling: crate::model::ModelSampling,
+    summary: bool,
     tools: &'a [crate::tool::ToolDefinition],
 }
 
@@ -65,6 +66,7 @@ fn envelope(
 ) -> Result<(acyclic_stream::OwnedBytes, usize)> {
     let bytes = encode(
         &Envelope {
+            summary: request.summary,
             compose_tools: request.compose_tools,
             sampling: request.sampling,
             max_output_tokens: request.max_output_tokens,

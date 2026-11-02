@@ -9,6 +9,7 @@ fn message(index: usize) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
+        summary: false,
         compose_tools: false,
         model: Model::new("scripted".into(), "encoding".into(), "1".into())?,
         messages: (0..count).map(message).collect(),
@@ -100,6 +101,32 @@ fn sampling_is_pinned_across_incremental_encoding_and_recovery() -> Result<()> {
         let recovered = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
         assert_eq!(recovered.request().sampling, sampling);
         assert_eq!(recovered.request_digest(), prepared.request_digest());
+    }
+    let mut summary = request(1)?;
+    summary.summary = true;
+    let summary = PreparedModelRequest::prepare(summary, Limits::default(), None)?;
+    assert_ne!(summary.request_digest(), baseline.request_digest());
+    let recovered = PreparedModelRequest::decode(summary.bytes(), Limits::default(), None)?;
+    assert!(recovered.request().summary);
+    let recovered = recovered
+        .into_continuation()
+        .finish(Limits::default(), None)?;
+    assert_eq!(recovered.bytes(), summary.bytes());
+    assert_eq!(recovered.request_digest(), summary.request_digest());
+    let mut continuation = recovered.into_continuation();
+    continuation.messages().push(message(1));
+    assert!(continuation.finish(Limits::default(), None).is_err());
+    for messages in [
+        Vec::new(),
+        vec![ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text("not a summary instruction".into()),
+        }],
+    ] {
+        let mut invalid = request(1)?;
+        invalid.summary = true;
+        invalid.messages = messages;
+        assert!(PreparedModelRequest::prepare(invalid, Limits::default(), None).is_err());
     }
     for sampling in [
         ModelSampling {

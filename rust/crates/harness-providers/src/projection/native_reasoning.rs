@@ -102,7 +102,7 @@ pub(super) fn replay_responses_with(
             &allows,
         )?;
     }
-    super::sequence::finish(Adapter::Responses, &mut messages)?;
+    super::sequence::finish(Adapter::Responses, &mut messages, false)?;
     let encoded = serde_json::to_vec(&messages).unwrap();
     match crate::json(&encoded).unwrap() {
         serde_json::Value::Array(output) => Ok(output),

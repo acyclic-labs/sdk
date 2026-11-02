@@ -149,6 +149,7 @@ fn request(
     let model = provider.provider.model().clone();
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model,
             messages: vec![ModelMessage {
@@ -371,6 +372,7 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
     ).map_err(error)?;
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: provider.provider.model().clone(),
             messages: vec![ModelMessage {
