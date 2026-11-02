@@ -107,9 +107,12 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     registry.register("openai".into(), openai.clone())?;
     let model = registry.resolve("openai/gpt-5")?;
     assert_eq!(model.context_capacity(model.model())?.context_tokens, 32768);
-    let original = model.provider_settings().unwrap();
+    let original = model.provider_settings(model.model())?.unwrap();
     let cost = acyclic_test_support::measure(|| {
-        assert!(std::ptr::eq(original, model.provider_settings().unwrap()));
+        assert!(std::ptr::eq(
+            original,
+            model.provider_settings(model.model()).unwrap().unwrap()
+        ));
     });
     assert_eq!(cost.count_total, 0);
     assert_eq!(
@@ -123,10 +126,11 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     registry.register("openai".into(), openai.clone())?;
     let changed = registry.resolve("openai/gpt-5")?;
     assert_ne!(model.model(), changed.model());
+    assert!(model.provider_settings(changed.model()).is_err());
     assert_eq!(original.base.sampling.temperature, None);
     assert_eq!(
         changed
-            .provider_settings()
+            .provider_settings(changed.model())?
             .unwrap()
             .base
             .sampling

@@ -211,6 +211,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
         Ok(None)
     }
+    /// Borrows the caller-configured public provider entry for this exact model.
+    /// Absence is explicit; implementations must not reconstruct a settings
+    /// base from capacity, endpoint names or credential data.
+    ///
+    /// # Errors
+    /// A selection mismatch or an unsupported metadata query.
+    fn provider_settings(&self, _: &Model) -> Result<Option<&crate::config::ProviderEntry>> {
+        Err(unsupported())
+    }
     /// The tool family the exact model selection was trained on. Stock turns
     /// offer the tools it maps under that family's declarations.
     fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {

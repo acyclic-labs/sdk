@@ -32,13 +32,6 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
-    /// The caller's original public settings entry, retained with this selection.
-    /// It shares the selected specification's ownership and exposes no route,
-    /// credential, header or secret-reference fields.
-    pub fn provider_settings(&self) -> Option<&acyclic_harness_core::config::ProviderEntry> {
-        self.config.settings.as_ref()
-    }
-
     /// The original selected catalog member's tool family, including under
     /// alloy. Profile admission consumes this value without a naming heuristic.
     pub fn native_tool_profile(&self) -> Option<acyclic_harness_core::model::NativeToolProfile> {
@@ -278,6 +271,13 @@ impl ModelProvider for ResolvedModel {
         Ok(self.profile)
     }
 
+    fn provider_settings(
+        &self,
+        model: &Model,
+    ) -> Result<Option<&acyclic_harness_core::config::ProviderEntry>> {
+        self.validate(model)?;
+        Ok(self.config.settings.as_ref())
+    }
     fn native_tool_profile(
         &self,
         model: &Model,
