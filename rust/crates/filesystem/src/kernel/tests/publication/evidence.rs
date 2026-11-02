@@ -71,15 +71,20 @@ async fn evidence_fixture() -> TestResult<(
     .await?;
     let first = FileId::from_bytes([2; 16]);
     let second = FileId::from_bytes([3; 16]);
-    let [tree, table, root] = generation(
+    let ([tree, table, root], bindings) = generation(
         &objects,
         volume_id,
         FileId::from_bytes([1; 16]),
         metadata,
-        vec![entry(b"first", first)?, entry(b"second", second)?],
         vec![
-            regular(first, metadata, u64::MAX, extents),
-            regular(second, metadata, u64::MAX, extents),
+            (
+                entry(b"first", first)?,
+                regular(first, metadata, u64::MAX, extents),
+            ),
+            (
+                entry(b"second", second)?,
+                regular(second, metadata, u64::MAX, extents),
+            ),
         ],
         Vec::new(),
     )
@@ -105,9 +110,10 @@ async fn evidence_fixture() -> TestResult<(
     )
     .await?;
     let mut expected_objects = vec![metadata, extents, tree, table, root];
+    expected_objects.extend(bindings);
     expected_objects.sort_unstable();
     assert_eq!(proof.objects, expected_objects);
-    assert_eq!(crate::foundation::usize_to_u64(proof.objects.len()), 5);
+    assert_eq!(crate::foundation::usize_to_u64(proof.objects.len()), 7);
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
     let cancellation = CancellationToken::new();

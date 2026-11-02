@@ -42,13 +42,15 @@ async fn native_fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> Tes
     )
     .await?;
     let child = FileId::from_bytes([2; 16]);
-    let [_, _, generation] = generation(
+    let ([_, _, generation], _) = generation(
         objects,
         volume_id,
         FileId::from_bytes([1; 16]),
         metadata,
-        vec![entry(b"content", child)?],
-        vec![regular(child, metadata, logical_bytes, extents)],
+        vec![(
+            entry(b"content", child)?,
+            regular(child, metadata, logical_bytes, extents),
+        )],
         vec![crate::GenerationId::new(Digest::from_bytes([7; 32]))],
     )
     .await?;
