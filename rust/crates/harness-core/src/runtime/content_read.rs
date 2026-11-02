@@ -87,6 +87,25 @@ impl TaskContext {
             .unwrap_or(&self.output_content)
     }
 
+    /// The ordinary home mount when no workspace resolver is bound. Reads and
+    /// writes must select the same volume and strip the same public prefix.
+    pub(super) fn home_content_path<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Option<(&'a ContentBindings, &'a str)> {
+        if self.harness.targets.is_some() {
+            return None;
+        }
+        let relative = path.strip_prefix(crate::layers::HOME_PATH)?;
+        let binding = self
+            .harness
+            .artifacts
+            .as_ref()
+            .unwrap_or(&self.output_content);
+        (binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate)
+            .then_some((binding, relative))
+    }
+
     /// Where a tool publishes into `volume`, or, unselected, its new files:
     /// the harness's own project content when it has a writer, which is
     /// where the project's commands write too; otherwise the agent's

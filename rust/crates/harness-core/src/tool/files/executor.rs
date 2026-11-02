@@ -518,20 +518,27 @@ impl ToolExecutor for FileTool {
                 (source.map(FileReadSource::Content), custody)
             };
             let receipt =
-                context
-                    .observe_tool_source_file_once(
-                        invocation.operation_id,
-                        source.0.as_ref().map(FileReadSource::volume),
-                        if matches!(self, Self::Write) && source.0.is_none() {
-                            None
-                        } else {
+                if matches!(self, Self::Write) && source.0.is_none() {
+                    let path = invocation
+                        .arguments
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| rejection(Some(work), "write receipt requires its path"))?;
+                    context
+                        .observe_tool_path_once(invocation.operation_id, path, Some(&io))
+                        .await?
+                } else {
+                    context
+                        .observe_tool_source_file_once(
+                            invocation.operation_id,
+                            source.0.as_ref().map(FileReadSource::volume),
                             source.0.as_ref().map(FileReadSource::path).or_else(|| {
                                 invocation.arguments.get("path").and_then(Value::as_str)
-                            })
-                        },
-                        Some(&io),
-                    )
-                    .await?;
+                            }),
+                            Some(&io),
+                        )
+                        .await?
+                };
             match receipt.0 {
                 Some(file) => {
                     let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;

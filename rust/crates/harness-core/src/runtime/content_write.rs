@@ -46,6 +46,18 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    /// Preserve a mounted publisher's routing, or select the ordinary home
+    /// binding before handing a relative path to a single-volume publisher.
+    pub(super) fn tool_publication_path<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> (Option<&'a ContentBindings>, &'a str) {
+        self.home_content_path(path).map_or_else(
+            || (self.tool_content(None), path),
+            |(binding, relative)| (Some(binding), relative),
+        )
+    }
+
     /// A cache commit must not advance the source volume's generation. Only
     /// an independently bound private destination can retain projections.
     pub(crate) fn projection_destination(
@@ -217,13 +229,11 @@ impl TaskContext {
         if let Some(source) = source {
             self.authorize_file_read(source, scope, scope.grants(), None, io)?;
         }
-        publication_destination(
-            self.tool_content(source.map(FileRef::volume)),
-            scope,
-            source,
-            path,
-            io,
-        )?;
+        let (binding, path) = match source {
+            Some(source) => (self.tool_content(Some(source.volume())), path),
+            None => self.tool_publication_path(path),
+        };
+        publication_destination(binding, scope, source, path, io)?;
         Ok(())
     }
 

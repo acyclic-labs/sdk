@@ -496,6 +496,16 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) async fn observe_tool_path_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let (binding, _) = self.task().tool_publication_path(path);
+        self.observe_once(binding, operation_id, io).await
+    }
+
     pub(crate) async fn observe_tool_source_file_once(
         &self,
         operation_id: OperationId,
@@ -769,7 +779,7 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let binding = self.task().tool_content(None);
+        let (binding, path) = self.task().tool_publication_path(path);
         self.stage_once(
             binding,
             operation_id,
@@ -875,18 +885,8 @@ impl ToolContext {
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
         }
-        // Match the home mount's public path when no execution target is
-        // bound. Keep the same private reader and ordinary directory grants.
-        if let Some(relative) = path.strip_prefix(HOME_PATH) {
-            let binding = self
-                .task()
-                .harness
-                .artifacts
-                .as_ref()
-                .unwrap_or(&self.task().output_content);
-            if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
-                return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
-            }
+        if let Some((binding, relative)) = self.task().home_content_path(path) {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         Ok((
             &self.task().tool_read_content().volume,
@@ -1079,8 +1079,9 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (binding, path) = self.task().tool_publication_path(path);
         let (_, volume, relative) = super::content_write::publication_destination(
-            self.task().tool_content(None),
+            binding,
             self.effective_scope(),
             None,
             path,
