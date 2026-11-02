@@ -57,6 +57,34 @@ impl ExecutionRecordQuery<'_> {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionJournalCacheId(OperationId);
 
+/// Stable capability to return the original accepted sequence on every append
+/// and exact retry. A bound journal must expose the same capability on replay.
+#[cfg(feature = "research")]
+pub trait SequencedExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Publishes through the original append entrance, returning its one-based
+    /// sequence or an error. Never discover the receipt by reading the tail.
+    fn append_with_sequence<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>>;
+}
+
+#[cfg(feature = "research")]
+pub(super) fn completion_cut(
+    sequenced: Option<&dyn SequencedExecutionJournal>,
+    operation: OperationId,
+    sequence: u64,
+) -> Option<ExecutionJournalCut> {
+    sequenced.map(|_| ExecutionJournalCut {
+        version: 1,
+        operation,
+        sequence,
+    })
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticates private working cuts issued by this journal binding.
@@ -165,19 +193,12 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
-    /// Returns the sequence accepted by the original append, including an
-    /// exact retry. `None` declines before allocation or publication; the caller
-    /// uses ordinary append and retains unknown coverage. Never discover a
-    /// receipt by reading the current tail.
+    /// Stable receipt capability of this immutable journal binding. `None`
+    /// uses ordinary append and retains unknown coverage on live completion
+    /// and replay alike, even when replay records have sequence numbers.
     #[cfg(feature = "research")]
-    fn append_with_sequence<'a>(
-        &'a self,
-        _operation: OperationId,
-        _key: &'a str,
-        _event: &'a ExecutionEvent,
-        _io: Option<&'a PreparationIo>,
-    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, Option<u64>>>> {
-        Ok(None)
+    fn sequenced_appends(&self) -> Option<&dyn SequencedExecutionJournal> {
+        None
     }
 
     /// Appends at the exact operation-scoped journal tail.

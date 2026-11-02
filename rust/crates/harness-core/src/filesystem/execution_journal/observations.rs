@@ -276,7 +276,7 @@ where
             contributions,
             confirmation,
             io,
-            |receipt| receipt.accepted,
+            |receipt| Ok(receipt.accepted),
         )
     }
 
@@ -289,7 +289,7 @@ where
         contributions: &'a [indexed_publication::Contribution<'a>],
         confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
         io: Option<&'a PreparationIo>,
-        project: impl FnOnce(AppendObservation) -> T + acyclic_stream::ProviderTask + 'a,
+        project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -308,7 +308,7 @@ where
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
-                return result.map(project);
+                return result.and_then(project);
             }
             let span = match expected_tail {
                 Some(rev) => {
@@ -329,7 +329,7 @@ where
                 ),
             )
             .await
-            .map(project)
+            .and_then(project)
         })
     }
 

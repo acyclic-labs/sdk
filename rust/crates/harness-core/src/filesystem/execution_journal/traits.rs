@@ -1,5 +1,28 @@
 use super::*;
 
+#[cfg(feature = "research")]
+impl<P, A, O> crate::executor::SequencedExecutionJournal for FilesystemExecutionJournal<P, A, O>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn append_with_sequence<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
+        self.append_projected(operation, None, key, event, &[], None, io, |receipt| {
+            receipt
+                .sequence
+                .filter(|sequence| *sequence > 0)
+                .ok_or(Error::Indeterminate(operation))
+        })
+    }
+}
+
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized,
@@ -209,27 +232,12 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        self.append_projected(operation, None, key, event, &[], None, io, |_| ())
+        self.append_projected(operation, None, key, event, &[], None, io, |_| Ok(()))
     }
 
     #[cfg(feature = "research")]
-    fn append_with_sequence<'a>(
-        &'a self,
-        operation: OperationId,
-        key: &'a str,
-        event: &'a ExecutionEvent,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, Option<u64>>>> {
-        Ok(Some(self.append_projected(
-            operation,
-            None,
-            key,
-            event,
-            &[],
-            None,
-            io,
-            |receipt| receipt.sequence,
-        )?))
+    fn sequenced_appends(&self) -> Option<&dyn crate::executor::SequencedExecutionJournal> {
+        Some(self)
     }
 
     fn append_if_tail<'a>(

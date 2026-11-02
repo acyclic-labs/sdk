@@ -11,7 +11,7 @@ pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurp
 #[derive(Debug)]
 pub(crate) struct ModelObservationReceipt {
     #[cfg(feature = "research")]
-    pub(crate) sequence: Option<u64>,
+    pub(crate) journal_cut: Option<ExecutionJournalCut>,
 }
 
 async fn commit(
@@ -24,17 +24,20 @@ async fn commit(
 ) -> Result<ModelObservationReceipt> {
     #[cfg(feature = "research")]
     if matches!(model, ModelEvent::Completed { .. })
-        && let Some(append) = journal.append_with_sequence(operation, key, event, io)?
+        && let Some(sequenced) = journal.sequenced_appends()
     {
-        return append
+        return sequenced
+            .append_with_sequence(operation, key, event, io)?
             .await
-            .map(|sequence| ModelObservationReceipt { sequence });
+            .map(|sequence| ModelObservationReceipt {
+                journal_cut: journal::completion_cut(Some(sequenced), operation, sequence),
+            });
     }
     let _ = model;
     journal.append(operation, key, event, io)?.await?;
     Ok(ModelObservationReceipt {
         #[cfg(feature = "research")]
-        sequence: None,
+        journal_cut: None,
     })
 }
 

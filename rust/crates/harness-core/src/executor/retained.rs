@@ -143,11 +143,11 @@ pub(crate) async fn retained_model_step<'a>(
             admission.observe(event, limits, io)?;
             #[cfg(feature = "research")]
             if matches!(event, ModelEvent::Completed { .. }) {
-                journal_cut = Some(ExecutionJournalCut {
-                    version: 1,
-                    operation: record.operation_id,
-                    sequence: record.sequence,
-                });
+                journal_cut = journal::completion_cut(
+                    journal.sequenced_appends(),
+                    record.operation_id,
+                    record.sequence,
+                );
             }
         }
     }

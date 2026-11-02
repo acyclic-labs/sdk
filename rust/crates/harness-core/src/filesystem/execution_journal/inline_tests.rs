@@ -110,26 +110,29 @@ async fn append_receipts_preserve_original_sequence_after_later_publication() ->
         None,
     )
     .await?;
-    assert_eq!(terminal.sequence, Some(3));
+    let terminal_cut = terminal.journal_cut.expect("original terminal receipt");
+    assert_eq!(terminal_cut.operation, operation);
+    assert_eq!(terminal_cut.sequence, 3);
     let started = ExecutionEvent::Started {
         request_digest: [1; 32],
     };
-    let original = journal
+    let sequenced = journal
+        .sequenced_appends()
+        .expect("original receipt capability");
+    let original = sequenced
         .append_with_sequence(operation, "started", &started, None)?
-        .expect("original receipt capability")
         .await?;
-    assert_eq!(original, Some(1));
+    assert_eq!(original, 1);
     assert_ne!(
-        original, terminal.sequence,
+        original, terminal_cut.sequence,
         "current tail would certify a different observation"
     );
     let foreign = ExecutionEvent::Started {
         request_digest: [2; 32],
     };
     assert!(
-        journal
+        sequenced
             .append_with_sequence(operation, "started", &foreign, None)?
-            .expect("original receipt capability")
             .await
             .is_err()
     );
@@ -144,8 +147,8 @@ async fn append_receipts_preserve_original_sequence_after_later_publication() ->
             None,
         )
         .await?
-        .sequence,
-        terminal.sequence
+        .journal_cut,
+        Some(terminal_cut)
     );
     Ok(())
 }

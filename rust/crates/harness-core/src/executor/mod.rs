@@ -35,6 +35,8 @@ pub(crate) use native_stock::{
 pub(crate) mod execution_claim;
 mod journal;
 pub use execution_claim::{ExecutionAttempt, ExecutionClaim, ExecutionClaims};
+#[cfg(feature = "research")]
+pub use journal::SequencedExecutionJournal;
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,

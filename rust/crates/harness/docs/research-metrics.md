@@ -116,7 +116,11 @@ from an agent inbox cursor. In research mode, the stock executor supplies
 accepted terminal model observation's sequence. The original journal append
 returns this sequence on fresh publication and exact retry; replay retains the
 same original record. It performs no tail lookup, extra append or durability
-barrier. A custom journal without receipt support leaves the cut unknown.
+barrier. `ExecutionJournal::sequenced_appends` exposes a stable
+`SequencedExecutionJournal` capability for the immutable binding. Its append
+returns the original sequence or a typed error. A custom journal without this
+capability leaves the cut unknown on both live completion and replay; a saved
+completion's sequence alone cannot upgrade that coverage.
 Pending, failed or cancelled execution without a successful output cannot
 certify closure. Settlement must bind the cut's operation to its original turn.
 Use one

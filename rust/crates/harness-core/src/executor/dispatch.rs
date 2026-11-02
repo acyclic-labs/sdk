@@ -545,11 +545,7 @@ impl StockExecution<'_> {
                 .await?;
                 #[cfg(feature = "research")]
                 if admission.completed && purpose == ModelPurpose::Response {
-                    phase.1 = receipt.sequence.map(|sequence| ExecutionJournalCut {
-                        version: 1,
-                        operation: operation_id,
-                        sequence,
-                    });
+                    phase.1 = receipt.journal_cut;
                 }
                 #[cfg(not(feature = "research"))]
                 let _ = receipt;
