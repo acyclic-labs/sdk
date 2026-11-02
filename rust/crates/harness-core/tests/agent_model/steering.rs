@@ -37,15 +37,21 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             MessageDelivery::Steer => InboxRecord::Message(message),
             MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
         };
-        let step = Step {
+        let mut step = Step {
             state,
             outs: vec![Out::Send {
                 to: recipient.clone(),
                 record,
             }],
-            status: None,
+            // Soft delivery accompanies the sender's own durable publication.
+            status: Some(StatusRecord {
+                phase: Phase::Idle,
+                cursor: 1,
+                conversation: 0,
+            }),
             alarm: Alarm::Clear,
         };
+        step.state.status_tail += 1;
         let open = lower(&step, 1, intent_key("open", &[])?)?;
         assert!(matches!(
             stream.commit(open).await?,
@@ -54,16 +60,18 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         assert_eq!(inbox_tail(&stream, &recipient).await?, 2);
 
         // Close after preparation, before submission: the same effect must skip.
+        step.state.status_tail += 1;
         let late = lower(&step, 1, intent_key("late", &[])?)?;
         submit(&stream, archive(&recipient, &user(), &intent("close"))?).await?;
         let closed_tail = inbox_tail(&stream, &recipient).await?;
         assert!(matches!(
-            stream.commit(late.clone()).await?,
+            stream.commit(late).await?,
             CommitOutcome::Committed(_)
         ));
         assert_eq!(inbox_tail(&stream, &recipient).await?, closed_tail);
 
         // The actual same append lands if its original close condition is removed.
+        step.state.status_tail += 1;
         let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
         for mutation in &mut unguarded.mutations {
             if let CommitMutation::SoftAppend { closed, .. } = mutation {
