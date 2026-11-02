@@ -1,7 +1,11 @@
 //! Allocation bounds for the production streaming input decoder.
 #![cfg(feature = "tui")]
 
-use acyclic_harness_tui::term::{Decoder, ModeState, Multiplexer};
+use std::{io, time::Instant};
+
+use acyclic_harness_tui::term::{
+    Decoder, Environment, ModeState, Multiplexer, Probe, ProbeIo, detect,
+};
 
 #[test]
 fn csi_replies_borrow_parameters_and_reuse_frame_storage() {
@@ -38,7 +42,44 @@ fn csi_replies_borrow_parameters_and_reuse_frame_storage() {
 
 #[test]
 fn multiplexer_frames_append_without_temporary_allocations() {
-    for mux in [Multiplexer::None, Multiplexer::Tmux, Multiplexer::Screen] {
+    struct FailedSend<'a> {
+        batch: &'a [u8],
+        cancel: &'a [u8],
+        sent: u8,
+        before_cancel: u64,
+        cancel_allocations: u64,
+    }
+    impl ProbeIo for FailedSend<'_> {
+        fn send(&mut self, bytes: &[u8], _: Instant) -> io::Result<()> {
+            let count = acyclic_test_support::current_allocations()
+                .expect("detect runs inside the allocation measurement")
+                .count_total;
+            self.sent += 1;
+            match self.sent {
+                1 => {
+                    assert_eq!(bytes, self.batch);
+                    self.before_cancel = count;
+                    Err(io::ErrorKind::BrokenPipe.into())
+                }
+                2 => {
+                    assert_eq!(bytes, self.cancel);
+                    self.cancel_allocations = count - self.before_cancel;
+                    Ok(())
+                }
+                _ => panic!("startup failure must return after its cancellation send"),
+            }
+        }
+
+        fn receive(&mut self, _: &mut [u8], _: Instant) -> io::Result<usize> {
+            panic!("startup failure cannot wait for a reply")
+        }
+    }
+
+    for (mux, marker, batch_allocations, cancel_allocations) in [
+        (Multiplexer::None, None, 20, 1),
+        (Multiplexer::Tmux, Some("TMUX"), 21, 3),
+        (Multiplexer::Screen, Some("STY"), 20, 2),
+    ] {
         let query = b"\x1b]11;?\x07";
         let expected = mux.wrap(query);
         let mut batch = Vec::with_capacity(1 + expected.len());
@@ -55,6 +96,41 @@ fn multiplexer_frames_append_without_temporary_allocations() {
         assert!(
             allocations.count_total > 0,
             "the removed temporary wrapper must cost an allocation"
+        );
+
+        let mut startup = Vec::new();
+        let allocations = acyclic_test_support::measure(|| startup = Probe::batch(mux));
+        // Fourteen numeric mode formats plus the initial batch and its growth:
+        // six buffer allocations direct/screen, seven for the larger tmux batch.
+        assert_eq!(allocations.count_total, batch_allocations, "{mux:?} batch");
+        let mut cancel = vec![0x18];
+        if mux != Multiplexer::None {
+            mux.wrap_into(b"\x18", &mut cancel);
+        }
+        let mut transport = FailedSend {
+            batch: &startup,
+            cancel: &cancel,
+            sent: 0,
+            before_cancel: 0,
+            cancel_allocations: 0,
+        };
+        let mut env = Environment::default();
+        if let Some(marker) = marker {
+            env.0
+                .insert(marker.into(), "generated transport selection".into());
+        }
+        acyclic_test_support::measure(|| {
+            assert_eq!(
+                detect(&mut transport, &env).err().unwrap().kind(),
+                io::ErrorKind::BrokenPipe,
+            );
+        });
+        assert_eq!(transport.sent, 2);
+        // Count only work between the failed original send and cancellation:
+        // CAN storage plus its existing growth, excluding startup formatting.
+        assert_eq!(
+            transport.cancel_allocations, cancel_allocations,
+            "{mux:?} cancel"
         );
     }
 }
