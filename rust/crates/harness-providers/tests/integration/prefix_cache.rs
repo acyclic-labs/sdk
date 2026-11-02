@@ -195,7 +195,6 @@ fn executors(
     model: Arc<acyclic_harness_providers::ResolvedModel>,
     extra: &[&str],
 ) -> TestResult<Arc<dyn TurnExecutors>> {
-    let preset = acyclic_harness::preset::Preset::graphcoder();
     let selected = ["code", "spawn"].map(String::from);
     let tools = acyclic_harness::tools::registry(
         &selected,
@@ -216,22 +215,21 @@ fn executors(
     }
     .build()?;
     Ok(Arc::new(
-        preset
-            .executors(
-                (model.model().clone(), model),
-                tools,
-                (
-                    limits,
-                    // Usable: 2^20 - 1024 tokens.
-                    CompactionPolicy::Threshold(ThresholdCompaction {
-                        response_reserve_tokens: 1024,
-                        recent_tokens: 1,
-                    }),
-                ),
-                Arc::new(Tasks(bindings)),
-            )
-            .with_agent_tools(&selected)
-            .with_profiles(profiles()?),
+        acyclic_harness::filesystem::StockExecutors::new(
+            (model.model().clone(), model),
+            tools,
+            (
+                limits,
+                // Usable: 2^20 - 1024 tokens.
+                CompactionPolicy::Threshold(ThresholdCompaction {
+                    response_reserve_tokens: 1024,
+                    recent_tokens: 1,
+                }),
+            ),
+            Arc::new(Tasks(bindings)),
+        )
+        .with_agent_tools(&selected)
+        .with_profiles(profiles()?),
     ))
 }
 

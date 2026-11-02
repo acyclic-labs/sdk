@@ -124,18 +124,16 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
         None,
     )?;
-    let executors = preset
-        .executors(
-            (
-                Model::new("conformance".into(), "scripted".into(), "1".into())?,
-                Arc::new(Scripted),
-            ),
-            tools,
-            (Limits::default(), CompactionPolicy::Disabled),
-            Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
-        )
-        .with_agent_tools(&[])
-        .with_profiles(crate::profile::Profiles::builtin());
+    let executors = crate::filesystem::StockExecutors::new(
+        (
+            Model::new("conformance".into(), "scripted".into(), "1".into())?,
+            Arc::new(Scripted),
+        ),
+        tools,
+        (Limits::default(), CompactionPolicy::Disabled),
+        Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
+    )
+    .with_profiles(crate::profile::Profiles::builtin());
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },

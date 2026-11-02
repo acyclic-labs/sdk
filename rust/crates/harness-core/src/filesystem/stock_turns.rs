@@ -12,7 +12,6 @@ use crate::{
     conversation::Limits,
     executor::{Executor, StockExecutor},
     model::{Model, ModelContent, ModelProvider},
-    preset::Preset,
     profile::Profiles,
     runtime::{AgentHarness, RuntimeScope, TaskContext},
     tool::ToolRegistry,
@@ -140,47 +139,6 @@ pub struct StockExecutors {
     agent_tools: Vec<String>,
     profiles: Option<Arc<Profiles>>,
     context: Arc<dyn TurnContext>,
-}
-
-impl Preset {
-    /// Stock turns over the host's model and registry, with standard agent
-    /// tools bound to each turn's effects. A host with a narrower selection
-    /// applies [`StockExecutors::with_agent_tools`]. Child admission uses
-    /// [`StockExecutors::with_profiles`].
-    #[must_use]
-    pub fn executors(
-        &self,
-        model: (Model, Arc<dyn ModelProvider>),
-        tools: ToolRegistry,
-        (limits, compaction): (Limits, CompactionPolicy),
-        context: Arc<dyn TurnContext>,
-    ) -> StockExecutors {
-        let mut executors = StockExecutors::new(model, tools, (limits, compaction), context);
-        executors.agent_tools = crate::tools::AGENT_TOOLS.map(String::from).into();
-        executors
-    }
-
-    /// The standard catalog tools the host can back, followed by its custom
-    /// `tools`. Agent tools bind per turn through [`Self::executors`].
-    ///
-    /// # Errors
-    /// When two tools share a name or a catalog binding fails.
-    pub fn tools(
-        &self,
-        workspace: impl Fn(&str) -> bool,
-        tools: Vec<crate::tool::Tool>,
-    ) -> Result<ToolRegistry> {
-        crate::tools::registry(&crate::tools::default_names(), workspace, tools)
-    }
-
-    /// The call grant of every tool in `tools` and of the standard agent
-    /// tools, which bind per turn outside the registry.
-    ///
-    /// # Errors
-    /// When a definition of `tools` cannot be produced.
-    pub fn tool_grants(&self, tools: &ToolRegistry) -> Result<Vec<String>> {
-        crate::tools::call_grants(tools, crate::tools::AGENT_TOOLS)
-    }
 }
 
 impl StockExecutors {
