@@ -98,7 +98,10 @@ struct BoundPath {
 
 impl BoundPath {
     fn new(path: &Path) -> io::Result<Self> {
-        let path = canonical(path)?;
+        if !path.is_absolute() {
+            return Err(refused("execution grant paths must be absolute"));
+        }
+        let path = std::fs::canonicalize(path).map_err(failure)?;
         let object = Self::open_path(&path)?;
         let metadata = object.metadata().map_err(failure)?;
         #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -207,12 +210,17 @@ impl ExecutionGrant {
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
     /// No ambient home, temporary directory or filesystem root is added.
+    /// Invalid network authority refuses before binding paths or consuming
+    /// the read-root iterator.
     pub fn new(
         workspace: &Path,
         access: ExecutionAccess,
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
+        if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
+            return Err(refused("TCP port zero is not a destination grant"));
+        }
         let workspace = BoundPath::new(workspace)?;
         if !workspace.is_dir {
             return Err(refused("execution workspace is not a directory"));
@@ -223,9 +231,6 @@ impl ExecutionGrant {
             .collect::<io::Result<Vec<_>>>()?;
         read.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         read.dedup_by(|left, right| left.path == right.path);
-        if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
-            return Err(refused("TCP port zero is not a destination grant"));
-        }
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
         Ok(Self(Arc::new(Grant {
@@ -424,13 +429,6 @@ impl PreparedExecution {
     pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
         self.platform.encode(&self.grant.0.filter, body)
     }
-}
-
-fn canonical(path: &Path) -> io::Result<PathBuf> {
-    if !path.is_absolute() {
-        return Err(refused("execution grant paths must be absolute"));
-    }
-    std::fs::canonicalize(path).map_err(failure)
 }
 
 pub(crate) fn failure(error: io::Error) -> io::Error {
