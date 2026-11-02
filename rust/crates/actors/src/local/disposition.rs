@@ -11,6 +11,10 @@ use prost::Message as _;
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
 pub(super) const DIRECTORY: &str = ".failures";
 
+fn status_path(path: &StreamPath) -> Result<StreamPath, Error> {
+    Ok(StreamPath::new(format!("{path}/status"))?)
+}
+
 #[derive(Clone, PartialEq, prost::Message)]
 struct EntryV1 {
     #[prost(message, optional, tag = "1")]
@@ -141,7 +145,7 @@ impl FailureEntry {
     /// Decode only version one, using the shared Streams record/header codec.
     /// A failure copied to another path cannot authorize its original disposition.
     pub fn decode(path: &StreamPath, record: &Record) -> Result<Self, Error> {
-        if path != &record.origin {
+        if status_path(path)? != record.origin {
             return Err(Error::Invalid(
                 "failed input was inherited from another path",
             ));
@@ -157,7 +161,7 @@ impl FailureEntry {
                 let state = StreamPath::new(failed.state)?;
                 if failed.revision == 0
                     || failed.subscription.is_empty()
-                    || location(&state, failed.revision)? != record.origin
+                    || location(&state, failed.revision)? != *path
                 {
                     return Err(Error::Invalid("failed input changes its owner or revision"));
                 }
@@ -180,7 +184,7 @@ impl FailureEntry {
                     return Err(Error::Invalid("non-canonical failed-input cause"));
                 }
                 Ok(Self::Failed(FailedDelivery {
-                    path: record.origin.clone(),
+                    path: path.clone(),
                     commit: record.commit_id,
                     state,
                     revision: failed.revision,
@@ -200,7 +204,8 @@ impl FailureEntry {
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Ordinary child streams, one per original state revision. Store forks exclude
     /// this host-owned subtree, so a branch cannot inherit another owner's failures.
-    /// `children_page` with no tail selector projects each failure's current terminal.
+    /// `children_page` with `tail_stream = Some("status")` projects each failure's
+    /// current terminal. Follow the projected record's origin for updates.
     pub fn failures_path(
         &self,
         actor: &crate::addressing::ActorReference,
@@ -248,6 +253,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let mut state = original.clone();
         super::consume(&mut state, &original.alarm, trigger)?;
         let path = location(&previous.path, previous.tail)?;
+        let status = status_path(&path)?;
         let input_path = captured_path(&path)?;
         let bytes = encode(EntryV1 {
             failed: Some(InputV1 {
@@ -276,9 +282,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             state,
             vec![
                 Effect {
-                    conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                    conditions: vec![CommitCondition::Absent {
+                        path: status.clone(),
+                    }],
                     mutation: CommitMutation::Append {
-                        path: path.clone(),
+                        path: status,
                         records: vec![bytes.into()],
                     },
                 },
@@ -325,14 +333,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }
         };
         let mut prepared = PreparedPublish::foreign(key);
+        let status = status_path(&failed.path)?;
         prepared.join(Effect {
             conditions: vec![CommitCondition::Head {
-                path: failed.path.clone(),
+                path: status.clone(),
                 expected: 1,
                 commit_id: failed.commit,
             }],
             mutation: CommitMutation::Append {
-                path: failed.path.clone(),
+                path: status,
                 records: vec![
                     encode(EntryV1 {
                         failed: None,

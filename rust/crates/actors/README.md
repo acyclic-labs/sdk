@@ -71,8 +71,9 @@ external effects are not failed-input dispositions. The existing invocation
 failure path uses this same publication and includes its original terminal reply.
 
 Failures live in ordinary child streams at `Store::failures_path`. Page their
-current tails with `children_page`, decode `local::FailureEntry`, and follow the
-selected streams for changes. Values and headers remain in a separate
+current tails with `children_page` and `tail_stream = Some("status")`, decode
+`local::FailureEntry` with each child path, and follow the projected record's
+origin for changes. Values and headers remain in a separate
 co-committed input record, fetched only for inspection or replay. Forks exclude
 this host-owned failure subtree. An explicit `prepare_disposition` appends one
 terminal under the original failure head condition: purge retires the entry;

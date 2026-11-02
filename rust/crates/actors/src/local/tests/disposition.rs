@@ -132,7 +132,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             parent: Some(store.failures_path(&owner)?),
             after: None,
             hierarchy_version: None,
-            tail_stream: None,
+            tail_stream: Some(StreamPath::new("status")?),
             limit: 1,
         })
         .await?;
@@ -193,7 +193,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             .as_ref(),
         b"later"
     );
-    let terminal = selected(provider.as_ref(), &child.path, 1).await?;
+    let terminal = selected(provider.as_ref(), &entry.origin, 1).await?;
     assert_eq!(
         terminal.commit_id, replayed.commit_id,
         "replay and disposition are one decision"
@@ -230,7 +230,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             parent: Some(store.failures_path(&owner)?),
             after: Some(child.path.clone()),
             hierarchy_version: None,
-            tail_stream: None,
+            tail_stream: Some(StreamPath::new("status")?),
             limit: 1,
         })
         .await?;
@@ -256,7 +256,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     assert_eq!(
         FailureEntry::decode(
             &second_path,
-            &selected(provider.as_ref(), &second_path, 1).await?
+            &selected(provider.as_ref(), &second_entry.origin, 1).await?
         )?,
         FailureEntry::Resolved(FailureResolution::Purge)
     );
@@ -268,7 +268,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     }
     store.submit(fork).await?;
     let inherited = StreamPath::new(format!(
-        "{}/{:020}",
+        "{}/{:020}/status",
         store.failures_path(&child_owner)?,
         after.tail
     ))?;
