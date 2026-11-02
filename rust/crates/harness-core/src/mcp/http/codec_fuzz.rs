@@ -1,6 +1,6 @@
 //! Finite-input oracles over the production HTTP/SSE and JSON-RPC decoders.
 use super::{McpHttpResponse, response};
-use crate::{OperationId, mcp::rpc, wire::ErrorCode};
+use crate::{OperationId, mcp::rpc, test_support::error_observation};
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -10,7 +10,7 @@ fn parse(
     media: &str,
     maximum: u32,
     operation: OperationId,
-) -> Result<Value, ErrorCode> {
+) -> crate::Result<Value> {
     let body = futures::stream::unfold(
         Bytes::copy_from_slice(input),
         move |mut remaining| async move {
@@ -28,7 +28,6 @@ fn parse(
         body: Box::pin(body),
     };
     futures::executor::block_on(response::decode(response, operation, maximum, None))
-        .map_err(|error| error.code())
 }
 
 /// Require positive admission of an actual captured response, rather than only
@@ -38,23 +37,28 @@ pub fn admit(
     media: &str,
     operation: OperationId,
     initialization: bool,
-) -> Result<Value, ErrorCode> {
+) -> crate::Result<Value> {
     let result = parse(input, input.len().max(1), media, u32::MAX, operation)?;
     if initialization {
-        rpc::initialization(&result, None).map_err(|error| error.code())?;
+        rpc::initialization(&result, None)?;
     }
     Ok(result)
 }
 
-/// Chunking cannot change a decoded result or its typed refusal. The finite
-/// body supplies every event synchronously and closes at its original EOF.
+/// Chunking cannot change a result, refusal envelope or outcome uncertainty.
+/// The finite body supplies every event synchronously and closes at its original EOF.
 pub fn check(input: &[u8]) {
     for media in ["application/json", "text/event-stream"] {
         for maximum in [0, 1, u32::MAX] {
             let operation = OperationId::from_bytes([7; 16]);
-            let whole = parse(input, input.len().max(1), media, maximum, operation);
+            let whole = parse(input, input.len().max(1), media, maximum, operation)
+                .map_err(|error| error_observation(&error));
             for width in [1, 17, 127] {
-                assert_eq!(whole, parse(input, width, media, maximum, operation));
+                assert_eq!(
+                    whole,
+                    parse(input, width, media, maximum, operation)
+                        .map_err(|error| error_observation(&error))
+                );
             }
         }
     }
@@ -63,12 +67,12 @@ pub fn check(input: &[u8]) {
         let replay =
             crate::contract::json_from_slice::<Value>(&encoded).expect("JSON output decodes");
         assert_eq!(
-            rpc::initialization(&value, None).map_err(|error| error.code()),
-            rpc::initialization(&replay, None).map_err(|error| error.code())
+            rpc::initialization(&value, None).map_err(|error| error_observation(&error)),
+            rpc::initialization(&replay, None).map_err(|error| error_observation(&error))
         );
         assert_eq!(
-            rpc::notification(&value, None).map_err(|error| error.code()),
-            rpc::notification(&replay, None).map_err(|error| error.code())
+            rpc::notification(&value, None).map_err(|error| error_observation(&error)),
+            rpc::notification(&replay, None).map_err(|error| error_observation(&error))
         );
     }
 }

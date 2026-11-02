@@ -5,6 +5,7 @@ use acyclic_harness_core::{
         callbacks::{McpCallbackPolicy, McpCallbackRequest},
         services,
     },
+    test_support::error_observation,
     wire::ErrorCode,
 };
 use serde_json::Value;
@@ -29,14 +30,16 @@ pub fn check(bytes: &[u8]) {
             "tools/call",
         ] {
             assert_eq!(
-                services::validate_params(method, value, None).map_err(|error| error.code()),
-                services::validate_params(method, &restored, None).map_err(|error| error.code())
+                services::validate_params(method, value, None)
+                    .map_err(|error| error_observation(&error)),
+                services::validate_params(method, &restored, None)
+                    .map_err(|error| error_observation(&error))
             );
             assert_eq!(
                 services::validate_result(method, value.clone(), None)
-                    .map_err(|error| error.code()),
+                    .map_err(|error| error_observation(&error)),
                 services::validate_result(method, restored.clone(), None)
-                    .map_err(|error| error.code())
+                    .map_err(|error| error_observation(&error))
             );
         }
     }
@@ -63,12 +66,12 @@ fn callback(mut request: McpCallbackRequest) {
         .expect("callback request decodes");
     assert_eq!(request, restored);
     assert_eq!(
-        admitted.as_ref().map_err(|error| error.code()),
+        admitted.as_ref().map_err(error_observation),
         restored
             .validate()
             .map(|(operation, _)| operation)
             .as_ref()
-            .map_err(|error| error.code())
+            .map_err(error_observation)
     );
     if admitted.is_ok() {
         request.policy.sampling = false;
@@ -76,5 +79,44 @@ fn callback(mut request: McpCallbackRequest) {
         request.policy.sampling = true;
         request.message["jsonrpc"] = "unsupported".into();
         assert_eq!(request.validate().unwrap_err().code(), ErrorCode::Invalid);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_harness_core::mcp::{http, stdio};
+
+    #[test]
+    fn captured_mcp_refusals_keep_diagnostics_and_uncertainty() {
+        // Original server stdout and its extracted discovery response; capture
+        // provenance and byte digests are retained in corpus/EXTERNAL.tsv.
+        for (codec, bytes) in [
+            (
+                "stdio",
+                include_bytes!("../corpus/harness_codecs/mcp-filesystem-2.1.0-stdio").as_slice(),
+            ),
+            (
+                "json",
+                include_bytes!("../corpus/harness_codecs/mcp-filesystem-2.1.0-result").as_slice(),
+            ),
+        ] {
+            crate::admit_external(codec, "tools/list", bytes)
+                .expect("original captured discovery must be admitted");
+            let exercise = |input: &[u8]| {
+                http::codec_fuzz::check(input);
+                stdio::codec_fuzz::check(input);
+                check(input);
+            };
+            exercise(bytes);
+            // Generated truncations and malformed bytes derive from the real
+            // capture; they are not claimed to be captured server responses.
+            for cut in [0, 1, bytes.len() / 2, bytes.len() - 1] {
+                exercise(&bytes[..cut]);
+            }
+            let mut malformed = bytes.to_vec();
+            malformed[0] = 0xff;
+            exercise(&malformed);
+        }
     }
 }
