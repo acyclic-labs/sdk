@@ -55,12 +55,23 @@ mod proofs {
     fn ordinary_items_are_never_silently_dropped() {
         let same_family: bool = kani::any();
         let same_provider: bool = kani::any();
-        let selection = select(ItemKind::Message, same_family, same_provider);
+        let kind = if kani::any() {
+            ItemKind::Message
+        } else {
+            ItemKind::Notice
+        };
+        let selection = select(kind, same_family, same_provider);
         assert_ne!(selection, Selection::Drop);
         assert_eq!(selection == Selection::Native, same_family);
         assert_eq!(selection == Selection::Projection, !same_family);
-        kani::cover!(selection == Selection::Native && !same_provider);
-        kani::cover!(selection == Selection::Projection);
+        kani::cover!(
+            matches!(kind, ItemKind::Message) && selection == Selection::Native && !same_provider
+        );
+        kani::cover!(matches!(kind, ItemKind::Message) && selection == Selection::Projection);
+        kani::cover!(
+            matches!(kind, ItemKind::Notice) && selection == Selection::Native && !same_provider
+        );
+        kani::cover!(matches!(kind, ItemKind::Notice) && selection == Selection::Projection);
     }
 
     #[kani::proof]
