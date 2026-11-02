@@ -116,10 +116,10 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     }
     // The original delivery retains this lock through physical cleanup and
     // publication settlement. A later control cannot pass either transition.
-    let delivery = slot.inner.lock().await;
+    let mut delivery = slot.inner.lock().await;
     let epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
-        let snapshot = store.load(actor).await?;
+        let mut snapshot = store.load(actor).await?;
         let state = snapshot
             .state()
             .ok_or(Error::Invalid("actor state was never created"))?;
@@ -128,6 +128,22 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
         }
         gate.decided = state.paused();
         if state.paused() != paused {
+            // A paused fork cannot reach dispatch's first placement claim.
+            // Control claims the same original branch under its exact cut;
+            // a parent's inherited epoch never authorizes the pause write.
+            if !snapshot.owns_epoch(state.epoch()) {
+                let epoch = state
+                    .epoch()
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("actor epoch overflow"))?;
+                snapshot = store
+                    .claim(&snapshot, epoch, key(&snapshot, "control-claim")?)
+                    .await?;
+                delivery.epoch = epoch;
+            }
+            let state = snapshot
+                .state()
+                .ok_or(Error::Invalid("claim receipt has no state"))?;
             let operation = if paused { "pause" } else { "resume" };
             store
                 .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
