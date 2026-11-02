@@ -262,3 +262,28 @@ fn final_input_and_context_share_one_output_reservation() -> Result<()> {
     ));
     Ok(())
 }
+
+#[test]
+fn report_only_context_overflow_cannot_discard_checked_arguments_and_allow() -> Result<()> {
+    let hook = Arc::new(HookSpec {
+        run: HookRun::Shell {
+            command: "exit 0".into(),
+            shell: None,
+        },
+        timeout_ms: u64::MAX,
+        failure: HookFailure::Report,
+    });
+    let context = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "x".repeat(1024)}});
+    let output = fold(
+        [(
+            &hook,
+            Ok((Some(0), context.to_string().into_bytes(), vec![])),
+        )],
+        HookEvent::PreToolUse,
+        512,
+        Some(json!({"command": "checked"})),
+    )?;
+    assert!(output.blocks());
+    assert!(output.updated_input.is_none());
+    Ok(())
+}

@@ -235,13 +235,7 @@ impl Hooks {
         registry: &'a ToolRegistry,
     ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
         let input = input.into();
-        let subject = input.subject(event);
-        let tool = registry.get(subject, None, None)?;
-        let request = Arc::new(request::request(
-            subject,
-            request::capability(subject, tool),
-            input.tool_input().unwrap_or(&Value::Null),
-        ));
+        let request = Arc::new(request::normalized(input, event, None, registry)?);
         Ok(self
             .candidates(event, input, registry)?
             .filter(move |(_, matcher)| matcher.is_none_or(|matcher| matcher.matches(&request)))
@@ -288,19 +282,20 @@ impl Hooks {
         if event.site() == HookSite::BeforeTool {
             let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
             let quota = capture_quota(maximum_bytes, hooks.len());
-            let subject = input.subject(event);
-            let tool = registry.get(subject, None, None)?;
-            let capability = request::capability(subject, tool);
             let original = input.tool_input().unwrap_or(&Value::Null);
             return chain::judge(
                 &hooks,
                 event,
                 original,
                 (quota, maximum_bytes),
-                &|matcher, current| {
-                    matcher.is_none_or(|matcher: &Requests| {
-                        matcher.matches(&request::request(subject, capability, current))
-                    })
+                &|matcher, current| match matcher {
+                    None => Ok(true),
+                    Some(matcher) => Ok(matcher.matches(&request::normalized(
+                        input,
+                        event,
+                        Some(current),
+                        registry,
+                    )?)),
                 },
                 &mut execute,
             )

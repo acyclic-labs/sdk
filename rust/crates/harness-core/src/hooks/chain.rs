@@ -89,19 +89,22 @@ pub(super) async fn judge<F, Fut, M>(
 where
     F: FnMut(&Arc<HookSpec>, usize, Option<&Value>) -> Fut,
     Fut: Future<Output = Run>,
-    M: Fn(Option<&Requests>, &Value) -> bool,
+    M: Fn(Option<&Requests>, &Value) -> Result<bool>,
 {
     // Keep all candidates. A skipped hook has no process or output, and is
     // reconsidered whenever another hook changes the input.
-    let pending = hooks.iter().map(|(hook, matcher)| {
-        let execution = matches(*matcher, original).then(|| execute(hook, quota, None));
-        async move {
-            match execution {
-                Some(run) => Some(run.await),
-                None => None,
-            }
-        }
-    });
+    let pending = hooks
+        .iter()
+        .map(|(hook, matcher)| {
+            let execution = matches(*matcher, original)?.then(|| execute(hook, quota, None));
+            Ok(async move {
+                match execution {
+                    Some(run) => Some(run.await),
+                    None => None,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut runs: Vec<Option<Run>> = futures::future::join_all(pending).await;
     let classify = |hook: &HookSpec, run: &Option<Run>| match run {
         Some(run) => answer(hook, event, run),
@@ -137,7 +140,7 @@ where
     for index in 0..hooks.len() {
         let (hook, matcher) = hooks[index];
         if seen[index].as_ref().unwrap_or(original) != &current {
-            runs[index] = if matches(matcher, &current) {
+            runs[index] = if matches(matcher, &current)? {
                 Some(execute(hook, quota, Some(&current)).await)
             } else {
                 None
@@ -164,16 +167,20 @@ where
     let stale: Vec<_> = (0..hooks.len())
         .filter(|&index| seen[index].as_ref().unwrap_or(original) != &current)
         .collect();
-    let pending = stale.iter().map(|&index| {
-        let (hook, matcher) = hooks[index];
-        let execution = matches(matcher, &current).then(|| execute(hook, quota, Some(&current)));
-        async move {
-            match execution {
-                Some(run) => Some(run.await),
-                None => None,
-            }
-        }
-    });
+    let pending = stale
+        .iter()
+        .map(|&index| {
+            let (hook, matcher) = hooks[index];
+            let execution =
+                matches(matcher, &current)?.then(|| execute(hook, quota, Some(&current)));
+            Ok(async move {
+                match execution {
+                    Some(run) => Some(run.await),
+                    None => None,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let reruns = futures::future::join_all(pending).await;
     for (index, run) in stale.into_iter().zip(reruns) {
         runs[index] = run;
