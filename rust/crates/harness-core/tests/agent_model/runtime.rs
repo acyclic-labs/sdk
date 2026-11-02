@@ -28,6 +28,7 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
+                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -102,6 +103,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                     Wait::Done(AgentOutcome::Succeeded { result: None })
                 };
                 Ok(TurnStep {
+                    reserved_children: 0,
                     checkpoint: Some(vec![7]),
                     outs: self.0.clone(),
                     wait,
@@ -301,6 +303,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             Box::pin(async move {
                 if self.children && agent.parent.is_none() {
                     return Ok(TurnStep {
+                        reserved_children: 0,
                         checkpoint: None,
                         outs: if matches!(
                             input,
@@ -370,6 +373,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                     );
                 }
                 Ok(TurnStep {
+                    reserved_children: 0,
                     checkpoint: Some(vec![7]),
                     outs: vec![Out::Conversation(vec![b'x'])],
                     wait: Wait::Done(outcome),
@@ -515,6 +519,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
                     ))));
                 }
                 Ok(TurnStep {
+                    reserved_children: 0,
                     checkpoint: None,
                     outs: if matches!(
                         input,
@@ -546,7 +551,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     // Controls and multibyte text exercise both JSON expansion and chunk edges.
     let driver = Failing(format!(
         "{}complete suffix",
-        "\u{0001}\"é".repeat(acyclic_stream::MAX_RECORD_BYTES)
+        "\u{0001}\"ÃƒÂ©".repeat(acyclic_stream::MAX_RECORD_BYTES)
     ));
     let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
         driver.0.clone(),
@@ -744,6 +749,7 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
+                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -827,6 +833,7 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 async fn committed_checkpoints_carry_final_tails() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let driver = super::script(vec![TurnStep {
+        reserved_children: 0,
         checkpoint: Some(vec![7; 8]),
         outs: vec![
             Out::Conversation(b"first".to_vec()),
@@ -997,6 +1004,7 @@ async fn conversation_follow_waits_on_the_original_checkpoint_and_preserves_refu
     let host = AgentHost::new(
         provider.clone(),
         super::script(vec![TurnStep {
+            reserved_children: 0,
             checkpoint: None,
             outs: vec![Out::Conversation(entry.clone())],
             wait: Wait::Input,
@@ -1367,6 +1375,7 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
             self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(TurnStep {
+                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
@@ -1466,6 +1475,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         super::script(
             (0..3)
                 .map(|_| TurnStep {
+                    reserved_children: 0,
                     checkpoint: None,
                     outs: vec![Out::Conversation(b"answer".to_vec())],
                     wait: Wait::Input,
@@ -1504,5 +1514,51 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
+    // Every open child is in the root's checkpoint, so a root at the limit
+    // is the largest the child set makes it; that state must commit.
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let request = |n: usize| {
+        InboxRecord::Spawn(SpawnRequest {
+            profile: acyclic_harness_core::agent::CreationConfig {
+                context: acyclic_harness_core::agent::SpawnContext::Fork,
+                template: None,
+            },
+            history: None,
+            by: user(),
+            id: intent(&format!("s{n}")),
+            brief: Box::new(super::driver::file("task").expect("file")),
+        })
+    };
+    let mut last = 0;
+    for n in 0..=MAX_OPEN_CHILDREN {
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
+            return Err("spawn request was not committed".into());
+        };
+        last = inbox;
+    }
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&root).await?;
+    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
+    let (spawn, _) = requested_child(&root, last)?;
+    assert_eq!(
+        host.spawned(&root, last, &spawn).await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Limit
+        }
+    );
     Ok(())
 }

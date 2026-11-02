@@ -664,6 +664,13 @@ impl AgentRecord for InboxRecord {
         match self {
             Self::ForkAdopted(adopted) => {
                 check_volumes(adopted.volumes.iter())?;
+                if adopted
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
+                {
+                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
+                }
                 Ok(())
             }
             Self::ChildDone(_) => Ok(()),
