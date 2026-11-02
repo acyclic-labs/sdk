@@ -49,22 +49,6 @@ impl NativeTreeMaterializationBackend {
             Err(NativeTreeMaterializationError::InvalidLayout)
         }
     }
-    /// Observes a binding through its original checkout allocation.
-    pub fn mapping_root_identity(
-        &self,
-        path: &str,
-    ) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
-        self.check_path(path)?;
-        let actual = self.work.root_identity(self.root_path())?;
-        let expected = self.held_root.identity();
-        if actual != expected {
-            return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
-        }
-        let directory = host_path(Path::new(path), &mut &self.work, |path, work| {
-            self.held_root.open_dir_held(path, work)
-        })?;
-        crate::native_host::directory_identity(&directory, &mut &self.work)
-    }
     /// Returns an admitted staging path.
     pub fn staging_path(
         &self,
@@ -77,57 +61,6 @@ impl NativeTreeMaterializationBackend {
         let (result, mut extra) = self.work.path(&base, Some(Path::new(path)))?;
         allocation.absorb(&mut extra)?;
         Ok((result, allocation))
-    }
-    /// Requires empty recovery allocations.
-    pub fn require_empty_staging(&self) -> Result<(), NativeTreeMaterializationError> {
-        for root in [&self.held_target, &self.held_backup] {
-            let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
-                root.read_dir_stats(path, work)
-            })?;
-            if reader.next(&mut &self.work)?.is_some() {
-                return Err(NativeTreeMaterializationError::ExternalMutation);
-            }
-        }
-        Ok(())
-    }
-    /// Rejects root entries outside the selected bindings and preserved names.
-    pub fn require_selected_root(
-        &self,
-        edits: &[MaterializationEdit],
-        preserved: &[&str],
-        mut owned: impl FnMut(
-            &crate::native_host::HostListedEntry,
-        ) -> Result<bool, NativeTreeMaterializationError>,
-    ) -> Result<(), NativeTreeMaterializationError> {
-        for path in preserved {
-            self.check_path(path)?;
-        }
-        let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
-            self.held_root.read_dir_stats(path, work)
-        })?;
-        while let Some((entry, _allocation)) = reader.next(&mut &self.work)? {
-            let mut selected = false;
-            for path in edits
-                .iter()
-                .filter_map(|edit| match edit {
-                    MaterializationEdit::Install { path, .. } => Some(path.as_str()),
-                    _ => None,
-                })
-                .chain(preserved.iter().copied())
-            {
-                let top = path.split('/').next().unwrap_or_default();
-                self.work
-                    .charge(NativeResourceCredit::Items.delta(top.len() as u64))?;
-                if entry.is_named(top) {
-                    selected = true;
-                    break;
-                }
-            }
-            if !selected && !owned(&entry)? {
-                return Err(NativeTreeMaterializationError::ExternalMutation);
-            }
-        }
-        Ok(())
     }
     /// Clears staged contents while retaining the witnessed target root.
     pub async fn reset_target_directory(
