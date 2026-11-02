@@ -276,6 +276,10 @@ impl<'a> StockExecution<'a> {
         let original_context = retain_preparation(
             load_json::<crate::context::Context>(journal, &cut.retained, io).await?,
         )?;
+        // Both decoded values already own their admitted backing. Keep that
+        // custody while validating, then transfer it instead of copying them.
+        #[cfg(feature = "filesystem")]
+        let decoded = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if authenticated {
             crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
         } else {
@@ -297,25 +301,12 @@ impl<'a> StockExecution<'a> {
         #[cfg(feature = "filesystem")]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let reference = crate::model::clone_file(reference, io)?;
-        let retained_cut = WorkingCut {
-            version: cut.version,
-            operation: cut.operation,
-            input_digest: cut.input_digest,
-            step: cut.step,
-            prior_messages: cut.prior_messages,
-            source: crate::model::clone_file(&cut.source, io)?,
-            retained: crate::model::clone_file(&cut.retained, io)?,
-            compaction: crate::model::clone_file(&cut.compaction, io)?,
-            proof: cut.proof,
-        };
-        let context = crate::context::copy_context(&original_context, io)?;
-        drop(original_context);
-        drop(cut);
         #[cfg(feature = "filesystem")]
         let hold = {
             let retained = io.map_or(Ok(0), |io| {
                 io.owned_bytes()?
                     .checked_sub(before)
+                    .and_then(|reference| decoded.checked_add(reference))
                     .ok_or_else(|| self.invalid_working_cut())
             })?;
             scope.finish(retained)?;
@@ -326,8 +317,8 @@ impl<'a> StockExecution<'a> {
         Ok(RetainedCut {
             journal: journal.cache_identity(),
             reference,
-            cut: retained_cut,
-            context,
+            cut,
+            context: original_context,
             _hold: hold,
         })
     }

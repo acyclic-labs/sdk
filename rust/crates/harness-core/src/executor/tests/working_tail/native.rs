@@ -86,6 +86,57 @@ async fn private_cut() -> Result<CutFixture> {
 }
 
 #[tokio::test]
+async fn private_working_cut_transfers_decoded_values_without_copying_them_again() -> Result<()> {
+    let fixture = private_cut().await?;
+    let journal = fixture.storage.journal();
+    let cut = load_json::<Value>(journal.as_ref(), &fixture.reference, None)
+        .await?
+        .0;
+    let context_ref: FileRef = serde_json::from_value(cut["retained"].clone()).unwrap();
+    let expected = load_json::<crate::context::Context>(journal.as_ref(), &context_ref, None)
+        .await?
+        .0;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    let decode_io = PreparationIo::from_budget(budget, &cancellation)?;
+    {
+        // Inventory the required reads/decodes and the caller's one borrowed
+        // reference. No output reconstruction is included in this allowance.
+        let scope = crate::filesystem::PreparationScope::new(Some(&decode_io))?;
+        let cut = load_json::<crate::executor::working_tail::WorkingCut>(
+            journal.as_ref(),
+            &fixture.reference,
+            scope.io(),
+        )
+        .await?;
+        let context =
+            load_json::<crate::context::Context>(journal.as_ref(), &context_ref, scope.io())
+                .await?;
+        let reference = crate::model::clone_file(&fixture.reference, scope.io())?;
+        drop(reference);
+        drop(context);
+        drop(cut);
+    }
+    assert_eq!(decode_io.owned_bytes()?, 0);
+    budget.bytes_copied = decode_io.receipt().bytes_copied;
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&fixture.executor)
+    };
+    let retained = execution
+        .load_working_cut(journal.as_ref(), &fixture.reference)
+        .await?;
+    assert_eq!(io.receipt().bytes_copied, budget.bytes_copied);
+    // Restoring the old reconstruction exceeds the independently inventoried
+    // allowance, even though all retained bytes have already been admitted.
+    assert!(crate::context::copy_context(&expected, Some(&io)).is_err());
+    drop(retained);
+    assert_eq!(io.owned_bytes()?, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn private_working_cut_retains_only_original_custody_through_value_drop() -> Result<()> {
     let fixture = private_cut().await?;
     let journal = fixture.storage.journal();
