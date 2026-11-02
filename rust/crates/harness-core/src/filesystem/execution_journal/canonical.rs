@@ -43,9 +43,118 @@ mod tests {
         context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
         executor::{Executor, StockExecutor, TurnInput},
         model::{Model, ModelContent, ModelMessage, ModelRole},
+        runtime::RuntimeScope,
         test_support::{ScriptedModelProvider, ScriptedTurn},
         tool::ToolRegistry,
     };
+
+    #[tokio::test]
+    async fn task_summary_uses_response_publication_and_replays_without_dispatch() -> Result<()> {
+        let (journal, _issuer) = super::super::test_support::journal().await?;
+        let private = crate::runtime::test_context::private_volume(7)?;
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new([
+                "model:generate".to_owned(),
+                private.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Limits::default(),
+        )?;
+        let context = crate::runtime::test_context::agent_context(
+            scope.clone(),
+            Some(crate::runtime::ContentBindings {
+                volume: private.clone(),
+                reader: Arc::new(crate::runtime::test_context::NoReads),
+                // Admission retains the original task writer. Actual publication
+                // must use the real journal; this writer cannot publish bytes.
+                writer: Some(Arc::new(crate::runtime::test_context::PrivateVolume(
+                    private,
+                ))),
+            }),
+        )?;
+        let operation = OperationId::new();
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text("portable summary".into()),
+                ScriptedTurn::Text("response".into()),
+            ])
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 4_096,
+                output_tokens: Some(64),
+            })
+            .with_token_counter(|request| {
+                Ok(ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    8,
+                    vec![8; request.request().messages.len()],
+                ))
+            }),
+        );
+        let executor = StockExecutor::new(
+            Model::new("test".into(), "summary".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_max_output_tokens(64)?
+        .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+        .with_tool_authority(
+            scope,
+            Arc::new(crate::test_support::FixedToolPolicy::new(
+                crate::runtime::ToolPolicyDecision::Allow,
+            )?),
+        )?
+        .with_task_context(&context, operation)?;
+        let input = TurnInput {
+            max_steps: None,
+            operation_id: operation,
+            input: ModelContent::Text("respond".into()),
+            selected_context: None,
+        };
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("earlier history".into()),
+            }],
+            ..Default::default()
+        };
+        let instruction = ModelContent::Text("summarize".into());
+        let summary = executor
+            .summarize_in_turn(&journal, &input, 0, source.clone(), instruction.clone())
+            .await?;
+        assert_eq!(summary.output.volume(), &journal.volume);
+        assert!(journal.authenticate_summary(&summary.output, None)?.await?);
+        assert_eq!(
+            journal.load(&summary.output, None)?.await?.as_ref(),
+            b"portable summary"
+        );
+
+        // Readable but unrelated content cannot inherit the summary receipt.
+        let unrelated = journal
+            .stage(
+                operation,
+                "unrelated",
+                b"portable summary",
+                "text/plain",
+                None,
+            )?
+            .await?;
+        assert!(!journal.authenticate_summary(&unrelated, None)?.await?);
+        let response = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(response.text, "response");
+        assert_eq!(executor.execute(input.clone(), &journal).await?, response);
+        assert_eq!(
+            executor
+                .summarize_in_turn(&journal, &input, 0, source, instruction)
+                .await?,
+            summary,
+        );
+        assert_eq!(
+            provider.request_count(),
+            2,
+            "accepted calls were dispatched again"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn selected_compaction_publishes_only_the_signed_working_cut() -> Result<()> {

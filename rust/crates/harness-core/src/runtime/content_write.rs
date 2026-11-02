@@ -4,8 +4,9 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
 /// A validated agent-owned private writer, constructed only by
-/// [`TaskContext::summary_destination`]. Summaries and derived immutable files
-/// share this destination and the same publication receipts.
+/// [`TaskContext::summary_destination`]. Derived immutable files use this
+/// destination. Summary admission checks the same task authority, while the
+/// summary object uses the journal's immutable publication and receipt.
 #[derive(Clone, Copy)]
 pub(crate) struct PrivateContent<'a>(&'a ContentBindings);
 

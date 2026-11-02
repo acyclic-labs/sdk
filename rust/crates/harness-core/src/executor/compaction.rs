@@ -1,7 +1,7 @@
 use super::*;
 
 /// The backstop's one fixed marker, in place of every evicted range.
-pub(crate) const BACKSTOP_MARKER: &str = "[context backstop: earlier messages were evicted to fit the model's context window; they remain in this agent's history]";
+pub(crate) const BACKSTOP_MARKER: &str = crate::seed::CONTEXT_BACKSTOP;
 
 impl StockExecution<'_> {
     pub(super) fn compaction_message_limit(
@@ -121,24 +121,13 @@ impl StockExecution<'_> {
         let key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("backstop:{step}:marker"), work)
         })?;
-        let output = journal
-            .stage(
-                operation_id,
-                &key,
-                BACKSTOP_MARKER.as_bytes(),
-                "text/plain",
-                self.io,
-            )?
-            .await?;
-        let summary = crate::context::ContextSummary {
-            operation_id,
-            step,
-            source_messages,
-            source_digest,
-            output,
-        };
-        super::summary::stage_summary_provenance(journal, &summary, self.io).await?;
-        Ok(summary)
+        self.publish_summary(
+            journal,
+            (operation_id, step),
+            (source_messages, source_digest),
+            (&key, BACKSTOP_MARKER.as_bytes()),
+        )
+        .await
     }
 
     async fn prepare_compacted_request(
