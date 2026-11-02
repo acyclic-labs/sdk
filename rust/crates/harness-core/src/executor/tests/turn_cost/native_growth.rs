@@ -241,7 +241,7 @@ fn relocating_index_storage_requires_peak_capacity_before_allocation() -> Result
             // Mirror retained cache custody, separate from temporary outputs.
             let retained = io.guard_owned(32)?;
             let result = if fund_peak {
-                stock_vec_reserve(&mut values, 8, Some(&io))
+                stock_vec_prepare_push(&mut values, Some(&io))
             } else {
                 // Negative control: the original delta-only reserve admits an
                 // allocation whose temporary physical peak exceeds the budget.
@@ -260,6 +260,49 @@ fn relocating_index_storage_requires_peak_capacity_before_allocation() -> Result
             drop(retained);
         }
         assert_eq!(work.live_allocation_bytes(), base);
+    }
+    for native in [false, true] {
+        for count in [16_u64, 1_024] {
+            let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+                let mut values = Vec::new();
+                let before = io.receipt();
+                for value in 0..count {
+                    stock_vec_push(&mut values, value, Some(io))?;
+                }
+                let after = io.receipt();
+                let allocations = after.allocation_operations - before.allocation_operations;
+                let copied = after.bytes_copied - before.bytes_copied;
+                assert!(allocations <= u64::from(count.ilog2()) + 1);
+                assert!(copied >= count / 2 * std::mem::size_of::<u64>() as u64);
+                assert!(copied < count * 2 * std::mem::size_of::<u64>() as u64);
+                stock_vec_push(&mut values, count, Some(io))?;
+                assert!(values.len() < values.capacity());
+                let spare = io.receipt();
+                stock_vec_push(&mut values, count + 1, Some(io))?;
+                assert_eq!(io.receipt(), spare, "spare storage charged new work");
+                assert_eq!(
+                    io.owned_bytes()?,
+                    (values.capacity() * std::mem::size_of::<u64>()) as u64
+                );
+                eprintln!(
+                    "native={native} entries={count} allocations={allocations} copied={copied}"
+                );
+                for (expected, value) in stock_into_iter(values, Some(io))?.enumerate() {
+                    assert_eq!(value, expected as u64);
+                }
+                assert_eq!(io.owned_bytes()?, 0);
+                Ok::<_, Error>(())
+            })
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+            observed.0?;
+            assert_eq!(observed.2, 0);
+            if native {
+                assert_eq!(
+                    observed.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
     }
     Ok(())
 }
