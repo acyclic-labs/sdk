@@ -377,7 +377,7 @@ async fn records<P: StreamProvider + ?Sized>(
 
 #[tokio::test]
 async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
-    for committed in [false, true] {
+    for (committed, lose_reply) in [(false, false), (true, false), (true, true)] {
         let provider = Arc::new(ControlledStream::default());
         let executor = Arc::new(HeldCloseExecutor::default());
         let sockets = Sockets::open(
@@ -395,6 +395,17 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let mut opening = Box::pin(shared.commit_open(&connection, &open));
         assert!(futures::poll!(&mut opening).is_pending());
         assert!(provider.pause.lock().unwrap().is_none());
+        let release = if lose_reply {
+            let retry = executor.pause_retry();
+            // Acceptance is real; losing its reply returns Unavailable to the
+            // original retry path. Keep that retry parked until after rotation.
+            drop(release);
+            assert!(futures::poll!(&mut opening).is_pending());
+            assert!(executor.retry.lock().unwrap().is_none());
+            retry
+        } else {
+            release
+        };
         // A retained provider request must not own the ledger lock. Restoring
         // that lock fails here without hanging behind the compaction writer.
         drop(
@@ -439,6 +450,10 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             Err(Error::Conflict) if !committed => {}
             _ => return Err("Open did not retain its original epoch condition".into()),
         }
+        assert_eq!(
+            provider.replays.load(Ordering::Acquire),
+            usize::from(lose_reply)
+        );
         assert_eq!(shared.live.load(Ordering::Acquire), usize::from(committed));
         assert_eq!(
             shared.written.load(Ordering::Acquire),
@@ -545,6 +560,10 @@ struct ControlledStream {
     meet: Option<tokio::sync::Barrier>,
     reads: std::sync::atomic::AtomicUsize,
     pause: std::sync::Mutex<Option<(bool, oneshot::Receiver<()>)>>,
+    /// Captured from the actual MemoryStream acceptance, before its reply.
+    accepted:
+        std::sync::Mutex<Option<(acyclic_stream::WriteRequest, acyclic_stream::WriteOutcome)>>,
+    replays: AtomicUsize,
 }
 
 impl ControlledStream {
@@ -607,14 +626,40 @@ impl StreamProvider for ControlledStream {
         request: acyclic_stream::WriteRequest,
     ) -> BoxProviderFuture<'_, Result<acyclic_stream::WriteOutcome, StreamError>> {
         let pause = self.pause.lock().unwrap().take();
+        let replay = match (&request, self.accepted.lock().unwrap().as_ref()) {
+            (
+                acyclic_stream::WriteRequest::CommitAccepted(current),
+                Some((acyclic_stream::WriteRequest::CommitAccepted(original), outcome)),
+            ) if current.idempotency_key == original.idempotency_key => {
+                assert_eq!(current, original, "retry changed the original Open request");
+                Some(outcome.clone())
+            }
+            _ => None,
+        };
         Box::pin(async move {
+            if let Some(original) = replay {
+                let result = self.inner.write(request).await?;
+                assert_eq!(result, original, "retry replaced the original acceptance");
+                self.replays.fetch_add(1, Ordering::AcqRel);
+                return Ok(result);
+            }
             match pause {
                 Some((false, resumed)) => {
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     self.inner.write(request).await
                 }
                 Some((true, resumed)) => {
+                    let original = request.clone();
                     let result = self.inner.write(request).await;
+                    if let Ok(outcome) = &result {
+                        assert!(matches!(
+                            outcome,
+                            acyclic_stream::WriteOutcome::CommitAccepted(
+                                acyclic_stream::AcceptedCommitOutcome::Committed { .. }
+                            )
+                        ));
+                        *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
+                    }
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     result
                 }
@@ -656,6 +701,7 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
 #[derive(Default)]
 struct HeldCloseExecutor {
     tasks: std::sync::Mutex<VecDeque<BoxProviderFuture<'static, ()>>>,
+    retry: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl Executor for HeldCloseExecutor {
@@ -663,12 +709,23 @@ impl Executor for HeldCloseExecutor {
         self.tasks.lock().unwrap().push_back(future);
     }
 
-    fn sleep(&self, _milliseconds: u32) -> BoxProviderFuture<'static, ()> {
-        Box::pin(async { panic!("a decided socket operation must not retry") })
+    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+        let retry = self.retry.lock().unwrap().take();
+        Box::pin(async move {
+            let retry = retry.expect("a decided socket operation must not retry");
+            assert_eq!(milliseconds, 1, "unexpected additional transport retry");
+            retry.await.expect("lost original transport-retry producer");
+        })
     }
 }
 
 impl HeldCloseExecutor {
+    fn pause_retry(&self) -> oneshot::Sender<()> {
+        let (release, retry) = oneshot::channel();
+        assert!(self.retry.lock().unwrap().replace(retry).is_none());
+        release
+    }
+
     fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
         self.tasks
             .lock()
