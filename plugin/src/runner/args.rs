@@ -45,14 +45,14 @@ pub struct Args {
     pub directory: Option<String>,
     #[arg(global = true, long, env = "ACYCLIC_MODEL")]
     pub model: Option<String>,
-    #[arg(global = true, long)]
+    #[arg(global = true, long, env = "ACYCLIC_CATALOG")]
     pub catalog: Option<PathBuf>,
     #[arg(global = true, long)]
     pub credentials: Option<PathBuf>,
     #[arg(global = true, long)]
     pub settings_root: Option<PathBuf>,
     /// Use shipped defaults and explicit inputs only; ignore user settings,
-    /// native credential discovery and environment model selection. Signing
+    /// native credential discovery and environment model/catalog selection. Signing
     /// custody uses private files in this run's state directory.
     #[arg(global = true, long, conflicts_with = "endpoint")]
     pub default_config: bool,

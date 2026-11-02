@@ -1,6 +1,6 @@
 # Shipping acceptance cases
 
-Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
+Build `acyclic`, its thin `graphcoder` preset and `harness-mock-model` on the target OS ahead of timing.
 Windows MSVC executables must be cross-built; run Windows suites serially.
 ConPTY preparation has no local PowerShell compiler entry point: cross-build
 `scripts/graphcoder-conpty.cs` and supply its executable as
@@ -29,6 +29,13 @@ oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.
 The terminal package is required for PTY cases and the complete helper suite;
 headless selections load only their own runtime dependencies.
+
+`node scripts/test-graphcoder-entry.mjs /absolute/graphcoder /absolute/acyclic`
+launches bare GraphCoder and the explicit preset through this same PTY owner,
+checks their first TUI frame and clean exit, and checks headless EOF with pipes.
+The binaries read an ordinary isolated catalog through `ACYCLIC_CATALOG`;
+any model connection fails the check. This covers entry and terminal selection,
+not provider responses, hosted deployment or shared live-path admission.
 
 ```sh
 node scripts/graphcoder-e2e/helpers.mjs

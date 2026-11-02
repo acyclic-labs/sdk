@@ -18,6 +18,10 @@ categories = ["command-line-utilities", "development-tools"]
 name = "acyclic"
 path = "src/main.rs"
 
+[[bin]]
+name = "graphcoder"
+path = "src/graphcoder.rs"
+
 [dependencies]
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-plugin-identity = { path = "identity", version = "=0.2.0" }
