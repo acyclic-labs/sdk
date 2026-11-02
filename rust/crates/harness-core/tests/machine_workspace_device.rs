@@ -1056,6 +1056,73 @@ async fn committed_handover(refused_close: bool) -> Result {
             .commit(dispatch(active, b"archive-active-command")?)
             .await?;
         let (mut held, _) = listener.accept().await?;
+        // A branch forks this agent's subtree, actor-blind, while the real
+        // command runs. The copy's call settles `indeterminate` once, by the
+        // same observation recovery makes, and never reaches the device; the
+        // original run is untouched and settles below.
+        let inbox = run.agent.inbox()?;
+        let branch = StreamPath::new(format!("{inbox}-branch"))?;
+        // This fixture has no agent actor; give the inbox the root record a
+        // live agent's inbox already has.
+        let at_tail = match provider.head(inbox.clone()).await {
+            Ok(head) => head.tail,
+            Err(acyclic_stream::StreamError::NotFound) => {
+                provider
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        conditions: vec![acyclic_stream::CommitCondition::Absent {
+                            path: inbox.clone(),
+                        }],
+                        mutations: vec![CommitMutation::Append {
+                            path: inbox.clone(),
+                            records: vec![b"inbox".to_vec().into()],
+                        }],
+                        idempotency_key: IdempotencyKey::new(b"branch-inbox".to_vec())?,
+                    })
+                    .await?;
+                1
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let conditions = vec![acyclic_stream::CommitCondition::Absent {
+            path: branch.clone(),
+        }];
+        let mutations = vec![CommitMutation::Fork {
+            exclude: Vec::new(),
+            source: inbox,
+            destination: branch.clone(),
+            at_tail,
+            records: Vec::new(),
+        }];
+        let forked = provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions,
+                mutations,
+                idempotency_key: IdempotencyKey::new(b"branch-active-command".to_vec())?,
+            })
+            .await?;
+        assert!(matches!(
+            forked,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ));
+        let copy =
+            acyclic_actors::call::CallPath::new(&branch, &hex::encode(active_op.into_bytes()))?;
+        let copied = provider.head(copy.log().clone()).await?;
+        assert!(
+            copied.origin.is_some(),
+            "the branch did not copy the open call"
+        );
+        assert!(copy.settle_if_copied(&*provider).await?);
+        assert!(!copy.settle_if_copied(&*provider).await?);
+        let settled = provider.head(copy.log().clone()).await?;
+        assert_eq!(settled.tail, copied.tail + 1);
+        assert!(matches!(
+            acyclic_actors::call::Entry::decode(
+                settled.last.as_ref().ok_or("copy has no terminal")?
+            )?,
+            acyclic_actors::call::Entry::Terminal(acyclic_actors::call::Outcome::Indeterminate(_))
+        ));
         if refused_close {
             let mut original = provider
                 .follow(FollowRequest::new(log(&run.agent, active_op)?, 0))

@@ -388,6 +388,17 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         input.validate()?;
         let (agent, _) = self.agent(Some(context))?;
         let call = super::records::call(agent, invocation.operation_id)?;
+        if reconcile {
+            // A fork copied this agent's subtree while the call was open: its
+            // executor serves the source, so the copy settles `indeterminate`
+            // here once, and the follow below reads that terminal.
+            call.settle_if_copied(&*self.provider)
+                .await
+                .map_err(|error| match error {
+                    acyclic_actors::call::Error::Stream(error) => error.into(),
+                    error => protocol(error),
+                })?;
+        }
         let mut request = FollowRequest::new(call.log().clone(), 0);
         if !reconcile {
             request.when_absent = WhenAbsent::Wait;

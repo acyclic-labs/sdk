@@ -27,6 +27,10 @@
 //! covers every call of the session, so executor loss is O(1) in the number
 //! of calls it held. An accepted call is never dispatched again.
 //!
+//! A fork copies the caller's subtree with its journals. The executor keeps
+//! serving the source, so a copy that was open settles `indeterminate`
+//! ([`CallPath::settle_if_copied`]) when the copy's owner first observes it.
+//!
 //! The request record and the one terminal record are the call's original
 //! committed receipt ([`Receipt`]).
 //!
@@ -34,8 +38,9 @@
 //! indexed attribute, so a chunk is never re-encoded or copied.
 
 use acyclic_stream::{
-    AppendRecord, Attribute, CommitCondition, CommitId, CommitMutation, CommitRequest,
-    IdempotencyKey, OwnedBytes, Record, RecordHeaders, StreamError, StreamPath,
+    AppendRecord, Attribute, CommitCondition, CommitId, CommitMutation, CommitOutcome,
+    CommitRequest, IdempotencyKey, OwnedBytes, Record, RecordHeaders, StreamError, StreamPath,
+    StreamProvider, StreamProviderExt as _,
 };
 
 /// Subtree segment under which a caller keeps its call journals.
@@ -43,6 +48,7 @@ pub const CALLS: &str = "calls";
 const SETTLED: &str = "settled";
 const KIND: &str = "acyclic.call.v1";
 const FENCE: &str = "acyclic.call.v1.fence";
+const COPIED: &str = "copied by a fork before its terminal";
 
 /// A call journal that cannot be addressed or does not follow the protocol.
 #[derive(Debug, thiserror::Error)]
@@ -261,6 +267,58 @@ impl CallPath {
     /// When the record cannot be built.
     pub fn cancel(&self, reason: &str) -> Result<Commit, Error> {
         self.settle(None, &Outcome::Cancelled(reason.to_owned()))
+    }
+
+    /// Settles a fork's copy of this call as `indeterminate` when the call was
+    /// open as copied. `forked_at` is the copy's inherited prefix end, the
+    /// log's `PathHead::origin` cut. Its executor serves the source and never
+    /// writes to the copy, and the source may still run, so the copy ends here
+    /// and is never dispatched again. The commit holds only while the copy is
+    /// exactly its inherited prefix with no terminal: a terminal inherited
+    /// from the source, or anything written to the copy since, refuses it.
+    /// O(1) in the fork's size and in the caller's other calls.
+    ///
+    /// # Errors
+    /// When the record cannot be built.
+    pub fn settle_copy(&self, forked_at: u64) -> Result<Commit, Error> {
+        let mut commit = self.settle(None, &Outcome::Indeterminate(COPIED.to_owned()))?;
+        commit.conditions.push(CommitCondition::Tail {
+            path: self.log.clone(),
+            expected: forked_at,
+        });
+        Ok(commit)
+    }
+
+    /// Observes this call and settles it as [`Self::settle_copy`] when it is
+    /// a fork's copy that was open as copied: one history head read, and one
+    /// commit only for such a copy. Returns whether this observation settled
+    /// it; otherwise the journal already reads as its owner should follow it.
+    ///
+    /// # Errors
+    /// When the provider fails.
+    pub async fn settle_if_copied<P: StreamProvider + ?Sized>(
+        &self,
+        provider: &P,
+    ) -> Result<bool, Error> {
+        let head = match provider.head(self.log.clone()).await {
+            Ok(head) => head,
+            Err(StreamError::NotFound) => return Ok(false),
+            Err(error) => return Err(Error::Stream(error)),
+        };
+        let Some(forked_at) = head
+            .origin
+            .map(|origin| origin.inherited.forked_at)
+            .filter(|forked_at| *forked_at == head.tail)
+        else {
+            return Ok(false);
+        };
+        let key = IdempotencyKey::new(format!("{}/copy", self.log).into_bytes())
+            .map_err(Error::Stream)?;
+        let outcome = provider
+            .commit(self.settle_copy(forked_at)?.request(key))
+            .await
+            .map_err(Error::Stream)?;
+        Ok(matches!(outcome, CommitOutcome::Committed(_)))
     }
 
     fn open(&self, fence: Option<&StreamPath>) -> impl Iterator<Item = CommitCondition> {

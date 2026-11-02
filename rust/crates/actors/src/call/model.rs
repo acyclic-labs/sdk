@@ -11,6 +11,11 @@
 //! settled right after it (it never waits). Independent controls remove
 //! settlement guards, session guards or the original retry identity, or
 //! incorrectly fence cancellation behind the executor's ended session.
+//!
+//! A fork of the caller's subtree at every reachable prefix copies the call.
+//! The copy settles exactly once: with its inherited terminal, or
+//! `indeterminate` when it was open, and never changes as the source goes on.
+//! The control removes the copy settlement's guards.
 use super::*;
 use acyclic_stream::{
     CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
@@ -18,7 +23,7 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Hop {
     Request,
     Executor,
@@ -27,6 +32,10 @@ enum Hop {
     Fence,
     Chunk,
     Replay,
+    /// Fork the caller's whole subtree, actor-blind, as a branch does.
+    Fork,
+    /// The copy's owner observes its copied call.
+    Copy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +46,18 @@ enum Fault {
     Retry,
     Producer,
     Cancel,
+    Copy,
+}
+
+/// The branch's copy of the call.
+struct Copied {
+    call: CallPath,
+    /// The source's terminal, when the fork copied one.
+    inherited: Option<Outcome>,
+    /// The copy's settled outcome, once its owner observed it.
+    expected: Option<Outcome>,
+    journal: Journal,
+    terminals: u64,
 }
 
 struct Model {
@@ -58,6 +79,7 @@ struct Model {
     expected: Option<Outcome>,
     chunks: u64,
     read_chunks: u64,
+    copy: Option<Copied>,
 }
 
 impl Model {
@@ -82,6 +104,7 @@ impl Model {
             expected: None,
             chunks: 0,
             read_chunks: 0,
+            copy: None,
         }
     }
 
@@ -190,6 +213,98 @@ impl Model {
                 }
                 if self.ended && !self.stopped {
                     return Err("ended executor committed to the call".into());
+                }
+            }
+            Hop::Fork => {
+                // A caller's root exists, as an agent's inbox does; the fork
+                // takes it at its tail with the whole subtree beneath.
+                let source = StreamPath::new("caller").map_err(|error| error.to_string())?;
+                let root = StreamPath::new("branch").map_err(|error| error.to_string())?;
+                let at_tail = match self.provider.head(source.clone()).await {
+                    Ok(head) => head.tail,
+                    Err(StreamError::NotFound) => {
+                        let root = Commit {
+                            conditions: vec![CommitCondition::Absent {
+                                path: source.clone(),
+                            }],
+                            mutations: vec![CommitMutation::Append {
+                                path: source.clone(),
+                                records: vec![b"root".to_vec().into()],
+                            }],
+                        };
+                        self.provider
+                            .commit(root.request(IdempotencyKey::unique()))
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        1
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
+                let fork = Commit {
+                    conditions: vec![CommitCondition::Absent { path: root.clone() }],
+                    mutations: vec![CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source,
+                        destination: root.clone(),
+                        at_tail,
+                        records: Vec::new(),
+                    }],
+                };
+                match self
+                    .provider
+                    .commit(fork.request(IdempotencyKey::unique()))
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    CommitOutcome::Committed(_) => {}
+                    outcome => return Err(format!("fork refused: {outcome:?}")),
+                }
+                self.copy = Some(Copied {
+                    call: CallPath::new(&root, "c1").map_err(|error| error.to_string())?,
+                    inherited: (self.terminals > 0)
+                        .then(|| self.journal.outcome().cloned())
+                        .flatten(),
+                    expected: None,
+                    journal: Journal::default(),
+                    terminals: 0,
+                });
+            }
+            Hop::Copy => {
+                let Some(copy) = &self.copy else {
+                    return self.check(hop).await;
+                };
+                let (call, inherited) = (copy.call.clone(), copy.inherited.clone());
+                let forked_at = match self.provider.head(call.log().clone()).await {
+                    // The fork preceded the call's first record.
+                    Err(StreamError::NotFound) => return self.check(hop).await,
+                    Err(error) => return Err(error.to_string()),
+                    Ok(head) => {
+                        head.origin
+                            .ok_or("a copied journal has no origin")?
+                            .inherited
+                            .forked_at
+                    }
+                };
+                let committed = if self.fault == Fault::Copy {
+                    let mut commit = call
+                        .settle_copy(forked_at)
+                        .map_err(|error| error.to_string())?;
+                    commit.conditions.clear();
+                    self.publish(commit).await?
+                } else {
+                    // The owner's one production observation of its copy.
+                    call.settle_if_copied(&self.provider)
+                        .await
+                        .map_err(|error| error.to_string())?
+                };
+                if committed == inherited.is_some() {
+                    return Err(format!(
+                        "copy settlement committed={committed} with inherited {inherited:?}"
+                    ));
+                }
+                if let Some(copy) = self.copy.as_mut() {
+                    copy.expected =
+                        Some(inherited.unwrap_or_else(|| Outcome::Indeterminate("copied".into())));
                 }
             }
             Hop::Rival => {
@@ -337,7 +452,44 @@ impl Model {
         if hop == Hop::Cancel && self.terminals != 1 {
             return Err("cancel did not retain exactly one terminal record".into());
         }
-        Ok(())
+        self.check_copy().await
+    }
+
+    /// Once observed, the copy holds exactly one terminal, its settled
+    /// outcome, whatever the source does after the fork.
+    async fn check_copy(&mut self) -> Result<(), String> {
+        let Some(mut copy) = self.copy.take() else {
+            return Ok(());
+        };
+        let result = self.fold_copy(&mut copy).await;
+        self.copy = Some(copy);
+        result
+    }
+
+    async fn fold_copy(&self, copy: &mut Copied) -> Result<(), String> {
+        let Some(expected) = copy.expected.clone() else {
+            return Ok(());
+        };
+        for record in self.records(copy.call.log(), copy.journal.next()).await? {
+            if let Entry::Terminal(_) = copy
+                .journal
+                .apply(&record)
+                .map_err(|error| error.to_string())?
+            {
+                copy.terminals += 1;
+            }
+        }
+        let markers = self.tail(copy.call.settled()).await?;
+        if copy.terminals != 1 || markers != 1 {
+            return Err(format!(
+                "copy has {} terminals and {markers} settled markers",
+                copy.terminals
+            ));
+        }
+        match copy.journal.outcome() {
+            Some(outcome) if same(&expected, outcome) => Ok(()),
+            outcome => Err(format!("copy settled {outcome:?}, not {expected:?}")),
+        }
     }
 }
 
@@ -402,6 +554,60 @@ async fn explore(fault: Fault) -> Result<usize, String> {
                 }
             }
         }
+    }
+    Ok(violations)
+}
+
+/// Forks the caller at every distinct reachable prefix, observes the copy at
+/// once, then lets the source run to the end of one schedule from there.
+#[cfg(test)]
+async fn explore_copies(fault: Fault) -> Result<usize, String> {
+    let mut all = Vec::new();
+    schedules(
+        &mut vec![
+            Hop::Request,
+            Hop::Executor,
+            Hop::Executor,
+            Hop::Executor,
+            Hop::Rival,
+            Hop::Cancel,
+            Hop::Fence,
+        ],
+        &mut Vec::new(),
+        &mut all,
+    );
+    let mut forks = std::collections::HashSet::new();
+    let (mut violations, mut copied) = (0, 0);
+    for schedule in &all {
+        for at in 0..=schedule.len() {
+            if !forks.insert(schedule[..at].to_vec()) {
+                continue;
+            }
+            for requested in [false, true] {
+                let mut model = Model::new(fault, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+                model.requested = requested;
+                let hops = schedule[..at]
+                    .iter()
+                    .chain(&[Hop::Fork, Hop::Copy])
+                    .chain(&schedule[at..]);
+                for hop in hops {
+                    if let Err(violation) = model.step(*hop).await {
+                        if fault == Fault::None {
+                            return Err(format!(
+                                "requested={requested} fork at {at} of {schedule:?}: {violation}"
+                            ));
+                        }
+                        violations += 1;
+                        break;
+                    }
+                }
+                copied += usize::from(model.copy.is_some_and(|copy| copy.expected.is_some()));
+            }
+        }
+    }
+    // The exploration is vacuous unless forks actually copied the call.
+    if copied == 0 {
+        return Err("no fork copied the call".into());
     }
     Ok(violations)
 }
@@ -499,6 +705,10 @@ async fn terminal_sessions() -> Result<(), String> {
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(Fault::None).await?, 0);
+    assert_eq!(explore_copies(Fault::None).await?, 0);
+    // Without its guards a copy's settlement adds a second terminal to a
+    // copy that inherited one.
+    assert!(explore_copies(Fault::Copy).await? > 0);
     terminal_sessions().await?;
     // Preserve the owning acceptance control: only its settled guard is
     // removed from the original requestless, already cancelled call.
