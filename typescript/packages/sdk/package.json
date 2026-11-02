@@ -35,6 +35,7 @@
   "scripts": {
     "build": "bun run generate && bun run build:wasm && tsc -b",
     "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
+    "test:process-admission": "node --test test/process-admission.test.mjs",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs sdk",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs sdk",

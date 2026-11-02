@@ -44,6 +44,9 @@ Validate the published entry and real native executable together with
 `cargo test --locked -p acyclic-native-runtime --test node_process` from `rust/`.
 Node.js must be installed. The control uses real input/output, a root with a
 descendant, caller cancellation, accepted output writes and native receipts.
+Run `node --test test/process-admission.test.mjs` from this package to check
+host-admission failures through the public entry without an installed host.
+It uses a real failed OS spawn, open command input and accepted terminal work.
 
 ## Objects
 
