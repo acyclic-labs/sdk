@@ -43,6 +43,30 @@ pub struct Provenance {
     pub credential_scope: Option<[u8; 32]>,
 }
 
+impl Provenance {
+    /// Checks the nonsecret identity at admission, before retaining a payload.
+    ///
+    /// # Errors
+    /// Refuses an absent provider, model or endpoint identity.
+    pub fn validate(&self) -> Result<(), super::RenderError> {
+        if self.provider.trim().is_empty()
+            || self.model.trim().is_empty()
+            || self.endpoint.trim().is_empty()
+        {
+            return Err(super::RenderError::InvalidItem("missing wire provenance"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn same_owner(&self, target: &Self) -> bool {
+        self.family == target.family
+            && self.provider == target.provider
+            && self.endpoint == target.endpoint
+            && self.credential_scope.is_some()
+            && self.credential_scope == target.credential_scope
+    }
+}
+
 /// Semantic class fixed by the ingress parser, never inferred during rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,12 +136,7 @@ impl WireItem {
         if record.version != 2 {
             return Err(super::RenderError::InvalidItem("unsupported item version"));
         }
-        if record.provenance.provider.trim().is_empty()
-            || record.provenance.model.trim().is_empty()
-            || record.provenance.endpoint.trim().is_empty()
-        {
-            return Err(super::RenderError::InvalidItem("missing wire provenance"));
-        }
+        record.provenance.validate()?;
         let own_projection = record.projections.contains_key(&record.provenance.family);
         if (own_projection && record.kind != ItemKind::GuardedMessage)
             || (record.kind == ItemKind::Reasoning && !record.projections.is_empty())

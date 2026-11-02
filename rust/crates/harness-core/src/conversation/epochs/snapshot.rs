@@ -2,7 +2,7 @@
 //! writes. Reopening reads only the last record, independent of history length.
 
 use super::{
-    Epoch, FileRef, InvalidEpoch,
+    Epoch, InvalidEpoch, SummaryRef,
     protocol::{Completion, Pending, Refusal, State},
 };
 #[cfg(feature = "filesystem")]
@@ -48,8 +48,8 @@ impl EncodedSnapshot<'_> {
     deny_unknown_fields
 )]
 pub enum SummaryOutcome {
-    /// Exact immutable reference returned by the original summary producer.
-    Ready(FileRef),
+    /// Complete immutable artifact set returned by the original producer.
+    Ready(SummaryRef),
     /// The producer terminated without a summary, including loss of custody.
     Failed,
 }
@@ -93,8 +93,8 @@ impl From<Refusal> for SnapshotError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "version", content = "snapshot", deny_unknown_fields)]
 enum RecordWire<E, O> {
-    #[serde(rename = "1")]
-    V1(SnapshotWire<E, O>),
+    #[serde(rename = "2")]
+    V2(SnapshotWire<E, O>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,7 +130,7 @@ impl Snapshot {
     /// Admits the one versioned record against its inherited source and head.
     /// Decoding never scans previous snapshots or reconstructs a missing job.
     pub fn decode(record: &Record, source: &StreamPath, head: u64) -> Result<Self, SnapshotError> {
-        let RecordWire::V1(wire): RecordWire<Epoch, SummaryOutcome> =
+        let RecordWire::V2(wire): RecordWire<Epoch, SummaryOutcome> =
             serde_json::from_slice(&record.value)?;
         wire.epoch.validate(source, head)?;
         if (wire.generation == 0) != (wire.epoch.cursor() == 0) {
@@ -271,7 +271,7 @@ impl Snapshot {
         } else {
             CommitCondition::Absent { path }
         };
-        let wire = RecordWire::V1(SnapshotWire {
+        let wire = RecordWire::V2(SnapshotWire {
             epoch: &self.epoch,
             generation: self.state.generation(),
             pending: self.state.pending().map(|pending| PendingWire {

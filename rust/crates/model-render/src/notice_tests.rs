@@ -45,7 +45,7 @@ proptest! {
                 endpoint:"https://example.invalid".into(), credential_scope:None,
             };
             let header = Header::new(target.clone(), [1;32], RENDERER_VERSION,
-                json!({"model":"model"}).as_object().unwrap()).unwrap();
+                json!({"model":"model"}).as_object().unwrap(), None).unwrap();
             let first = notice(Some("files".into()), 1, vec![text.clone()]);
             let frozen = notice_block(target.clone(), &[first]).unwrap();
             let stored = serde_json::to_vec(&frozen).unwrap();
