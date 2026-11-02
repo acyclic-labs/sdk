@@ -574,7 +574,7 @@ struct Shared<P: StreamProvider + ?Sized> {
     incarnation: u64,
     next: AtomicU64,
     table: Tables,
-    /// Opens and closes hold it shared; compaction holds it exclusively.
+    /// Compaction holds it exclusively; opens copy its fenced cut before I/O.
     ledger: RwLock<Ledger>,
     live: AtomicUsize,
     written: AtomicUsize,
@@ -1165,8 +1165,9 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     async fn commit_open(&self, connection: &str, open: &SocketOpen) -> Result<Opened, Error> {
         let socket = self.layout.socket(connection)?;
         let invocation = open_invocation(socket.clone(), connection, open)?;
-        // Held across retries, so every attempt carries the same conditions.
-        let ledger = self.ledger.read().await;
+        // The epoch condition fences this cut without retaining the lock over
+        // provider I/O. Every unknown retry still carries this identical cut.
+        let ledger = *self.ledger.read().await;
         let epochs = self.layout.epochs()?;
         let segment = self.layout.segment(ledger.segment)?;
         let actor: Bytes = open.actor.encode().into();
@@ -1223,12 +1224,18 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             (Err(error), None) | (Err(error @ Error::Conflict), Some(_)) => return Err(error),
             (Err(_), Some(inbox)) => (Opened::Unsettled, inbox),
         };
-        self.live.fetch_add(1, Ordering::AcqRel);
-        self.written.fetch_add(1, Ordering::AcqRel);
+        {
+            let current = self.ledger.read().await;
+            // A completed compaction already copied this committed Open. Only
+            // the original segment still needs its new socket and row counted.
+            if current.segment == ledger.segment {
+                self.live.fetch_add(1, Ordering::AcqRel);
+                self.written.fetch_add(1, Ordering::AcqRel);
+            }
+        }
         if let Some(entry) = self.lock(connection).sockets.get_mut(connection) {
             entry.inbox = Some(opened.1);
         }
-        drop(ledger);
         Ok(opened.0)
     }
 

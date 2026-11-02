@@ -356,7 +356,10 @@ async fn socket_conformance_rejects_a_host_that_wakes_actors_for_keepalives() ->
     }
 }
 
-async fn records(store: &Store<MemoryStream>, path: &StreamPath) -> Result<Vec<Bytes>, Error> {
+async fn records<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    path: &StreamPath,
+) -> Result<Vec<Bytes>, Error> {
     Ok(store
         .provider()
         .read(ReadRequest {
@@ -374,6 +377,94 @@ async fn records(store: &Store<MemoryStream>, path: &StreamPath) -> Result<Vec<B
 
 #[tokio::test]
 async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
+    for committed in [false, true] {
+        let provider = Arc::new(ControlledStream::default());
+        let executor = Arc::new(HeldCloseExecutor::default());
+        let sockets = Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            executor.clone(),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let shared = &sockets.shared;
+        let (unrelated, unrelated_inbox, last, _frames) =
+            admitted_close_fixture(&sockets, "unrelated-close").await?;
+        let (connection, inbox, _last, open, _frames) =
+            close_fixture(&sockets, "delayed-open").await?;
+        let release = provider.pause_write(committed);
+        let mut opening = Box::pin(shared.commit_open(&connection, &open));
+        assert!(futures::poll!(&mut opening).is_pending());
+        assert!(provider.pause.lock().unwrap().is_none());
+        // A retained provider request must not own the ledger lock. Restoring
+        // that lock fails here without hanging behind the compaction writer.
+        drop(
+            shared
+                .ledger
+                .try_write()
+                .map_err(|_| "delayed Open blocked compaction")?,
+        );
+        let mut compact = Box::pin(shared.compact());
+        match futures::poll!(&mut compact) {
+            std::task::Poll::Ready(result) => result?,
+            std::task::Poll::Pending => return Err("delayed Open blocked compaction I/O".into()),
+        }
+        assert_eq!(
+            shared.live.load(Ordering::Acquire),
+            1 + usize::from(committed)
+        );
+        let copied = records(&shared.store, &shared.layout.segment(2)?)
+            .await?
+            .len();
+        assert_eq!(copied, 1 + usize::from(committed));
+        let completion = shared
+            .begin_close(
+                &unrelated,
+                Close::new(1000, "independent", SocketCloseInitiator::Actor),
+            )
+            .ok_or("missing original Close owner")?;
+        let mut closing = executor.take()?;
+        assert!(
+            futures::poll!(&mut closing).is_ready(),
+            "delayed Open blocked an unrelated Close"
+        );
+        completion.await?;
+        assert!(matches!(
+            SocketFrame::decode(&last.await?)?,
+            SocketFrame::Close { code: 1000, .. }
+        ));
+        assert_eq!(shared.live.load(Ordering::Acquire), usize::from(committed));
+        release.send(()).map_err(|_| "lost delayed Open request")?;
+        match opening.await {
+            Ok(Opened::Committed(_)) if committed => {}
+            Err(Error::Conflict) if !committed => {}
+            _ => return Err("Open did not retain its original epoch condition".into()),
+        }
+        assert_eq!(shared.live.load(Ordering::Acquire), usize::from(committed));
+        assert_eq!(
+            shared.written.load(Ordering::Acquire),
+            copied + 1,
+            "a delayed reply counted an Open already copied by compaction"
+        );
+        drop(compact);
+        drop(sockets);
+        let recovered = Sockets::open(
+            Store::new(provider, root()?),
+            executor,
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let store = &recovered.shared.store;
+        assert_eq!(records(store, &unrelated_inbox).await?.len(), 2);
+        match records(store, &inbox).await {
+            Ok(records) if committed => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(crate::sockets::input_kind(&records[1]), Some("close"));
+            }
+            Err(Error::Stream(StreamError::NotFound)) if !committed => {}
+            _ => return Err("recovery lost an Open or delivered a refused Open".into()),
+        }
+    }
+
     let store = || -> Result<Store<MemoryStream>, Error> {
         Ok(Store::new(Arc::new(MemoryStream::default()), root()?))
     };
@@ -446,16 +537,32 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
     Ok(())
 }
 
-/// MemoryStream whose first two `heads` reads meet before either returns,
-/// so two hosts opening at once observe the same epochs tail.
-struct MeetingHeads {
+/// Schedule original MemoryStream observations and publications without
+/// replacing their results or the socket producer.
+#[derive(Default)]
+struct ControlledStream {
     inner: MemoryStream,
-    meet: tokio::sync::Barrier,
+    meet: Option<tokio::sync::Barrier>,
     reads: std::sync::atomic::AtomicUsize,
+    pause: std::sync::Mutex<Option<(bool, oneshot::Receiver<()>)>>,
+}
+
+impl ControlledStream {
+    fn pause_write(&self, after: bool) -> oneshot::Sender<()> {
+        let (release, resumed) = oneshot::channel();
+        assert!(
+            self.pause
+                .lock()
+                .unwrap()
+                .replace((after, resumed))
+                .is_none()
+        );
+        release
+    }
 }
 
 #[async_trait::async_trait]
-impl StreamProvider for MeetingHeads {
+impl StreamProvider for ControlledStream {
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
         acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
@@ -464,8 +571,10 @@ impl StreamProvider for MeetingHeads {
         request: acyclic_stream::HeadsRequest,
     ) -> Result<acyclic_stream::Heads, StreamError> {
         let heads = self.inner.heads(request).await;
-        if self.reads.fetch_add(1, Ordering::AcqRel) < 2 {
-            self.meet.wait().await;
+        if let Some(meet) = &self.meet
+            && self.reads.fetch_add(1, Ordering::AcqRel) < 2
+        {
+            meet.wait().await;
         }
         heads
     }
@@ -497,16 +606,29 @@ impl StreamProvider for MeetingHeads {
         &self,
         request: acyclic_stream::WriteRequest,
     ) -> BoxProviderFuture<'_, Result<acyclic_stream::WriteOutcome, StreamError>> {
-        self.inner.write(request)
+        let pause = self.pause.lock().unwrap().take();
+        Box::pin(async move {
+            match pause {
+                Some((false, resumed)) => {
+                    resumed.await.map_err(|_| StreamError::Unavailable)?;
+                    self.inner.write(request).await
+                }
+                Some((true, resumed)) => {
+                    let result = self.inner.write(request).await;
+                    resumed.await.map_err(|_| StreamError::Unavailable)?;
+                    result
+                }
+                None => self.inner.write(request).await,
+            }
+        })
     }
 }
 
 #[tokio::test]
 async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
-    let provider = Arc::new(MeetingHeads {
-        inner: MemoryStream::default(),
-        meet: tokio::sync::Barrier::new(2),
-        reads: std::sync::atomic::AtomicUsize::new(0),
+    let provider = Arc::new(ControlledStream {
+        meet: Some(tokio::sync::Barrier::new(2)),
+        ..ControlledStream::default()
     });
     let open = || -> Result<_, Error> {
         Ok(Sockets::open(
@@ -557,8 +679,8 @@ impl HeldCloseExecutor {
 }
 
 /// Prepare an original actor and socket entry before its Open is submitted.
-async fn close_fixture(
-    sockets: &Sockets<MemoryStream>,
+async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
+    sockets: &Sockets<P>,
     label: &str,
 ) -> Result<
     (
@@ -638,8 +760,8 @@ async fn close_fixture(
 
 /// The actual Open creates its invocation, socket stream and ledger. Only the
 /// guest acceptance is supplied here; close custody starts afterwards.
-async fn admitted_close_fixture(
-    sockets: &Sockets<MemoryStream>,
+async fn admitted_close_fixture<P: StreamProvider + ?Sized + 'static>(
+    sockets: &Sockets<P>,
     label: &str,
 ) -> Result<
     (
