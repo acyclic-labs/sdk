@@ -265,6 +265,24 @@ mod tests {
                 [Some(3), Some(0), Some(1)]
             );
 
+            // Consumer-only task-field controls use the actual errors above.
+            // These spans assert no native admission, execution or retirement.
+            for error in [&missing, &different] {
+                drop(tracing::info_span!(
+                    "acyclic.runtime.persistence",
+                    native.terminal = "io_error",
+                    error.os = i64::from(error.raw_os_error().unwrap()),
+                    outcome = "err",
+                ));
+                let observed = projection.snapshot();
+                assert_eq!(observed.tasks[0].first_os_error, Some(original_code));
+                assert_eq!(observed.tasks[0].missing_io_error, Some(0));
+            }
+            assert_eq!(
+                projection.snapshot().tasks[0].terminal,
+                [Some(0), Some(0), Some(2), Some(0), Some(0)]
+            );
+
             // Losing numeric precision cannot turn a later real terminal into
             // zero work. The same fixed counter retires as unknown.
             projection.0.tasks[1].terminal[1].store(u64::MAX - 1, Ordering::Relaxed);
