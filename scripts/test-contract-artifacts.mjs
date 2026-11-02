@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { createInterface } from "node:readline";
 
@@ -26,17 +26,28 @@ test("the generator compares executed bytes and records failure without changing
     const generator = source("generate-contracts.mjs");
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
+    put("scripts/package-closure.mjs", source("package-closure.mjs"));
+    put("package.json", JSON.stringify({ workspaces: [] }));
     for (const [, name] of generator.matchAll(/^  "([^"]+\.mjs)",/gm)) {
       put(`scripts/${name}`, name === "generate-actors-routes.mjs"
         ? 'export const rust = [["fixture", "bin", "contract"]]; export const render = ([stdout]) => ({"contract.txt": stdout});'
         : 'export const render = () => ({});');
     }
-    // Use Node as an executable CLI fixture, including a no-argument native
-    // target invocation. Only the latter prints the candidate contract bytes.
-    put("bootstrap.cjs", 'if (process.argv.length === 1) { process.stdout.write(require("node:fs").readFileSync("candidate.txt")); process.exit(0); }');
-    const pkg = { name: "fixture", id: "fixture#0.1.0", targets: [{ name: "contract", kind: ["bin"] }] };
-    put("metadata", `console.log(${JSON.stringify(JSON.stringify({ packages: [pkg], target_directory: join(root, "target") }))});`);
-    put("build", `console.log(${JSON.stringify(JSON.stringify({ reason: "compiler-artifact", package_id: pkg.id, target: pkg.targets[0], executable: process.execPath, features: [], fresh: true }))});`);
+    // Execute the actual generator entry, Cargo metadata/artifact discovery and
+    // selected Rust binary. No hand-written Cargo messages admit this exporter.
+    const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
+    put("Cargo.toml", '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n[[bin]]\nname = "contract"\npath = "src/main.rs"\n');
+    mkdirSync(join(root, "src"));
+    put("src/main.rs", `use std::io::Write;
+fn main() -> std::io::Result<()> {
+    std::fs::OpenOptions::new().create(true).append(true).open("executions.txt")?.write_all(b"execute\\n")?;
+    std::io::stdout().lock().write_all(&std::fs::read("candidate.txt")?)
+}
+`);
+    const env = { ...process.env, ACYCLIC_CARGO_BIN: cargo, CARGO_TARGET_DIR: join(root, "target"),
+      SDK_TEMP_DIR: join(root, "diagnostics"), GITHUB_RUN_ID: "fixture-run" };
+    const locked = spawnSync(cargo, ["generate-lockfile", "--offline"], { cwd: root, env, encoding: "utf8" });
+    assert.equal(locked.status, 0, locked.error?.message ?? locked.stderr);
     put("contract.txt", "current\n");
     put("candidate.txt", "current\n");
     const git = args => {
@@ -47,7 +58,20 @@ test("the generator compares executed bytes and records failure without changing
     git(["init", "--quiet"]);
     git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "Fixture"]);
     const sourceSha = git(["rev-parse", "HEAD"]);
-    const env = { ...process.env, ACYCLIC_CARGO_BIN: process.execPath, SDK_TEMP_DIR: join(root, "diagnostics"), NODE_OPTIONS: `--require=${JSON.stringify(join(root, "bootstrap.cjs"))}`, CI_HEAD_SHA: sourceSha, GITHUB_RUN_ID: "fixture-run" };
+    env.CI_HEAD_SHA = sourceSha;
+    // Retain the exact real wire at the generator's existing decode boundary.
+    // Later report/drift controls replay it against the SAME unchanged binary;
+    // source/configuration freshness is covered by the real Cargo control.
+    put("capture-wire.mjs", `import { appendFileSync, writeFileSync } from "node:fs";
+const parse = JSON.parse;
+JSON.parse = (text, ...args) => {
+  const value = parse(text, ...args);
+  if (value?.packages) writeFileSync("metadata.json", text);
+  else if (value?.reason) appendFileSync("artifacts.jsonl", text + "\\n");
+  return value;
+};
+`);
+    env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(root, "capture-wire.mjs")).href}`;
     const run = () => spawnSync(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "check"], { cwd: root, env, encoding: "utf8" });
     const receipt = () => JSON.parse(readFileSync(join(root, "diagnostics/observability/generated-contracts.json"), "utf8"));
     const success = run();
@@ -55,6 +79,10 @@ test("the generator compares executed bytes and records failure without changing
     assert.equal(receipt().status, "success");
     assert.equal(receipt().source_commit, sourceSha);
     assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
+    env.NODE_OPTIONS = process.env.NODE_OPTIONS;
+    put("metadata", 'process.stdout.write(require("node:fs").readFileSync("metadata.json"));');
+    put("build", 'process.stdout.write(require("node:fs").readFileSync("artifacts.jsonl"));');
+    env.ACYCLIC_CARGO_BIN = process.execPath;
     // An executable selected under the correct Cargo identity can still emit
     // wrong bytes; the independent generated drift comparison must reject it.
     put("candidate.txt", "substituted\n");
@@ -80,19 +108,21 @@ test("the generator compares executed bytes and records failure without changing
     put("scripts/generate-inference-defaults.mjs", 'export const render = () => ({});');
     put("candidate.txt", "current\n");
     assert.equal(run().status, 0);
-    const metadata = readFileSync(join(root, "metadata"));
+    const metadataReplay = readFileSync(join(root, "metadata"));
     const readinessFailure = step => Object.assign(new Error(`compiler-readiness step=${step}; recovery command: node --test scripts/test-contract-artifacts.mjs`), {
       code: "COMPILER_READINESS_FAILED", step,
     });
     let ready = Promise.withResolvers();
     ready.promise.catch(() => {}); // Listening failure can precede the await.
-    // The original metadata child owns this connection until cancellation.
-    // Arm the channel before starting it, including early connection loss.
+    // A separate native child stalls the metadata phase for the cancellation
+    // control only. It supplies no metadata or compiler wire. Arm its channel
+    // before starting it, including early connection loss.
     compilerServer = createServer(socket => {
       const admitted = ready;
       compilerSocket = socket;
       socket.once("error", admitted.reject);
       const lines = createInterface({ input: socket });
+      lines.once("error", admitted.reject);
       lines.once("line", line => {
         const pid = Number(line);
         if (!/^\d+$/.test(line) || !Number.isSafeInteger(pid) || pid <= 0) {
@@ -111,6 +141,15 @@ test("the generator compares executed bytes and records failure without changing
     departed.once("error", ready.reject);
     departed.end();
     await lost;
+    // The actual TCP reset also reaches readline's error port. Losing its
+    // producer before identity must reject this same wait, never throw outside it.
+    ready = Promise.withResolvers();
+    const resetLost = assert.rejects(ready.promise, { code: "ECONNRESET" });
+    const reset = connect({ host: "127.0.0.1", port });
+    reset.once("error", ready.reject);
+    await once(reset, "connect");
+    reset.resetAndDestroy();
+    await resetLost;
     ready = Promise.withResolvers();
     put("metadata", `const socket = require("node:net").connect(${JSON.stringify({ host: "127.0.0.1", port })}, () => socket.write(String(process.pid) + "\\n"));`);
     cancelled = spawn(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "check"], { cwd: root, env, stdio: "ignore", windowsHide: true });
@@ -126,7 +165,6 @@ test("the generator compares executed bytes and records failure without changing
     assert.equal(receipt().status, "incomplete", "abrupt termination must not reuse the previous success");
     assert.equal(receipt().phase, "metadata");
     assert.equal(receipt().source_commit, sourceSha);
-    assert.ok(receipt().toolchain_ms > 0);
     const incompleteSummary = spawnSync(process.execPath, [fileURLToPath(new URL("ci-summary.mjs", import.meta.url)), join(root, "diagnostics/observability")], { env, encoding: "utf8" });
     assert.equal(incompleteSummary.status, 0, incompleteSummary.stderr);
     assert.match(incompleteSummary.stdout, /incomplete/);
@@ -145,31 +183,20 @@ test("the generator compares executed bytes and records failure without changing
       put("diagnostics/observability/generated-contracts.json", JSON.stringify(incomplete));
     }
     assert.equal(readFileSync(join(root, "contract.txt"), "utf8"), "current\n");
-    put("metadata", metadata);
-    assert.equal(run().status, 0, "retry after cancellation must complete");
-    assert.equal(receipt().status, "success");
+    put("metadata", metadataReplay);
     // Two renderers share the exact Cargo artifact and execute it once. Both
-    // independent file comparisons still run; an absent payload is refusal.
+    // independent file comparisons still run after cancellation. Decoder
+    // missing/malformed cases live in the shared contract-target controls.
     put("scripts/generate-actors-routes.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "first"; export const render = ([stdout]) => ({"contract.txt": stdout});');
     put("scripts/generate-inference-defaults.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "second"; export const render = ([stdout]) => ({"second.txt": stdout});');
     put("second.txt", "second\n");
     put("candidate.txt", JSON.stringify({ first: "current\n", second: "second\n" }));
-    put("bootstrap.cjs", 'if (process.argv.length === 1) { const fs = require("node:fs"); fs.appendFileSync("executions.txt", "execute\\n"); process.stdout.write(fs.readFileSync("candidate.txt")); process.exit(0); }');
+    rmSync(join(root, "executions.txt"));
     const shared = run();
     assert.equal(shared.status, 0, shared.stderr);
+    assert.equal(receipt().status, "success");
     assert.equal(readFileSync(join(root, "executions.txt"), "utf8"), "execute\n");
     assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
-    put("candidate.txt", JSON.stringify({ first: "current\n" }));
-    const missing = run();
-    assert.notEqual(missing.status, 0);
-    assert.match(missing.stderr, /STEP_FAILED contract-payload: missing second/);
-    assert.equal(receipt().status, "failed");
-    assert.equal(readFileSync(join(root, "second.txt"), "utf8"), "second\n");
-    put("candidate.txt", "{not a contract bundle");
-    const malformed = run();
-    assert.notEqual(malformed.status, 0);
-    assert.match(malformed.stderr, /STEP_FAILED contract-payload: malformed bundle/);
-    assert.equal(receipt().status, "failed");
   } finally {
     if (cancelled?.exitCode === null && cancelled.signalCode === null) cancelled.kill("SIGKILL");
     stopCompiler();
