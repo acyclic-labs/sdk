@@ -26,7 +26,9 @@ use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkCut, OwnedBytesBacking, Provenance, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 /// Fixed accounting charge per entry: map nodes, key and LRU bookkeeping.
-const ENTRY_OVERHEAD: usize = 96 + size_of::<Option<RecordEvidence>>();
+const ENTRY_OVERHEAD: usize = 96;
+/// Original coordinates occupy record entries, not listing indexes or views.
+const RECORD_OVERHEAD: usize = ENTRY_OVERHEAD + size_of::<Option<RecordEvidence>>();
 
 /// One cache key. Records are immutable; listing pages are hierarchy views
 /// that the scheduler revalidates while they are displayed.
@@ -912,7 +914,7 @@ impl RecordCache {
             return true;
         }
         let charge = path_len(&key)
-            + ENTRY_OVERHEAD
+            + RECORD_OVERHEAD
             + evidence
                 .as_ref()
                 .map_or(0, |evidence| evidence.origin.as_str().len());
@@ -1576,7 +1578,7 @@ mod tests {
         assert_eq!(cache.backing_bytes(), 4096);
         assert_eq!(
             cache.bytes(),
-            4096 + 2 * (ENTRY_OVERHEAD + stream.as_str().len())
+            4096 + 2 * (RECORD_OVERHEAD + stream.as_str().len())
         );
         cache.set_budget(0);
         assert_eq!(cache.bytes(), 0);
@@ -1595,7 +1597,7 @@ mod tests {
         let root = OwnedBytes::from(vec![3; 1 << 20]);
         let unknown = OwnedBytes::from(bytes::Bytes::from(vec![3; 1 << 20]).slice(11..15));
         let budget = 4096;
-        let allowance = budget - ENTRY_OVERHEAD - stream.as_str().len();
+        let allowance = budget - RECORD_OVERHEAD - stream.as_str().len();
         for (value, detach) in [
             (root.slice(11..15), true),
             (OwnedBytes::from(vec![3; budget]).slice(11..15), true),
