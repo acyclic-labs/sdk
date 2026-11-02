@@ -1,7 +1,7 @@
 //! Golden prompt-cache prefixes: every family's serialized request is a
 //! byte-exact extension of the request before it, across a tool call, a
 //! tools.changed delta, a waking notice and a fork whose child continues and
-//! forks a grandchild of its own.
+//! forks a grandchild of its own, and a history window that advances a page.
 //!
 //! The run is the shared hosting composition (one [`Bound`] over in-memory
 //! streams and objects, the stock preset's executors) with each provider
@@ -386,7 +386,9 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
             limits: TurnLimits {
                 maximum_bytes: 1 << 20,
                 max_steps: 4,
-                history_turns: 8,
+                // A page of four entries: the parent's later turns cross one
+                // page cut, while the child's history stays on the first.
+                history_turns: 4,
             },
             actors: acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(acyclic_actors::local::SystemClock),
@@ -482,6 +484,13 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     agents.drain(&child).await?;
     transport.label("parent");
     agents.drain(&root).await?;
+    // Turns that carry the parent's conversation across its first page cut.
+    for name in ["m5", "m6", "m7", "m8", "m9", "m10", "m11"] {
+        agents
+            .send(&root, &user(), &message(&root, name, "Keep going").await?)
+            .await?;
+        agents.drain(&root).await?;
+    }
 
     let sent = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     let bodies = |agent| -> Vec<&Bytes> {
@@ -494,7 +503,14 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
     assert!(child.len() >= 4, "{family}: child sent {}", child.len());
     assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
+    // The window advances only at its page cut: exactly one request starts
+    // a new prefix, and every other one extends the request before it.
+    let mut cut = None;
     for (index, pair) in parent.windows(2).enumerate() {
+        if departure(pair[0], pair[1]).is_some() && cut.is_none() {
+            cut = Some(index + 1);
+            continue;
+        }
         extends(
             family,
             &format!("parent request {}", index + 1),
@@ -502,6 +518,11 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
             pair[1],
         )?;
     }
+    let cut = cut.ok_or_else(|| format!("{family}: the history window never advanced"))?;
+    assert!(
+        cut + 1 < parent.len(),
+        "{family}: nothing follows the page cut"
+    );
     // The child forks the parent's settled conversation: the turn before the
     // spawning one, whose last request was the parent's third.
     extends(family, "child request 0", parent[2], child[0])?;

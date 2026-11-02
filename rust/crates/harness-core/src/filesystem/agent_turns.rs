@@ -408,7 +408,12 @@ pub struct TurnLimits {
     pub maximum_bytes: u64,
     /// Model and tool steps per turn.
     pub max_steps: u32,
-    /// Settled turns of history in the model context.
+    /// Page size of the settled history in the model context. The window
+    /// starts at a multiple of this many conversation entries and holds at
+    /// least this many and fewer than twice as many, so it advances one whole
+    /// page at a time: the prompt prefix, and with it the provider's prompt
+    /// cache, is rebuilt once per page rather than on every turn. Page cuts
+    /// are absolute sequences, so forks that share history share the cut.
     pub history_turns: u32,
 }
 
@@ -880,7 +885,8 @@ where
         )))
     }
 
-    /// The agent's last settled turns with their sequences, oldest first.
+    /// The agent's settled turns from the current history page cut, with their
+    /// sequences, oldest first.
     async fn history(
         &self,
         _: &AdmittedAgent<'_>,
@@ -896,9 +902,8 @@ where
         )
         .await?
         .context;
-        let from = cut
-            .tail
-            .saturating_sub(u64::from(self.limits.history_turns));
+        let page = u64::from(self.limits.history_turns);
+        let from = cut.tail.saturating_sub(page) / page.max(1) * page.max(1);
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
             entries
