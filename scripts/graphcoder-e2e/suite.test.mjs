@@ -9,6 +9,34 @@ import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failureReport, finishCase, retainCapture } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 
+test("conversation completion rejects a malformed tail after its final committed reply", async () => {
+  const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures["jsonl-reopen"];
+  const reply = JSON.parse(captured.stdout);
+  // Mutate the retained shipping reply; these suffixes are negative controls,
+  // not invented provider or host fixtures. Include a partial final line.
+  for (const tail of ["", "{\n", "{", "null\n"]) {
+    const processes = new Processes(), captures = [];
+    try {
+      const running = conversation(processes, process.execPath, {
+        workspace: tmpdir(), args: ["-e",
+          "require('node:readline').createInterface({input:process.stdin}).once('line',()=>process.stdout.write(process.argv[1]))",
+          captured.stdout + tail, "--"],
+      }, { operation: "terminal-admission", turns: [{ id: reply.id, text: "unused", answer: reply.text }] },
+      result => captures.push(result));
+      if (tail === "") await running;
+      else await assert.rejects(running, error => {
+        assert.equal(error.name, "SpoolEnded");
+        assert.equal(error.kind, tail === "null\n" ? "consumer" : "malformed");
+        return true;
+      });
+      assert.equal(captures.length, 1);
+      assert.equal(captures[0].code, 0, captures[0].stderr);
+      assert.equal(captures[0].stdout, captured.stdout + tail);
+      assert.equal(processes.children.size, 0);
+    } finally { await processes.close(); }
+  }
+});
+
 test("conversation rejection retires only its producer and retains independent capture failure", async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "conversation-failure-"));
   try {

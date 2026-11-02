@@ -41,6 +41,10 @@ export async function conversation(processes, binary, fixture, input, capture, b
     if (failures.length === 1) throw failures[0];
     throw new AggregateError(failures, "conversation completion failures", { cause: failures[0] });
   }
+  // The final keyed reply can precede malformed trailing output. Join the
+  // original spool's drained terminal event before admitting the conversation.
+  try { await replies.next(() => false); }
+  catch (error) { if (error.kind !== "eof") throw error; }
   assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}`);
   assert.equal(result.signal, null, "step=verify conversation retirement");
   assert.equal(replies.sequence, input.turns.length,
