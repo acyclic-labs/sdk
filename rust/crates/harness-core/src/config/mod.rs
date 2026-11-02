@@ -1,6 +1,8 @@
 //! Configuration is code. A settings file is a TypeScript module whose
 //! default export is a value, replacing the result of the layers below it,
-//! or a function of that result ([`Form`]). The kernel folds a settings
+//! or a function of that result ([`Form`]). A function nested in the result
+//! (a plugin entry, or its `config`) is likewise called with the base at its
+//! own path, so `Config<T>` composes at every level. The kernel folds a settings
 //! entry point's modules from the lowest layer to the highest
 //! ([`compose`]); every other module replaces by path.
 //!
