@@ -233,7 +233,8 @@ pub(super) async fn admit(
     .await
     {
         Ok(settings) => (settings, AdmissionStatus::Applied, None),
-        Err(Refused(status, error)) => (
+        Err(Refused::Operation(error)) => return Err(error),
+        Err(Refused::Settings(status, error)) => (
             settle(&layers[..1], volumes, &source, started, resolve, compaction)
                 .await
                 .map_err(Refused::seed)?,
@@ -349,23 +350,46 @@ pub(super) async fn plugins(
     Ok(rules)
 }
 
-/// Why a stack's settings are not in force.
-struct Refused(AdmissionStatus, String);
+/// Only configuration refusals permit fallback. Operation failures retain their
+/// original typed cause and cannot become an admission record.
+#[derive(Debug)]
+enum Refused {
+    Settings(AdmissionStatus, String),
+    Operation(Error),
+}
 
 impl Refused {
     /// The seed is the floor every home module falls back to; refusing it
-    /// is a defect of this build, so the session does not open.
+    /// is a defect of this build. Read failures keep their original cause.
     fn seed(self) -> Error {
-        Error::Invalid(format!(
-            "the seed's settings are not admissible: {}",
-            self.1
-        ))
+        match self {
+            Self::Settings(_, reason) => {
+                Error::Invalid(format!("the seed's settings are not admissible: {reason}"))
+            }
+            Self::Operation(error) => error,
+        }
+    }
+
+    fn evaluated(error: Error) -> Self {
+        match error {
+            Error::Invalid(reason) => Self::Settings(AdmissionStatus::Invalid, reason),
+            error => Self::Operation(error),
+        }
+    }
+
+    fn selection(error: Error) -> Self {
+        match error {
+            Error::Invalid(_) | Error::Unsupported(_) | Error::NotFound(_) => {
+                Self::Settings(AdmissionStatus::Rejected, error.to_string())
+            }
+            error => Self::Operation(error),
+        }
     }
 }
 
 impl From<Error> for Refused {
     fn from(error: Error) -> Self {
-        Self(AdmissionStatus::Rejected, error.to_string())
+        Self::Operation(error)
     }
 }
 
@@ -385,7 +409,7 @@ async fn settle(
         pin: &source.pin,
     };
     let selection = format!("{}/{}", started.0.provider, started.0.name);
-    let invalid = |error: String| Refused(AdmissionStatus::Invalid, error);
+    let invalid = |error: String| Refused::Settings(AdmissionStatus::Invalid, error);
     let (value, links) = config::compose(
         config::AGENT,
         layers,
@@ -393,11 +417,11 @@ async fn settle(
         serde_json::json!({ "model": selection }),
     )
     .await
-    .map_err(|error| invalid(error.to_string()))?;
+    .map_err(Refused::evaluated)?;
     let settings: AgentConfig = serde_json::from_value(value)
         .map_err(|error| invalid(format!("{}: {error}", config::AGENT)))?;
     let rejected = |reason: &str| {
-        Refused(
+        Refused::Settings(
             AdmissionStatus::Rejected,
             format!("{}: {reason}", config::AGENT),
         )
@@ -432,7 +456,7 @@ async fn settle(
         let resolve = resolve.ok_or_else(|| {
             rejected("this session's model is bound by its host and cannot be changed here")
         })?;
-        resolve(&settings.model)?
+        resolve(&settings.model).map_err(Refused::selection)?
     };
     if let Some(sampling) = settings.sampling {
         crate::model::ModelSampling::admit(
@@ -445,12 +469,14 @@ async fn settle(
                 .1
                 .model_profile(&model.0)?
                 .map(|profile| profile.sampling()),
-        )?;
+        )
+        .map_err(Refused::selection)?;
     }
     let compaction = if unchanged_model {
         compaction.0.clone()
     } else {
-        super::compaction::select(compaction.1.clone(), &model.0, model.1.as_ref())?
+        super::compaction::select(compaction.1.clone(), &model.0, model.1.as_ref())
+            .map_err(Refused::selection)?
     };
     if let Some(output) = settings
         .sampling
@@ -459,10 +485,14 @@ async fn settle(
         let capacity = model.1.context_capacity(&model.0)?;
         match &compaction {
             crate::context::CompactionPolicy::Disabled => {
-                capacity.output_reservation(Some(output))?;
+                capacity
+                    .output_reservation(Some(output))
+                    .map_err(Refused::selection)?;
             }
             crate::context::CompactionPolicy::Threshold(policy) => {
-                policy.validate(capacity, Some(output))?;
+                policy
+                    .validate(capacity, Some(output))
+                    .map_err(Refused::selection)?;
             }
         }
     }
@@ -641,6 +671,93 @@ mod tests {
         assert_eq!(retained.profile, admitted.profile);
         assert_eq!(retained.links, admitted.links);
         assert_eq!(retained.stack, admitted.stack);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn imported_settings_keep_the_original_directory_read_refusal() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let project = volume(directory.path()).await?;
+        let harness = LocalHarness::open(
+            volume_config(directory.path(), project, text())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?;
+        let write = ContentGrant::verify(
+            &harness.verifier,
+            &harness.signed,
+            &harness.scratch,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        harness
+            .files
+            .put_content(
+                &harness.scratch,
+                &write,
+                "options.ts",
+                b"export const sampling = {temperature: 0.25};",
+                "text/typescript",
+                "options.ts",
+                u64::MAX,
+                &crate::IdempotencyKey::new("settings-import-control".to_owned())?,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        let volumes = Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: u64::MAX,
+        };
+        let layers = [Layer {
+            name: "home",
+            generation: "original",
+            bytes: Some(b"import {sampling} from './options.ts'; export default base => ({...base, sampling});"),
+        }];
+        let disabled = crate::context::CompactionPolicy::Disabled;
+        for prefix in ["", "allowed"] {
+            let mut source = Source::new(&volumes).await?;
+            Arc::get_mut(&mut source)
+                .expect("original source has one owner")
+                .pin
+                .read = ContentGrant::verify_directory_read(
+                &harness.verifier,
+                &harness.signed,
+                &harness.scratch,
+                prefix,
+                &mut None,
+            )?;
+            let result = settle(
+                &layers,
+                &volumes,
+                &source,
+                harness.agent()?.clone(),
+                None,
+                (&disabled, &None),
+            )
+            .await;
+            match (prefix, result) {
+                ("", Ok(settings)) => assert_eq!(
+                    settings.sampling.and_then(|sampling| sampling.temperature),
+                    Some(0.25),
+                ),
+                ("allowed", Err(Refused::Operation(error))) => {
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+                    // A failed seed read also retains the operation's typed cause.
+                    assert_eq!(
+                        Refused::Operation(error).seed().code(),
+                        crate::wire::ErrorCode::Unauthorized
+                    );
+                }
+                (_, Err(error)) => panic!("{prefix}: {error:?}"),
+                (_, Ok(_)) => panic!("{prefix}: imported settings escaped their read boundary"),
+            }
+        }
         Ok(())
     }
 }
