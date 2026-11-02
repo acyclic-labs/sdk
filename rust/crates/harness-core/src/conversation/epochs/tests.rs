@@ -197,7 +197,8 @@ proptest::proptest! {
 #[cfg(feature = "filesystem")]
 async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     use acyclic_stream::{
-        AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
+        AppendRecord, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+        MemoryStream,
     };
 
     let provider = MemoryStream::default();
@@ -252,11 +253,13 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         if operation == 0 {
             let request = CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![CommitMutation::Append {
-                    path: source.clone(),
-                    records: vec![AppendRecord::from(vec![argument])],
-                }],
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: source.clone(),
+                        records: vec![AppendRecord::from(vec![argument])],
+                    }],
+                )],
                 idempotency_key: IdempotencyKey::unique(),
             };
             if !crash_before_commit {
@@ -476,23 +479,27 @@ fn snapshot_request<'io>(
     path: StreamPath,
     io: &'io crate::filesystem::PreparationIo,
 ) -> SnapshotRequest<'io> {
-    use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, IdempotencyKey};
+    use acyclic_stream::{
+        AppendRecord, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
+    };
 
     // A preexisting mutation witnesses that epoch conditions guard the whole
     // caller transaction, not a separately submitted epoch-only request.
     let mut request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![CommitMutation::Append {
-            path: StreamPath::new("account/agent/transaction-marker").unwrap(),
-            records: vec![AppendRecord::from("joined")],
-        }],
+        effects: vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: StreamPath::new("account/agent/transaction-marker").unwrap(),
+                records: vec![AppendRecord::from("joined")],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     let encoded = snapshot.encode(path.clone(), io).unwrap();
     let (condition, record) = encoded.parts();
-    request.conditions.push(condition.clone());
-    request.mutations.push(CommitMutation::Append {
+    request.effects[0].conditions.push(condition.clone());
+    request.effects[0].mutations.push(CommitMutation::Append {
         path,
         records: vec![AppendRecord::from(record.clone())],
     });
@@ -780,7 +787,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     // same stale producer now overwrites coverage in the authoritative stream.
     let mut bypass = snapshot_request(&competing, path.clone(), &io);
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 4);
-    bypass.request.conditions =
+    bypass.request.effects[0].conditions =
         vec![acyclic_stream::CommitCondition::Present { path: path.clone() }];
     assert!(matches!(
         bypass.commit(&provider).await.unwrap(),

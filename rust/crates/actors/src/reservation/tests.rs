@@ -206,7 +206,7 @@ async fn open_at(
 async fn publish(
     store: &Store<MemoryStream>,
     actor: &ActorReference,
-    effects: impl IntoIterator<Item = crate::guest::Effect>,
+    effects: impl IntoIterator<Item = acyclic_stream::CommitEffect>,
 ) -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
     let mut create = PreparedPublish::foreign(IdempotencyKey::new(
         format!("create-{}", store.root()).into_bytes(),

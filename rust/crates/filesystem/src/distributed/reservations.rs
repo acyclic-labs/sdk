@@ -47,8 +47,7 @@ fn request(
     };
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions,
-        mutations,
+        effects: vec![acyclic_stream::CommitEffect::hard(conditions, mutations)],
         idempotency_key: work.key(
             placement.key_scope(),
             domain,
@@ -65,7 +64,8 @@ fn digest(
     request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
-    let Some(CommitMutation::Append { path, records }) = request.mutations.first() else {
+    let Some(CommitMutation::Append { path, records }) = request.effects[0].mutations.first()
+    else {
         return Err(AuthorityStoreError::RejectedStatic(
             "publication gates only append",
         ));
@@ -77,7 +77,7 @@ fn digest(
     bytes = bytes
         .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + record.hash_bytes())
         .ok_or(crate::WorkError::Overflow)?;
-    for condition in &request.conditions {
+    for condition in &request.effects[0].conditions {
         let (path, scalar) = match condition {
             CommitCondition::Head { path, .. } => (path, 40),
             CommitCondition::Tail { path, .. } => (path, 8),
@@ -152,7 +152,7 @@ fn verify_release(
         .checked_add(1)
         .ok_or(crate::WorkError::Overflow)?;
     let request_digest = digest(&mut request, work)?;
-    let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
+    let CommitMutation::Append { path: gate, .. } = &request.effects[0].mutations[0] else {
         unreachable!("release is one append");
     };
     let valid = request_digest == observation.request_digest
@@ -368,10 +368,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 };
                 work.admit(examined)?;
                 work.charge(examined)?;
-                if let CommitCondition::Tail { expected, .. } = &mut candidate.conditions[0] {
+                if let CommitCondition::Tail { expected, .. } =
+                    &mut candidate.effects[0].conditions[0]
+                {
                     *expected = epochs;
                 }
-                if let CommitCondition::Tail { expected, .. } = &mut candidate.conditions[2] {
+                if let CommitCondition::Tail { expected, .. } =
+                    &mut candidate.effects[0].conditions[2]
+                {
                     *expected = records;
                 }
                 if digest(&mut candidate, work)? == observation.request_digest {

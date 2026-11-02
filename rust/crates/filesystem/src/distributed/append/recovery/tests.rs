@@ -47,7 +47,7 @@ impl AuthorityGuard for OperationRace {
                     winner.authority_id,
                     winner.commit.operation_id,
                 )?;
-                prepared.request.mutations.retain(|mutation| !matches!(mutation, CommitMutation::Append { path: target, .. } if target == &path));
+                prepared.request.effects[0].mutations.retain(|mutation| !matches!(mutation, CommitMutation::Append { path: target, .. } if target == &path));
             }
             let result = self
                 .store

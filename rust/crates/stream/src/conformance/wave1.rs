@@ -8,9 +8,9 @@
 
 use crate::StreamProviderExt as _;
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError, StreamPath,
-    StreamProvider,
+    AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
+    CommitRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError,
+    StreamPath, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
@@ -397,14 +397,16 @@ fn commit_request<P: ?Sized>(
 ) -> CommitRequest {
     CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: history.path.clone(),
-            expected,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: history.path.clone(),
-            records: vec![OwnedBytes::from_static(value).into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: history.path.clone(),
+                expected,
+            }],
+            vec![CommitMutation::Append {
+                path: history.path.clone(),
+                records: vec![OwnedBytes::from_static(value).into()],
+            }],
+        )],
         idempotency_key: history.key.clone(),
     }
 }

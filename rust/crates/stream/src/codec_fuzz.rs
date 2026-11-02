@@ -150,8 +150,8 @@ pub fn check(bytes: &[u8]) -> bool {
 
 fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
     use crate::{
-        AppendRequest, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey, OwnedBytes,
-        StreamPath, WriteRequest,
+        AppendRequest, CommitEffect, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
+        OwnedBytes, StreamPath, WriteRequest,
     };
     Ok([
         (
@@ -177,11 +177,13 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
             "commit",
             WriteRequest::Commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new("codec/events")?,
-                    records: vec![OwnedBytes::from_static(b"committed codec corpus").into()],
-                }],
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("codec/events")?,
+                        records: vec![OwnedBytes::from_static(b"committed codec corpus").into()],
+                    }],
+                )],
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
             }),
         ),

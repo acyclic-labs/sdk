@@ -1,5 +1,5 @@
 use super::*;
-use crate::guest::{CodecIdentity, Effect};
+use crate::guest::CodecIdentity;
 use acyclic_stream::{LocalStream, MemoryStream, ReadRequest};
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -287,16 +287,16 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     assert_eq!(store.load(&address).await?.tail, before.tail);
     let mut forked = result.clone();
     let reply_parent = invocation.caller().clone();
-    let reply_fork = Effect {
-        conditions: Vec::new(),
-        mutation: CommitMutation::Fork {
+    let reply_fork = acyclic_stream::CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Fork {
             exclude: Vec::new(),
             source: before.path().clone(),
             destination: reply_parent,
             at_tail: 0,
             records: Vec::new(),
-        },
-    };
+        }],
+    );
     forked.effects.push(reply_fork.clone());
     assert!(matches!(
         store.prepare_publish(
@@ -435,7 +435,7 @@ async fn invocation_completion_rejects_changed_original_publication() -> TestRes
             .into_request()?;
         match fault {
             0 => {
-                for mutation in &mut request.mutations {
+                for mutation in &mut request.effects[0].mutations {
                     if let CommitMutation::Append { path, records } = mutation {
                         if path == before.path() {
                             records[0] = before.state().ok_or("missing state")?.encode().into();
@@ -443,20 +443,20 @@ async fn invocation_completion_rejects_changed_original_publication() -> TestRes
                     }
                 }
             }
-            1 => request.mutations.retain(|mutation| {
+            1 => request.effects[0].mutations.retain(|mutation| {
                 !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
             }),
             2 => {
                 let mut state_only = request.clone();
-                state_only.mutations.retain(|mutation| {
+                state_only.effects[0].mutations.retain(|mutation| {
                     matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
                 });
                 assert!(matches!(provider.commit(state_only).await?, CommitOutcome::Committed(_)));
                 request.idempotency_key = key("changed-publication/separate-reply")?;
-                request.mutations.retain(|mutation| {
+                request.effects[0].mutations.retain(|mutation| {
                     !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
                 });
-                request.conditions.retain(|condition| {
+                request.effects[0].conditions.retain(|condition| {
                     matches!(condition, CommitCondition::Absent { .. })
                 });
             }
@@ -713,6 +713,55 @@ fn inbox(address: &ActorReference) -> Result<BTreeMap<String, Subscription>, Str
     )]))
 }
 
+/// A foreign publication of only soft sends commits on the durable local
+/// provider beside its empty hard effect, skips the send whose recipient is
+/// absent, and a retry after a reopen replays the same receipt.
+#[tokio::test]
+async fn foreign_soft_only_publication_commits_and_replays_after_reopen() -> TestResult {
+    use acyclic_stream::AppendRequest;
+    let root = tempfile::tempdir()?;
+    let inbox = StreamPath::new("peers/one/inbox")?;
+    let absent = StreamPath::new("peers/two/inbox")?;
+    let send = |to: &StreamPath| CommitEffect {
+        conditions: vec![CommitCondition::Present { path: to.clone() }],
+        mutations: vec![CommitMutation::Append {
+            path: to.clone(),
+            records: vec![Bytes::from_static(b"hello").into()],
+        }],
+        soft: true,
+    };
+    let mut prepared = PreparedPublish::foreign(key("soft-only")?);
+    prepared.join(send(&inbox))?;
+    prepared.join(send(&absent))?;
+    let request = prepared.into_request()?;
+    let provider = LocalStream::open(root.path(), Default::default()).await?;
+    provider
+        .append(AppendRequest {
+            path: inbox.clone(),
+            records: vec![Bytes::from_static(b"open").into()],
+            if_tail: Some(0),
+            idempotency_key: key("open")?,
+        })
+        .await?;
+    let CommitOutcome::Committed(receipt) = provider.commit(request.clone()).await? else {
+        return Err("soft-only publication conflicted".into());
+    };
+    // Effect 0 is the publication's empty hard effect.
+    assert_eq!(receipt.skipped, [2]);
+    drop(provider);
+    let reopened = LocalStream::open(root.path(), Default::default()).await?;
+    let CommitOutcome::Committed(replayed) = reopened.commit(request).await? else {
+        return Err("replayed publication conflicted".into());
+    };
+    assert_eq!(
+        (replayed.commit_id, &replayed.skipped),
+        (receipt.commit_id, &receipt.skipped)
+    );
+    assert_eq!(reopened.tail(inbox).await?, 2);
+    assert_eq!(reopened.tail(absent).await, Err(StreamError::NotFound));
+    Ok(())
+}
+
 /// Create through the companion mutation in a standalone commit, then place.
 async fn place<P: StreamProvider + ?Sized>(
     store: &Store<P>,
@@ -747,24 +796,24 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
             },
         );
         value.effects = vec![
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: output.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: output.clone(),
                     records: vec![Bytes::from_static(b"a").into()],
-                },
-            },
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+                }],
+            ),
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: output.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: output.clone(),
                     records: vec![Bytes::from_static(b"b").into()],
-                },
-            },
+                }],
+            ),
         ];
         value
     };

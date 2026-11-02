@@ -22,28 +22,30 @@ async fn native_receipt_replay_records_actual_metadata_copies_and_original_refus
         .await?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: source.clone(),
-                expected: 1,
-            },
-            CommitCondition::Absent {
-                path: destination.clone(),
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: source.clone(),
-                records: vec![OwnedBytes::from_static(b"next").into()],
-            },
-            CommitMutation::Fork {
-                source: source.clone(),
-                destination: destination.clone(),
-                at_tail: 1,
-                exclude: Vec::new(),
-                records: Vec::new(),
-            },
-        ],
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 1,
+                },
+                CommitCondition::Absent {
+                    path: destination.clone(),
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![OwnedBytes::from_static(b"next").into()],
+                },
+                CommitMutation::Fork {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: 1,
+                    exclude: Vec::new(),
+                    records: Vec::new(),
+                },
+            ],
+        )],
         idempotency_key: IdempotencyKey::new("receipt-copy")?,
     };
     let accepted = provider.commit(request.clone()).await?;
@@ -115,21 +117,24 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
     let input_exclusions = exclude.capacity() * std::mem::size_of::<crate::RelativePath>();
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: destination.clone(),
-        }],
-        mutations: vec![CommitMutation::Fork {
-            source,
-            destination,
-            at_tail: 1,
-            records: Vec::new(),
-            exclude,
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: destination.clone(),
+            }],
+            vec![CommitMutation::Fork {
+                source,
+                destination,
+                at_tail: 1,
+                records: Vec::new(),
+                exclude,
+            }],
+        )],
         idempotency_key: IdempotencyKey::new("resident-exclusions")?,
     };
     let input_bytes = input_exclusions
-        + request.conditions.capacity() * std::mem::size_of::<CommitCondition>()
-        + request.mutations.capacity() * std::mem::size_of::<CommitMutation>();
+        + request.effects.capacity() * std::mem::size_of::<crate::CommitEffect>()
+        + request.effects[0].conditions.capacity() * std::mem::size_of::<CommitCondition>()
+        + request.effects[0].mutations.capacity() * std::mem::size_of::<CommitMutation>();
     let input_meter = Arc::new(Meter::default());
     {
         let work = Work::new(input_meter.original())?;
@@ -215,19 +220,21 @@ async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<
     provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: destination.clone(),
-            }],
-            mutations: vec![CommitMutation::Fork {
-                source,
-                destination,
-                at_tail: 1,
-                records: Vec::new(),
-                exclude: vec![
-                    crate::RelativePath::new("private")?,
-                    crate::RelativePath::new("secret")?,
-                ],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: destination.clone(),
+                }],
+                vec![CommitMutation::Fork {
+                    source,
+                    destination,
+                    at_tail: 1,
+                    records: Vec::new(),
+                    exclude: vec![
+                        crate::RelativePath::new("private")?,
+                        crate::RelativePath::new("secret")?,
+                    ],
+                }],
+            )],
             idempotency_key: key.clone(),
         })
         .await?;
@@ -455,20 +462,22 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
     }
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: path("completion/owner")?,
-                expected: 1,
-            },
-            CommitCondition::Tail {
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: path("completion/owner")?,
+                    expected: 1,
+                },
+                CommitCondition::Tail {
+                    path: path("completion/target")?,
+                    expected: 1,
+                },
+            ],
+            vec![CommitMutation::Append {
                 path: path("completion/target")?,
-                expected: 1,
-            },
-        ],
-        mutations: vec![CommitMutation::Append {
-            path: path("completion/target")?,
-            records: vec![(OwnedBytes::new()).into()],
-        }],
+                records: vec![(OwnedBytes::new()).into()],
+            }],
+        )],
         idempotency_key: key(b"prepared-completion")?,
     };
     Ok((provider, request))
@@ -624,27 +633,28 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             let outcome = provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    // Each real Append mutation needs its own current-tail guard.
-                    conditions: vec![
-                        CommitCondition::Tail {
-                            path: path("completion/owner")?,
-                            expected: 1,
-                        },
-                        CommitCondition::Tail {
-                            path: path("completion/target")?,
-                            expected: 1,
-                        },
-                    ],
-                    mutations: vec![
-                        CommitMutation::Append {
-                            path: path("completion/owner")?,
-                            records: vec![(OwnedBytes::from_static(b"foreign-owner")).into()],
-                        },
-                        CommitMutation::Append {
-                            path: path("completion/target")?,
-                            records: vec![(OwnedBytes::from_static(b"foreign-target")).into()],
-                        },
-                    ],
+                    effects: vec![crate::CommitEffect::hard(
+                        vec![
+                            CommitCondition::Tail {
+                                path: path("completion/owner")?,
+                                expected: 1,
+                            },
+                            CommitCondition::Tail {
+                                path: path("completion/target")?,
+                                expected: 1,
+                            },
+                        ],
+                        vec![
+                            CommitMutation::Append {
+                                path: path("completion/owner")?,
+                                records: vec![(OwnedBytes::from_static(b"foreign-owner")).into()],
+                            },
+                            CommitMutation::Append {
+                                path: path("completion/target")?,
+                                records: vec![(OwnedBytes::from_static(b"foreign-target")).into()],
+                            },
+                        ],
+                    )],
                     idempotency_key: foreign_key.clone(),
                 })
                 .await?;
@@ -863,13 +873,15 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
         };
         let commit = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: path("unrelated")?,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path("unrelated")?,
-                records: vec![(OwnedBytes::new()).into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: path("unrelated")?,
+                }],
+                vec![CommitMutation::Append {
+                    path: path("unrelated")?,
+                    records: vec![(OwnedBytes::new()).into()],
+                }],
+            )],
             idempotency_key: key(b"unrelated")?,
         };
         assert_eq!(

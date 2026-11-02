@@ -18,8 +18,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         let collection = Arc::new(crate::collection::Collection::default());
         let mut work = AuthorityWork::native(&original, &cancellation);
         let mut commit = FilesystemCommit::new(CommitRequest {
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"retained-result"))?,
             deadline_unix_millis: None,
         });
@@ -182,8 +181,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let mut commit = FilesystemCommit::new(CommitRequest {
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"held-cache-result"))?,
         deadline_unix_millis: None,
     });

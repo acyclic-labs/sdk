@@ -120,10 +120,10 @@ if (process.argv.includes("--client")) {
       if (method.name === "DeleteAll") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
 
-      if (method.name === "Commit") initializer.mutations = [
+      if (method.name === "Commit") initializer.effects = [{ mutations: [
         { mutation: { case: "append", value: { path: "a", records: [new Uint8Array([1])] } } },
         { mutation: { case: "append", value: { path: "b", records: [new Uint8Array([2])] } } },
-      ];
+      ] }];
       const request = create(method.input, initializer);
       if (method.methodKind === "server_streaming") {
         let frames = 0;
@@ -195,7 +195,7 @@ const adapter = connectNodeAdapter({
           seen.set(`${service.typeName}/${method.name}`, (seen.get(`${service.typeName}/${method.name}`) ?? 0) + 1);
           inspectActorRequest(method, request);
 
-          if (method.name === "Commit") assert.deepEqual(request.mutations.map(item => item.mutation.value.path), ["a", "b"]);
+          if (method.name === "Commit") assert.deepEqual(request.effects[0].mutations.map(item => item.mutation.value.path), ["a", "b"]);
         };
         if (method.methodKind === "server_streaming") {
           implementation[method.localName] = async function* (request, context) {

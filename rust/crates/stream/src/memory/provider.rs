@@ -157,11 +157,7 @@ impl MemoryStream {
                     let index = envelope
                         .mutations
                         .binary_search_by(|mutation| {
-                            let destination = match mutation {
-                                CommittedMutation::Append(append) => &append.path,
-                                CommittedMutation::Fork(fork) => &fork.destination,
-                            };
-                            destination.cmp(&selected.path)
+                            crate::request::fact_path(mutation).cmp(&selected.path)
                         })
                         .ok()?;
                     let (start, records) = match &envelope.mutations[index] {
@@ -845,11 +841,9 @@ impl MemoryStream {
                                 return Err(E::from(StreamError::PrefixNotRetained));
                             }
                             let bytes = request
-                                .mutations
-                                .iter()
+                                .mutations()
                                 .map(|mutation| match mutation {
                                     CommitMutation::Append { records, .. }
-                                    | CommitMutation::SoftAppend { records, .. }
                                     | CommitMutation::Fork { records, .. } => records
                                         .iter()
                                         .map(AppendRecord::payload_bytes)

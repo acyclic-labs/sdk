@@ -10,7 +10,8 @@
 use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
-    CommitId, CommittedEnvelope, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
+    CommitEffect, CommitId, CommittedEnvelope, IdempotencyObservation, MemoryStream, ReadRequest,
+    RecordStream,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -103,10 +104,10 @@ fn checkpoint(step: u8) -> Checkpoint {
     }
 }
 
-fn output(published: u64, value: &'static [u8]) -> Result<Effect, StreamError> {
+fn output(published: u64, value: &'static [u8]) -> Result<CommitEffect, StreamError> {
     let out = path("model/out")?;
-    Ok(Effect {
-        conditions: vec![if published == 0 {
+    Ok(acyclic_stream::CommitEffect::hard(
+        vec![if published == 0 {
             CommitCondition::Absent { path: out.clone() }
         } else {
             CommitCondition::Tail {
@@ -114,11 +115,11 @@ fn output(published: u64, value: &'static [u8]) -> Result<Effect, StreamError> {
                 expected: published,
             }
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: out,
             records: vec![Bytes::from_static(value).into()],
-        },
-    })
+        }],
+    ))
 }
 
 /// The script: which delivery is next at this cut, and its transition.
@@ -166,27 +167,27 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                 alarm: AlarmChange::Clear,
                 effects: vec![
                     output(2, b"e1")?,
-                    Effect {
-                        conditions: vec![CommitCondition::Absent {
+                    acyclic_stream::CommitEffect::hard(
+                        vec![CommitCondition::Absent {
                             path: path("model/child")?,
                         }],
-                        mutation: CommitMutation::Fork {
+                        vec![CommitMutation::Fork {
                             source: path("model/inbox")?,
                             destination: path("model/child")?,
                             at_tail: 2,
                             records: Vec::new(),
                             exclude: Vec::new(),
-                        },
-                    },
-                    Effect {
-                        conditions: vec![CommitCondition::Absent {
+                        }],
+                    ),
+                    acyclic_stream::CommitEffect::hard(
+                        vec![CommitCondition::Absent {
                             path: path("model/audit")?,
                         }],
-                        mutation: CommitMutation::Append {
+                        vec![CommitMutation::Append {
                             path: path("model/audit")?,
                             records: vec![Bytes::from_static(b"spawned").into()],
-                        },
-                    },
+                        }],
+                    ),
                 ],
             },
         )),
@@ -284,18 +285,18 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
     )? {
         create.join(effect)?;
     }
-    create.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    create.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: path("model/inbox")?,
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: path("model/inbox")?,
             records: vec![
                 Bytes::from_static(b"m0").into(),
                 Bytes::from_static(b"m1").into(),
             ],
-        },
-    })?;
+        }],
+    ))?;
     PreparedPublish::settle(&provider.inner.commit(create.into_request()?).await?)?;
     setup
         .claim(
@@ -328,19 +329,29 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                     .prepare_publish(&snapshot, 1, &trigger, None, transition, key("state")?)?
                     .into_request()?;
                 let own = |path: &StreamPath| path == &snapshot.path;
-                let (state_conditions, effect_conditions): (Vec<_>, Vec<_>) = request
-                    .conditions
+                let acyclic_stream::CommitEffect {
+                    conditions,
+                    mutations,
+                    ..
+                } = request
+                    .effects
                     .into_iter()
-                    .partition(|condition| own(condition_path(condition)));
+                    .next()
+                    .ok_or("publication has no hard effect")?;
+                let (state_conditions, effect_conditions): (Vec<_>, Vec<_>) = conditions
+                    .into_iter()
+                    .partition(|condition| own(CommitCondition::path(condition)));
                 let (state_mutations, effect_mutations): (Vec<_>, Vec<_>) =
-                    request.mutations.into_iter().partition(|mutation| {
+                    mutations.into_iter().partition(|mutation| {
                         matches!(mutation, CommitMutation::Append { path, .. } if own(path))
                     });
                 let first = provider
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
-                        conditions: state_conditions,
-                        mutations: state_mutations,
+                        effects: vec![acyclic_stream::CommitEffect::hard(
+                            state_conditions,
+                            state_mutations,
+                        )],
                         idempotency_key: key("state")?,
                     })
                     .await;
@@ -349,8 +360,10 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                     let _crash = provider
                         .commit(CommitRequest {
                             deadline_unix_millis: None,
-                            conditions: effect_conditions,
-                            mutations: effect_mutations,
+                            effects: vec![acyclic_stream::CommitEffect::hard(
+                                effect_conditions,
+                                effect_mutations,
+                            )],
                             idempotency_key: key("effects")?,
                         })
                         .await;

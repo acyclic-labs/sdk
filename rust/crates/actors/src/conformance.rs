@@ -7,14 +7,14 @@
 //! only pause/resume and restart go through [`Backend`].
 use crate::addressing::ActorReference;
 use crate::guest::{
-    AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
-    Manifest, Transition, Trigger,
+    AlarmChange, Checkpoint, CodecIdentity, Delivery, GuestError, GuestFuture, Handler, Manifest,
+    Transition, Trigger,
 };
 use crate::local::{AppliedCut, Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey,
+    AppendRecord, BoxProviderFuture, CommitCondition, CommitEffect, CommitMutation, IdempotencyKey,
     ProviderPlatform, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
@@ -228,13 +228,13 @@ impl Handler for Package {
                         expected: ledger.published,
                     }
                 };
-                effects.push(Effect {
-                    conditions: vec![condition],
-                    mutation: CommitMutation::Append {
+                effects.push(acyclic_stream::CommitEffect::hard(
+                    vec![condition],
+                    vec![CommitMutation::Append {
                         path: ledger.outbox.clone(),
                         records: vec![AppendRecord::from(Bytes::from(output))],
-                    },
-                });
+                    }],
+                ));
                 ledger.published += 1;
             }
             Ok(Transition {
@@ -274,7 +274,7 @@ struct Fixture<'a, T: Backend + ?Sized> {
     inbox: StreamPath,
     outbox: StreamPath,
     /// Creation effects that ride in the first send's commit.
-    creation: Option<[Effect; 2]>,
+    creation: Option<[CommitEffect; 2]>,
     sent: u64,
 }
 
@@ -349,13 +349,13 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
             }
             None => prepared.join(store.activation(&self.actor))?,
         }
-        prepared.join(Effect {
-            conditions: vec![condition],
-            mutation: CommitMutation::Append {
+        prepared.join(acyclic_stream::CommitEffect::hard(
+            vec![condition],
+            vec![CommitMutation::Append {
                 path: self.inbox.clone(),
                 records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
-            },
-        })?;
+            }],
+        ))?;
         let outcome = store
             .provider()
             .commit(prepared.into_request()?)
@@ -945,15 +945,15 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
     )? {
         prepared.join(effect)?;
     }
-    prepared.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    prepared.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: owner.inbox.clone(),
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: owner.inbox.clone(),
             records: vec![Bytes::from_static(b"clear").into()],
-        },
-    })?;
+        }],
+    ))?;
     store.submit(prepared).await?;
     let call = Invocation::new(
         acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
@@ -965,16 +965,16 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
     .map_err(Error::from)?;
     let committed = store.invoke(&call).await?;
     let mut send = PreparedPublish::foreign(idempotency(&format!("{run}/shared/after"))?);
-    send.join(Effect {
-        conditions: vec![CommitCondition::Tail {
+    send.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Tail {
             path: owner.inbox.clone(),
             expected: 2,
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: owner.inbox.clone(),
             records: vec![Bytes::from_static(b"emit").into()],
-        },
-    })?;
+        }],
+    ))?;
     for actor in [&owner.actor, &observer.actor] {
         send.join(store.activation(actor))?;
     }

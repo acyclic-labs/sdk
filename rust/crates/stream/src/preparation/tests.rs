@@ -120,7 +120,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     let identity = commit_identity(73, [19; 32]);
     let tail_reads = Cell::new(0);
     let output = facts(
-        &mutations,
+        &mutations.iter().collect::<Vec<_>>(),
         |path| {
             assert_eq!(path, &source);
             tail_reads.set(tail_reads.get() + 1);
@@ -172,7 +172,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     );
     // Seeding a fresh per-operation state would assign sequence zero to append.
     let reset = facts(
-        &mutations,
+        &mutations.iter().collect::<Vec<_>>(),
         |_| Ok(None),
         |origin, start, bodies, exclude| {
             records(
@@ -190,7 +190,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     assert_ne!(reset, output);
     assert_eq!(
         facts(
-            &mutations,
+            &mutations.iter().collect::<Vec<_>>(),
             |_| Ok(Some(4)),
             |_, _, _, _| Err(StreamError::Unavailable),
             Vec::new()
@@ -210,32 +210,28 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
 fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Result<(), StreamError>
 {
     let source = StreamPath::new("source")?;
-    let request = CommitRequest {
-        deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![CommitMutation::Fork {
-            exclude: Vec::new(),
-            source: source.clone(),
-            destination: StreamPath::new("destination")?,
-            at_tail: 3,
-            records: Vec::new(),
-        }],
-        idempotency_key: crate::IdempotencyKey::new(vec![1])?,
+    let fork = CommitMutation::Fork {
+        exclude: Vec::new(),
+        source: source.clone(),
+        destination: StreamPath::new("destination")?,
+        at_tail: 3,
+        records: Vec::new(),
     };
+    let request = [&fork];
     assert_eq!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
+        authority(&request[..], |_| Err(StreamError::Unavailable)),
         Err(StreamError::Unavailable)
     );
     assert_eq!(
-        authority(&request, |_| Ok(None)),
+        authority(&request[..], |_| Ok(None)),
         Err(StreamError::NotFound)
     );
     assert_eq!(
-        authority(&request, |_| Ok(Some(2))),
+        authority(&request[..], |_| Ok(Some(2))),
         Err(StreamError::PrefixNotRetained)
     );
     assert_eq!(
-        authority(&request, |path| {
+        authority(&request[..], |path| {
             assert_eq!(path, &source);
             Ok(Some(3))
         }),
@@ -243,46 +239,90 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     );
     // The missing-on-error control would disguise a disk failure as NotFound.
     assert_ne!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
-        authority(&request, |_| Ok(None))
+        authority(&request[..], |_| Err(StreamError::Unavailable)),
+        authority(&request[..], |_| Ok(None))
     );
     Ok(())
 }
 
 #[test]
-fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
+fn settling_reports_hard_conflicts_or_skips_soft_effects_and_views_the_rest_in_place()
 -> Result<(), StreamError> {
-    let [closed, gone, live, marker] = ["a", "b", "c", "c-closed"].map(StreamPath::new);
-    let (closed, gone, live, marker) = (closed?, gone?, live?, marker?);
-    let mutation = |path: &StreamPath, closed: Option<&StreamPath>| CommitMutation::SoftAppend {
+    let [a, b, c, d, marker] = ["a", "b", "c", "d", "d-closed"].map(StreamPath::new);
+    let (a, b, c, d, marker) = (a?, b?, c?, d?, marker?);
+    let append = |path: &StreamPath| CommitMutation::Append {
         path: path.clone(),
         records: vec![AppendRecord::from(vec![1])],
-        closed: closed.cloned(),
     };
-    let request = CommitRequest {
+    let present = |path: &StreamPath| CommitCondition::Present { path: path.clone() };
+    let soft_effect = |conditions, mutations| crate::CommitEffect {
+        conditions,
+        mutations,
+        soft: true,
+    };
+    let mut request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![
-            mutation(&closed, Some(&marker)),
-            mutation(&gone, None),
-            mutation(&live, None),
+        effects: vec![
+            // Skipped: `b` is absent.
+            soft_effect(vec![present(&b)], vec![append(&c), append(&b)]),
+            crate::CommitEffect::hard(vec![present(&a)], vec![append(&a)]),
+            // Skipped: `d` is closed.
+            soft_effect(
+                vec![
+                    present(&d),
+                    CommitCondition::Absent {
+                        path: marker.clone(),
+                    },
+                ],
+                vec![append(&d)],
+            ),
         ],
         idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"settle"))?,
     };
-    // `a` exists but is closed, `b` is absent, `c` is open.
-    let tail = |path: &StreamPath| -> Result<Option<u64>, StreamError> {
-        Ok([&closed, &marker, &live].contains(&path).then_some(1))
+    crate::request::validate_commit(&mut request)?;
+    let tail = |path: &StreamPath| [&a, &c, &d, &marker].contains(&path).then_some(1);
+    let conflict = |condition: &CommitCondition| {
+        condition_conflict(
+            condition,
+            tail(crate::CommitCondition::path(condition)),
+            || Err(StreamError::Unavailable),
+        )
     };
     // Negative control: an under-admitted output is refused, never grown.
     assert!(matches!(
-        settle(&request, tail, Vec::with_capacity(2)),
+        settle(&request, conflict, Vec::new(), Vec::with_capacity(1)),
         Err(StreamError::InvalidArgument)
     ));
-    let skipped = settle(&request, tail, Vec::with_capacity(soft(&request)))?;
-    assert_eq!(skipped, [closed.clone(), gone.clone()]);
-    let applied: Vec<_> = applied(&request, &skipped)
-        .map(crate::CommitMutation::path)
+    let (conflicts, skipped) = settle(
+        &request,
+        conflict,
+        Vec::with_capacity(hard_conditions(&request)),
+        Vec::with_capacity(soft(&request)),
+    )?;
+    assert!(conflicts.is_empty());
+    assert_eq!(skipped, [0, 2]);
+    let applied = applied(
+        &request,
+        &skipped,
+        Vec::with_capacity(applied_len(&request, &skipped)),
+    )?;
+    let paths: Vec<_> = applied
+        .iter()
+        .map(|mutation| crate::CommitMutation::path(mutation))
         .collect();
-    assert_eq!(applied, [&live]);
+    assert_eq!(paths, [&a]);
+    // A failed hard condition conflicts, and no soft condition is evaluated.
+    request.effects[1].conditions = vec![present(&b)];
+    let (conflicts, skipped) = settle(
+        &request,
+        conflict,
+        Vec::with_capacity(hard_conditions(&request)),
+        Vec::with_capacity(soft(&request)),
+    )?;
+    assert_eq!(
+        conflicts,
+        [crate::CommitConflict::Missing { path: b.clone() }]
+    );
+    assert!(skipped.is_empty());
     Ok(())
 }

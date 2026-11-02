@@ -109,15 +109,20 @@ pub(super) fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, Strea
 }
 
 pub(super) fn request_control_capacity(request: &CommitRequest) -> usize {
-    request.conditions.capacity() * std::mem::size_of::<crate::CommitCondition>()
-        + request.mutations.capacity() * std::mem::size_of::<crate::CommitMutation>()
+    request.effects.capacity() * std::mem::size_of::<crate::CommitEffect>()
         + request
-            .mutations
+            .effects
             .iter()
+            .map(|effect| {
+                effect.conditions.capacity() * std::mem::size_of::<crate::CommitCondition>()
+                    + effect.mutations.capacity() * std::mem::size_of::<crate::CommitMutation>()
+            })
+            .sum::<usize>()
+        + request
+            .mutations()
             .map(|mutation| {
                 let records = match mutation {
                     crate::CommitMutation::Append { records, .. }
-                    | crate::CommitMutation::SoftAppend { records, .. }
                     | crate::CommitMutation::Fork { records, .. } => records,
                 };
                 records.capacity() * std::mem::size_of::<OwnedBytes>()
@@ -140,20 +145,22 @@ pub(super) async fn prepared_fixture<P: StreamProvider + ?Sized>(
     }
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            crate::CommitCondition::Tail {
-                path: StreamPath::new("prepared/owner")?,
-                expected: 1,
-            },
-            crate::CommitCondition::Tail {
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                crate::CommitCondition::Tail {
+                    path: StreamPath::new("prepared/owner")?,
+                    expected: 1,
+                },
+                crate::CommitCondition::Tail {
+                    path: StreamPath::new("prepared/target")?,
+                    expected: 1,
+                },
+            ],
+            vec![crate::CommitMutation::Append {
                 path: StreamPath::new("prepared/target")?,
-                expected: 1,
-            },
-        ],
-        mutations: vec![crate::CommitMutation::Append {
-            path: StreamPath::new("prepared/target")?,
-            records: vec![(OwnedBytes::new()).into()],
-        }],
+                records: vec![(OwnedBytes::new()).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"original-prepared-key"))?,
     })
 }

@@ -607,7 +607,7 @@ fn finished(phase: &Phase) -> Option<String> {
 mod tests {
     use super::*;
     use acyclic_harness_client::CommandError;
-    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
+    use acyclic_stream::{CommitEffect, CommitRequest, IdempotencyKey, StreamError};
 
     #[test]
     fn only_a_host_refusal_settles_a_send() -> Result<()> {
@@ -635,8 +635,7 @@ mod tests {
         // may each have committed it.
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: IdempotencyKey::new(b"message".to_vec()).map_err(failed)?,
         };
         let unknown = AgentControlFailure::Unknown(Box::new(request));

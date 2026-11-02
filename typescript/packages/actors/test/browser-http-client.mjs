@@ -104,13 +104,13 @@ try {
   assert.equal(followed, 2);
   assert.equal((await stream.fork(path, "browser/fork", { atTail: 1n, idempotencyKey: key("browser-fork") })).tail, 1n);
   assert.deepEqual((await stream.childrenPage({ parent: "browser", limit: 8 })).children.map(item => item.path), ["browser/events", "browser/fork"]);
-  const commitRequest = { conditions: [{ path, ifTail: 2n }, { path: "browser/other", ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: "browser/other", values: [body("other")] } }] };
+  const commitRequest = { effects: [{ conditions: [{ path, ifTail: 2n }, { path: "browser/other", ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: "browser/other", values: [body("other")] } }], soft: false }] };
   const committed = await stream.commit(commitRequest, { idempotencyKey: key("browser-commit") });
   assert.equal(committed.ok, true); assert.equal(committed.appends.find(item => item.path === path).tail, 3n);
   assert.deepEqual(await stream.commit(commitRequest, { idempotencyKey: key("browser-commit") }), committed);
   assert.equal((await stream.readCommit(committed.commitId)).mutations.length, 2);
   assert.equal((await stream.inspectIdempotency(key("browser-commit"))).outcome.type, "commit");
-  const conflict = await stream.commit({ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }] }, { idempotencyKey: key("browser-conflict") });
+  const conflict = await stream.commit({ effects: [{ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }], soft: false }] }, { idempotencyKey: key("browser-conflict") });
   assert.equal(conflict.ok, false); assert.equal(await stream.tail(path), 3n);
   await assert.rejects(new HttpStreamProvider({ ...options, token: "wrong" }).tail(path), error => error.code === "access_denied");
   await assert.rejects(new HttpStreamProvider({ ...options, maximumResponseBytes: 8 }).readCommit(committed.commitId), error => error.code === "response_too_large");

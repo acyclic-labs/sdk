@@ -79,7 +79,7 @@ async fn authority_batches_reject_a_changed_record_identity_without_publishing()
                 return Err("group was rejected before CAS".into());
             };
             let records = work.path(&AuthorityPlacement::default(), authority, "/records", None)?;
-            for condition in &mut group.transaction.conditions {
+            for condition in &mut group.transaction.effects[0].conditions {
                 if let CommitCondition::Head {
                     path, commit_id, ..
                 } = condition

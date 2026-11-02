@@ -505,7 +505,8 @@ pub struct CommittedEnvelope {
     pub commit_id: CommitId,
     /// Publication time, including forks that append no records.
     pub committed_at_micros: u64,
-    /// Canonically ordered mutation facts.
+    /// Canonically ordered mutation facts of every applied effect; empty when
+    /// the commit skipped every effect.
     pub mutations: Vec<CommittedMutation>,
 }
 
@@ -550,19 +551,6 @@ pub enum CommitMutation {
         /// Opaque records.
         records: Vec<AppendRecord>,
     },
-    /// Append one nonempty batch only if `path` exists and `closed`, when
-    /// named, does not, both observed at the commit's own decision. Otherwise
-    /// the commit skips it and reports the path in [`CommitReceipt::skipped`];
-    /// the rest of the commit is unaffected. A soft append rides on a commit
-    /// with at least one other mutation, and no condition names its path.
-    SoftAppend {
-        /// Destination; never created by this mutation.
-        path: StreamPath,
-        /// Opaque records.
-        records: Vec<AppendRecord>,
-        /// Marker whose presence closes `path` to soft appends.
-        closed: Option<StreamPath>,
-    },
     /// Share the entire pre-commit subtree at a new destination. `at_tail`
     /// selects the root prefix; descendants retain their pre-commit heads. Append
     Fork {
@@ -579,32 +567,99 @@ pub enum CommitMutation {
     },
 }
 
-impl CommitMutation {
-    /// The one stream this mutation writes: an append's path, a fork's
-    /// destination.
+impl CommitCondition {
+    /// The stream this condition observes.
     #[must_use]
     pub fn path(&self) -> &StreamPath {
         match self {
-            Self::Append { path, .. } | Self::SoftAppend { path, .. } => path,
+            Self::Head { path, .. }
+            | Self::Tail { path, .. }
+            | Self::Absent { path }
+            | Self::Present { path } => path,
+        }
+    }
+}
+
+impl CommitMutation {
+    /// The stream this mutation publishes: an append's path or a fork's
+    /// destination, the key of its canonical order.
+    #[must_use]
+    pub fn path(&self) -> &StreamPath {
+        match self {
+            Self::Append { path, .. } => path,
             Self::Fork { destination, .. } => destination,
         }
     }
 }
 
-/// One bounded all-or-nothing optimistic commit.
+/// One all-or-none group of mutations guarded by its own exact conditions.
+///
+/// Every condition of every effect is evaluated on the pre-commit state. A
+/// hard effect whose conditions fail refuses the whole commit as a
+/// [`CommitOutcome::Conflict`]. A soft effect whose conditions fail is
+/// skipped, and its index is reported in [`CommitReceipt::skipped`]; the rest
+/// of the commit is unaffected. Several effects may condition the same path,
+/// but each mutation path appears once in the whole commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitEffect {
+    /// Exact conditions, at most one per path.
+    pub conditions: Vec<CommitCondition>,
+    /// Mutations, applied all or none. A hard effect without any is a guard:
+    /// its conditions gate the commit and it publishes nothing. A soft effect
+    /// needs at least one.
+    pub mutations: Vec<CommitMutation>,
+    /// Whether failed conditions skip this effect instead of refusing the commit.
+    pub soft: bool,
+}
+
+impl CommitEffect {
+    /// Whether this effect may join a commit: a soft effect needs mutations,
+    /// since one without any could not show on replay whether it was skipped.
+    /// A hard effect without mutations is a guard over the whole commit.
+    #[must_use]
+    pub fn admissible(&self) -> bool {
+        !self.soft || !self.mutations.is_empty()
+    }
+
+    /// An effect whose failed conditions refuse the whole commit.
+    #[must_use]
+    pub fn hard(conditions: Vec<CommitCondition>, mutations: Vec<CommitMutation>) -> Self {
+        Self {
+            conditions,
+            mutations,
+            soft: false,
+        }
+    }
+}
+
+/// One bounded optimistic commit: an ordered list of effects published at one
+/// decision, or nothing.
+///
+/// A commit whose hard conditions hold publishes every effect it did not skip
+/// and spends its key, even when it skipped every effect: the receipt then
+/// lists no appends or forks, and a retry replays it instead of redelivering.
+/// A conflict publishes nothing and leaves the key unspent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitRequest {
     /// Trusted-clock publication deadline; successful retries keep their original identity.
     pub deadline_unix_millis: Option<u64>,
-    /// Exact conditions for every participant.
-    pub conditions: Vec<CommitCondition>,
-    /// Nonempty mutation set.
-    pub mutations: Vec<CommitMutation>,
+    /// Effects in request order, carrying at least one mutation between them.
+    pub effects: Vec<CommitEffect>,
     /// Required stable recovery identity.
     pub idempotency_key: IdempotencyKey,
 }
 
 impl CommitRequest {
+    /// Every condition, effect by effect.
+    pub fn conditions(&self) -> impl Iterator<Item = &CommitCondition> + Clone {
+        self.effects.iter().flat_map(|effect| &effect.conditions)
+    }
+
+    /// Every mutation, effect by effect.
+    pub fn mutations(&self) -> impl Iterator<Item = &CommitMutation> + Clone {
+        self.effects.iter().flat_map(|effect| &effect.mutations)
+    }
+
     /// Protobuf command size, without allocating or copying the record payloads.
     /// Returns `usize::MAX` if the size cannot be represented on this platform.
     #[must_use]
@@ -687,9 +742,9 @@ pub enum CommitConflict {
 /// Coordinated commit outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
-    /// Every mutation committed.
+    /// Every effect not listed in the receipt's `skipped` committed.
     Committed(CommitReceipt),
-    /// Nothing changed.
+    /// A hard effect's conditions failed; nothing changed.
     Conflict(Vec<CommitConflict>),
 }
 
@@ -700,7 +755,8 @@ pub enum IdempotencyOutcome {
     Append(AppendOutcome),
     /// Successful immutable-prefix fork.
     Fork(ForkReceipt),
-    /// Successful coordinated commit. Conflicts leave the key unspent.
+    /// Successful coordinated commit, including one that skipped every effect
+    /// and so holds no mutation. Conflicts leave the key unspent.
     Commit(CommittedEnvelope),
 }
 

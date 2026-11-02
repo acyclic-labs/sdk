@@ -21,8 +21,7 @@ pub(crate) fn commit_request<'a, 'b>(
     (
         acyclic_stream::CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: key,
         },
         CodecQuota::from_retained(work, retained_key_bytes),
@@ -34,7 +33,10 @@ pub(crate) fn add_condition(
     custody: &mut CodecQuota<'_, '_>,
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
-    custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
-    request.conditions.push(condition);
+    custody.reserve(
+        request.effects[0].conditions.len() + 1,
+        &mut request.effects[0].conditions,
+    )?;
+    request.effects[0].conditions.push(condition);
     Ok(())
 }

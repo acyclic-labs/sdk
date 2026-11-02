@@ -9,11 +9,13 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let source = StreamPath::new("receipt/source")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![CommitMutation::Append {
-            path: source.clone(),
-            records: vec![Bytes::from(vec![42; 4096]).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: source.clone(),
+                records: vec![Bytes::from(vec![42; 4096]).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"receipt-body".as_slice())?,
     };
     let written = provider.commit(request.clone()).await?;
@@ -52,16 +54,18 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let destination = StreamPath::new("receipt/fork")?;
     let fork = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: destination.clone(),
-        }],
-        mutations: vec![CommitMutation::Fork {
-            source,
-            destination: destination.clone(),
-            at_tail: 1,
-            exclude: Vec::new(),
-            records: Vec::new(),
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: destination.clone(),
+            }],
+            vec![CommitMutation::Fork {
+                source,
+                destination: destination.clone(),
+                at_tail: 1,
+                exclude: Vec::new(),
+                records: Vec::new(),
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"receipt-empty-fork".as_slice())?,
     };
     let forked = provider.commit(fork.clone()).await?;
@@ -78,8 +82,8 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
             crate::RetainedRecord {
                 commit_id: receipt.commit_id,
                 path: request
-                    .mutations
-                    .first()
+                    .mutations()
+                    .next()
                     .map(crate::CommitMutation::path)
                     .ok_or(StreamError::Unavailable)?
                     .clone(),
@@ -153,18 +157,20 @@ async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_
     let closed = StreamPath::new("mail/inbox/closed")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Present {
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                CommitCondition::Present {
+                    path: inbox.clone(),
+                },
+                CommitCondition::Absent {
+                    path: closed.clone(),
+                },
+            ],
+            vec![CommitMutation::Append {
                 path: inbox.clone(),
-            },
-            CommitCondition::Absent {
-                path: closed.clone(),
-            },
-        ],
-        mutations: vec![CommitMutation::Append {
-            path: inbox.clone(),
-            records: vec![Bytes::from_static(b"message").into()],
-        }],
+                records: vec![Bytes::from_static(b"message").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"send".as_slice())?,
     };
     assert_eq!(

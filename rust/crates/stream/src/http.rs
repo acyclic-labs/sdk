@@ -278,7 +278,12 @@ impl HttpStream {
                         .as_array()
                         .ok_or(StreamError::Unavailable)?
                         .iter()
-                        .map(parse_path)
+                        .map(|index| {
+                            index
+                                .as_u64()
+                                .and_then(|index| u32::try_from(index).ok())
+                                .ok_or(StreamError::Unavailable)
+                        })
                         .collect::<Result<_, _>>()?,
                     None => Vec::new(),
                 },

@@ -227,7 +227,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
-    use crate::{CommitCondition, CommitMutation, CommitRequest, IdempotencyKey};
+    use crate::{CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey};
     let owner = StreamPath::new("changes-owner").unwrap();
     let target = StreamPath::new("changes-target").unwrap();
     for path in [&owner, &target] {
@@ -245,20 +245,22 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
     let body = forged();
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: owner,
-                expected: 1,
-            },
-            CommitCondition::Tail {
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: owner,
+                    expected: 1,
+                },
+                CommitCondition::Tail {
+                    path: target.clone(),
+                    expected: 1,
+                },
+            ],
+            vec![CommitMutation::Append {
                 path: target.clone(),
-                expected: 1,
-            },
-        ],
-        mutations: vec![CommitMutation::Append {
-            path: target.clone(),
-            records: vec![crate::OwnedBytes::default().into()],
-        }],
+                records: vec![crate::OwnedBytes::default().into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new("changes-invalid").unwrap(),
     };
     let (prepared, _guard) = provider

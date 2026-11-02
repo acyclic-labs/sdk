@@ -623,7 +623,7 @@ async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_e
         vec![private],
         "the root and its selected volume exist before retry"
     );
-    let paths = request
+    let paths = request.effects[0]
         .mutations
         .iter()
         .map(|mutation| mutation.path().clone())

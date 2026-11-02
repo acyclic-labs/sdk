@@ -449,8 +449,7 @@ async fn composed_publication_work(
     }];
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
         idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(
             b"composed-proof",
         ))?,

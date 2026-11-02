@@ -284,26 +284,28 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
     let execution = crate::distributed::execution_path(operation, &mut None)?;
     let request = acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            acyclic_stream::CommitCondition::Tail {
-                path: (*head).clone(),
-                expected: 2,
-            },
-            acyclic_stream::CommitCondition::Tail {
-                path: execution.clone(),
-                expected: 1,
-            },
-        ],
-        mutations: vec![
-            acyclic_stream::CommitMutation::Append {
-                path: (*head).clone(),
-                records: vec![codec::encode(&forged, None)?.into()],
-            },
-            acyclic_stream::CommitMutation::Append {
-                path: execution,
-                records: vec![observation.into()],
-            },
-        ],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![
+                acyclic_stream::CommitCondition::Tail {
+                    path: (*head).clone(),
+                    expected: 2,
+                },
+                acyclic_stream::CommitCondition::Tail {
+                    path: execution.clone(),
+                    expected: 1,
+                },
+            ],
+            vec![
+                acyclic_stream::CommitMutation::Append {
+                    path: (*head).clone(),
+                    records: vec![codec::encode(&forged, None)?.into()],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: execution,
+                    records: vec![observation.into()],
+                },
+            ],
+        )],
         idempotency_key: StreamKey::new(acyclic_stream::OwnedBytes::from_static(b"forged-head"))?,
     };
     assert!(matches!(

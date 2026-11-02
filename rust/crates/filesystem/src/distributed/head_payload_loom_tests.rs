@@ -220,17 +220,19 @@ fn request(
     let path = stream_path(ID, suffix).unwrap();
     CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![match tail {
-            Some(expected) => CommitCondition::Tail {
-                path: path.clone(),
-                expected,
-            },
-            None => CommitCondition::Absent { path: path.clone() },
-        }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: records.into_iter().map(Into::into).collect(),
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![match tail {
+                Some(expected) => CommitCondition::Tail {
+                    path: path.clone(),
+                    expected,
+                },
+                None => CommitCondition::Absent { path: path.clone() },
+            }],
+            vec![CommitMutation::Append {
+                path,
+                records: records.into_iter().map(Into::into).collect(),
+            }],
+        )],
         idempotency_key: stream_key(b"head-model", &[key]).unwrap(),
     }
 }

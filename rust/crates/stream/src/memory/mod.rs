@@ -18,12 +18,9 @@ use crate::preparation::commit_identity;
 use crate::query_sync::{Mutex, RwLock, watch};
 #[cfg(test)]
 use crate::request::validate_append_size;
-use crate::request::{append_digest, commit_digest, condition_path, fork_digest};
+use crate::request::{append_digest, commit_digest, fork_digest};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::request::{
-    hash_conditions, hash_path, hash_records, normalize_commit, request_hasher,
-    validate_commit_shape,
-};
+use crate::request::{normalize_commit, validate_commit_shape};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(test)]
@@ -39,10 +36,11 @@ pub(crate) use snapshot::check_codec as check_snapshot_codec;
 
 use crate::{
     AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildrenPage,
-    ChildrenPageRequest, CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome,
-    CommitRequest, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    ChildrenPageRequest, CommitCondition, CommitConflict, CommitEffect, CommitId, CommitMutation,
+    CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS,
+    ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider,
+    SystemUnixMillisClock, UnixMillisClock,
 };
 
 #[cfg(all(loom, feature = "local"))]

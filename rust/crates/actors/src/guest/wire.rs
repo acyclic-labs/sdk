@@ -9,9 +9,8 @@
 //! smuggle data the host would ignore.
 
 use super::{
-    AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, Effect, GuestError,
-    GuestFuture, Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionCuts,
-    Transition, Trigger,
+    AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, GuestError, GuestFuture,
+    Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionCuts, Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
@@ -368,17 +367,12 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
 
 /// Encode a guest's transition for its host.
 pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError> {
-    let mut effects = CommitRequest {
+    let effects = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: Vec::with_capacity(transition.effects.len()),
+        effects: transition.effects.clone(),
         idempotency_key: IdempotencyKey::new(EFFECTS_KEY.to_vec())
             .map_err(|error| GuestError::Encode(error.to_string()))?,
     };
-    for effect in &transition.effects {
-        effects.conditions.extend(effect.conditions.iter().cloned());
-        effects.mutations.push(effect.mutation.clone());
-    }
     Ok(encode(
         &TransitionWire {
             response: transition.response.clone(),
@@ -401,10 +395,9 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
     ))
 }
 
-/// Decode a guest's canonical transition on its host. Effects arrive as one
-/// effect carrying every condition, which joins identically to the original.
-/// Effects omit the host-owned commit deadline and require a mutation to carry
-/// their conditions; unrepresentable guards are refused.
+/// Decode a guest's canonical transition on its host. Effects arrive exactly
+/// as the guest wrote them. They omit the host-owned commit deadline, and an
+/// effect without a mutation is refused.
 pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     let wire: TransitionWire = canonical(bytes, "transition", TRANSITION_DOMAIN)?;
     let alarm = match wire.alarm.ok_or_else(|| invalid("alarm"))? {
@@ -416,24 +409,19 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     let effects = wire.effects.ok_or_else(|| invalid("effects"))?;
     if effects.idempotency_key.as_ref() != EFFECTS_KEY
         || effects.deadline_unix_millis.is_some()
-        || (effects.mutations.is_empty() && !effects.conditions.is_empty())
+        || effects
+            .effects
+            .iter()
+            .any(|effect| effect.mutations.is_empty())
     {
         return Err(invalid("effects"));
     }
     let effects = wire_codec::commit_from_wire(effects).map_err(|_| invalid("effects"))?;
-    let mut conditions = Some(effects.conditions);
     Ok(Transition {
         response: wire.response,
         checkpoint: checkpoint(wire.checkpoint.ok_or_else(|| invalid("checkpoint"))?),
         alarm,
-        effects: effects
-            .mutations
-            .into_iter()
-            .map(|mutation| Effect {
-                conditions: conditions.take().unwrap_or_default(),
-                mutation,
-            })
-            .collect(),
+        effects: effects.effects,
         participant: wire.participant.map(|participant| Participant {
             kind: participant.kind,
             plan: participant.plan,
@@ -500,15 +488,16 @@ mod tests {
             alarm: AlarmChange::Set {
                 deadline_unix_ms: 7,
             },
-            effects: vec![Effect {
+            effects: vec![acyclic_stream::CommitEffect {
                 conditions: vec![CommitCondition::Tail {
                     path: path.clone(),
                     expected: 3,
                 }],
-                mutation: CommitMutation::Append {
+                mutations: vec![CommitMutation::Append {
                     path,
                     records: vec![Bytes::from_static(b"record").into()],
-                },
+                }],
+                soft: true,
             }],
             participant: Some(Participant {
                 kind: "spawn".into(),
@@ -541,6 +530,7 @@ mod tests {
             .effects
             .as_mut()
             .expect("actual writer effects")
+            .effects[0]
             .mutations
             .clear();
         assert!(matches!(

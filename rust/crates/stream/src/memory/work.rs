@@ -183,15 +183,20 @@ impl MemoryStream {
 #[cfg(not(target_arch = "wasm32"))]
 impl MemoryStream {
     pub(crate) fn request_claim(&self, request: &CommitRequest) -> Result<Allocation, StreamError> {
-        let bytes = request.conditions.capacity() * std::mem::size_of::<CommitCondition>()
-            + request.mutations.capacity() * std::mem::size_of::<CommitMutation>()
+        let bytes = request.effects.capacity() * std::mem::size_of::<crate::CommitEffect>()
             + request
-                .mutations
+                .effects
                 .iter()
+                .map(|effect| {
+                    effect.conditions.capacity() * std::mem::size_of::<CommitCondition>()
+                        + effect.mutations.capacity() * std::mem::size_of::<CommitMutation>()
+                })
+                .sum::<usize>()
+            + request
+                .mutations()
                 .map(|mutation| {
                     let (records, exclusions) = match mutation {
-                        CommitMutation::Append { records, .. }
-                        | CommitMutation::SoftAppend { records, .. } => (records, 0),
+                        CommitMutation::Append { records, .. } => (records, 0),
                         CommitMutation::Fork {
                             records, exclude, ..
                         } => (

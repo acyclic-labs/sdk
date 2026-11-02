@@ -5,11 +5,13 @@ pub(in crate::local) fn request(body: Vec<u8>) -> CommitRequest {
     let path = StreamPath::new("replay-work").unwrap();
     CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![crate::CommitMutation::Append {
-            path,
-            records: vec![body.into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Absent { path: path.clone() }],
+            vec![crate::CommitMutation::Append {
+                path,
+                records: vec![body.into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new("replay-work").unwrap(),
     }
 }
@@ -46,7 +48,9 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
     }
     let after = stream.inner.required().unwrap();
     let mut mismatched = request.clone();
-    if let Some(crate::CommitMutation::Append { records, .. }) = mismatched.mutations.first_mut() {
+    if let Some(crate::CommitMutation::Append { records, .. }) =
+        mismatched.effects[0].mutations.first_mut()
+    {
         records.push((Bytes::from_static(b"different")).into());
     }
     assert!(matches!(

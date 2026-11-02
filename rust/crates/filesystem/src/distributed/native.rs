@@ -438,66 +438,77 @@ impl<'a> AuthorityWork<'a> {
         request: &CommitRequest,
     ) -> Result<CommitRequest, AuthorityStoreError> {
         let examined = WorkCounters {
-            items_examined: (request.conditions.len() + request.mutations.len()) as u64,
+            items_examined: (request.effects.len()
+                + request.conditions().count()
+                + request.mutations().count()) as u64,
             ..WorkCounters::UNCHARGED
         };
         self.admit(examined)?;
-        let mut conditions = self.vec(request.conditions.len())?;
-        conditions.extend(request.conditions.iter().cloned());
-        let mut mutations = self.vec(request.mutations.len())?;
-        for mutation in &request.mutations {
-            let (CommitMutation::Append { records, .. }
-            | CommitMutation::SoftAppend { records, .. }
-            | CommitMutation::Fork { records, .. }) = mutation;
-            let copied = WorkCounters {
-                items_examined: records.len() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            self.admit(copied)?;
-            let mut copied_records = self.vec(records.len())?;
-            copied_records.extend(records.iter().cloned());
-            self.charge(copied)?;
-            mutations.push(match mutation {
-                CommitMutation::Append { path, .. } => CommitMutation::Append {
-                    path: path.clone(),
-                    records: copied_records,
-                },
-                CommitMutation::SoftAppend { path, closed, .. } => CommitMutation::SoftAppend {
-                    path: path.clone(),
-                    records: copied_records,
-                    closed: closed.clone(),
-                },
-                CommitMutation::Fork {
-                    exclude,
-                    source,
-                    destination,
-                    at_tail,
-                    ..
-                } => {
-                    let copied = WorkCounters {
-                        items_examined: exclude.len() as u64,
-                        ..WorkCounters::UNCHARGED
-                    };
-                    self.admit(copied)?;
-                    let mut exclusions = self.vec(exclude.len())?;
-                    exclusions.extend(exclude.iter().cloned());
-                    self.charge(copied)?;
-                    CommitMutation::Fork {
-                        exclude: exclusions,
-                        source: source.clone(),
-                        destination: destination.clone(),
-                        at_tail: *at_tail,
-                        records: copied_records,
-                    }
-                }
+        let mut effects = self.vec(request.effects.len())?;
+        for effect in &request.effects {
+            let mut conditions = self.vec(effect.conditions.len())?;
+            conditions.extend(effect.conditions.iter().cloned());
+            let mut mutations = self.vec(effect.mutations.len())?;
+            for mutation in &effect.mutations {
+                mutations.push(self.copy_mutation(mutation)?);
+            }
+            effects.push(CommitEffect {
+                conditions,
+                mutations,
+                soft: effect.soft,
             });
         }
         self.charge(examined)?;
         Ok(CommitRequest {
-            conditions,
-            mutations,
+            effects,
             idempotency_key: request.idempotency_key.clone(),
             deadline_unix_millis: request.deadline_unix_millis,
+        })
+    }
+
+    /// One mutation's metered copy: its records and fork exclusions.
+    fn copy_mutation(
+        &mut self,
+        mutation: &CommitMutation,
+    ) -> Result<CommitMutation, AuthorityStoreError> {
+        let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
+            mutation;
+        let copied = WorkCounters {
+            items_examined: records.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        self.admit(copied)?;
+        let mut copied_records = self.vec(records.len())?;
+        copied_records.extend(records.iter().cloned());
+        self.charge(copied)?;
+        Ok(match mutation {
+            CommitMutation::Append { path, .. } => CommitMutation::Append {
+                path: path.clone(),
+                records: copied_records,
+            },
+            CommitMutation::Fork {
+                exclude,
+                source,
+                destination,
+                at_tail,
+                ..
+            } => {
+                let copied = WorkCounters {
+                    items_examined: exclude.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                self.admit(copied)?;
+                let mut exclusions = self.vec(exclude.len())?;
+                exclusions.extend(exclude.iter().cloned());
+                self.charge(copied)?;
+                CommitMutation::Fork {
+                    exclude: exclusions,
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: *at_tail,
+                    records: copied_records,
+                }
+            }
         })
     }
 
@@ -511,10 +522,9 @@ impl<'a> AuthorityWork<'a> {
             durability_operations: physical,
             ..WorkCounters::UNCHARGED
         };
-        for mutation in &request.mutations {
-            let (CommitMutation::Append { records, .. }
-            | CommitMutation::SoftAppend { records, .. }
-            | CommitMutation::Fork { records, .. }) = mutation;
+        for mutation in request.mutations() {
+            let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
+                mutation;
             for record in records {
                 delta = delta.checked_add(WorkCounters {
                     authority_records_appended: 1,

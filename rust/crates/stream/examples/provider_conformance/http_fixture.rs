@@ -30,13 +30,15 @@ async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Er
     let commit_only =
         HttpStream::with_ca_certificate(endpoint, "commit-only", 16 * 1024 * 1024, ca.as_deref())?;
     let commit_only_request = acyclic_stream::CommitRequest {
-        conditions: vec![acyclic_stream::CommitCondition::Absent {
-            path: StreamPath::new("conformance/commit-only")?,
-        }],
-        mutations: vec![acyclic_stream::CommitMutation::Append {
-            path: StreamPath::new("conformance/commit-only")?,
-            records: vec![acyclic_stream::OwnedBytes::from_static(b"admitted").into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![acyclic_stream::CommitCondition::Absent {
+                path: StreamPath::new("conformance/commit-only")?,
+            }],
+            vec![acyclic_stream::CommitMutation::Append {
+                path: StreamPath::new("conformance/commit-only")?,
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"admitted").into()],
+            }],
+        )],
         idempotency_key: acyclic_stream::IdempotencyKey::new(
             acyclic_stream::OwnedBytes::from_static(b"commit-only"),
         )?,

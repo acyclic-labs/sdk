@@ -2,7 +2,7 @@
 use super::*;
 use crate::{AuthorityWork, PublicationChanges, StreamAuthorityStore};
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamProviderExt,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, StreamProviderExt,
 };
 use std::sync::Arc;
 
@@ -856,19 +856,21 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let outcome = provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: locator.clone(),
-                        expected: 1,
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: locator,
-                        records: vec![
-                            acyclic_stream::OwnedBytes::from_static(
-                                b"corrupt extra locator record",
-                            )
-                            .into(),
-                        ],
-                    }],
+                    effects: vec![CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: locator.clone(),
+                            expected: 1,
+                        }],
+                        vec![CommitMutation::Append {
+                            path: locator,
+                            records: vec![
+                                acyclic_stream::OwnedBytes::from_static(
+                                    b"corrupt extra locator record",
+                                )
+                                .into(),
+                            ],
+                        }],
+                    )],
                     idempotency_key: acyclic_stream::IdempotencyKey::new(Bytes::from_static(
                         b"catalog-corruption-control",
                     ))?,

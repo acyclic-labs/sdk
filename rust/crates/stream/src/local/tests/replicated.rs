@@ -344,14 +344,16 @@ async fn a_cached_refusal_observes_once_without_reconsidering_the_command()
     replica.set_proposal_clock(0);
     let expired = CommitRequest {
         deadline_unix_millis: Some(1),
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec!["late".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec!["late".into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     let reads = replica.journal.pages.len();

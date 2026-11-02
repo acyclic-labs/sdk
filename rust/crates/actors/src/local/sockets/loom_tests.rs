@@ -215,7 +215,7 @@ impl StreamProvider for StripsTail {
         if self.strip
             && let acyclic_stream::WriteRequest::Commit(commit) = &mut request
         {
-            commit
+            commit.effects[0]
                 .conditions
                 .retain(|condition| !matches!(condition, CommitCondition::Tail { .. }));
         }

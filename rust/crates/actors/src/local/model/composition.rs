@@ -32,12 +32,11 @@ impl Composition for Participant {
         Box::pin(async move {
             self.counts.seals.fetch_add(1, Ordering::SeqCst);
             if self.remove_actor_fence {
-                request.conditions.clear();
+                request.effects[0].conditions.clear();
             }
             if self.fork_reply_parent {
                 let reply = request
-                    .mutations
-                    .iter()
+                    .mutations()
                     .find_map(|mutation| match mutation {
                         CommitMutation::Append { path, .. } => path.as_str().rsplit_once("/calls/"),
                         _ => None,
@@ -46,14 +45,13 @@ impl Composition for Participant {
                 let destination = StreamPath::new(format!("{}/calls", reply.0))
                     .map_err(|_| GuestError::Decode("invalid original reply parent".into()))?;
                 let source = request
-                    .mutations
-                    .iter()
+                    .mutations()
                     .find_map(|mutation| match mutation {
                         CommitMutation::Append { path, .. } => Some(path.clone()),
                         _ => None,
                     })
                     .ok_or_else(|| GuestError::Decode("missing original state".into()))?;
-                request.mutations.push(CommitMutation::Fork {
+                request.effects[0].mutations.push(CommitMutation::Fork {
                     exclude: Vec::new(),
                     source,
                     destination,
@@ -395,16 +393,18 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .await?
             .ok_or("accepted input lost its retry identity")?;
         assert_eq!(accepted.idempotency_key, operation);
+        let activation = reopened.activation(&actor);
+        let mut mutations = vec![CommitMutation::Append {
+            path: input,
+            records: vec![invocation.record(&reopened.path(&actor)?)?],
+        }];
+        mutations.extend(activation.mutations);
         let mut expected = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![
-                CommitMutation::Append {
-                    path: input,
-                    records: vec![invocation.record(&reopened.path(&actor)?)?],
-                },
-                reopened.activation(&actor).mutation,
-            ],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                activation.conditions,
+                mutations,
+            )],
             idempotency_key: operation,
         };
         assert_eq!(
@@ -614,15 +614,15 @@ fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
         response: None,
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,
-        effects: vec![Effect {
-            conditions: vec![CommitCondition::Absent {
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent {
                 path: path("participant/child")?,
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: path("participant/child")?,
                 records: vec![Bytes::from_static(b"joined volume").into()],
-            },
-        }],
+            }],
+        )],
         participant: Some(crate::guest::Participant {
             kind: "test".into(),
             plan: Bytes::from(vec![u8::from(remove_actor_fence)]),
@@ -733,15 +733,15 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
     let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let snapshot = store.load(&actor).await?;
     let mut competing = PreparedPublish::foreign(key("competing-child")?);
-    competing.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    competing.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: path("participant/child")?,
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: path("participant/child")?,
             records: vec![Bytes::from_static(b"other owner").into()],
-        },
-    })?;
+        }],
+    ))?;
     store.submit(competing).await?;
     let result = store
         .publish(

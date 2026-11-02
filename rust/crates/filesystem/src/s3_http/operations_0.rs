@@ -139,20 +139,22 @@ where
         match provider
             .commit(acyclic_stream::CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![
-                    registry_condition,
-                    acyclic_stream::CommitCondition::Absent { path: path.clone() },
-                ],
-                mutations: vec![
-                    acyclic_stream::CommitMutation::Append {
-                        path: registry,
-                        records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
-                    },
-                    acyclic_stream::CommitMutation::Append {
-                        path,
-                        records: vec![record.into()],
-                    },
-                ],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![
+                        registry_condition,
+                        acyclic_stream::CommitCondition::Absent { path: path.clone() },
+                    ],
+                    vec![
+                        acyclic_stream::CommitMutation::Append {
+                            path: registry,
+                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
+                        },
+                        acyclic_stream::CommitMutation::Append {
+                            path,
+                            records: vec![record.into()],
+                        },
+                    ],
+                )],
                 idempotency_key: attempt,
             })
             .await

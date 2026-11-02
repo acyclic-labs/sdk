@@ -21,16 +21,16 @@ use acyclic_actors::{
     call::{Accepted, CallPath, Commit, Entry, Outcome, fence},
     domain::{ActorLimits, CodeSha256},
     guest::{
-        AlarmChange, Checkpoint, CodecIdentity, Composer, Composition, Delivery, Effect,
-        GuestError, GuestEventResult, GuestFuture, GuestSocketEvent, Handler, Manifest,
-        Participant, SocketHost, SocketPayload, Transition, WebSocketId,
+        AlarmChange, Checkpoint, CodecIdentity, Composer, Composition, Delivery, GuestError,
+        GuestEventResult, GuestFuture, GuestSocketEvent, Handler, Manifest, Participant,
+        SocketHost, SocketPayload, Transition, WebSocketId,
     },
     local::{PreparedPublish, Store, Subscription},
     sockets::socket_reply,
 };
 use acyclic_stream::{
-    AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, Record,
-    StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    Record, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -93,7 +93,7 @@ impl State {
     }
 
     /// The presence record for the current connection.
-    fn status(&self) -> Result<Effect> {
+    fn status(&self) -> Result<CommitEffect> {
         let mut target = self.target.clone();
         target.state = if self.connection.is_some() {
             TargetState::Online
@@ -150,7 +150,7 @@ impl State {
 
     /// One session end covers every unfinished call: it is their fence, so
     /// disconnect never enumerates them.
-    fn lose(&self, reason: &str, effects: &mut Vec<Effect>) -> Result<()> {
+    fn lose(&self, reason: &str, effects: &mut Vec<CommitEffect>) -> Result<()> {
         effects.push(append(self.fence()?, AppendRecord::from(reason)));
         Ok(())
     }
@@ -161,7 +161,7 @@ impl State {
         &mut self,
         provider: &P,
         record: &Record,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<()> {
         // A record that is no run is no command; dispatch writes only runs.
         let Ok(run) = decode::<Run>(&record.value) else {
@@ -196,7 +196,7 @@ impl State {
             )
             .map_err(protocol)?
         };
-        effects.extend(joined(commit));
+        effects.push(commit.into());
         Ok(())
     }
 
@@ -206,7 +206,7 @@ impl State {
         provider: &P,
         agent: &AgentPath,
         message: DeviceMessage,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<()> {
         if self.connection.is_none() {
             return Ok(());
@@ -240,7 +240,7 @@ impl State {
             Err(outcome) => call.settle(Some(&fence), &outcome),
         }
         .map_err(protocol)?;
-        effects.extend(joined(commit));
+        effects.push(commit.into());
         Ok(())
     }
 
@@ -271,27 +271,18 @@ impl State {
     }
 }
 
-/// A protocol step as effects; the first carries every condition.
-fn joined(commit: Commit) -> impl Iterator<Item = Effect> {
-    let mut conditions = Some(commit.conditions);
-    commit.mutations.into_iter().map(move |mutation| Effect {
-        conditions: conditions.take().unwrap_or_default(),
-        mutation,
-    })
-}
-
 fn protocol(error: acyclic_actors::call::Error) -> Error {
     Error::Invalid(error.to_string())
 }
 
-fn append(path: StreamPath, record: AppendRecord) -> Effect {
-    Effect {
-        conditions: Vec::new(),
-        mutation: CommitMutation::Append {
+fn append(path: StreamPath, record: AppendRecord) -> CommitEffect {
+    CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Append {
             path,
             records: vec![record],
-        },
-    }
+        }],
+    )
 }
 
 /// One handler package for every device's actor.
@@ -326,7 +317,7 @@ impl<P: StreamProvider + ?Sized> TargetActor<P> {
         &self,
         delivery: &Delivery,
         state: &mut State,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<Option<bytes::Bytes>> {
         if let (acyclic_actors::guest::Trigger::Record { subscription, .. }, Some(record)) =
             (&delivery.trigger, &delivery.record)

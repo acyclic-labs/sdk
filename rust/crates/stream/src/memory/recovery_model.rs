@@ -269,15 +269,17 @@ fn head_fence_and_recovery(ignore_head: bool) {
         });
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Head {
-                path: path.clone(),
-                expected: 1,
-                commit_id: anchor,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![Bytes::from_static(b"obsolete").into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Head {
+                    path: path.clone(),
+                    expected: 1,
+                    commit_id: anchor,
+                }],
+                vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec![Bytes::from_static(b"obsolete").into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"write"))?,
         };
         if ignore_head {
@@ -508,24 +510,21 @@ pub fn subtree_cut(root_only: bool) {
         let writing = thread::spawn({
             let provider = provider.clone();
             move || {
-                block_on(
-                    provider.commit(CommitRequest {
-                        deadline_unix_millis: None,
-                        conditions: ["tree/a", "tree/b"]
+                block_on(provider.commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    effects: vec![crate::CommitEffect::hard(["tree/a", "tree/b"]
                             .map(|name| CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
                                 expected: 1,
                             })
-                            .into(),
-                        mutations: ["tree/a", "tree/b"]
+                            .into(), ["tree/a", "tree/b"]
                             .map(|name| CommitMutation::Append {
                                 path: StreamPath::new(name).unwrap(),
                                 records: vec![Bytes::from_static(b"next").into()],
                             })
-                            .into(),
-                        idempotency_key: IdempotencyKey::new(b"writer".to_vec()).unwrap(),
-                    }),
-                )
+                            .into())],
+                    idempotency_key: IdempotencyKey::new(b"writer".to_vec()).unwrap(),
+                }))
                 .unwrap();
             }
         });
@@ -634,24 +633,21 @@ pub fn page_tail_cut(split_reads: bool) {
         let writer = thread::spawn({
             let provider = provider.clone();
             move || {
-                let outcome = block_on(
-                    provider.commit(CommitRequest {
-                        deadline_unix_millis: None,
-                        conditions: ["agents/a/status", "agents/b/status"]
+                let outcome = block_on(provider.commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    effects: vec![crate::CommitEffect::hard(["agents/a/status", "agents/b/status"]
                             .map(|name| crate::CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
                                 expected: 1,
                             })
-                            .into(),
-                        mutations: ["agents/a/status", "agents/b/status"]
+                            .into(), ["agents/a/status", "agents/b/status"]
                             .map(|name| CommitMutation::Append {
                                 path: StreamPath::new(name).unwrap(),
                                 records: vec![Bytes::from_static(b"new").into()],
                             })
-                            .into(),
-                        idempotency_key: IdempotencyKey::new(b"page-writer".to_vec()).unwrap(),
-                    }),
-                )
+                            .into())],
+                    idempotency_key: IdempotencyKey::new(b"page-writer".to_vec()).unwrap(),
+                }))
                 .unwrap();
                 assert!(matches!(outcome, crate::CommitOutcome::Committed(_)));
             }
@@ -761,14 +757,16 @@ pub fn stable_intent_key(retain_conflicts: bool) {
         let key = IdempotencyKey::new(b"intent".to_vec())?;
         let request = |expected| CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![Bytes::from_static(b"intent").into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected,
+                }],
+                vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec![Bytes::from_static(b"intent").into()],
+                }],
+            )],
             idempotency_key: key.clone(),
         };
         let writer = thread::spawn({

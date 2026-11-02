@@ -345,14 +345,16 @@ mod write_tests {
         assert_eq!(forked_receipt.forked_at, 1);
         let mut commit = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: source.clone(),
-                expected: 1,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: source.clone(),
-                records: vec![b"second".to_vec().into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 1,
+                }],
+                vec![CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![b"second".to_vec().into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::unique(),
         };
         let commit_request = WriteRequest::Commit(commit.clone());

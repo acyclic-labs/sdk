@@ -33,14 +33,16 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     };
     let commit = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"committed").into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 1,
+            }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![OwnedBytes::from_static(b"committed").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"corrected-commit".to_vec())?,
     };
     for _ in 0..16 {

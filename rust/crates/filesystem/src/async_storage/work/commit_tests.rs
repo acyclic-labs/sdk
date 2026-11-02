@@ -11,11 +11,13 @@ fn request() -> Result<CommitRequest, acyclic_stream::StreamError> {
     let path = StreamPath::new("publication")?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![OwnedBytes::from_static(b"sealed").into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![OwnedBytes::from_static(b"sealed").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"sealed"))?,
     })
 }

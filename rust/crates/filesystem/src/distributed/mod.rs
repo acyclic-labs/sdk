@@ -126,7 +126,9 @@ struct AuthoritySnapshot {
 // Private read-only capability: retirement bypass is available only to accounting.
 struct AccountingAuthority<'a, P: ?Sized>(&'a StreamAuthorityStore<P>);
 
-use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath};
+use acyclic_stream::{
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, StreamPath,
+};
 mod io;
 use io::*;
 mod native;

@@ -34,8 +34,8 @@
 //! indexed attribute, so a chunk is never re-encoded or copied.
 
 use acyclic_stream::{
-    AppendRecord, Attribute, CommitCondition, CommitId, CommitMutation, CommitRequest,
-    IdempotencyKey, OwnedBytes, Record, RecordHeaders, StreamError, StreamPath,
+    AppendRecord, Attribute, CommitCondition, CommitEffect, CommitId, CommitMutation,
+    CommitRequest, IdempotencyKey, OwnedBytes, Record, RecordHeaders, StreamError, StreamPath,
 };
 
 /// Subtree segment under which a caller keeps its call journals.
@@ -127,10 +127,17 @@ impl Commit {
     pub fn request(self, idempotency_key: IdempotencyKey) -> CommitRequest {
         CommitRequest {
             deadline_unix_millis: None,
-            conditions: self.conditions,
-            mutations: self.mutations,
+            effects: vec![self.into()],
             idempotency_key,
         }
+    }
+}
+
+/// A protocol step is one hard effect: it publishes all or none with the
+/// publisher's own state.
+impl From<Commit> for CommitEffect {
+    fn from(commit: Commit) -> Self {
+        Self::hard(commit.conditions, commit.mutations)
     }
 }
 

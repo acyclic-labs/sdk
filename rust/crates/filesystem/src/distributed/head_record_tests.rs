@@ -360,14 +360,16 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
             .provider
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Tail {
-                    path: path.clone(),
-                    expected: 1,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path,
-                    records: vec![OwnedBytes::from(encoded).into()],
-                }],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: 1,
+                    }],
+                    vec![CommitMutation::Append {
+                        path,
+                        records: vec![OwnedBytes::from(encoded).into()],
+                    }],
+                )],
                 idempotency_key: stream_key(b"corrupt-head", &[u8::from(corrupt_sequence)])?,
             })
             .await?;

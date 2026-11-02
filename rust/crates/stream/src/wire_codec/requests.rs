@@ -1,6 +1,6 @@
 use crate::{
-    AppendRecord, AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest,
-    RecordAttribute,
+    AppendRecord, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest,
+    ForkRequest, RecordAttribute,
 };
 
 pub(crate) fn block_len(bytes: usize) -> usize {
@@ -204,17 +204,6 @@ fn mutation_len_with(mutation: &CommitMutation, length: &impl Fn(&AppendRecord) 
         CommitMutation::Append { path, records } => {
             block_len(path.as_str().len()).saturating_add(records_len_with(records, length))
         }
-        CommitMutation::SoftAppend {
-            path,
-            records,
-            closed,
-        } => block_len(path.as_str().len())
-            .saturating_add(records_len_with(records, length))
-            .saturating_add(
-                closed
-                    .as_ref()
-                    .map_or(0, |closed| block_len(closed.as_str().len())),
-            ),
         CommitMutation::Fork {
             source,
             destination,
@@ -236,19 +225,28 @@ fn mutation_len_with(mutation: &CommitMutation, length: &impl Fn(&AppendRecord) 
 pub(crate) fn commit_len(request: &CommitRequest) -> usize {
     commit_len_with(request, &append_record_len)
 }
-fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> usize) -> usize {
-    request
+/// The encoded `CommitEffect` message, without its enclosing field.
+fn effect_len_with(effect: &CommitEffect, length: &impl Fn(&AppendRecord) -> usize) -> usize {
+    effect
         .conditions
         .iter()
         .map(|condition| block_len(condition_len(condition)))
         .fold(0_usize, usize::saturating_add)
         .saturating_add(
-            request
+            effect
                 .mutations
                 .iter()
                 .map(|mutation| block_len(mutation_len_with(mutation, length)))
                 .fold(0_usize, usize::saturating_add),
         )
+        .saturating_add(uint_len(effect.soft.then_some(1)))
+}
+fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> usize) -> usize {
+    request
+        .effects
+        .iter()
+        .map(|effect| block_len(effect_len_with(effect, length)))
+        .fold(0_usize, usize::saturating_add)
         .saturating_add(block_len(request.idempotency_key.as_bytes().len()))
         .saturating_add(uint_len(request.deadline_unix_millis))
 }
@@ -374,7 +372,26 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     )
 ))]
 pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
-    for condition in &request.conditions {
+    // Generated protobuf writes fields in tag order: `effects` (6) follows
+    // the key (3) and deadline (4).
+    bytes(out, 3, request.idempotency_key.as_bytes());
+    uint(out, 4, request.deadline_unix_millis);
+    for effect in &request.effects {
+        header(out, 6, effect_len_with(effect, &append_record_len));
+        commit_effect(out, effect);
+    }
+}
+
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
+fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
+    for condition in &effect.conditions {
         header(out, 1, condition_len(condition));
         match condition {
             CommitCondition::Present { path } => {
@@ -413,7 +430,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
             }
         }
     }
-    for mutation in &request.mutations {
+    for mutation in &effect.mutations {
         header(out, 2, mutation_len(mutation));
         match mutation {
             CommitMutation::Append {
@@ -423,26 +440,6 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
                 header(out, 1, block_len(path.as_str().len()) + records_len(values));
                 bytes(out, 1, path.as_str().as_bytes());
                 records(out, 2, values);
-            }
-            CommitMutation::SoftAppend {
-                path,
-                records: values,
-                closed,
-            } => {
-                header(
-                    out,
-                    5,
-                    block_len(path.as_str().len())
-                        + records_len(values)
-                        + closed
-                            .as_ref()
-                            .map_or(0, |closed| block_len(closed.as_str().len())),
-                );
-                bytes(out, 1, path.as_str().as_bytes());
-                records(out, 2, values);
-                if let Some(closed) = closed {
-                    bytes(out, 3, closed.as_str().as_bytes());
-                }
             }
             CommitMutation::Fork {
                 source,
@@ -473,8 +470,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
             }
         }
     }
-    bytes(out, 3, request.idempotency_key.as_bytes());
-    uint(out, 4, request.deadline_unix_millis);
+    uint(out, 3, effect.soft.then_some(1));
 }
 
 #[cfg(test)]
@@ -490,40 +486,55 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let path = crate::StreamPath::new("request/events")?;
         let destination = crate::StreamPath::new("request/fork")?;
+        let inbox = crate::StreamPath::new("request/inbox")?;
         for tail in [0, 127, 128, 16_383, 16_384, u64::MAX] {
             for length in [0, 127, 128, 16_383, 16_384, crate::MAX_RECORD_BYTES] {
                 let records: Vec<AppendRecord> = vec![OwnedBytes::from(vec![7; length]).into()];
                 let request = CommitRequest {
                     deadline_unix_millis: (tail != 0).then_some(tail),
-                    conditions: vec![
-                        CommitCondition::Present { path: path.clone() },
-                        CommitCondition::Absent {
-                            path: destination.clone(),
-                        },
-                        CommitCondition::Tail {
-                            path: path.clone(),
-                            expected: tail,
-                        },
-                        CommitCondition::Head {
-                            path: path.clone(),
-                            expected: tail,
-                            commit_id: crate::CommitId::from_bytes([3; 32]),
-                        },
-                    ],
-                    mutations: vec![
-                        CommitMutation::Append {
-                            path: path.clone(),
-                            records: records.clone(),
-                        },
-                        CommitMutation::Fork {
-                            exclude: vec![
-                                crate::StreamPath::new("children")?,
-                                crate::StreamPath::new("volumes/cache")?,
+                    effects: vec![
+                        CommitEffect::hard(
+                            vec![
+                                CommitCondition::Present { path: path.clone() },
+                                CommitCondition::Absent {
+                                    path: destination.clone(),
+                                },
+                                CommitCondition::Tail {
+                                    path: path.clone(),
+                                    expected: tail,
+                                },
+                                CommitCondition::Head {
+                                    path: path.clone(),
+                                    expected: tail,
+                                    commit_id: crate::CommitId::from_bytes([3; 32]),
+                                },
                             ],
-                            source: path.clone(),
-                            destination: destination.clone(),
-                            at_tail: tail,
-                            records,
+                            vec![
+                                CommitMutation::Append {
+                                    path: path.clone(),
+                                    records: records.clone(),
+                                },
+                                CommitMutation::Fork {
+                                    exclude: vec![
+                                        crate::StreamPath::new("children")?,
+                                        crate::StreamPath::new("volumes/cache")?,
+                                    ],
+                                    source: path.clone(),
+                                    destination: destination.clone(),
+                                    at_tail: tail,
+                                    records: records.clone(),
+                                },
+                            ],
+                        ),
+                        CommitEffect {
+                            conditions: vec![CommitCondition::Present {
+                                path: inbox.clone(),
+                            }],
+                            mutations: vec![CommitMutation::Append {
+                                path: inbox.clone(),
+                                records,
+                            }],
+                            soft: true,
                         },
                     ],
                     idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(
@@ -664,12 +675,9 @@ pub(crate) fn accepted_response_limit(
     input: &crate::wire::CommitRequest,
 ) -> Result<usize, crate::StreamError> {
     let mut maximum = 2 * crate::MAX_COMMAND_BYTES + 64;
-    for mutation in &input.mutations {
+    for mutation in input.effects.iter().flat_map(|effect| &effect.mutations) {
         let records = match mutation.mutation.as_ref() {
             Some(crate::wire::commit_mutation::Mutation::Append(append)) => append.records.len(),
-            Some(crate::wire::commit_mutation::Mutation::SoftAppend(append)) => {
-                append.records.len()
-            }
             Some(crate::wire::commit_mutation::Mutation::Fork(fork)) => fork.records.len(),
             None => return Err(crate::StreamError::InvalidArgument),
         };

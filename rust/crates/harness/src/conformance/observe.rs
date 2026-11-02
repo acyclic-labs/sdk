@@ -291,11 +291,13 @@ mod tests {
             let path = StreamPath::new("observation")?;
             let request = CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![CommitMutation::Append {
-                    path,
-                    records: vec![AppendRecord::from("value"); records],
-                }],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Absent { path: path.clone() }],
+                    vec![CommitMutation::Append {
+                        path,
+                        records: vec![AppendRecord::from("value"); records],
+                    }],
+                )],
                 idempotency_key: IdempotencyKey::unique(),
             };
             // All comparisons replay one actual committed request against the

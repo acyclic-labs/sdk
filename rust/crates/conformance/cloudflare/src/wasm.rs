@@ -12,7 +12,7 @@ pub async fn qualify_journal_deadline(
     retry: bool,
 ) -> std::result::Result<(), JsValue> {
     use acyclic_stream::{
-        AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
+        AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
         IdempotencyKey, StreamError, StreamPath, UnixMillisClock,
     };
     use futures::FutureExt as _;
@@ -51,11 +51,13 @@ pub async fn qualify_journal_deadline(
         let path = StreamPath::new("deadline/acceptance")?;
         let key = IdempotencyKey::new(b"deadline-acceptance".to_vec())?;
         let request = CommitRequest {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec![AppendRecord::from(b"accepted".as_slice())],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec![AppendRecord::from(b"accepted".as_slice())],
+                }],
+            )],
             idempotency_key: key.clone(),
             deadline_unix_millis: None,
         };
@@ -102,13 +104,15 @@ pub async fn qualify_journal_deadline(
             let control = StreamPath::new("deadline/control")?;
             let accepted = provider
                 .commit(CommitRequest {
-                    conditions: vec![CommitCondition::Absent {
-                        path: control.clone(),
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: control.clone(),
-                        records: vec![AppendRecord::from(b"before-expiry".as_slice())],
-                    }],
+                    effects: vec![CommitEffect::hard(
+                        vec![CommitCondition::Absent {
+                            path: control.clone(),
+                        }],
+                        vec![CommitMutation::Append {
+                            path: control.clone(),
+                            records: vec![AppendRecord::from(b"before-expiry".as_slice())],
+                        }],
+                    )],
                     idempotency_key: IdempotencyKey::new(b"deadline-control".to_vec())?,
                     deadline_unix_millis: Some(DEADLINE),
                 })

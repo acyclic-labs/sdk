@@ -23,8 +23,7 @@ fn state(payload: &'static [u8]) -> StateRecord {
 
 fn commit(key: &'static [u8]) -> Result<FilesystemCommit, StreamError> {
     Ok(FilesystemCommit::new(CommitRequest {
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
         deadline_unix_millis: None,
     }))
@@ -233,6 +232,131 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
 }
 
 #[tokio::test]
+async fn filesystem_state_joins_a_hard_effect_and_is_never_skipped_with_a_soft_one() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let inbox = StreamPath::new("agent/peer/inbox")?;
+    let sent = acyclic_stream::CommitEffect {
+        conditions: vec![CommitCondition::Present {
+            path: inbox.clone(),
+        }],
+        mutations: vec![acyclic_stream::CommitMutation::Append {
+            path: inbox.clone(),
+            records: vec![OwnedBytes::from_static(b"hello").into()],
+        }],
+        soft: true,
+    };
+    // A soft send first, alone and then ahead of a caller's hard write.
+    for (key, caller) in [
+        (&b"soft-only"[..], None),
+        (
+            &b"soft-then-hard"[..],
+            Some(StreamPath::new("agent/one/log")?),
+        ),
+    ] {
+        let path = StreamPath::new(format!("agent/{}/files/root", key.len()))?;
+        let observed = store.observe_record(path.clone(), &mut work).await?;
+        let mut effects = vec![sent.clone()];
+        if let Some(caller) = &caller {
+            effects.push(acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: caller.clone(),
+                    records: vec![OwnedBytes::from_static(b"entry").into()],
+                }],
+            ));
+        }
+        let mut publication = FilesystemCommit::new(CommitRequest {
+            effects,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from(key.to_vec()))?,
+            deadline_unix_millis: None,
+        });
+        store.contribute_record(
+            &mut publication,
+            &observed.observation,
+            &state(b"root"),
+            crate::PublicationHold::none(),
+            &mut work,
+        )?;
+        store.seal_observed(&mut publication, &[], None, &mut work)?;
+        let request = publication.request();
+        assert!(!request.effects[0].mutations.is_empty() && request.effects[0].soft);
+        assert!(request.effects[1..].iter().all(|effect| !effect.soft));
+        let FilesystemCommitOutcome::Committed(receipt) =
+            store.submit(publication, &mut work).await?
+        else {
+            return Err("publication did not commit".into());
+        };
+        // The absent recipient skips only the send; the state still publishes.
+        assert_eq!(receipt.skipped, [0]);
+        assert_eq!(provider.tail(path).await?, 1);
+        if let Some(caller) = caller {
+            assert_eq!(provider.tail(caller).await?, 1);
+        }
+    }
+    Ok(())
+}
+
+/// A soft-only request seals with or without observation fences: the fences
+/// become a hard guard without mutations, which gates the send and publishes
+/// nothing itself.
+#[tokio::test]
+async fn filesystem_seals_a_soft_only_request_behind_its_fences() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let inbox = StreamPath::new("agent/peer/inbox")?;
+    let policy = StreamPath::new("agent/one/policy")?;
+    publish(&store, &inbox, b"inbox", &state(b"open"), &mut work).await?;
+    publish(&store, &policy, b"policy", &state(b"v1"), &mut work).await?;
+    let fence = store.observe_record(policy.clone(), &mut work).await?;
+    let send = |key: &'static [u8]| -> Result<FilesystemCommit, StreamError> {
+        Ok(FilesystemCommit::new(CommitRequest {
+            effects: vec![acyclic_stream::CommitEffect {
+                conditions: vec![CommitCondition::Present {
+                    path: inbox.clone(),
+                }],
+                mutations: vec![acyclic_stream::CommitMutation::Append {
+                    path: inbox.clone(),
+                    records: vec![OwnedBytes::from_static(b"hello").into()],
+                }],
+                soft: true,
+            }],
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
+            deadline_unix_millis: None,
+        }))
+    };
+    let mut unfenced = send(b"unfenced")?;
+    store.seal_observed(&mut unfenced, &[], None, &mut work)?;
+    assert_eq!(unfenced.request().effects.len(), 1);
+    let mut fenced = send(b"fenced")?;
+    store.seal_observed(&mut fenced, &[fence.observation.clone()], None, &mut work)?;
+    let guard = &fenced.request().effects[1];
+    assert!(!guard.soft && guard.mutations.is_empty() && guard.conditions.len() == 1);
+    let mut stale = send(b"stale")?;
+    store.seal_observed(&mut stale, &[fence.observation], None, &mut work)?;
+    for publication in [unfenced, fenced] {
+        let FilesystemCommitOutcome::Committed(receipt) =
+            store.submit(publication, &mut work).await?
+        else {
+            return Err("soft-only publication did not commit".into());
+        };
+        assert!(receipt.skipped.is_empty());
+    }
+    // A moved fence refuses the guarded send as a whole.
+    publish(&store, &policy, b"policy-moved", &state(b"v2"), &mut work).await?;
+    assert!(matches!(
+        store.submit(stale, &mut work).await?,
+        FilesystemCommitOutcome::Rejected(_)
+    ));
+    assert_eq!(provider.tail(inbox).await?, 3);
+    Ok(())
+}
+
+#[tokio::test]
 async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(provider.clone());
@@ -408,7 +532,7 @@ async fn cross_provider_observation_and_oversize_total_refuse_before_submit() ->
             )
             .is_err()
     );
-    assert!(publication.request().mutations.is_empty());
+    assert!(publication.request().effects[0].mutations.is_empty());
     assert!(
         store
             .seal_observed(&mut publication, &[foreign.observation], None, &mut work)
@@ -651,8 +775,10 @@ fn expiry_bytes_are_admitted_before_a_request_is_sealed() -> TestResult {
     let mut records = vec![bytes.clone().into(); acyclic_stream::MAX_COMMAND_BYTES / bytes.len()];
     records.push(OwnedBytes::new().into());
     let mut request = CommitRequest {
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append { path, records }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append { path, records }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"expiry-size"))?,
         deadline_unix_millis: None,
     };
@@ -662,7 +788,7 @@ fn expiry_bytes_are_admitted_before_a_request_is_sealed() -> TestResult {
     let mut upper = bytes.len();
     while lower < upper {
         let middle = lower + (upper - lower).div_ceil(2);
-        let CommitMutation::Append { records, .. } = &mut request.mutations[0] else {
+        let CommitMutation::Append { records, .. } = &mut request.effects[0].mutations[0] else {
             return Err("boundary append missing".into());
         };
         records.last_mut().ok_or("boundary record missing")?.value = bytes.slice(..middle);
@@ -674,7 +800,7 @@ fn expiry_bytes_are_admitted_before_a_request_is_sealed() -> TestResult {
             upper = middle - 1;
         }
     }
-    let CommitMutation::Append { records, .. } = &mut request.mutations[0] else {
+    let CommitMutation::Append { records, .. } = &mut request.effects[0].mutations[0] else {
         return Err("boundary append missing".into());
     };
     records.last_mut().ok_or("boundary record missing")?.value = bytes.slice(..lower);
@@ -977,7 +1103,7 @@ async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records(
         let mut publication = commit(b"all-roots")?;
         store.prepare_records(&mut publication, updates, &[], Some(u64::MAX), &mut work)?;
         assert!(publication.request_mut().is_none());
-        assert_eq!(publication.request().mutations.len(), count + 1);
+        assert_eq!(publication.request().effects[0].mutations.len(), count + 1);
         assert_eq!(
             provider.tail(first.clone()).await,
             Err(StreamError::NotFound)
@@ -1032,9 +1158,7 @@ async fn failed_state_batch_restores_caller_conditions_and_publishes_nothing() -
         .observe_record(StreamPath::new("actor/files/foreign")?, &mut work)
         .await?;
     let mut publication = commit(b"refused-batch")?;
-    publication
-        .request_mut()
-        .ok_or("unexpected seal")?
+    publication.request_mut().ok_or("unexpected seal")?.effects[0]
         .conditions
         .push(CommitCondition::Tail {
             path: path.clone(),
@@ -1296,9 +1420,7 @@ async fn oversized_state_batch_leaves_the_original_request_and_no_published_pref
         ));
     }
     let mut publication = commit(b"oversized-atomic-batch")?;
-    publication
-        .request_mut()
-        .ok_or("unexpected seal")?
+    publication.request_mut().ok_or("unexpected seal")?.effects[0]
         .conditions
         .push(CommitCondition::Absent {
             path: StreamPath::new("caller/condition")?,
@@ -1343,14 +1465,16 @@ async fn identical_state_bytes_from_separate_commits_are_not_one_publication() -
     }
     store.prepare_records(&mut publication, updates, &[], None, &mut work)?;
     let original = publication.request().clone();
-    for (index, mutation) in original.mutations.iter().enumerate() {
+    for (index, mutation) in original.effects[0].mutations.iter().enumerate() {
         let CommitMutation::Append { path, .. } = mutation else {
             return Err("unexpected fork".into());
         };
         let decision = provider
             .commit(CommitRequest {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![mutation.clone()],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Absent { path: path.clone() }],
+                    vec![mutation.clone()],
+                )],
                 idempotency_key: IdempotencyKey::new(format!("separate-{index}").into_bytes())?,
                 deadline_unix_millis: None,
             })

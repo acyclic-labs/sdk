@@ -68,8 +68,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "policy cut and publication use different Streams owners",
             ));
         }
-        let mut conditions = work.vec(request.conditions.len() + 3)?;
-        conditions.append(&mut request.conditions);
+        let effect = super::composition::hard_effect(&mut request, work)?;
+        let mut conditions = work.vec(effect.conditions.len() + 3)?;
+        conditions.append(&mut effect.conditions);
         merge_condition(
             &mut conditions,
             CommitCondition::Tail {
@@ -98,7 +99,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             },
             work,
         )?;
-        request.conditions = conditions;
+        super::composition::hard_effect(&mut request, work)?.conditions = conditions;
         // A rejected stale cut cannot consume a later freshly authorized attempt.
         let key = work.key(
             self.placement.key_scope(),
@@ -116,15 +117,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             &key,
         )?;
         Ok(request)
-    }
-}
-
-pub(super) fn condition_path(condition: &CommitCondition) -> &StreamPath {
-    match condition {
-        CommitCondition::Head { path, .. }
-        | CommitCondition::Tail { path, .. }
-        | CommitCondition::Present { path }
-        | CommitCondition::Absent { path } => path,
     }
 }
 
@@ -146,7 +138,7 @@ pub(super) fn merge_condition(
         };
         work.admit(examined)?;
         work.charge(examined)?;
-        if condition_path(existing) != condition_path(&condition) {
+        if CommitCondition::path(existing) != CommitCondition::path(&condition) {
             continue;
         }
         let (compatible, stronger) = match (&*existing, &condition) {
@@ -169,7 +161,7 @@ pub(super) fn merge_condition(
                 "a commit condition conflicts with one the commit already holds",
             ));
         }
-        work.release(condition_path(&condition).as_str().len() as u64)?;
+        work.release(CommitCondition::path(&condition).as_str().len() as u64)?;
         if stronger {
             *existing = condition;
         }
@@ -197,7 +189,7 @@ mod tests {
             let candidate = CommitCondition::Absent {
                 path: StreamPath::new("policy/target")?,
             };
-            work.hold_opaque(condition_path(&candidate).as_str().len() as u64)?;
+            work.hold_opaque(CommitCondition::path(&candidate).as_str().len() as u64)?;
             let result = if omit_charge {
                 conditions.iter().try_for_each(|_| {
                     work.admit(WorkCounters {
@@ -243,7 +235,7 @@ mod tests {
             let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
             let [first, second] = order;
             let mut conditions = vec![first];
-            work.hold_opaque(condition_path(&second).as_str().len() as u64)?;
+            work.hold_opaque(CommitCondition::path(&second).as_str().len() as u64)?;
             merge_condition(&mut conditions, second, &mut work)?;
             assert_eq!(conditions, [head.clone()]);
             work.hold_opaque(path.as_str().len() as u64)?;
@@ -282,19 +274,19 @@ mod tests {
             conditions.push(candidate);
         } else {
             // Model the funded candidate path which the production fence owns.
-            work.hold_opaque(condition_path(&candidate).as_str().len() as u64)?;
+            work.hold_opaque(CommitCondition::path(&candidate).as_str().len() as u64)?;
             merge_condition(&mut conditions, candidate, &mut work)?;
         }
         let outcome = provider
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions,
-                mutations: vec![CommitMutation::Append {
-                    // The destination must have its own condition. Use the same
-                    // authority to isolate duplicate policy/publication checks.
-                    path: StreamPath::new("policy/source")?,
-                    records: vec![acyclic_stream::OwnedBytes::from_static(b"published").into()],
-                }],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    conditions,
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("policy/source")?,
+                        records: vec![acyclic_stream::OwnedBytes::from_static(b"published").into()],
+                    }],
+                )],
                 idempotency_key: acyclic_stream::IdempotencyKey::new(
                     acyclic_stream::OwnedBytes::from_static(b"policy-conditions"),
                 )?,

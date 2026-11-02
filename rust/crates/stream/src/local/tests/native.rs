@@ -175,14 +175,16 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     // Reusing the same bytes/key through Commit is a different operation.
     let wrong_family = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Tail {
-            path: request.path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: request.path,
-            records: request.records,
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Tail {
+                path: request.path.clone(),
+                expected: 1,
+            }],
+            vec![crate::CommitMutation::Append {
+                path: request.path,
+                records: request.records,
+            }],
+        )],
         idempotency_key: key,
     };
     meter.cancelled.store(false, Ordering::SeqCst);
@@ -370,7 +372,9 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     drop(packet_guard);
     drop(provider);
     let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice() else {
+    let [crate::CommitMutation::Append { records, .. }] =
+        request.effects[0].mutations.as_mut_slice()
+    else {
         return Err("fixture changed family".into());
     };
     *records.first_mut().ok_or(StreamError::InvalidArgument)? =
@@ -824,14 +828,16 @@ async fn rejected_commits_do_not_grow_the_journal() -> Result<(), Box<dyn std::e
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![crate::CommitCondition::Tail {
-                        path: StreamPath::new("absent")?,
-                        expected: 1
-                    }],
-                    mutations: vec![crate::CommitMutation::Append {
-                        path: StreamPath::new("absent")?,
-                        records: vec![OwnedBytes::from_static(b"intent").into()]
-                    }],
+                    effects: vec![crate::CommitEffect::hard(
+                        vec![crate::CommitCondition::Tail {
+                            path: StreamPath::new("absent")?,
+                            expected: 1
+                        }],
+                        vec![crate::CommitMutation::Append {
+                            path: StreamPath::new("absent")?,
+                            records: vec![OwnedBytes::from_static(b"intent").into()]
+                        }]
+                    )],
                     idempotency_key: key.clone(),
                 })
                 .await?,

@@ -17,11 +17,13 @@ async fn required_ranges_refuse_missing_history_and_stop_at_the_original_cut()
     let published = provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![CommitMutation::Append {
-                path: path.clone(),
-                records: vec!["zero".into(), "one".into(), "two".into(), "three".into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec!["zero".into(), "one".into(), "two".into(), "three".into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new("original")?,
         })
         .await?;

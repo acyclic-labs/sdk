@@ -80,15 +80,17 @@ fn request(
 ) -> Result<CommitRequest, StreamError> {
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Head {
-            path: path.clone(),
-            expected,
-            commit_id,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec![(OwnedBytes::from_static(b"next")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Head {
+                path: path.clone(),
+                expected,
+                commit_id,
+            }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![(OwnedBytes::from_static(b"next")).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
     })
 }
@@ -126,7 +128,7 @@ async fn head_condition_checks_identity_under_the_commit_lock_and_binds_retries(
     );
     assert_eq!(provider.tail(path.clone()).await?, 1);
     let mut changed = rejected;
-    changed.conditions = vec![CommitCondition::Head {
+    changed.effects[0].conditions = vec![CommitCondition::Head {
         path: path.clone(),
         expected: 1,
         commit_id: original,
@@ -213,8 +215,8 @@ proptest::proptest! {
                 let path=StreamPath::new(&path)?;
                 let original=seed(&provider,&path).await?;
                 let mut request=request(&path,1,original,b"native")?;
-                request.mutations=vec![CommitMutation::Append {path:path.clone(),records:vec![payload.clone().into()]}];
-                if !head {request.conditions=vec![CommitCondition::Tail {path,expected:1}];}
+                request.effects[0].mutations=vec![CommitMutation::Append {path:path.clone(),records:vec![payload.clone().into()]}];
+                if !head {request.effects[0].conditions=vec![CommitCondition::Tail {path,expected:1}];}
                 let meter=std::sync::Arc::new(crate::test_meter::Meter::default());
                 let result=provider.native_commit(request,None,meter.original()).await??;
                 assert!(matches!(result.value(),CommitOutcome::Committed(_)));

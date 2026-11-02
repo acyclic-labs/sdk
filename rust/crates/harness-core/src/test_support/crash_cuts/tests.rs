@@ -3,8 +3,8 @@
 //! Every sweep also runs under limits that compact the journal mid-run.
 use super::*;
 use acyclic_stream::{
-    AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    OwnedBytes, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
+    IdempotencyKey, OwnedBytes, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 
 /// The default limits, and limits that compact after every second frame:
@@ -28,14 +28,16 @@ fn key(name: &'static str) -> IdempotencyKey {
 fn commit(name: &'static str, expected: u64) -> CommitRequest {
     CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path(),
-            expected,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path(),
-            records: vec![OwnedBytes::from_static(b"record").into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path(),
+                expected,
+            }],
+            vec![CommitMutation::Append {
+                path: path(),
+                records: vec![OwnedBytes::from_static(b"record").into()],
+            }],
+        )],
         idempotency_key: key(name),
     }
 }

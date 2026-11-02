@@ -2,8 +2,8 @@
 
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, ReadRequest,
-    StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt;
 use std::{
@@ -177,7 +177,7 @@ async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
 
     // Negative control: without the close guard the same append lands.
     let mut unguarded = late;
-    unguarded
+    unguarded.effects[0]
         .conditions
         .retain(|condition| !matches!(condition, CommitCondition::Absent { .. }));
     assert!(matches!(
@@ -199,7 +199,7 @@ async fn send_cannot_create_an_agent() -> Result {
     ));
     // Negative control: without `Present` the same send creates the inbox.
     let mut forced = request;
-    forced
+    forced.effects[0]
         .conditions
         .retain(|condition| !matches!(condition, CommitCondition::Present { .. }));
     assert!(matches!(
@@ -222,34 +222,36 @@ async fn seeded() -> Result<Seeded> {
     let status = parent.status()?;
     let seeded = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: conversation.clone(),
-                expected: 0,
-            },
-            CommitCondition::Tail {
-                path: status.clone(),
-                expected: 1,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: conversation,
-                records: vec![b"c1".to_vec().into(), b"c2".to_vec().into()],
-            },
-            CommitMutation::Append {
-                path: status,
-                records: vec![
-                    StatusRecord {
-                        phase: Phase::Running,
-                        cursor: 1,
-                        conversation: 2,
-                    }
-                    .encode()?
-                    .into(),
-                ],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: conversation.clone(),
+                    expected: 0,
+                },
+                CommitCondition::Tail {
+                    path: status.clone(),
+                    expected: 1,
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: conversation,
+                    records: vec![b"c1".to_vec().into(), b"c2".to_vec().into()],
+                },
+                CommitMutation::Append {
+                    path: status,
+                    records: vec![
+                        StatusRecord {
+                            phase: Phase::Running,
+                            cursor: 1,
+                            conversation: 2,
+                        }
+                        .encode()?
+                        .into(),
+                    ],
+                },
+            ],
+        )],
         idempotency_key: intent_key("seed", &[])?,
     };
     assert!(matches!(
@@ -275,7 +277,7 @@ async fn spawn_child(
 ) -> Result<Step> {
     let step = spawning(state.clone(), name);
     let mut request = lower(&step, 1, delivery_key(&step.state, name)?)?;
-    for mutation in &mut request.mutations {
+    for mutation in &mut request.effects[0].mutations {
         if let CommitMutation::Fork { exclude: names, .. } = mutation
             && !exclude
         {
@@ -493,7 +495,7 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
     assert_eq!(later.state.checkpoint, Some(101));
     let spawned = spawning(later.state.clone(), "s1");
     let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
-    let adopted = request
+    let adopted = request.effects[0]
         .mutations
         .iter()
         .find_map(|mutation| match mutation {
@@ -895,7 +897,7 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
     let mut shapes = Vec::new();
     for agent in [&paths[0], &paths[paths.len() / 2], &paths[paths.len() - 1]] {
         let request = send(agent, &user(), &cancel("c1"))?;
-        let touched: Vec<_> = request
+        let touched: Vec<_> = request.effects[0]
             .conditions
             .iter()
             .map(|condition| match condition {
@@ -914,8 +916,8 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
             panic!("send to a dormant agent did not commit");
         };
         shapes.push((
-            request.conditions.len(),
-            request.mutations.len(),
+            request.effects[0].conditions.len(),
+            request.effects[0].mutations.len(),
             receipt.appends.len() + receipt.forks.len(),
         ));
     }

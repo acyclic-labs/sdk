@@ -271,8 +271,7 @@ fn indexed_commit(
     }
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions,
-        mutations: vec![mutation],
+        effects: vec![crate::CommitEffect::hard(conditions, vec![mutation])],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"indexed-commit"))?,
     })
 }

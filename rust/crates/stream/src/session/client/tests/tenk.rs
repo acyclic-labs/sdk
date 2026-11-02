@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope,
-    IdempotencyKey, IdempotencyObservation, ReadRequest,
+    CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome, CommitRequest,
+    CommittedEnvelope, IdempotencyKey, IdempotencyObservation, ReadRequest,
 };
 use futures::{
     stream::{FuturesUnordered, SelectAll},
@@ -86,26 +86,28 @@ async fn agent(
     let expected = if first { 1 } else { 2 };
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: own.clone(),
-                expected,
-            },
-            CommitCondition::Tail {
-                path: peer.clone(),
-                expected,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: own.clone(),
-                records: vec![(OwnedBytes::from(value.clone())).into()],
-            },
-            CommitMutation::Append {
-                path: peer,
-                records: vec![(OwnedBytes::from(value)).into()],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: own.clone(),
+                    expected,
+                },
+                CommitCondition::Tail {
+                    path: peer.clone(),
+                    expected,
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: own.clone(),
+                    records: vec![(OwnedBytes::from(value.clone())).into()],
+                },
+                CommitMutation::Append {
+                    path: peer,
+                    records: vec![(OwnedBytes::from(value)).into()],
+                },
+            ],
+        )],
         idempotency_key: IdempotencyKey::new(format!("agent-{id}").into_bytes())?,
     };
     assert!(matches!(

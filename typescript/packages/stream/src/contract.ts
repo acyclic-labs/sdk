@@ -3,14 +3,14 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
-  CommitMutationSchema, CommitRequestSchema,
-  ForkMutationSchema, SoftAppendMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
+  CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
+  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest, Revision } from "./types.js";
+import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitEffect, ProviderCommitRequest, Revision } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -260,43 +260,8 @@ export async function encodeHttpRequest(route: HttpRoute, input: Uint8Array): Pr
 export async function normalizeWireCommitBytes(request: ProviderCommitRequest, options: CommitOptions): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
-    const conditions = request.conditions.map(condition => {
-      if ("ifTail" in condition && condition.ifCommitId !== undefined) return create(CommitConditionSchema, {
-        condition: { case: "head", value: create(HeadConditionSchema, { path: condition.path, expected: condition.ifTail, commitId: commitId(condition.ifCommitId) }) },
-      });
-      if ("ifTail" in condition) return create(CommitConditionSchema, {
-        condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
-      });
-      if ("ifPresent" in condition) {
-        if (condition.ifPresent !== true) throw new StreamError("invalid_argument", "presence condition must be true");
-        return create(CommitConditionSchema, {
-          condition: { case: "present", value: create(PresentConditionSchema, { path: condition.path }) },
-        });
-      }
-      if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
-      return create(CommitConditionSchema, {
-        condition: { case: "absent", value: create(AbsentConditionSchema, { path: condition.path }) },
-      });
-    });
-    const mutations = request.mutations.map(mutation => {
-      if ("append" in mutation) return create(CommitMutationSchema, {
-        mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
-      });
-      if ("softAppend" in mutation) return create(CommitMutationSchema, {
-        mutation: { case: "softAppend", value: create(SoftAppendMutationSchema, { path: mutation.softAppend.path, records: mutation.softAppend.values.map(value => create(AppendRecordSchema, { value })), closed: mutation.softAppend.closed ?? "" }) },
-      });
-      if ("fork" in mutation) return create(CommitMutationSchema, {
-        mutation: { case: "fork", value: create(ForkMutationSchema, {
-          source: mutation.fork.source,
-          destination: mutation.fork.destination,
-          atTail: mutation.fork.atTail,
-          exclude: [...(mutation.fork.exclude ?? [])],
-          records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
-        }) },
-      });
-      throw new StreamError("invalid_argument", "commit mutation is invalid");
-    });
-    const wire = create(CommitRequestSchema, { conditions, mutations, idempotencyKey: options.idempotencyKey, ...(options.deadlineUnixMillis === undefined ? {} : { deadlineUnixMillis: options.deadlineUnixMillis }) });
+    const effects = request.effects.map(effect => create(CommitEffectSchema, { conditions: wireConditions(effect.conditions), mutations: wireMutations(effect.mutations), soft: effect.soft }));
+    const wire = create(CommitRequestSchema, { effects, idempotencyKey: options.idempotencyKey, ...(options.deadlineUnixMillis === undefined ? {} : { deadlineUnixMillis: options.deadlineUnixMillis }) });
     input = toBinary(CommitRequestSchema, wire);
   } catch (error) {
     if (error instanceof StreamError) throw error;
@@ -309,44 +274,76 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
   return canonical;
 }
 
+function wireConditions(conditions: ProviderCommitEffect["conditions"]) {
+  return conditions.map(condition => {
+    if ("ifTail" in condition && condition.ifCommitId !== undefined) return create(CommitConditionSchema, {
+      condition: { case: "head", value: create(HeadConditionSchema, { path: condition.path, expected: condition.ifTail, commitId: commitId(condition.ifCommitId) }) },
+    });
+    if ("ifTail" in condition) return create(CommitConditionSchema, {
+      condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
+    });
+    if ("ifPresent" in condition) {
+      if (condition.ifPresent !== true) throw new StreamError("invalid_argument", "presence condition must be true");
+      return create(CommitConditionSchema, {
+        condition: { case: "present", value: create(PresentConditionSchema, { path: condition.path }) },
+      });
+    }
+    if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
+    return create(CommitConditionSchema, {
+      condition: { case: "absent", value: create(AbsentConditionSchema, { path: condition.path }) },
+    });
+  });
+}
+
+function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
+  return mutations.map(mutation => {
+    if ("append" in mutation) return create(CommitMutationSchema, {
+      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
+    });
+    if ("fork" in mutation) return create(CommitMutationSchema, {
+      mutation: { case: "fork", value: create(ForkMutationSchema, {
+        source: mutation.fork.source,
+        destination: mutation.fork.destination,
+        atTail: mutation.fork.atTail,
+        exclude: [...(mutation.fork.exclude ?? [])],
+        records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
+      }) },
+    });
+    throw new StreamError("invalid_argument", "commit mutation is invalid");
+  });
+}
+
 export async function normalizeWireCommit(request: ProviderCommitRequest, options: CommitOptions): Promise<ProviderCommitRequest> {
   const canonical = await normalizeWireCommitBytes(request, options);
   const normalized = fromBinary(CommitRequestSchema, canonical);
   return {
-    conditions: normalized.conditions.map(condition => {
-      switch (condition.condition.case) {
-        case "head": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected, ifCommitId: commitId(condition.condition.value.commitId) };
-        case "tail": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected };
-        case "absent": return { path: condition.condition.value.path, ifAbsent: true };
-        case "present": return { path: condition.condition.value.path, ifPresent: true };
-        default: throw new StreamError("invalid_argument", "normalized condition is missing its kind");
-      }
-    }),
-    mutations: normalized.mutations.map(mutation => {
-      switch (mutation.mutation.case) {
-        case "append": return {
-          append: {
-            path: mutation.mutation.value.path,
-            values: mutation.mutation.value.records.map(record => record.value.slice()),
-          },
-        };
-        case "softAppend": {
-          const value = mutation.mutation.value;
-          return {
-            softAppend: {
-              path: value.path,
-              values: value.records.map(record => record.value.slice()),
-              ...(value.closed === "" ? {} : { closed: value.closed }),
+    effects: normalized.effects.map(effect => ({
+      conditions: effect.conditions.map(condition => {
+        switch (condition.condition.case) {
+          case "head": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected, ifCommitId: commitId(condition.condition.value.commitId) };
+          case "tail": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected };
+          case "absent": return { path: condition.condition.value.path, ifAbsent: true };
+          case "present": return { path: condition.condition.value.path, ifPresent: true };
+          default: throw new StreamError("invalid_argument", "normalized condition is missing its kind");
+        }
+      }),
+      mutations: effect.mutations.map(mutation => {
+        switch (mutation.mutation.case) {
+          case "append": return {
+            append: {
+              path: mutation.mutation.value.path,
+              values: mutation.mutation.value.records.map(record => record.value.slice()),
             },
           };
+          case "fork": {
+            const value = mutation.mutation.value;
+            return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };
+          }
+          default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
         }
-        case "fork": {
-          const value = mutation.mutation.value;
-          return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };
-        }
-        default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
-      }
-    }),
+      }),
+      soft: effect.soft,
+    })),
   };
 }
 

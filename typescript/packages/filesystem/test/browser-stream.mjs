@@ -142,7 +142,7 @@ if (query.has("actor")) {
       }
     } finally { await backlog.return(); }
 
-    const request = { conditions: [{ path: "deadline", ifAbsent: true }], mutations: [{ append: { path: "deadline", values: [Uint8Array.of(1)] } }] };
+    const request = { effects: [{ conditions: [{ path: "deadline", ifAbsent: true }], mutations: [{ append: { path: "deadline", values: [Uint8Array.of(1)] } }], soft: false }] };
     let deadlineRejected = false;
     try { await reopened.commit(request, { idempotencyKey: key("deadline"), deadlineUnixMillis: BigInt(Date.now()) - 1n }); }
     catch (error) { deadlineRejected = error.code === "deadline_elapsed"; }

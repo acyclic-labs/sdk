@@ -15,14 +15,16 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
             let outcome = stream
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: path.clone(),
-                        expected: 1,
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.clone(),
-                        records: vec![(Bytes::from_static(b"rollback")).into()],
-                    }],
+                    effects: vec![crate::CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: 1,
+                        }],
+                        vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![(Bytes::from_static(b"rollback")).into()],
+                        }],
+                    )],
                     idempotency_key: key(b"rollback-commit")?,
                 })
                 .await?;
@@ -204,13 +206,15 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
     let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: path("deadline/accepted")?,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path("deadline/accepted")?,
-            records: vec![(Bytes::from_static(b"accepted")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: path("deadline/accepted")?,
+            }],
+            vec![CommitMutation::Append {
+                path: path("deadline/accepted")?,
+                records: vec![(Bytes::from_static(b"accepted")).into()],
+            }],
+        )],
         idempotency_key: key(b"deadline-accepted")?,
     };
     assert_eq!(
@@ -251,13 +255,15 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
 
     let retryable = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: path("deadline/retry")?,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path("deadline/retry")?,
-            records: vec![(Bytes::from_static(b"retry")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: path("deadline/retry")?,
+            }],
+            vec![CommitMutation::Append {
+                path: path("deadline/retry")?,
+                records: vec![(Bytes::from_static(b"retry")).into()],
+            }],
+        )],
         idempotency_key: key(b"deadline-retry")?,
     };
     assert_eq!(
@@ -739,19 +745,21 @@ async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Resul
     let names = ["a", "a-/child", "a/child"];
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: names
-            .iter()
-            .map(|name| Ok(CommitCondition::Absent { path: path(name)? }))
-            .collect::<Result<_, StreamError>>()?,
-        mutations: names
-            .iter()
-            .map(|name| {
-                Ok(CommitMutation::Append {
-                    path: path(name)?,
-                    records: vec![(Bytes::new()).into()],
+        effects: vec![crate::CommitEffect::hard(
+            names
+                .iter()
+                .map(|name| Ok(CommitCondition::Absent { path: path(name)? }))
+                .collect::<Result<_, StreamError>>()?,
+            names
+                .iter()
+                .map(|name| {
+                    Ok(CommitMutation::Append {
+                        path: path(name)?,
+                        records: vec![(Bytes::new()).into()],
+                    })
                 })
-            })
-            .collect::<Result<_, StreamError>>()?,
+                .collect::<Result<_, StreamError>>()?,
+        )],
         idempotency_key: key(b"prefix-siblings")?,
     };
     assert!(matches!(

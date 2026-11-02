@@ -8,7 +8,7 @@ use acyclic_harness_core::{
     context::{DiffCursor, DiffFilePage},
     interaction::ApprovalBinding,
 };
-use acyclic_stream::{CommitRequest, wire_codec};
+use acyclic_stream::{CommitEffect, CommitRequest, wire_codec};
 use base64::Engine as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -333,10 +333,20 @@ pub fn decode_agent_reply(
             if request.deadline_unix_millis.is_some() {
                 return Err(CommandError::Invalid);
             }
+            let conditions: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.conditions.len())
+                .sum();
+            let mutations: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.mutations.len())
+                .sum();
             if request.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES
-                || request.conditions.len() > acyclic_stream::MAX_ITEMS
-                || request.mutations.is_empty()
-                || request.mutations.len() > acyclic_stream::MAX_ITEMS
+                || conditions > acyclic_stream::MAX_ITEMS
+                || mutations == 0
+                || mutations > acyclic_stream::MAX_ITEMS
             {
                 return Err(CommandError::Capacity);
             }
@@ -728,14 +738,16 @@ mod tests {
         let path = StreamPath::new("agent/inbox")?;
         Ok(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 7,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from("exact original payload")],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 7,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from("exact original payload")],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
         })
     }
@@ -1433,7 +1445,7 @@ mod tests {
     fn failed_export_does_not_consume_uncertain_custody() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut original = request()?;
-        let CommitMutation::Append { records, .. } = &mut original.mutations[0] else {
+        let CommitMutation::Append { records, .. } = &mut original.effects[0].mutations[0] else {
             return Err("expected append".into());
         };
         *records = vec![AppendRecord::from(bytes::Bytes::from(vec![

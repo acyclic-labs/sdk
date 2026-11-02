@@ -26,8 +26,8 @@ use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPageRequest, CommitCondition, CommitConflict,
-    CommitMutation, CommitOutcome, CommitRequest, CommittedMutation, ForkRequest, IdempotencyKey,
-    IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
+    CommitEffect, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation, ForkRequest,
+    IdempotencyKey, IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -273,22 +273,24 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: source.clone(),
-                expected: 2,
-            },
-            CommitCondition::Absent {
-                path: committed_path.clone(),
-            },
-        ],
-        mutations: vec![CommitMutation::Fork {
-            exclude: Vec::new(),
-            source: source.clone(),
-            destination: committed_path,
-            at_tail: 2,
-            records: Vec::new(),
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 2,
+                },
+                CommitCondition::Absent {
+                    path: committed_path.clone(),
+                },
+            ],
+            vec![CommitMutation::Fork {
+                exclude: Vec::new(),
+                source: source.clone(),
+                destination: committed_path,
+                at_tail: 2,
+                records: Vec::new(),
+            }],
+        )],
         idempotency_key: key(b"stream-commit")?,
     };
     let committed = provider.commit(request.clone()).await?;
@@ -307,14 +309,16 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: absent.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: absent.clone(),
-            records: vec![Bytes::from_static(b"first-write").into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: absent.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: absent.clone(),
+                records: vec![Bytes::from_static(b"first-write").into()],
+            }],
+        )],
         idempotency_key: absent_key.clone(),
     };
     let absent_outcome = provider.commit(absent_request.clone()).await?;
@@ -385,22 +389,24 @@ async fn verify_stale_tail_condition(
     if provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![
-                CommitCondition::Tail {
-                    path: source.clone(),
-                    expected: 1,
-                },
-                CommitCondition::Absent {
-                    path: stale_path.clone(),
-                },
-            ],
-            mutations: vec![CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: source.clone(),
-                destination: stale_path.clone(),
-                at_tail: 2,
-                records: Vec::new(),
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![
+                    CommitCondition::Tail {
+                        path: source.clone(),
+                        expected: 1,
+                    },
+                    CommitCondition::Absent {
+                        path: stale_path.clone(),
+                    },
+                ],
+                vec![CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: source.clone(),
+                    destination: stale_path.clone(),
+                    at_tail: 2,
+                    records: Vec::new(),
+                }],
+            )],
             idempotency_key: key(b"stream-stale-commit")?,
         })
         .await?
@@ -421,25 +427,27 @@ async fn verify_fork_with_records(
     let destination = path("conformance/forked-and-extended")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: source.clone(),
-                expected: 2,
-            },
-            CommitCondition::Absent {
-                path: destination.clone(),
-            },
-        ],
-        mutations: vec![CommitMutation::Fork {
-            exclude: Vec::new(),
-            source,
-            destination: destination.clone(),
-            at_tail: 1,
-            records: vec![
-                Bytes::from_static(b"extended").into(),
-                Bytes::from_static(b"again").into(),
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 2,
+                },
+                CommitCondition::Absent {
+                    path: destination.clone(),
+                },
             ],
-        }],
+            vec![CommitMutation::Fork {
+                exclude: Vec::new(),
+                source,
+                destination: destination.clone(),
+                at_tail: 1,
+                records: vec![
+                    Bytes::from_static(b"extended").into(),
+                    Bytes::from_static(b"again").into(),
+                ],
+            }],
+        )],
         idempotency_key: key(b"stream-fork-with-records")?,
     };
     let committed = provider.commit(request.clone()).await?;
@@ -528,14 +536,16 @@ async fn verify_unspent_conflicts(
     let commit_key = key(b"unspent-commit")?;
     let mut request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![Bytes::from_static(b"next").into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![Bytes::from_static(b"next").into()],
+            }],
+        )],
         idempotency_key: commit_key.clone(),
     };
     if !matches!(
@@ -545,7 +555,8 @@ async fn verify_unspent_conflicts(
     {
         return Err(StreamError::Unavailable);
     }
-    let Some(CommitCondition::Tail { expected, .. }) = request.conditions.first_mut() else {
+    let Some(CommitCondition::Tail { expected, .. }) = request.effects[0].conditions.first_mut()
+    else {
         return Err(StreamError::Unavailable);
     };
     *expected = 1;
@@ -623,56 +634,58 @@ fn subtree_request() -> Result<CommitRequest, StreamError> {
     let marker = path("conformance/adopted")?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent {
-                path: destination.clone(),
-            },
-            CommitCondition::Tail {
-                path: child.clone(),
-                expected: 1,
-            },
-            CommitCondition::Tail {
-                path: marker.clone(),
-                expected: 0,
-            },
-            CommitCondition::Absent {
-                path: path("conformance/fork-volumes/one")?,
-            },
-            CommitCondition::Absent {
-                path: path("conformance/fork-volumes/two")?,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Fork {
-                exclude: vec![path("children")?],
-                source,
-                destination,
-                at_tail: 0,
-                records: vec![Bytes::from_static(b"bound").into()],
-            },
-            CommitMutation::Append {
-                path: child,
-                records: vec![Bytes::from_static(b"source-after-cut").into()],
-            },
-            CommitMutation::Append {
-                path: marker,
-                records: vec![Bytes::from_static(b"ForkAdopted").into()],
-            },
-            CommitMutation::Fork {
-                source: path("conformance/volumes/one")?,
-                destination: path("conformance/fork-volumes/one")?,
-                at_tail: 1,
-                exclude: Vec::new(),
-                records: vec![Bytes::from_static(b"volume-bound").into()],
-            },
-            CommitMutation::Fork {
-                source: path("conformance/volumes/two")?,
-                destination: path("conformance/fork-volumes/two")?,
-                at_tail: 1,
-                exclude: Vec::new(),
-                records: vec![Bytes::from_static(b"volume-bound").into()],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Absent {
+                    path: destination.clone(),
+                },
+                CommitCondition::Tail {
+                    path: child.clone(),
+                    expected: 1,
+                },
+                CommitCondition::Tail {
+                    path: marker.clone(),
+                    expected: 0,
+                },
+                CommitCondition::Absent {
+                    path: path("conformance/fork-volumes/one")?,
+                },
+                CommitCondition::Absent {
+                    path: path("conformance/fork-volumes/two")?,
+                },
+            ],
+            vec![
+                CommitMutation::Fork {
+                    exclude: vec![path("children")?],
+                    source,
+                    destination,
+                    at_tail: 0,
+                    records: vec![Bytes::from_static(b"bound").into()],
+                },
+                CommitMutation::Append {
+                    path: child,
+                    records: vec![Bytes::from_static(b"source-after-cut").into()],
+                },
+                CommitMutation::Append {
+                    path: marker,
+                    records: vec![Bytes::from_static(b"ForkAdopted").into()],
+                },
+                CommitMutation::Fork {
+                    source: path("conformance/volumes/one")?,
+                    destination: path("conformance/fork-volumes/one")?,
+                    at_tail: 1,
+                    exclude: Vec::new(),
+                    records: vec![Bytes::from_static(b"volume-bound").into()],
+                },
+                CommitMutation::Fork {
+                    source: path("conformance/volumes/two")?,
+                    destination: path("conformance/fork-volumes/two")?,
+                    at_tail: 1,
+                    exclude: Vec::new(),
+                    records: vec![Bytes::from_static(b"volume-bound").into()],
+                },
+            ],
+        )],
         idempotency_key: key(b"tree-adopt")?,
     })
 }
@@ -882,20 +895,22 @@ pub async fn verify_page_tails(
     let cut = provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: [&a, &b]
-                .into_iter()
-                .map(|path| CommitCondition::Tail {
-                    path: path.clone(),
-                    expected: 1,
-                })
-                .collect(),
-            mutations: vec![a.clone(), b.clone()]
-                .into_iter()
-                .map(|path| CommitMutation::Append {
-                    path,
-                    records: vec![Bytes::from_static(b"new").into()],
-                })
-                .collect(),
+            effects: vec![CommitEffect::hard(
+                [&a, &b]
+                    .into_iter()
+                    .map(|path| CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: 1,
+                    })
+                    .collect(),
+                vec![a.clone(), b.clone()]
+                    .into_iter()
+                    .map(|path| CommitMutation::Append {
+                        path,
+                        records: vec![Bytes::from_static(b"new").into()],
+                    })
+                    .collect(),
+            )],
             idempotency_key: key(b"page-tails-next")?,
         })
         .await?;
