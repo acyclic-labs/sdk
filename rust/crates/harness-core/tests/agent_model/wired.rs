@@ -85,7 +85,6 @@ fn executors_with_render_bytes(
     render_bytes: Option<u64>,
 ) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let preset = acyclic_harness_core::preset::Preset::graphcoder();
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
         base.render_bytes = render_bytes;
@@ -107,14 +106,12 @@ fn executors_with_render_bytes(
     }
     .build()?;
     Ok(Arc::new(
-        preset
-            .executors(
-                (selection, model),
-                ToolRegistry::default(),
-                (base, CompactionPolicy::Disabled),
-                Arc::new(Tasks(bindings)),
-            )
-            .with_agent_tools(&[]),
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (selection, model),
+            ToolRegistry::default(),
+            (base, CompactionPolicy::Disabled),
+            Arc::new(Tasks(bindings)),
+        ),
     ))
 }
 
@@ -130,6 +127,8 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
 
 #[test]
 fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
+    use acyclic_harness_core::tools;
+
     let preset = acyclic_harness_core::preset::Preset::graphcoder();
     for (field, value) in [
         ("tools", serde_json::json!(["fs"])),
@@ -139,28 +138,26 @@ fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
         restored[field] = value;
         assert!(serde_json::from_value::<acyclic_harness_core::preset::Preset>(restored).is_err());
     }
-    let shell = preset.tools(|name| name == "shell", Vec::new())?;
-    let all = preset.tools(|_| true, Vec::new())?;
-    let selected = shell.definitions(None)?;
+    let names = tools::default_names();
+    let volume = tools::registry(&names, |_| false, Vec::new())?;
+    let all = tools::registry(&names, |_| true, Vec::new())?;
+    let selected = volume.definitions(None)?;
     let full = all.definitions(None)?;
-    assert!(selected.iter().any(|tool| tool.name == "shell"));
-    assert!(!selected.iter().any(|tool| tool.name == "fs"));
-    // The former all-workspace admission exposes this additional command.
+    assert!(!selected.iter().any(|tool| tool.name == "shell"));
+    assert!(selected.iter().any(|tool| tool.name == "fs"));
+    // The stream-backed filesystem needs no physical workspace. The shell does.
+    assert!(full.iter().any(|tool| tool.name == "shell"));
     assert!(full.iter().any(|tool| tool.name == "fs"));
-    let fs = acyclic_harness_core::tools::catalog()
-        .find(|tool| tool.name == "fs")
-        .expect("stock filesystem tool")
+    let shell = tools::catalog()
+        .find(|tool| tool.name == "shell")
+        .expect("stock shell tool")
         .capability();
-    assert!(!preset.tool_grants(&shell)?.contains(&fs));
-    assert!(preset.tool_grants(&all)?.contains(&fs));
-    let selected = acyclic_harness_core::tools::call_grants(&shell, std::iter::empty())?;
+    let volume_grants = tools::call_grants(&volume, tools::AGENT_TOOLS)?;
+    assert!(!volume_grants.contains(&shell));
+    assert!(tools::call_grants(&all, tools::AGENT_TOOLS)?.contains(&shell));
+    let selected = tools::call_grants(&volume, std::iter::empty())?;
     assert!(!selected.iter().any(|grant| grant == "tool:call:spawn"));
-    assert!(
-        preset
-            .tool_grants(&shell)?
-            .iter()
-            .any(|grant| grant == "tool:call:spawn")
-    );
+    assert!(volume_grants.iter().any(|grant| grant == "tool:call:spawn"));
     Ok(())
 }
 
