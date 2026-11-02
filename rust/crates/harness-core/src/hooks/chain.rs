@@ -17,6 +17,10 @@
 //! The chain is one hook outcome, recorded once per call by its caller.
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod model;
+
 /// One command's raw result.
 pub(super) type Run = Result<(Option<i32>, Vec<u8>, Vec<u8>)>;
 
