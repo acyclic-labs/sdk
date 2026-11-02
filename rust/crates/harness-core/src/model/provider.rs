@@ -222,10 +222,14 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             "selected model context capacity is unavailable".into(),
         ))
     }
-    /// Verified admission count and per-message compaction planning weights.
+    /// Admission for one request and its per-message compaction planning
+    /// weights. `input_tokens` is a locally proven upper bound when one is
+    /// within `ceiling`, so no count request precedes generation; otherwise it
+    /// is the provider's verified count. A ceiling of zero always counts.
     fn count_tokens<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
+        _ceiling: u64,
     ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
         Box::pin(async {
             Err(Error::Unsupported(
@@ -281,6 +285,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn count_tokens_with_native_work<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
+        _ceiling: u64,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
     {

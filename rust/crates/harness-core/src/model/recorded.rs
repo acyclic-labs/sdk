@@ -502,8 +502,9 @@ impl ModelProvider for RecordedModel {
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
     ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
-        self.live.count_tokens(request)
+        self.live.count_tokens(request, ceiling)
     }
     fn generate<'a>(
         &'a self,
@@ -548,10 +549,12 @@ impl ModelProvider for RecordedModel {
     fn count_tokens_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
     {
-        self.live.count_tokens_with_native_work(request, work)
+        self.live
+            .count_tokens_with_native_work(request, ceiling, work)
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn generate_with_native_work<'a>(

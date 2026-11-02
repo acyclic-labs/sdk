@@ -71,7 +71,7 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let mut resumed = original.request().clone();
         resumed.messages[1].content = ModelContent::Text("漢".repeat(5000));
         let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
-        let count = futures::executor::block_on(provider.count_tokens(&prepared))?.input_tokens;
+        let count = futures::executor::block_on(provider.count_tokens(&prepared, 0))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
         let policy = ThresholdCompaction {
             response_reserve_tokens: 1024,

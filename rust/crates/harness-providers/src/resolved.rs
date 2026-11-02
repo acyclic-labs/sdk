@@ -25,8 +25,8 @@ pub struct ResolvedModel {
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
     pub(crate) transport: Arc<dyn HttpTransport>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) codex_count: Arc<crate::codex_count::Counter>,
+    /// The last reported generation input, anchoring later admission bounds.
+    pub(crate) usage: Arc<crate::usage_count::Counter>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -126,13 +126,7 @@ impl ResolvedModel {
         metadata: &serde_json::Value,
     ) -> Result<()> {
         self.estimator.observe(input_bytes, metadata);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.codex_login.is_some() {
-            self.codex_count.observe(request, metadata)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = request;
-        Ok(())
+        self.usage.observe(self.config.adapter, request, metadata)
     }
 
     pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
@@ -169,8 +163,7 @@ impl ModelProvider for ResolvedModel {
             key: self.key.clone(),
             credential_scope: self.credential_scope,
             transport: self.transport.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            codex_count: Arc::clone(&self.codex_count),
+            usage: Arc::clone(&self.usage),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.clone(),
         }))
@@ -201,6 +194,7 @@ impl ModelProvider for ResolvedModel {
     fn count_tokens_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
         acyclic_harness_core::NativeFutureBundle<
@@ -211,7 +205,7 @@ impl ModelProvider for ResolvedModel {
         self.context_capacity_with_native_work(&request.request().model, work)?;
         acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let cancelled = work.cancellation_wait()?;
-            let exchange = crate::counting::count(self, request, Some(work));
+            let exchange = crate::counting::count(self, request, ceiling, Some(work));
             futures::pin_mut!(cancelled, exchange);
             match futures::future::select(cancelled, exchange).await {
                 futures::future::Either::Left(_) => {
@@ -287,9 +281,10 @@ impl ModelProvider for ResolvedModel {
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
         Box::pin(async move {
-            crate::counting::count(self, request, None)
+            crate::counting::count(self, request, ceiling, None)
                 .await
                 .map(|(count, _)| count)
         })

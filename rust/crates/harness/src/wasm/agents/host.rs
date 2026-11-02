@@ -186,6 +186,7 @@ impl ModelProvider for HostModel {
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        _ceiling: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
         Box::pin(async move {
             let callback = self.count_tokens.as_ref().ok_or_else(|| {

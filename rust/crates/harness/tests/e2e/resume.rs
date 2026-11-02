@@ -248,8 +248,9 @@ impl ModelProvider for PausedPrefix {
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ModelTokenCount>> {
-        self.accounting.count_tokens(request)
+        self.accounting.count_tokens(request, ceiling)
     }
 
     fn generate<'a>(
