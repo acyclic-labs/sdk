@@ -20,14 +20,7 @@ impl<A: 'static, O: 'static> Clone for Volume<A, O> {
 }
 
 pub(super) fn record_logical_bytes(record: FileRecord) -> u64 {
-    match record.payload {
-        FilePayload::InlineRegular(bytes) => {
-            u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
-        }
-        FilePayload::Regular { logical_bytes, .. } => logical_bytes,
-        FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
-        _ => 0,
-    }
+    record.logical_file_bytes()
 }
 
 pub(crate) async fn read_generation_root<O: AsyncObjectStore>(
