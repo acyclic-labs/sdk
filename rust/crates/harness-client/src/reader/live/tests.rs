@@ -11,7 +11,8 @@ use acyclic_harness_core::{
     model::ModelDispatch,
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, MemoryStream, StreamProvider as _, StreamProviderExt as _,
+    AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, StreamProvider as _,
+    StreamProviderExt as _,
 };
 use futures::StreamExt as _;
 use std::borrow::Cow;
@@ -320,6 +321,80 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert!(source.page(&reader, 2, count).unwrap().next().is_none());
         assert!(matches!(source.page(&reader, 3, count), Err(Error::Range)));
         assert_eq!(source.want_page(u64::MAX, count), Err(Error::Range));
+
+        // An ordinary listing supplies fork origin, but no child tail. Its
+        // finite nonempty read must make the requested page immediately usable
+        // without a head, another request, or fabricated end-of-stream proof.
+        let child = StreamPath::new("original/forked-usage").unwrap();
+        provider
+            .fork(ForkRequest {
+                exclude: Vec::new(),
+                source: stream.clone(),
+                destination: child.clone(),
+                at_tail: Some(2),
+                idempotency_key: IdempotencyKey::new(b"inherited-usage".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let selected = Source::new(child.clone());
+        let mut listed = Reader::new(ReaderPolicy::default()).unwrap();
+        listed.plan([(
+            Want::Listing {
+                parent: StreamPath::new("original").unwrap(),
+                index: 0,
+                tail: None,
+                witness: None,
+            },
+            Priority::Visible,
+        )]);
+        let [listing]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        assert!(matches!(&listing, Op::Children { .. }));
+        let id = listing.id();
+        listed.complete(
+            id,
+            super::super::driver::execute(&provider, listing).await,
+            0,
+        );
+        assert!(listed.cache().origin_known(&child));
+        assert_eq!(listed.cache().tail(&child), None);
+        let window = NonZeroU32::new(2).unwrap();
+        let want = selected.want_page(0, window).unwrap();
+        assert_eq!(
+            selected.page(&listed, 0, window).unwrap().next(),
+            Some((0, Err(Error::Pending)))
+        );
+        listed.plan([(want.clone(), Priority::Visible)]);
+        let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
+        assert!(matches!(&read, Op::Read { .. }));
+        let id = read.id();
+        let loaded = super::super::driver::execute(&provider, read).await;
+        let Outcome::Records(records) = &loaded else {
+            panic!("original finite read");
+        };
+        let pointer = records[0].value.as_slice().as_ptr();
+        listed.complete(id, loaded, 0);
+        assert_eq!(listed.cache().tail(&child), None);
+        let issued = listed.issued();
+        let mut page = selected.page(&listed, 0, window).unwrap();
+        assert_eq!(page.end, 2);
+        for sequence in 0..2 {
+            let (position, row) = page.next().unwrap();
+            let row = row.unwrap();
+            assert_eq!(position, sequence);
+            let original: ModelUsageRecord = serde_json::from_slice(row).unwrap();
+            assert_eq!(
+                Usage::project(&admission, &original, Some(&price)).unwrap(),
+                first
+            );
+            if sequence == 0 {
+                assert_eq!(row.as_ptr(), pointer);
+            }
+        }
+        assert!(page.next().is_none());
+        drop(page);
+        listed.plan([(want.clone(), Priority::Visible)]);
+        assert!(listed.poll(0).is_empty());
+        assert_eq!(listed.issued(), issued);
 
         // An original stream follow publishes a new source record. Its
         // unsupported layout must fail, rather than serve the previous value.

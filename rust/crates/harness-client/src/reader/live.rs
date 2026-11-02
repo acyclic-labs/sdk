@@ -73,7 +73,7 @@ impl Source {
     /// Borrow the observed latest original record without IO, a payload copy
     /// or a second encoding. Decode using the original producer's format.
     pub fn latest<'a>(&self, reader: &'a Reader) -> Result<&'a RecordBytes, Error> {
-        let tail = self.tail(reader)?;
+        let tail = self.observed_tail(reader)?.ok_or(Error::Pending)?;
         let sequence = tail.checked_sub(1).ok_or(Error::Empty)?;
         reader
             .cache()
@@ -82,36 +82,37 @@ impl Source {
     }
 
     /// Lazily borrow only the requested original records. The exclusive end is
-    /// the original observed tail clipped to the supplied window. Reaching it
-    /// is not producer completion: growth is delivered by the original follow.
+    /// the supplied window, clipped when the original tail is known. An
+    /// unknown tail does not hide loaded records; gaps remain Pending.
+    /// Reaching the end is not producer completion: growth uses the follow.
     pub fn page<'a>(
         &'a self,
         reader: &'a Reader,
         from: u64,
         count: NonZeroU32,
     ) -> Result<Page<impl Iterator<Item = (u64, Option<&'a RecordBytes>)>>, Error> {
-        let tail = self.tail(reader)?;
-        if from > tail {
+        let tail = self.observed_tail(reader)?;
+        if tail.is_some_and(|tail| from > tail) {
             return Err(Error::Range);
         }
         let end = from
             .checked_add(u64::from(count.get()))
-            .ok_or(Error::Range)?
-            .min(tail);
+            .ok_or(Error::Range)?;
+        let end = tail.map_or(end, |tail| end.min(tail));
         Ok(Page {
             end,
             records: reader.cache().records(&self.stream, from, end),
         })
     }
 
-    fn tail(&self, reader: &Reader) -> Result<u64, Error> {
+    fn observed_tail(&self, reader: &Reader) -> Result<Option<u64>, Error> {
         if !reader.readable() {
             return Err(Error::Unreadable);
         }
         if let Some(issue) = reader.issues.get(&self.stream) {
             return Err(Error::Source(*issue));
         }
-        reader.cache().tail(&self.stream).ok_or(Error::Pending)
+        Ok(reader.cache().tail(&self.stream))
     }
 }
 
