@@ -47,6 +47,7 @@ pub trait TargetResolver: acyclic_stream::ProviderPlatform {
     fn read_path<'a>(
         &'a self,
         _path: &'a str,
+        _kind: crate::tool::ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
@@ -139,13 +140,14 @@ impl TargetResolver for InProcessTargets {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
+        kind: crate::tool::ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
         let position = self.roster.select_position(None).map_err(Error::Target)?;
-        self.targets[position].executor.read_path(path, work)
+        self.targets[position].executor.read_path(path, kind, work)
     }
 
     fn roster(&self) -> Arc<Roster> {

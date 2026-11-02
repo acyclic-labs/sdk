@@ -40,12 +40,13 @@ impl ToolExecutor for Adapter {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
+        kind: crate::tool::ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
-        self.original.executor.read_path(path, work)
+        self.original.executor.read_path(path, kind, work)
     }
 
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]

@@ -24,7 +24,7 @@ pub use invocation::{ToolInvocation, ToolResult};
 mod recorded_invocation;
 pub(crate) use recorded_invocation::{RecordedInvocation, validate_model_call_recorded};
 mod executor;
-pub use executor::{Dispatch, ToolExecutor};
+pub use executor::{Dispatch, ReadPathKind, ToolExecutor};
 mod projection;
 pub use projection::*;
 mod approval;

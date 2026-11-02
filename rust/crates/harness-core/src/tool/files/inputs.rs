@@ -31,6 +31,15 @@ pub struct ReadFileInput {
 pub enum ReadSelection {
     /// Exact UTF-8 source bytes, without automatic notebook or media projection.
     Text,
+    /// Directory child names at one immutable generation. The last returned
+    /// entry's version is its exclusive continuation cursor.
+    Directory {
+        /// Opaque cursor from a previous entry in this directory.
+        #[serde(default)]
+        after: Option<String>,
+        /// Maximum names in this page.
+        limit: u32,
+    },
     /// Text lines, with an optional byte cursor returned by a previous page.
     Lines {
         /// First line to return.

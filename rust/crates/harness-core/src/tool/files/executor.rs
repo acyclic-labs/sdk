@@ -342,6 +342,17 @@ impl ToolExecutor for FileTool {
             return Err(unauthorized());
         }
         let (file, _custody) = self.preflight(scope, context, invocation, work)?;
+        if matches!(self, Self::Read)
+            && invocation
+                .arguments
+                .get("selection")
+                .and_then(|selection| selection.get("kind"))
+                .and_then(Value::as_str)
+                == Some("directory")
+        {
+            // Preflight validated the directory selection and its exact List policy.
+            return Ok(());
+        }
         let path = file
             .as_ref()
             .map(FileRef::path)

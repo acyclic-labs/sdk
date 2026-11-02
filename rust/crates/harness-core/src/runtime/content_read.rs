@@ -219,16 +219,71 @@ impl TaskContext {
         after: Option<&str>,
         maximum_entries: u32,
     ) -> Result<PrivateDirectoryPage> {
-        self.require_private_directory(volume, granted_prefix, path)?;
+        let (page, _hold) = self
+            .list_bound_directory(
+                crate::conversation::DirectoryRead {
+                    volume,
+                    granted_prefix,
+                    path,
+                    generation: expected_generation,
+                    after,
+                    maximum_entries,
+                },
+                &self.scope,
+                None,
+            )
+            .await?;
+        Ok(page)
+    }
+
+    pub(super) async fn list_bound_directory<'a, 'io: 'a>(
+        &'a self,
+        request: crate::conversation::DirectoryRead<'a>,
+        scope: &'a RuntimeScope,
+        io: Option<&'io ContentIo>,
+    ) -> Result<(
+        PrivateDirectoryPage,
+        Option<crate::conversation::ContentHold<'io>>,
+    )> {
+        let crate::conversation::DirectoryRead {
+            volume,
+            granted_prefix,
+            path,
+            generation: expected_generation,
+            after,
+            maximum_entries,
+        } = request;
+        crate::executor::with_history_io(io, |history| {
+            volume.validate(history)?;
+            crate::tool::ReadPathKind::Directory.validate(path, history)?;
+            crate::tool::ReadPathKind::Directory.validate(granted_prefix, history)?;
+            if crate::conversation::is_internal_path(path)
+                || !crate::core::directory_read_granted_with_work(
+                    scope.grants(),
+                    volume,
+                    granted_prefix,
+                    history,
+                )?
+            {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task scope cannot discover this directory",
+                ));
+            }
+            Ok(())
+        })?;
         if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
-            return Err(Error::Invalid(
-                "private directory page limit is invalid".into(),
+            return Err(content_error(
+                io,
+                ErrorCode::Invalid,
+                "private directory page limit is invalid",
             ));
         }
-        let content = self
-            .content_binding(Some(volume))
-            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-        let page = content
+        let content = self.content_binding(Some(volume)).ok_or_else(|| {
+            content_error(io, ErrorCode::Unsupported, "content reader is not bound")
+        })?;
+        let (page, hold) = content
             .reader
             .list_private_directory(
                 volume,
@@ -237,29 +292,33 @@ impl TaskContext {
                 expected_generation,
                 after,
                 maximum_entries,
-                Some(self.scope.grants()),
-                None,
+                Some(scope.grants()),
+                io,
             )?
             .await?;
-        page.validate()?;
+        page.validate_with_io(io)?;
         if page.generation.as_resource().provider() != volume.provider()
             || expected_generation.is_some_and(|expected| &page.generation != expected)
             || page.entries.len() > maximum_entries as usize
         {
-            return Err(Error::Conflict(
-                "private directory provider returned another page".into(),
+            return Err(content_error(
+                io,
+                ErrorCode::Conflict,
+                "private directory provider returned another page",
             ));
         }
         for entry in &page.entries {
             if (path.is_empty() && entry.name == ".system")
                 || after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes())
             {
-                return Err(Error::Conflict(
-                    "private directory provider returned a forbidden name".into(),
+                return Err(content_error(
+                    io,
+                    ErrorCode::Conflict,
+                    "private directory provider returned a forbidden name",
                 ));
             }
         }
-        Ok(page)
+        Ok((page, hold))
     }
 
     /// Reads and verifies a pinned file at a private path.

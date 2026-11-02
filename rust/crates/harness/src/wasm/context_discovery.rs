@@ -185,7 +185,7 @@ impl ContentResidencyVerifier for BrowserReader {
         ))
     }
 
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         prefix: &'a str,
@@ -194,9 +194,20 @@ impl ContentResidencyVerifier for BrowserReader {
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                PrivateDirectoryPage,
+                Option<crate::conversation::ContentHold<'io>>,
+            ),
+        >,
+    > {
         crate::conversation::require_owner_reader(ceiling)?;
+        if io.is_some() {
+            return Err(Error::Unsupported("directory callback has no funded result transfer; bind the original funded content reader".into()));
+        }
         BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
                 root: ContextRoot {
@@ -227,11 +238,14 @@ impl ContentResidencyVerifier for BrowserReader {
                 .map_err(platform_error)?
                 .as_bool()
                 .ok_or_else(|| Error::Storage("context page requires hasMore".into()))?;
-            Ok(PrivateDirectoryPage {
-                generation,
-                entries,
-                has_more,
-            })
+            Ok((
+                PrivateDirectoryPage {
+                    generation,
+                    entries,
+                    has_more,
+                },
+                None,
+            ))
         })
     }
 

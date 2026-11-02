@@ -265,7 +265,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         clippy::too_many_arguments,
         reason = "The provider receives the grant, generation and cursor as separate borrowed fields."
     )]
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         _volume: &'a VolumeRef,
         _granted_prefix: &'a str,
@@ -274,8 +274,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _after: Option<&'a str>,
         _maximum_entries: u32,
         _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (PrivateDirectoryPage, Option<ContentHold<'io>>)>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -807,7 +807,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             crate::conversation::ContentAccess { ceiling, io },
         )
     }
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
@@ -816,8 +816,8 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (PrivateDirectoryPage, Option<ContentHold<'io>>)>> {
         self.bound_reader(volume, io)?.list_private_directory(
             volume,
             granted_prefix,

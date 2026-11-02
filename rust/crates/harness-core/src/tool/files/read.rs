@@ -12,6 +12,10 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
+            return super::directory::read(context, &input.0, after.as_deref(), *limit, work, io)
+                .await;
+        }
         if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
             let layer = context.effective_tool_path(&input.0.path, io).await?;
             input.0.path = layer.into_owned();

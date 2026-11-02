@@ -471,7 +471,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<GenerationRef, String>>> {
         Box::pin(async move {
             self.root.validate(&mut None)?;
-            let page = self
+            let (page, _hold) = self
                 .reader
                 .list_private_directory(
                     &self.root.volume,

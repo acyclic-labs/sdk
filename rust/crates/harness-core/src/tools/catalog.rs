@@ -4,7 +4,7 @@ use crate::{
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
-            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadFileResult,
+            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadResult,
             WriteFileInput,
         },
         schema::{self, ProjectionMode},
@@ -149,12 +149,12 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-11",
-    description: "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+    revision: "portable-12",
+    description: "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
-    output: schema::output::<ReadFileResult>,
+    output: schema::output::<ReadResult>,
     projection_schema: FileProjection::read_schema,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),

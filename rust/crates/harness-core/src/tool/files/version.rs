@@ -88,6 +88,20 @@ pub(super) fn decode_version(
     version: &str,
     work: crate::NativeWork<'_>,
 ) -> Result<(SelectedVersion, crate::NativeCustody)> {
+    let (selected, custody) = decode_selection(version, work)?;
+    if selected.path() != path {
+        return Err(super::executor::rejection(
+            work,
+            "file version belongs to another path",
+        ));
+    }
+    Ok((selected, custody))
+}
+
+pub(super) fn decode_selection(
+    version: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<(SelectedVersion, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
@@ -108,9 +122,6 @@ pub(super) fn decode_version(
         };
         crate::executor::with_history_io(Some(&io), |history| file.validate(history))
             .map_err(Error::tool_input)?;
-        if file.path() != path {
-            return Err(Error::tool_rejected("file version belongs to another path"));
-        }
         let retained = (std::mem::size_of::<SelectedVersion>() as u64)
             .checked_add(file.logical_owned_bytes()?)
             .ok_or_else(|| Error::tool_rejected("file version ownership overflow"))?;
@@ -127,11 +138,6 @@ pub(super) fn decode_version(
             serde_json::from_str(version).map_err(|error| Error::Invalid(error.to_string()))?,
         )
     };
-    if file.path() != path {
-        return Err(Error::Invalid(
-            "file version belongs to another path".into(),
-        ));
-    }
     file.validate(&mut None)?;
     Ok((file, None))
 }

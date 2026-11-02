@@ -19,7 +19,7 @@ delete globalThis.__acyclic;
 const bind = async (name, input) => {
     try { return await rpc(name, input); }
     catch (error) {
-        if (error.class === 'not_found' && name === 'read') return null;
+        if (error.class === 'not_found' && name === 'read' && input.selection?.kind !== 'directory') return null;
         // Refresh is diagnostic: its refusal or failure cannot replace the
         // original write outcome or confer any additional read permission.
         if (error.class === 'conflict')
@@ -91,6 +91,27 @@ export async function write(path, data, ifVersion) {
         throw new TypeError('write requires any, absent or a version');
     const result = await bind('write', {path, content: encode(path, data), ifVersion});
     return result.version;
+}
+
+// A continuation is the last delivered entry's original namespace version.
+// Closing the iterator drops its page without reading ahead.
+export function list(path, after) {
+    if (path.endsWith('.jsonl')) throw new DeniedError('Log iteration requires its admitted log reader');
+    let cursor = after ?? '';
+    const iterator = (async function* () {
+        let more = true;
+        while (more) {
+            const page = await bind('read', {path, selection: {kind: 'directory', after: cursor || null, limit: 16}});
+            if (page.hasMore && page.entries.length === 0) throw new Error('Directory read did not advance');
+            more = page.hasMore;
+            for (const entry of page.entries) {
+                if (entry.version === cursor) throw new Error('Directory cursor did not advance');
+                cursor = entry.version;
+                yield Object.freeze(entry);
+            }
+        }
+    })();
+    return Object.freeze({get cursor() { return cursor; }, [Symbol.asyncIterator]() { return iterator; }});
 }
 
 export async function spawn() { throw new DeniedError('needs P2'); }

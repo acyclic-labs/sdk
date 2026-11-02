@@ -1,5 +1,36 @@
 use super::*;
 
+/// The authority needed to resolve one public namespace selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadPathKind {
+    /// A file's bytes.
+    File,
+    /// A directory's child names; the empty relative path selects its root.
+    Directory,
+}
+
+impl ReadPathKind {
+    /// Checks the normalized relative path without treating a directory as a file.
+    pub fn validate(
+        self,
+        path: &str,
+        history: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if self == Self::Directory && path.is_empty() {
+            return Ok(());
+        }
+        crate::conversation::validate_content_path(path, history)
+    }
+
+    /// The selected namespace operation's original policy action.
+    pub fn action(self) -> acyclic_fs::access::Action {
+        match self {
+            Self::File => acyclic_fs::access::Action::Read,
+            Self::Directory => acyclic_fs::access::Action::List,
+        }
+    }
+}
+
 /// Records appended atomically with a tool call's claim
 /// ([`ToolExecutor::dispatch`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +71,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn read_path<'a>(
         &'a self,
         _path: &'a str,
+        _kind: ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,

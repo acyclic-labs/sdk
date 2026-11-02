@@ -1,6 +1,23 @@
 use super::*;
 
-/// Admission barrier for every version-pinned file in a conversation message.
+/// One immutable directory selection on the caller's original reader.
+#[derive(Clone, Copy)]
+pub struct DirectoryRead<'a> {
+    /// Authenticated namespace volume.
+    pub volume: &'a VolumeRef,
+    /// The original readable subtree.
+    pub granted_prefix: &'a str,
+    /// Volume-relative directory; empty selects the root.
+    pub path: &'a str,
+    /// Pinned generation, or current head for the first page.
+    pub generation: Option<&'a GenerationRef>,
+    /// Exclusive child name from the previous page.
+    pub after: Option<&'a str>,
+    /// Page chunk size.
+    pub maximum_entries: u32,
+}
+
+/// A discovered name's kind at its pinned namespace generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -45,24 +62,36 @@ pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
-        self.generation.validate(&mut None)?;
-        if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
-            return Err(Error::Invalid(
-                "private directory page exceeds protocol limit".into(),
-            ));
-        }
-        let mut previous: Option<&[u8]> = None;
-        for entry in &self.entries {
-            validate_content_path(&entry.name, &mut None)?;
-            if entry.name.contains('/')
-                || previous.is_some_and(|name| entry.name.as_bytes() <= name)
+        self.validate_with_io(None)
+    }
+
+    pub(crate) fn validate_with_io(&self, io: Option<&ContentIo>) -> Result<()> {
+        crate::executor::with_history_io(io, |history| {
+            self.generation.validate(history)?;
+            if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64
+                || (self.has_more && self.entries.is_empty())
             {
-                return Err(Error::Invalid(
-                    "private directory page names are not ordered".into(),
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Invalid,
+                    "private directory page exceeds its bound or cannot advance",
                 ));
             }
-            previous = Some(entry.name.as_bytes());
-        }
-        Ok(())
+            let mut previous: Option<&[u8]> = None;
+            for entry in &self.entries {
+                validate_content_path(&entry.name, history)?;
+                if entry.name.contains('/')
+                    || previous.is_some_and(|name| entry.name.as_bytes() <= name)
+                {
+                    return Err(crate::store::guarded_boundary(
+                        history,
+                        crate::wire::ErrorCode::Invalid,
+                        "private directory page names are not ordered",
+                    ));
+                }
+                previous = Some(entry.name.as_bytes());
+            }
+            Ok(())
+        })
     }
 }

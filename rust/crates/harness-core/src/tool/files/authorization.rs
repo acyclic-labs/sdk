@@ -96,6 +96,18 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if let Some(ReadSelection::Directory { limit, .. }) = &input.0.selection {
+                    super::directory::validate_input(&input.0, *limit, work)?;
+                    context
+                        .ok_or_else(|| {
+                            error(
+                                crate::wire::ErrorCode::Unauthorized,
+                                "directory read requires its admitted context",
+                            )
+                        })?
+                        .authorize_tool_directory_read(&input.0.path, io)?;
+                    return Ok((None, input.1));
+                }
                 let source = self.path_source(
                     scope,
                     context,

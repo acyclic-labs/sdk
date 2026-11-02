@@ -245,7 +245,7 @@ mod tests {
             .agent_context(&Capabilities::default(), content)?,
         );
         let code = r#"
-            import {read, write, spawn, fork, DeniedError, ConflictError} from 'acyclic';
+            import {read, write, list, spawn, fork, DeniedError, ConflictError} from 'acyclic';
             const first = await write('file.txt', 'one\r\nβ\n', 'absent');
             const file = await read('file.txt');
             if (file.lines(0, 0).length !== 0) throw new Error('empty line selection');
@@ -275,6 +275,35 @@ mod tests {
             await write('large.txt', large, 'any');
             const paged = await read('large.txt');
             if (paged.text() !== large || paged.lines(1999, 1)[0] !== 'β') throw new Error('page lost bytes');
+            for (let i = 0; i < 18; i++) await write(`dir/a${String(i).padStart(2, '0')}`, 'old', 'absent');
+            const listing = list('dir/');
+            if (listing.cursor !== '') throw new Error('unread cursor advanced');
+            let firstEntry;
+            for await (const entry of listing) { firstEntry = entry; break; }
+            if (firstEntry.name !== 'a00' || firstEntry.path !== 'dir/a00' || firstEntry.kind !== 'file'
+                || listing.cursor !== firstEntry.version) throw new Error('delivered cursor differs');
+            // Resumption retains the original cut despite an intervening publication.
+            await write('dir/a00a', 'new', 'absent');
+            const rest = [];
+            for await (const entry of list('dir', listing.cursor)) rest.push(entry.name);
+            if (rest.length !== 17 || rest[0] !== 'a01' || rest[16] !== 'a17' || rest.includes('a00a'))
+                throw new Error('directory continuation changed generation');
+            try {
+                for await (const entry of list('.', listing.cursor)) throw new Error('wrong parent yielded');
+                throw new Error('wrong parent succeeded');
+            } catch (error) { if (!error.message.includes('cursor belongs')) throw error; }
+            let directory;
+            for await (const entry of list('.')) if (entry.name === 'dir') directory = entry;
+            if (directory?.kind !== 'dir' || directory.path !== 'dir') throw new Error('root directory missing');
+            try {
+                for await (const entry of list('.system')) throw new Error('private storage yielded');
+                throw new Error('private storage succeeded');
+            } catch (error) { if (!(error instanceof DeniedError)) throw error; }
+            let missingError;
+            try {
+                for await (const entry of list('missing-directory')) throw new Error('missing directory yielded');
+            } catch (error) { missingError = error; }
+            if (missingError?.class !== 'not_found') throw new Error('missing directory was not refused');
             export default {lines, conflict, absent, stubs, moduleText};
         "#;
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
@@ -291,6 +320,7 @@ mod tests {
             async move {
                 let mut count = 0;
                 let mut large_pages = 0;
+                let mut directory_pages = 0;
                 while let Some(request) = receive.recv().await {
                     let super::Request::Tool(call) = request else {
                         panic!("unexpected log");
@@ -315,6 +345,9 @@ mod tests {
                     if name == "read" && invocation.arguments["path"] == "large.txt" {
                         large_pages += 1;
                     }
+                    if invocation.arguments["selection"]["kind"] == "directory" {
+                        directory_pages += 1;
+                    }
                     let context = ToolContext::new(
                         task.clone(),
                         invocation.operation_id,
@@ -334,7 +367,7 @@ mod tests {
                         .reply
                         .send(Some(serde_json::to_vec(&reply).unwrap().into()));
                 }
-                Ok::<_, crate::Error>((count, large_pages))
+                Ok::<_, crate::Error>((count, large_pages, directory_pages))
             }
         );
         assert_eq!(
@@ -344,11 +377,14 @@ mod tests {
                 "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
             })
         );
-        let (calls, large_pages) = served?;
+        let (calls, large_pages, directory_pages) = served?;
         // Ten original operations, two notebook operations and one large write.
         // Only the source pages add calls; lines() has no host round trip.
         assert!(large_pages > 1);
-        assert_eq!(calls, 13 + large_pages);
+        // One initial page, two resumed pages, one root page and three refusals.
+        // Breaking after the first entry does not prefetch the next page.
+        assert_eq!(directory_pages, 7);
+        assert_eq!(calls, 13 + 19 + large_pages + directory_pages);
         Ok(())
     }
 

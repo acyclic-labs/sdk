@@ -844,8 +844,50 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.select_tool_read_path(path, crate::tool::ReadPathKind::File, io)
+    }
+
+    pub(crate) fn authorize_tool_directory_read<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let path = if path == "." {
+            ""
+        } else {
+            path.strip_suffix('/')
+                .filter(|path| !path.is_empty())
+                .unwrap_or(path)
+        };
+        let (volume, relative) =
+            self.select_tool_read_path(path, crate::tool::ReadPathKind::Directory, io)?;
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
+            if !crate::core::directory_read_granted_with_work(
+                self.effective_scope().grants(),
+                volume,
+                &relative,
+                history,
+            )? {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "directory listing requires its original subtree grant",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        Ok((volume, relative))
+    }
+
+    fn select_tool_read_path<'a>(
+        &'a self,
+        path: &'a str,
+        kind: crate::tool::ReadPathKind,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        crate::executor::with_history_io(io, |history| {
+            kind.validate(path, history).map_err(Error::tool_input)?;
             if path.len() > self.effective_scope().limits().path_bytes
                 || crate::conversation::is_internal_path(path)
             {
@@ -860,14 +902,18 @@ impl ToolContext {
         })?;
         // The effective view is read-only: reads resolve it to one layer
         // first (`effective_tool_path`), and nothing writes through it.
-        if path.starts_with(EFFECTIVE_PATH) {
+        if path.starts_with(EFFECTIVE_PATH) || path == EFFECTIVE_PATH.trim_end_matches('/') {
             return Err(Error::Unauthorized(format!(
                 "{EFFECTIVE_PATH} is read-only; write {HOME_PATH} instead"
             ))
             .tool_input());
         }
         if let (Some(relative), Some(seed)) = (
-            path.strip_prefix(SEED_PATH),
+            path.strip_prefix(SEED_PATH).or_else(|| {
+                (kind == crate::tool::ReadPathKind::Directory
+                    && path == SEED_PATH.trim_end_matches('/'))
+                .then_some("")
+            }),
             self.task().harness.seed.as_ref(),
         ) {
             return Ok((seed, std::borrow::Cow::Borrowed(relative)));
@@ -877,15 +923,37 @@ impl ToolContext {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let work = None;
         if let Some(targets) = self.task().harness.targets.as_ref() {
-            return targets.read_path(path, work).map_err(Error::tool_input);
+            return targets
+                .read_path(path, kind, work)
+                .map_err(Error::tool_input);
         }
-        if let Some((binding, relative)) = self.task().home_content_path(path) {
+        let home_path = if kind == crate::tool::ReadPathKind::Directory
+            && path == HOME_PATH.trim_end_matches('/')
+        {
+            HOME_PATH
+        } else {
+            path
+        };
+        if let Some((binding, relative)) = self.task().home_content_path(home_path) {
             return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
         ))
+    }
+
+    pub(crate) async fn list_tool_directory<'a, 'io: 'a>(
+        &'a self,
+        request: crate::conversation::DirectoryRead<'a>,
+        io: Option<&'io crate::conversation::ContentIo>,
+    ) -> Result<(
+        crate::conversation::PrivateDirectoryPage,
+        Option<crate::conversation::ContentHold<'io>>,
+    )> {
+        self.task()
+            .list_bound_directory(request, self.effective_scope(), io)
+            .await
     }
 
     /// The layer path a read of `path` selects. A path under

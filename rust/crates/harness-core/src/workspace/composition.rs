@@ -133,6 +133,19 @@ impl<T> MountTable<T> {
         path: &'a str,
         work: crate::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
+        self.path_with_work(volume, path, crate::tool::ReadPathKind::File, work)
+    }
+
+    /// Resolves file bytes or directory names through the same mount table.
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[doc(hidden)]
+    pub fn path_with_work<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        kind: crate::tool::ReadPathKind,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
         if volume.is_none() {
             #[cfg(not(target_arch = "wasm32"))]
             let io = work
@@ -142,9 +155,7 @@ impl<T> MountTable<T> {
             let io: Option<&crate::filesystem::PreparationIo> = None;
             #[cfg(not(target_arch = "wasm32"))]
             let io = io.as_ref();
-            crate::executor::with_history_io(io, |history| {
-                crate::conversation::validate_content_path(path, history)
-            })?;
+            crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
             if Path::new(path)
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
@@ -168,9 +179,7 @@ impl<T> MountTable<T> {
         #[cfg(not(target_arch = "wasm32"))]
         let io = io.as_ref();
         let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
-        crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)
-        })?;
+        crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
         if Path::new(path)
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))

@@ -277,7 +277,7 @@ where
         })
     }
 
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
@@ -286,67 +286,114 @@ where
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
-        if io.is_some() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "finite private directory discovery is unavailable",
-            ));
-        }
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                PrivateDirectoryPage,
+                Option<crate::conversation::ContentHold<'io>>,
+            ),
+        >,
+    > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let unmeasured;
+            let ledger = match io {
+                Some(io) => io,
+                None => {
+                    unmeasured =
+                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &unmeasured
+                }
+            };
+            self.verify_exact_file(None, Some(ledger))?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = ledger.original_native_work() {
+                self.supports_native_directory_list(volume, work)?;
+            }
+            let grant = crate::executor::with_history_io(Some(ledger), |history| {
+                ContentGrant::verify_directory_read(
+                    self.authority.verifier(),
+                    self.authority.scope(),
+                    volume,
+                    granted_prefix,
+                    history,
+                )
+            })?;
+            let _grant_hold = ledger.guard_owned(grant.logical_owned_bytes()?)?;
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
-                        .map_err(|error| Error::Invalid(error.to_string()))
+                    let bytes = crate::executor::with_history_io(Some(ledger), |history| {
+                        let mut quota = crate::wire_codec::CodecQuota::new(history, 0)?;
+                        let bytes = crate::core::copy_copy_vector(name.as_bytes(), &mut quota)?;
+                        quota.transfer();
+                        Ok::<_, Error>(bytes)
+                    })?;
+                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX)
+                        .map_err(|_| ledger.invalid("directory cursor is not a child name"))
                 })
                 .transpose()?;
-            let (generation, page) = FilesystemContentVerifier::list_private_directory(
-                self,
-                volume,
-                granted_prefix,
-                path,
-                crate::filesystem::DirectoryOptions {
-                    generation: expected_generation,
-                    after: after.as_ref(),
-                    maximum_entries,
-                    ceiling,
-                },
-            )
-            .await?;
-            let entries = page
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    let name = entry
-                        .name
-                        .unicode_text(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .ok()
-                        .map(|receipt| receipt.value)
-                        .ok_or_else(|| {
-                            Error::Unsupported("private directory name is not Unicode".into())
-                        })?;
-                    let kind = match entry.kind {
-                        FileKind::Regular => PrivateDirectoryEntryKind::File,
-                        FileKind::Directory => PrivateDirectoryEntryKind::Directory,
-                        _ => {
-                            return Err(Error::Unsupported(
-                                "private directory contains an unsupported entry kind".into(),
-                            ));
-                        }
-                    };
-                    Ok(PrivateDirectoryEntry { name, kind })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(PrivateDirectoryPage {
+            let _after_hold = after
+                .as_ref()
+                .map(|name| ledger.guard_owned(name.logical_owned_bytes()))
+                .transpose()?;
+            let ((generation, page), mut page_hold) = self
+                .host
+                .list_directory_page(
+                    host::DirectoryListing {
+                        volume,
+                        grant: &grant,
+                        path,
+                        generation: expected_generation,
+                        after: after.as_ref(),
+                        maximum_entries,
+                        ceiling,
+                    },
+                    ledger,
+                    &mut || std::future::ready(Ok(())),
+                )
+                .await?;
+            let mut held =
+                ledger.reserve_decode(std::mem::size_of::<PrivateDirectoryPage>() as u64)?;
+            let mut entries = Vec::new();
+            let mut history = ledger.history_io();
+            crate::store::history::reserve(&mut entries, page.entries.len(), &mut history)?;
+            held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
+            let has_more = page.has_more;
+            for entry in page.entries {
+                let name = ledger.sdk(entry.name.unicode_text(ledger, ledger.cancellation()))?;
+                held.adopt(name.capacity() as u64)?;
+                let kind = match entry.kind {
+                    FileKind::Regular => PrivateDirectoryEntryKind::File,
+                    FileKind::Directory => PrivateDirectoryEntryKind::Directory,
+                    _ => {
+                        return Err(stock_boundary(
+                            Some(ledger),
+                            crate::wire::ErrorCode::Unsupported,
+                            "private directory contains an unsupported entry kind",
+                        ));
+                    }
+                };
+                entries.push(PrivateDirectoryEntry { name, kind });
+            }
+            page_hold.substitute(generation.logical_owned_bytes()?)?;
+            held.absorb(page_hold)?;
+            let page = PrivateDirectoryPage {
                 generation,
                 entries,
-                has_more: page.has_more,
-            })
+                has_more,
+            };
+            self.authority
+                .recheck(&mut Some(&mut ledger.history_io()))?;
+            // Only caller-funded results transfer custody out of this future.
+            match io {
+                Some(io) => {
+                    let bytes = held.bytes();
+                    held.into_retained()?;
+                    Ok((page, Some(io.guard_owned(bytes)?)))
+                }
+                None => Ok((page, None)),
+            }
         })
     }
 

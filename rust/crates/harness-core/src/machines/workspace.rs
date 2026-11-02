@@ -194,6 +194,7 @@ impl ToolExecutor for MachinesWorkspace {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
+        kind: crate::tool::ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -208,7 +209,7 @@ impl ToolExecutor for MachinesWorkspace {
             None
         };
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
+            kind.validate(path, history)?;
             if path == ".volumes" || path.starts_with(".volumes/") {
                 return Err(crate::store::guarded_boundary(
                     history,

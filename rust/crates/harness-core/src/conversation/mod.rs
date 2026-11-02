@@ -263,7 +263,7 @@ pub use content::{
     ContentPublisher, ContentResidencyVerifier, ContentSource,
 };
 pub use directory::{
-    MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+    DirectoryRead, MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
 pub(crate) use file_source::PathSelectionView;

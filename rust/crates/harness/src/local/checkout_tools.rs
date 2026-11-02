@@ -319,11 +319,15 @@ impl ToolExecutor for CheckoutTools {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
+        kind: crate::tool::ReadPathKind,
         work: crate::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        let (mount, relative) = self.workspace.mounts.file_with_work(None, path, work)?;
+        let (mount, relative) = self
+            .workspace
+            .mounts
+            .path_with_work(None, path, kind, work)?;
         mount.check_with_work(
-            acyclic_fs::access::Action::Read,
+            kind.action(),
             &relative,
             self.clock.now_unix_millis() / 1000,
             work,

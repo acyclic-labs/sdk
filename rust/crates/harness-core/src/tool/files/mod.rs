@@ -46,8 +46,10 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
     .assemble(super::schema::ProjectionMode::Full)
 }
 
+mod directory;
 mod inputs;
 mod source;
+pub use directory::{DirectoryEntry, DirectoryEntryKind, DirectoryReadResult, ReadResult};
 pub(crate) use inputs::FileView;
 pub use inputs::{
     EditFileInput, FileResult, NotebookCell, NotebookEdit, NotebookOutput, PatchFileInput,

@@ -174,7 +174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
-    async fn list_directory_page<'io, F, Fut>(
+    pub(in crate::filesystem) async fn list_directory_page<'io, F, Fut>(
         &self,
         request: DirectoryListing<'_>,
         io: &'io PreparationIo,
