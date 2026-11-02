@@ -195,9 +195,11 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let observed = std::sync::Arc::new(crate::test_meter::Meter::default());
-                let prepared = crate::record_headers::PreparedHeaders::new(
+                let prepared = crate::record_headers::PreparedHeaders::new_shape(
                     &observed.original(),
                     headers.payload_bytes(),
+                    headers.keys().len(),
+                    headers.attributes().len(),
                 )?
                 .finish(&headers)?;
                 observed
