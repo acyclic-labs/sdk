@@ -1,14 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtempSync, open as fsOpen, readFileSync } from "node:fs";
+import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtempSync, open as fsOpen, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
-import { matches, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
+import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
+
+test("terminal setup rejection releases parser and screen resources before returning its original error", async () => {
+  const root = mkdtempSync(join(tmpdir(), "terminal-setup-")), processes = new Processes();
+  const disposeFrames = TerminalFrames.prototype.dispose, disposeScreen = Terminal.prototype.dispose;
+  let frames = 0, screens = 0, original;
+  TerminalFrames.prototype.dispose = function () { frames++; return disposeFrames.call(this); };
+  Terminal.prototype.dispose = function () { screens++; return disposeScreen.call(this); };
+  try {
+    await assert.rejects(pty(processes, process.execPath, {
+      get args() {
+        try { readFileSync(join(root, "missing-terminal-input")); }
+        catch (error) { original = error; throw error; }
+      },
+    }, { actions: [] }, () => assert.fail("rejected setup cannot produce a capture")), error => error === original);
+    assert.equal(original.code, "ENOENT");
+    assert.equal(processes.children.size, 0, "setup rejection must precede executable effects");
+    assert.equal(frames, 1, "actual terminal parser handlers remain owned through setup failure");
+    assert.equal(screens, 1, "actual terminal screen must be disposed before rejection");
+  } finally {
+    TerminalFrames.prototype.dispose = disposeFrames;
+    Terminal.prototype.dispose = disposeScreen;
+    await processes.close();
+    rmSync(root, { recursive: true });
+  }
+});
 
 test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
   const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
