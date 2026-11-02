@@ -12,9 +12,13 @@
 //! instruction budget, and the result must be plain data. A result or a
 //! failure is cached under the digest of everything it read. The most recent
 //! evaluation is reused without retaining a history of settings stacks.
+mod plugin;
 pub mod policy;
 mod types;
 
+pub use plugin::{
+    AfterSource, Event, PluginEntry, PluginManifest, PluginSource, Plugins, RequestMatch, Start,
+};
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
     Sampling, utc,
@@ -99,18 +103,15 @@ pub fn typescript() -> &'static str {
             Admission,
             AdmissionStatus,
             Link,
-            Form
-        );
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        declarations!(
-            crate::plugins::Plugins,
-            crate::plugins::PluginEntry,
-            crate::plugins::PluginSource,
-            crate::plugins::PluginManifest,
-            crate::plugins::AfterSource,
-            crate::plugins::Start,
-            crate::plugins::Event,
-            crate::hooks::RequestMatch
+            Form,
+            Plugins,
+            PluginEntry,
+            PluginSource,
+            PluginManifest,
+            AfterSource,
+            Start,
+            Event,
+            RequestMatch
         );
         text
     })

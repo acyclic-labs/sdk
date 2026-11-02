@@ -7,7 +7,7 @@
 // more rights than you. Each settings write is confirmed in live/agents/self/admissions/<version>.json (`Admission`).
 // Records on disk use these types' field names (generated from the harness's types). `At<P>` is the record at a path.
 
-import type { Admission, AgentConfig, Config, Policy } from './config';
+import type { Admission, AgentConfig, Config, PluginEntry as AdmittedPluginEntry, PluginManifest, Policy } from './config';
 
 /* Files -------------------------------------------------------------- */
 
@@ -283,13 +283,10 @@ export type { AgentConfig, Config } from './config';
 export type { Admission } from './config';
 
 /** To change a plugin's code, copy its folder into .volumes/home/plugins/ under a new name. */
-export interface PluginEntry<C = Record<string, unknown>> {
-  enabled: boolean;
-  /** A folder elsewhere, pinned by content (`acyclic digest <path>`). */
-  source?: { path: Path; digest: string };
+export type PluginEntry<C = Record<string, unknown>> = Omit<AdmittedPluginEntry, "config"> & {
   /** Its settings; the only place to change them. */
   config?: Config<C>;
-}
+};
 export interface CompactionConfig {
   /** Fraction of the context window at which you are told; null = never. */
   notify: number | null;
@@ -311,14 +308,7 @@ export type Plugins = { [K in keyof PluginConfigs]?: Config<PluginEntry<PluginCo
   [name: string]: Config<PluginEntry<any>> | undefined;
 };
 /** `plugins/<name>/plugin.ts` */
-export interface PluginManifest {
-  name: string;
-  description: string;
-  requires?: string[];
-  defaults?: Record<string, unknown>;
-  /** What each `hooks/after-<n>.{ts,sh}` watches, keyed by <n>. "start": also what is there already. */
-  after?: Record<string, { path: Path; from: "start" | "now" }>;
-}
+export type { PluginManifest } from './config';
 
 /**
  * `.volumes/home/policy.ts`. Written by you: restricts you, and you may always change it. Written by an issuer (your
