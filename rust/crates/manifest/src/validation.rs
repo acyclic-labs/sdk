@@ -95,38 +95,6 @@ fn asset_bucket(pattern: &ResourcePattern) -> Result<String, ManifestError> {
         acyclic_auth::encode_component(&bucket)
     ))
 }
-fn stream_path(resource: &str) -> Result<String, ManifestError> {
-    require(
-        acyclic_auth::valid_resource(resource),
-        "resource",
-        "auth-resource",
-    )?;
-    let encoded = resource
-        .strip_prefix("streams:/")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ManifestError::invalid("resource", "streams-resource"))?;
-    let parts = encoded
-        .split('/')
-        .map(|part| {
-            acyclic_auth::decode_component(part)
-                .map_err(|_| ManifestError::invalid("resource", "auth-resource"))
-                .and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| ManifestError::invalid("resource", "stream-path"))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    // Encoded slashes belong to a component, not the hierarchical path syntax.
-    require(
-        !parts.iter().any(|part| part.contains('/')),
-        "resource",
-        "stream-component",
-    )?;
-    let path = parts.join("/");
-    acyclic_stream::StreamPath::new(&path)
-        .map_err(|_| ManifestError::invalid("resource", "stream-path"))?;
-    Ok(path)
-}
 
 /// Admit a complete Rust value using the same rules as JSON and WASM ingress.
 pub fn validate(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
@@ -548,7 +516,17 @@ fn validate_inboxes(
                 _ => None,
             });
     for (entry, inbox_binding, inbox, cp) in cron_targets.chain(timer_targets) {
-        let path = stream_path(&inbox.name)?;
+        let path =
+            acyclic_stream::wire_codec::session::stream_path(&inbox.name).map_err(|error| {
+                ManifestError::invalid(
+                    &cp,
+                    match error {
+                        acyclic_stream::StreamError::Unsupported => "streams-resource",
+                        acyclic_stream::StreamError::InvalidArgument => "auth-resource",
+                        _ => "stream-path",
+                    },
+                )
+            })?;
         require(!inbox.prefix, &cp, "exact-inbox")?;
         require(
             subscribed

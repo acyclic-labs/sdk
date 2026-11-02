@@ -659,15 +659,18 @@ proptest! {
 
     /// Whole-segment grants cover descendants but never neighboring names.
     #[test]
-    fn inbox_scope_uses_s1_whole_segments(parent in "[a-z]{1,12}", suffix in "[a-z]{1,8}") {
+    fn inbox_scope_uses_s1_whole_segments(
+        parent in prop_oneof!["[a-z]{1,12}", Just(".acyclic".into()), Just("literal%2F".into())],
+        suffix in "[a-z]{1,8}"
+    ) {
         let mut manifest = fixture()?;
-        let prefix = format!("streams:/agents/{parent}");
+        let prefix = acyclic_stream::wire_codec::session::stream_resource(&format!("agents/{parent}"));
         let env = manifest.environments.first_mut().ok_or_else(missing)?;
         *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), prefix.clone())?.into();
         env.grants.first_mut().ok_or_else(missing)?.grant.0.resource = ResourcePattern { name: prefix, prefix: true };
         for (path, admitted) in [(format!("agents/{parent}/inbox"), true), (format!("agents/{parent}{suffix}/inbox"), false)] {
             let env = manifest.environments.first_mut().ok_or_else(missing)?;
-            let resource = format!("streams:/{path}");
+            let resource = acyclic_stream::wire_codec::session::stream_resource(&path);
             env.crons.first_mut().ok_or_else(missing)?.inbox.0.name = resource.clone();
             if let EntryRuntime::ActorNamespace { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
                 *subscriptions.first_mut().ok_or_else(missing)? = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
@@ -675,6 +678,19 @@ proptest! {
             }
             prop_assert_eq!(validate(&manifest).is_ok(), admitted);
         }
+        // Exact grants do not turn an encoded slash into a hierarchy separator.
+        let env = manifest.environments.first_mut().ok_or_else(missing)?;
+        let path = format!("agents/{parent}/inbox");
+        let alias = format!("streams:/{}", acyclic_auth::encode_component(path.as_bytes()));
+        *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), alias.clone())?.into();
+        env.grants.first_mut().ok_or_else(missing)?.grant.0.resource = ResourcePattern { name: alias.clone(), prefix: false };
+        env.crons.first_mut().ok_or_else(missing)?.inbox.0.name = alias.clone();
+        if let EntryRuntime::ActorNamespace { subscriptions, timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime {
+            *subscriptions.first_mut().ok_or_else(missing)? = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
+            if let Some(inbox) = timer_inbox { inbox.stream.0.name = alias; }
+        }
+        let error = validate(&manifest).expect_err("encoded separator");
+        prop_assert_eq!(error.rule, "stream-path");
     }
 
     /// URL-style integer and mixed hexadecimal IP spellings never become DNS grants.
