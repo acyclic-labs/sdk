@@ -4,6 +4,15 @@ The `machines` feature bridges sandbox and checkpoint references to a
 `MachinesProvider`. `MachinesHost` captures selected forkable checkpoints and
 verifies their retained provider identity before admission.
 
+`AgentMachines::binding` and the research placement export share
+`MachineBinding::decode(target, record)`. Supply the original authorized record
+from `AgentPath::machine(target)` at `from=1, limit=1`; position zero is the
+provisioning plan. The decoder checks that original settled position, format
+version and target once. It neither authenticates a supplied record nor derives
+its account or agent from the payload. Forks retain their original record origin,
+sequence and commit. The binding proves the original opaque provider and Machine
+reference; physical host, region and resource measurements remain unknown.
+
 `MachinesHost::exec` returns the provider's original stdout/stderr and terminal
 event stream. `read_file` and `write_file` use the native binary file primitives
 with an absolute guest path, exact offset and original deadline. `suspend` and
