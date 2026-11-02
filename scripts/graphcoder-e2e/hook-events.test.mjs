@@ -40,7 +40,8 @@ test("hook notifications share bounded reads before original exit", async t => {
   const held = new Promise(resolve => { releaseRead = resolve; });
   const started = new Promise(resolve => { readStarted = resolve; });
   const closed = new Promise(resolve => { publishExit = resolve; });
-  let reads = 0, visits = 0, notifications = 0, observation;
+  let reads = 0, notifications = 0, observation;
+  const visited = [];
   try {
     await writeFile(path, "");
     const probe = await open(path, "r");
@@ -62,7 +63,7 @@ test("hook notifications share bounded reads before original exit", async t => {
       return watcher;
     });
     syncBuiltinESMExports();
-    observation = waitForHook(path, () => { visits++; return false; }, closed);
+    observation = waitForHook(path, row => { visited.push(row.sequence); return false; }, closed);
     const missing = assert.rejects(observation, { code: "HOOK_SOURCE_EXITED" });
     await Promise.race([started, observation]);
     for (let sequence = 1; sequence <= 8; sequence++) {
@@ -73,9 +74,9 @@ test("hook notifications share bounded reads before original exit", async t => {
     publishExit({ code: 0, signal: null });
     releaseRead();
     await missing;
-    assert.equal(visits, 8, "the original cursor lost or repeated appended records");
+    assert.deepEqual(visited, [1, 2, 3, 4, 5, 6, 7, 8], "the original cursor lost or repeated appended records");
     assert.ok(reads <= 3, `notification burst queued redundant reads: ${reads}`);
-    t.diagnostic(`original notifications=${notifications}, file reads=${reads}, record visits=${visits}`);
+    t.diagnostic(`original notifications=${notifications}, file reads=${reads}, record visits=${visited.length}`);
   } finally {
     publishExit({ code: 1, signal: null });
     releaseRead();
