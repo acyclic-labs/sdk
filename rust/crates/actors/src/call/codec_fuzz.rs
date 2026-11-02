@@ -33,7 +33,10 @@ pub fn check(input: &[u8]) {
             value: value.into(),
         });
     }
-    let headers = RecordHeaders::new(Vec::new(), attributes).expect("distinct sorted attributes");
+    let Ok(headers) = RecordHeaders::new(Vec::new(), attributes) else {
+        // Oversized generated headers cannot represent an admitted record.
+        return;
+    };
     let origin = StreamPath::new("generated/call").expect("generated path");
     let reader = Journal::new(&origin);
     check_record(
@@ -104,5 +107,12 @@ pub(super) fn seeds() {
     }
     for tag in 0..=u8::MAX {
         check(&[tag, 0xff, 0, b'/']);
+    }
+    // The same retained target must accept inputs larger than a legal header
+    // without mistaking admission refusal for a decoder failure.
+    let mut oversized = vec![0; 65_537];
+    for tag in [16, 16 | 64] {
+        oversized[0] = tag;
+        check(&oversized);
     }
 }
