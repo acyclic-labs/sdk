@@ -994,11 +994,20 @@ mod tests {
             reader.set_follows(paths.clone());
             assert_eq!(reader.follows().count(), 5);
             let inserted = reader.follow_insertions;
+            reader.follow_selection_visits = 0;
             reader.set_follows(paths.iter().rev().chain(&paths).cloned());
+            let replacement_visits = reader.follow_selection_visits;
+            assert_eq!(replacement_visits, 15);
             assert_eq!(
                 reader.follow_insertions, inserted,
                 "unchanged selection rebuilt retained follow entries"
             );
+            reader.follow_selection_visits = 0;
+            reader.set_follow(paths[4].clone(), true);
+            reader.set_follow(paths[4].clone(), true);
+            assert_eq!(reader.follow_selection_visits, 2);
+            assert_eq!(reader.follow_insertions, inserted);
+            assert_eq!(reader.follow_changes.len(), 5);
             eprintln!("follow membership: selected=5 duplicate_inputs=10 new_entries=0");
             let woken = Arc::new(Woken(AtomicBool::new(true)));
             let waker = Waker::from(woken.clone());
@@ -1024,8 +1033,10 @@ mod tests {
                         .await
                         .unwrap();
                     reader.observed_head(&path, provider.head(path.clone()).await.unwrap(), None);
+                    reader.follow_selection_visits = 0;
+                    reader.set_follow(path.clone(), true);
+                    assert_eq!(reader.follow_selection_visits, 1);
                     paths.push(path);
-                    reader.set_follows(paths.clone());
                     assert_eq!(reader.follow_insertions, paths.len());
                 }
             }
@@ -1068,7 +1079,12 @@ mod tests {
             reader.set_follows(paths[..4].iter().cloned());
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(driver.waiting.len(), 4);
-            reader.set_follows([paths[1].clone()]);
+            reader.follow_selection_visits = 0;
+            for index in [0, 2, 3, 0] {
+                reader.set_follow(paths[index].clone(), false);
+            }
+            assert_eq!(reader.follow_selection_visits, 4);
+            assert_eq!(reader.follow_changes.len(), 3);
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(driver.waiting.len(), 1);
             assert_eq!(driver.first_waiting.as_ref(), Some(&paths[1]));
@@ -1080,6 +1096,24 @@ mod tests {
             assert!(driver.waiting.is_empty());
             assert!(driver.first_waiting.is_none());
             assert!(driver.last_waiting.is_none());
+            reader.set_follow(paths[1].clone(), true);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 1);
+            assert!(reader.follow_changes.is_empty());
+            reader.set_follow(paths[1].clone(), false);
+            reader.set_follow(paths[1].clone(), false);
+            assert_eq!(reader.follow_changes.len(), 1);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 0);
+            reader.denied(&paths[1]);
+            reader.set_follow(paths[1].clone(), true);
+            reader.set_follow(StreamPath::new("opening/unknown").unwrap(), true);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 0);
+            assert!(reader.follows.is_empty());
+            eprintln!(
+                "follow selection visits: full_replacement={replacement_visits} point_update=1 duplicate_removals=4 retired_sources=3"
+            );
             assert_eq!(reader.issued(), 0);
             assert_eq!(reader.next_deadline(), None);
         });

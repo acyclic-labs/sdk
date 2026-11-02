@@ -493,6 +493,8 @@ pub struct Reader {
     follow_mark: bool,
     #[cfg(test)]
     follow_insertions: usize,
+    #[cfg(test)]
+    follow_selection_visits: usize,
     follow_changes: BTreeSet<StreamPath>,
     delivered: usize,
     next_id: u64,
@@ -535,6 +537,8 @@ impl Reader {
             follow_mark: false,
             #[cfg(test)]
             follow_insertions: 0,
+            #[cfg(test)]
+            follow_selection_visits: 0,
             follow_changes: BTreeSet::new(),
             delivered: 0,
             next_id: 1,
@@ -1395,46 +1399,15 @@ impl Reader {
     /// whose stream tail ran more than `lag` ahead jumps to the last records;
     /// nothing is dropped, earlier records remain readable on demand.
     pub fn set_follows(&mut self, streams: impl IntoIterator<Item = StreamPath>) {
-        use std::collections::btree_map::Entry;
         self.follow_mark = !self.follow_mark;
         for stream in streams {
-            if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
-                continue;
-            }
-            let Some(tail) = self.cache.tail(&stream) else {
-                continue;
-            };
-            let resume = self.cache.resume_from(&stream);
-            match self.follows.entry(stream) {
-                Entry::Occupied(mut entry) => {
-                    let intent = entry.get_mut();
-                    let from = resume.unwrap_or_else(|| {
-                        if tail.saturating_sub(intent.from) <= self.policy.lag {
-                            intent.from
-                        } else {
-                            tail
-                        }
-                    });
-                    intent.selected = self.follow_mark;
-                    if intent.from != from {
-                        intent.from = from;
-                        self.follow_changes.insert(entry.key().clone());
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    #[cfg(test)]
-                    {
-                        self.follow_insertions += 1;
-                    }
-                    self.follow_changes.insert(entry.key().clone());
-                    entry.insert(FollowIntent {
-                        from: resume.unwrap_or(tail),
-                        selected: self.follow_mark,
-                    });
-                }
-            }
+            self.set_follow(stream, true);
         }
         self.follows.retain(|path, intent| {
+            #[cfg(test)]
+            {
+                self.follow_selection_visits += 1;
+            }
             if intent.selected == self.follow_mark {
                 true
             } else {
@@ -1442,6 +1415,64 @@ impl Reader {
                 false
             }
         });
+    }
+
+    /// Update one live-tail selection without visiting unrelated selections.
+    /// Selecting uses the same observed tail, resume position and lag rule as
+    /// [`Self::set_follows`]; a missing or denied tail is not admitted. Repeating
+    /// an unchanged selection neither reopens its source nor consumes credit.
+    /// Removing it releases its original pending or open source when the driver
+    /// next runs, including while delivery or opening credit is exhausted.
+    ///
+    /// Work is keyed O(log selected streams), plus the original cache lookups.
+    /// Full replacement still examines every supplied and retained selection.
+    pub fn set_follow(&mut self, stream: StreamPath, selected: bool) {
+        use std::collections::btree_map::Entry;
+        #[cfg(test)]
+        {
+            self.follow_selection_visits += 1;
+        }
+        if !selected {
+            if self.follows.remove(&stream).is_some() {
+                self.follow_changes.insert(stream);
+            }
+            return;
+        }
+        if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
+            return;
+        }
+        let Some(tail) = self.cache.tail(&stream) else {
+            return;
+        };
+        let resume = self.cache.resume_from(&stream);
+        match self.follows.entry(stream) {
+            Entry::Occupied(mut entry) => {
+                let intent = entry.get_mut();
+                let from = resume.unwrap_or_else(|| {
+                    if tail.saturating_sub(intent.from) <= self.policy.lag {
+                        intent.from
+                    } else {
+                        tail
+                    }
+                });
+                intent.selected = self.follow_mark;
+                if intent.from != from {
+                    intent.from = from;
+                    self.follow_changes.insert(entry.key().clone());
+                }
+            }
+            Entry::Vacant(entry) => {
+                #[cfg(test)]
+                {
+                    self.follow_insertions += 1;
+                }
+                self.follow_changes.insert(entry.key().clone());
+                entry.insert(FollowIntent {
+                    from: resume.unwrap_or(tail),
+                    selected: self.follow_mark,
+                });
+            }
+        }
     }
 
     /// Wanted follows and their current start positions.
