@@ -198,7 +198,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
         let budget = crate::WorkBudget::UNBOUNDED;
-        let fs = crate::Fs::memory();
+        let storage = tempfile::tempdir()?;
+        let fs = crate::Fs::local(crate::LocalOptions::new(storage.path().join("fs"))).await?;
         let config = crate::VolumeConfig {
             profile: crate::FilesystemProfile::Windows,
             ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
@@ -266,6 +267,93 @@ mod tests {
             std::fs::read(directory.path().join("foreign"))?,
             b"must survive"
         );
+
+        // Drive the same decision through the durable publication entry point.
+        // A removed directory may disappear only if every physical child was
+        // part of the pinned source generation.
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        transaction
+            .create_directory("/retired", budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?;
+        transaction.write_text("/retired/known", "authored").await?;
+        transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        let from = workspace
+            .head(budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        workspace.remove("/retired/known").await?;
+        workspace.remove("/retired").await?;
+        let to = workspace
+            .head(budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let state = crate::LocalCoreStateStore::new(storage.path().join("state"));
+        for foreign in [false, true] {
+            let checkout = tempfile::tempdir()?;
+            let retired = checkout.path().join("retired");
+            std::fs::create_dir(&retired)?;
+            std::fs::write(retired.join("known"), "physical")?;
+            if foreign {
+                std::fs::write(retired.join("foreign"), "must survive")?;
+            }
+            let operation = storage
+                .path()
+                .join(if foreign { "foreign" } else { "known" });
+            let original = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let identity = original.root_identity(checkout.path())?;
+            let result = publish_native_generation_transition(
+                &from,
+                &to,
+                &state,
+                NativeWorkspacePublication {
+                    root: checkout.path(),
+                    source_root_identity: identity,
+                    operation_directory: &operation,
+                    operation_id: OperationId::new(),
+                    from: from.id(),
+                    to: to.id(),
+                    excluded_names: &[],
+                    options: &crate::MaterializeOptions::native(operation.join("target")),
+                    budget,
+                    cancellation: &cancellation,
+                },
+                original,
+                || std::future::ready(Ok(())),
+            )
+            .await
+            .map_err(|(error, _)| error)?;
+            assert_eq!(result.value.phase, MaterializationPhase::Applied);
+            assert!(!retired.join("known").exists());
+            if foreign {
+                assert_eq!(std::fs::read(retired.join("foreign"))?, b"must survive");
+            } else {
+                assert!(!retired.exists());
+            }
+        }
         Ok(())
     }
 }
