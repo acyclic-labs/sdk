@@ -74,7 +74,7 @@ impl<'a> Call<'a> {
             return Err(invalid("request differs from its original admission"));
         }
         let replay_key = crate::model::replay_key(request).map_err(invalid)?;
-        let request = serde_json::from_slice(request).map_err(invalid)?;
+        let request = crate::contract::json_from_slice(request).map_err(invalid)?;
         Ok(Self {
             source,
             sequence: admission.sequence,
