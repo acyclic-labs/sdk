@@ -41,7 +41,8 @@ fn owned_control_reuses_only_current_file_health() -> io::Result<()> {
     let alias = original.reopen()?;
     let payload = Arc::clone(&native.file);
     let health = native.health.clone();
-    crate::tests::complete(native.control_async(
+    let (checked, verification) = std::sync::mpsc::sync_channel(1);
+    let terminal = crate::tests::complete(native.control_async(
         move |file, _| {
             let current = ACTIVE_FILES.with(Cell::get);
             let before = queries();
@@ -93,10 +94,18 @@ fn owned_control_reuses_only_current_file_health() -> io::Result<()> {
             if write_all_at(&alias, 0, b"wrong", None).is_ok() {
                 return Err(io::Error::other("uncertain alias was written"));
             }
-            expect_queries(before, 1)
+            expect_queries(before, 1)?;
+            // Poisoning also refuses the original completion. Keep a direct
+            // event proving every preceding callback check finished first.
+            checked.send(()).map_err(io::Error::other)
         },
         None,
-    )?)?;
+    )?);
+    verification.recv().map_err(io::Error::other)?;
+    assert_eq!(
+        terminal.unwrap_err().to_string(),
+        "prior native I/O completion on this file is uncertain"
+    );
     assert_eq!(std::fs::read(original.path())?, b"owned");
     assert_eq!(std::fs::read(foreign.path())?, b"foreign");
     Ok(())
