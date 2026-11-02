@@ -26,6 +26,9 @@ impl Counter {
         let Some(snapshot) = self.snapshot()? else {
             return Ok(None);
         };
+        if !byte_bound_eligible(request) {
+            return Ok(None);
+        }
         let (prefix, total) = footprint(request, snapshot.messages)?;
         Ok((snapshot.digest == prefix && snapshot.bytes <= total)
             .then(|| snapshot.tokens.saturating_add(total - snapshot.bytes)))
@@ -61,6 +64,16 @@ impl Counter {
     }
 }
 
+/// Native media tokenization can expand compressed bytes independently of the
+/// wire size. Both local shortcuts must defer to verified counting for it.
+pub(crate) fn byte_bound_eligible(request: &PreparedModelRequest) -> bool {
+    request
+        .request()
+        .messages
+        .iter()
+        .all(|message| !message.content.contains_native_media())
+}
+
 // If a resume, compaction or catalog change replaced the prefix, estimate the
 // complete input. Never subtract an unrelated request's byte count.
 #[cfg(not(target_arch = "wasm32"))]
@@ -94,8 +107,11 @@ fn footprint(request: &PreparedModelRequest, prefix: usize) -> Result<([u8; 32],
         hash: blake3::Hasher::new(),
         bytes: 0,
     };
-    serde_json::to_writer(&mut writer, &(&input.model, &input.tools))
-        .map_err(|_| crate::invalid("usage footprint encoding failed"))?;
+    serde_json::to_writer(
+        &mut writer,
+        &(&input.model, input.compose_tools, &input.tools),
+    )
+    .map_err(|_| crate::invalid("usage footprint encoding failed"))?;
     let mut digest = *writer.hash.finalize().as_bytes();
     for (index, message) in input.messages.iter().enumerate() {
         message

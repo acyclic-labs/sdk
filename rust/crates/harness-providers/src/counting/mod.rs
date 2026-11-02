@@ -171,11 +171,11 @@ pub(crate) async fn count(
             })
             .transpose()?;
     }
-    // With no usage yet, every token the endpoint would count spans at least one
-    // byte of this exact body, and `framing` bounds input it adds beyond it.
+    // For text input, every counted token spans at least one body byte, and
+    // `framing` bounds added input. Compressed media has no such byte bound.
     if let Some(bound) = (bytes.len() as u64)
         .checked_add(framing)
-        .filter(|tokens| *tokens <= ceiling)
+        .filter(|tokens| *tokens <= ceiling && crate::usage_count::byte_bound_eligible(request))
     {
         count.input_tokens = bound;
         return Ok((count, count_custody));

@@ -43,10 +43,14 @@ proptest! {
         cache_read in 0u64..100_000,
     ) {
         let mut request = ModelRequest {
-            compose_tools: false,
+            compose_tools: true,
             model: Model::new("anthropic".into(), "fixture".into(), "1".into()).unwrap(),
             messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }],
-            tools: Vec::new(), sampling: Default::default(), max_output_tokens: None,
+            tools: vec![acyclic_harness_core::tool::ToolDefinition {
+                name: "extra".into(), revision: "1".into(), description: "Extra capability".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({}), projection_schema: json!({}),
+            }], sampling: Default::default(), max_output_tokens: None,
         };
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let counter = Counter::default();
@@ -60,6 +64,14 @@ proptest! {
         let (_, before) = footprint(&first, 1).unwrap();
         let (_, after) = footprint(&next, 1).unwrap();
         prop_assert_eq!(counter.bound(&next).unwrap(), Some(tokens + cache_read + (after - before)));
+        // The same registered catalog exposes more native schemas when code
+        // composition is disabled. Its old, smaller usage cannot admit it.
+        prop_assert_eq!(next.request().model_tools().count(), 0);
+        request.compose_tools = false;
+        let exposed = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
+        prop_assert_eq!(exposed.request().model_tools().count(), 1);
+        prop_assert_eq!(counter.bound(&exposed).unwrap(), None);
+        request.compose_tools = true;
         // Negative control: a rewritten prefix is never anchored by its old usage.
         request.messages[0].content = ModelContent::Text("unrelated resume".into());
         let resumed = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
