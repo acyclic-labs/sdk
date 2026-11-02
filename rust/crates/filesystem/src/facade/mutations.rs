@@ -195,7 +195,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let (_, region) = regions.get(index).ok_or(WorkError::Overflow)?;
             let file_id = match region {
                 DependencyRegion::ContentRange { file_id, .. }
                 | DependencyRegion::FileLength(file_id)
