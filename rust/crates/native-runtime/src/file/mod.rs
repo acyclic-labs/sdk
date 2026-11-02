@@ -72,12 +72,19 @@ pub(crate) type FileIdentity = (u64, u64);
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    #[cfg(test)]
+    FILE_IDENTITY_QUERIES.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]
     return windows::file_identity(file);
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
         Ok(file_identity_from_metadata(&file.metadata()?))
     }
+}
+
+#[cfg(all(test, any(windows, target_os = "linux", target_vendor = "apple")))]
+thread_local! {
+    static FILE_IDENTITY_QUERIES: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]

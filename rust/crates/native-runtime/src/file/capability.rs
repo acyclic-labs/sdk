@@ -193,7 +193,7 @@ impl NativeFile {
             move || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let result = span.in_scope(|| {
-                        with_file_scope(Some(&health), || {
+                        super::scope::with_owned_file_scope(&file, &health, || {
                             let result = operation(&file, observer.as_deref());
                             span.record_error(result.as_ref().err());
                             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
