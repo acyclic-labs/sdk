@@ -235,7 +235,8 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
                     let bytes = tree.read(&hook).await?;
                     bytes
                         .map(|bytes| {
-                            String::from_utf8(bytes)
+                            std::str::from_utf8(&bytes)
+                                .map(str::to_owned)
                                 .map_err(|_| invalid(format!("{hook} is not UTF-8")))
                         })
                         .transpose()
