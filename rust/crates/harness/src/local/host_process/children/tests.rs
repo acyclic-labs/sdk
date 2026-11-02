@@ -41,7 +41,7 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
                 prompt: "closed producer".into(),
             },
         )?;
-        let mut command = native_fixture(&view, "", "0");
+        let mut command = native_fixture(&view, Path::new("/dev/null"), "0");
         running
             .process
             .spawn(&mut command, running.claim.operation)?;
@@ -97,7 +97,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                     prompt: "captured reply".into(),
                 },
             )?;
-            let mut command = native_fixture(&view, "", "0");
+            let mut command = native_fixture(&view, Path::new("/dev/null"), "0");
             running
                 .process
                 .spawn(&mut command, running.claim.operation)?;
@@ -454,9 +454,13 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
     }
 }
 
-fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
+fn native_fixture(
+    view: &Path,
+    events: &Path,
+    exit: &str,
+) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; cat \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
         .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
     command
 }
@@ -483,6 +487,18 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             "../../../../../../../plugin/tests/hosts/fixtures/native-claude-workflow-refusal.json"
         ))?;
         let mut events = String::new();
+        // Derived scale input repeats an unchanged captured frame. The real
+        // tool refusals follow the former cumulative log bound.
+        let terminal = serde_json::to_string(
+            fixture["events"]
+                .as_array()
+                .and_then(|events| events.last())
+                .ok_or("original terminal absent")?,
+        )?;
+        while events.len() <= 4 * 1024 * 1024 {
+            events.push_str(&terminal);
+            events.push('\n');
+        }
         for event in fixture["events"]
             .as_array()
             .ok_or("original Claude events absent")?
@@ -501,7 +517,10 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     } else {
         ("", "17")
     };
-    let mut command = native_fixture(&view, events, exit);
+    // Keep large captures out of the OS argument vector and outside the view.
+    let mut source = tempfile::NamedTempFile::new()?;
+    source.write_all(events.as_bytes())?;
+    let mut command = native_fixture(&view, source.path(), exit);
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
     let pid = shell_pid(&mut running)?;
@@ -550,6 +569,11 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     if !events.is_empty() {
         let file: crate::conversation::FileRef =
             serde_json::from_value(completed["events"].clone())?;
+        assert_eq!(
+            file.descriptor().byte_length(),
+            events.len() as u64,
+            "native event log discarded original captured bytes after cumulative cap"
+        );
         file.descriptor().verify(events.as_bytes(), &mut None)?;
     }
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
