@@ -325,15 +325,6 @@ impl<'a> AuthorityWork<'a> {
         self.work.admit(&delta, &self.budget).map_err(Into::into)
     }
 
-    pub(crate) fn operation(&mut self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = self.original {
-            self.check()?;
-            return Ok(Self::native(original, self.cancellation));
-        }
-        Ok(Self::new(self.remaining()?, self.cancellation))
-    }
-
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
