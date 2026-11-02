@@ -223,9 +223,14 @@ mod tests {
     #[test]
     fn completion_uses_no_history_buffer_allocation_and_keeps_admitted_nesting() -> Result<()> {
         let mut metadata = Value::Null;
-        for _ in 0..132 {
+        for _ in 0..128 {
             metadata = Value::Array(vec![metadata]);
         }
+        let rejected =
+            acyclic_harness_core::contract::canonical_json_bytes(&ModelEvent::Completed {
+                metadata: Value::Array(vec![metadata.clone()]),
+            })?;
+        assert!(acyclic_harness_core::contract::json_from_slice::<ModelEvent>(&rejected).is_err());
         // Generated typed operands, not external provider-output fixtures.
         let bytes = acyclic_harness_core::contract::canonical_json_bytes(&ModelEvent::Completed {
             metadata,
