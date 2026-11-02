@@ -59,7 +59,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
                         path,
                         self.replacement,
                         self.media_type,
-                        path,
+                        "replacement",
                     )
                     .await?;
             }
@@ -123,7 +123,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 let storage =
                     Arc::new(MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?);
                 let original = storage
-                    .stage(OperationId::new(), path, before, media_type, path)
+                    .stage(OperationId::new(), path, before, media_type, "original")
                     .await?;
                 let mut content = storage.content_bindings();
                 let reader = Arc::new(AdvanceAfterSelection {
@@ -228,7 +228,13 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                     assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
                     reader
                         .storage
-                        .stage(OperationId::new(), path, b"off: true", "text/plain", path)
+                        .stage(
+                            OperationId::new(),
+                            path,
+                            b"off: true",
+                            "text/plain",
+                            "disabled",
+                        )
                         .await?;
                     if native {
                         let io = crate::executor::PreparationIo::from_native_work(&work)?;
