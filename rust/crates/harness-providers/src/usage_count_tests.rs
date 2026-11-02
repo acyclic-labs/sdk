@@ -13,6 +13,7 @@ proptest! {
         output in 0u64..u64::MAX,
     ) {
         let mut request = ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("openai".into(), "fixture".into(), "1".into()).unwrap(),
             messages: Vec::new(), tools: Vec::new(), sampling: Default::default(), max_output_tokens: None,
@@ -43,6 +44,7 @@ proptest! {
         cache_read in 0u64..100_000,
     ) {
         let mut request = ModelRequest {
+            summary: false,
             compose_tools: true,
             model: Model::new("anthropic".into(), "fixture".into(), "1".into()).unwrap(),
             messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }],
