@@ -264,8 +264,8 @@ pub enum Outcome {
         /// Hierarchy version the page was read at.
         version: CommitId,
     },
-    /// The op failed.
-    Failed(Failure),
+    /// The original provider failure; scheduling is derived with [`Failure::of`].
+    Failed(StreamError),
 }
 
 /// Failure classes the scheduler reacts to.
@@ -302,7 +302,7 @@ impl Failure {
 }
 
 /// A reader discontinuity that applications must show separately from outages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadIssue {
     /// Authorization failed; cached bytes for the stream were discarded.
     AccessDenied,
@@ -310,8 +310,8 @@ pub enum ReadIssue {
     RetentionLost,
     /// A directory continuation observed concurrent hierarchy changes.
     HierarchyChanged,
-    /// A definite provider refusal; explicitly acknowledge before following again.
-    Refused,
+    /// The original definite provider refusal; acknowledge before following again.
+    Refused(StreamError),
 }
 
 /// What the client can promise about freshness.
@@ -1074,7 +1074,7 @@ impl Reader {
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
-            (_, Outcome::Failed(Failure::Changed)) => {
+            (_, Outcome::Failed(StreamError::HierarchyChanged)) => {
                 // This witness covers the whole hierarchy, not just the page
                 // reporting it. Old continuations cannot be rebound to a new
                 // version by an intervening reply or another driver wake.
@@ -1090,11 +1090,12 @@ impl Reader {
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }
-            (_, Outcome::Failed(Failure::RetentionLost)) => {
+            (_, Outcome::Failed(StreamError::PrefixNotRetained)) => {
                 self.replaced(flight.key.path());
                 return;
             }
-            (_, Outcome::Failed(failure)) => {
+            (_, Outcome::Failed(error)) => {
+                let failure = Failure::of(&error);
                 if failure != Failure::Denied {
                     self.demand.restore_paging(
                         &flight.key,
@@ -1104,6 +1105,8 @@ impl Reader {
                 }
                 if failure == Failure::Denied {
                     self.denied(flight.key.path());
+                } else if failure == Failure::Refused {
+                    self.report_issue(flight.key.path(), ReadIssue::Refused(error));
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
                     self.refused.insert(flight.key.clone(), flight.ticket);
@@ -1179,7 +1182,10 @@ impl Reader {
         } else {
             self.demand
                 .restore_paging(&flight.key, flight.paging, false);
-            self.report_issue(flight.key.path(), ReadIssue::Refused);
+            self.report_issue(
+                flight.key.path(),
+                ReadIssue::Refused(StreamError::InvalidResponse),
+            );
             self.refused.insert(flight.key, flight.ticket);
         }
     }
@@ -1450,7 +1456,7 @@ impl Reader {
         }
         if matches!(
             self.issues.get(&stream),
-            Some(ReadIssue::AccessDenied | ReadIssue::Refused)
+            Some(ReadIssue::AccessDenied | ReadIssue::Refused(_))
         ) {
             return;
         }
@@ -1518,7 +1524,7 @@ impl Reader {
             .checked_add(1)
             .filter(|next| *next <= accepted)
         else {
-            self.refuse_follow(stream);
+            self.refuse_follow(stream, StreamError::InvalidResponse);
             return;
         };
         self.delivered += 1;
@@ -1552,7 +1558,15 @@ impl Reader {
     /// Unacknowledged read failures and cursor discontinuities. Source replacement
     /// retires its issues; unrelated failures cannot acknowledge them.
     pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
-        self.issues.iter().map(|(path, issue)| (path, *issue))
+        self.issues
+            .iter()
+            .map(|(path, issue)| (path, issue.clone()))
+    }
+
+    /// The latest unacknowledged issue for one selected source, borrowed from
+    /// the existing keyed issue index. Operation retry custody remains separate.
+    pub fn issue(&self, stream: &StreamPath) -> Option<&ReadIssue> {
+        self.issues.get(stream)
     }
 
     /// Acknowledge a displayed issue. Retry a denial only after renewing authority.
@@ -1570,9 +1584,9 @@ impl Reader {
         self.issues.insert(stream.clone(), issue);
     }
 
-    fn refuse_follow(&mut self, stream: &StreamPath) {
+    fn refuse_follow(&mut self, stream: &StreamPath, error: StreamError) {
         self.generation += 1;
-        self.report_issue(stream, ReadIssue::Refused);
+        self.report_issue(stream, ReadIssue::Refused(error));
         if self.follows.remove(stream).is_some() {
             self.follow_changes.insert(stream.clone());
         }
@@ -2295,7 +2309,7 @@ mod reader_tests {
         ] {
             want(&mut reader, key);
         }
-        reader.complete(ops[0].id(), Outcome::Failed(Failure::Denied), 0);
+        reader.complete(ops[0].id(), Outcome::Failed(StreamError::AccessDenied), 0);
         assert_eq!(
             reader.demand.take_invalidation_visits(),
             10,
@@ -2593,7 +2607,11 @@ mod reader_tests {
             retry.begin_frame(0);
             retry.plan([want(0, Priority::Visible)]);
             let original = retry.poll(0);
-            retry.complete(original[0].id(), Outcome::Failed(Failure::Unavailable), 0);
+            retry.complete(
+                original[0].id(),
+                Outcome::Failed(StreamError::Unavailable),
+                0,
+            );
             assert!(retry.poll(0).is_empty());
             let at = retry.next_deadline().expect("original retry timer");
             retry.begin_frame(at);
@@ -2634,7 +2652,7 @@ mod reader_tests {
             let refused_ops = refused.poll(0);
             assert_eq!(refused_ops.len(), heads.len());
             for op in &refused_ops {
-                refused.complete(op.id(), Outcome::Failed(Failure::Refused), 0);
+                refused.complete(op.id(), Outcome::Failed(StreamError::Unsupported), 0);
             }
             refused.network_changed(true, 1);
             refused.demand.take_visits();
@@ -2692,7 +2710,7 @@ mod reader_tests {
             assert_eq!(first.len(), 1);
             withdrawn.plan([]);
             withdrawn.plan(wants().skip(1).take(1));
-            withdrawn.complete(first[0].id(), Outcome::Failed(Failure::Refused), 1);
+            withdrawn.complete(first[0].id(), Outcome::Failed(StreamError::Unsupported), 1);
             withdrawn.network_changed(true, 1);
             withdrawn.plan(wants().take(2).rev());
             withdrawn.acknowledge_issue(&denied);

@@ -199,7 +199,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     let accepted = head.tail.max(reader.cache().tail(&stream).unwrap_or(0));
                     match reader.observed_head(&stream, head, observed) {
                         HeadObservation::Invalid => {
-                            reader.refuse_follow(&stream);
+                            reader.refuse_follow(&stream, StreamError::InvalidResponse);
                             self.queue(&stream, reader);
                             continue;
                         }
@@ -266,7 +266,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.aborts.insert(id, abort);
         let work = async move {
             if !access.check().await {
-                return Some((id, Outcome::Failed(Failure::Unavailable)));
+                return Some((id, Outcome::Failed(StreamError::Unavailable)));
             }
             let outcome = execute(provider.as_ref(), op).await;
             Some((
@@ -274,7 +274,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                 if access.check().await {
                     outcome
                 } else {
-                    Outcome::Failed(Failure::Unavailable)
+                    Outcome::Failed(StreamError::Unavailable)
                 },
             ))
         };
@@ -447,7 +447,7 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
     match Failure::of(error) {
         Failure::RetentionLost => reader.replaced(stream),
         Failure::Denied => reader.denied(stream),
-        Failure::Refused | Failure::Changed => reader.refuse_follow(stream),
+        Failure::Refused | Failure::Changed => reader.refuse_follow(stream, error.clone()),
         failure @ (Failure::Unavailable | Failure::Overloaded) => {
             reader.follow_failed(failure, now)
         }
@@ -503,7 +503,7 @@ async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
                     .collect(),
             }),
     };
-    result.unwrap_or_else(|error| Outcome::Failed(Failure::of(&error)))
+    result.unwrap_or_else(Outcome::Failed)
 }
 
 async fn read<P: StreamProvider + ?Sized>(
@@ -586,7 +586,7 @@ mod tests {
                 assert!(reader.cache.record(&path, u64::MAX).is_none());
                 assert_eq!(
                     reader.issues.get(&path),
-                    invalid.then_some(&ReadIssue::Refused)
+                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
                 );
                 if !invalid {
                     assert_eq!(
@@ -637,7 +637,7 @@ mod tests {
                 assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
                 assert_eq!(
                     reader.issues.get(&parent),
-                    invalid.then_some(&ReadIssue::Refused)
+                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
                 );
                 reader.plan([(listing.clone(), Priority::Visible)]);
                 assert!(reader.poll(1).is_empty());
@@ -731,7 +731,10 @@ mod tests {
             assert!(driver.follows.is_empty());
             assert!(driver.waiting.is_empty(), "refused source was requeued");
             assert_eq!(reader.next_deadline(), None);
-            assert_eq!(reader.issues.get(&path), Some(&ReadIssue::Refused));
+            assert_eq!(
+                reader.issues.get(&path),
+                Some(&ReadIssue::Refused(StreamError::InvalidResponse))
+            );
             assert_eq!(
                 reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
                 original.value.as_slice().as_ptr()
@@ -753,13 +756,13 @@ mod tests {
 
     #[test]
     fn definite_read_refusal_is_visible_without_another_request() {
-        use super::super::{Priority, ReaderPolicy, Want};
+        use super::super::{Priority, ReadIssue, ReaderPolicy, Want};
 
         futures::executor::block_on(async {
             let provider = Arc::new(MemoryStream::default());
             let path = StreamPath::new("missing/original-source").unwrap();
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-            let mut driver = Driver::new(provider);
+            let mut driver = Driver::new(Arc::clone(&provider));
             driver.attach(&mut reader, 0);
             reader.plan([(
                 Want::Range {
@@ -782,6 +785,37 @@ mod tests {
                 reader.issues().map(|(path, _)| path).collect::<Vec<_>>(),
                 vec![&path],
                 "a refused read must become observable rather than stay pending"
+            );
+            assert_eq!(
+                reader.issue(&path),
+                Some(&ReadIssue::Refused(StreamError::NotFound))
+            );
+            assert!(std::ptr::eq(
+                reader.issue(&path).unwrap(),
+                reader.issues.get(&path).unwrap()
+            ));
+
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"original committed row".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"publish-refused-source".to_vec())
+                        .unwrap(),
+                })
+                .await
+                .unwrap();
+            driver.step(&mut reader, 1, &mut cx);
+            assert!(
+                reader.cache().record(&path, 0).is_none(),
+                "publication does not acknowledge a refusal"
+            );
+            reader.acknowledge_issue(&path);
+            assert!(reader.issue(&path).is_none());
+            driver.step(&mut reader, 2, &mut cx);
+            assert_eq!(
+                reader.cache().record(&path, 0).unwrap().as_ref(),
+                b"original committed row"
             );
         });
     }
@@ -962,7 +996,7 @@ mod tests {
             // Returning request custody on transient failure preserves the
             // original observations without a second plan or copied map.
             for op in &ops {
-                reader.complete(op.id(), Outcome::Failed(Failure::Unavailable), 1);
+                reader.complete(op.id(), Outcome::Failed(StreamError::Unavailable), 1);
             }
             let retry_at = reader.next_deadline().unwrap();
             assert!(reader.poll(retry_at - 1).is_empty());
@@ -1719,7 +1753,10 @@ mod tests {
                 .unwrap();
             let changed_id = changed.id();
             let outcome = execute(&provider, changed).await;
-            assert!(matches!(&outcome, Outcome::Failed(Failure::Changed)));
+            assert!(matches!(
+                &outcome,
+                Outcome::Failed(StreamError::HierarchyChanged)
+            ));
             reader.complete(changed_id, outcome, 0);
             assert_eq!(reader.take_cancelled(), vec![late_id]);
             reader.complete(late_id, old_page, 0);

@@ -284,7 +284,7 @@ mod tests {
             );
             explorer.reader.complete(
                 resume.id(),
-                Outcome::Failed(crate::reader::Failure::Changed),
+                Outcome::Failed(StreamError::HierarchyChanged),
                 2,
             );
             assert_eq!(

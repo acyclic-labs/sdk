@@ -100,6 +100,8 @@ struct Health<'a> {
 struct Issue<'a> {
     stream: &'a str,
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 fn depth(pos: &Pos) -> usize {
@@ -277,11 +279,15 @@ impl WasmExplorer {
                 .issues()
                 .map(|(stream, issue)| Issue {
                     stream: stream.as_str(),
-                    kind: match issue {
+                    kind: match &issue {
                         ReadIssue::AccessDenied => "accessDenied",
                         ReadIssue::RetentionLost => "retentionLost",
                         ReadIssue::HierarchyChanged => "hierarchyChanged",
-                        ReadIssue::Refused => "refused",
+                        ReadIssue::Refused(_) => "refused",
+                    },
+                    code: match issue {
+                        ReadIssue::Refused(error) => Some(error.code()),
+                        _ => None,
                     },
                 })
                 .collect(),

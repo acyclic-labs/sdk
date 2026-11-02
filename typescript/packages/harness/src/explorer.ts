@@ -34,7 +34,8 @@ export interface ExplorerHealth {
   /** Milliseconds until the reader's next deadline (a read timeout or retry). */
   wakeIn: bigint | null;
   /** Discontinuities that must remain visible independently of connectivity. */
-  issues: { stream: string; kind: "accessDenied" | "retentionLost" | "hierarchyChanged" | "refused" }[];
+  issues: ({ stream: string; kind: "accessDenied" | "retentionLost" | "hierarchyChanged" }
+    | { stream: string; kind: "refused"; code: string })[];
 }
 
 export interface ExplorerOptions {
