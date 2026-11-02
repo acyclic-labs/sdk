@@ -24,7 +24,8 @@ const GUARD: &str = r#"export default { name: "guard", description: "Deny force 
   defaults: { force: false }, matcher: { tool: { action: ["exec"], command: "push" } } };"#;
 
 #[tokio::test]
-async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule() -> Result<()> {
+async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let enabled = enable(
         r#"export default (base) => ({ ...base, guard: { enabled: true }, idle: { enabled: false } });"#,
         &[
@@ -62,7 +63,8 @@ async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule() -> Result<()>
 }
 
 #[tokio::test]
-async fn settings_in_plugins_ts_replace_the_defaults() -> Result<()> {
+async fn settings_in_plugins_ts_replace_the_defaults()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let enabled = enable(
         r#"export default { guard: { enabled: true, config: { force: true } } };"#,
         &[
