@@ -308,6 +308,81 @@ mod tests {
                     .iter()
                     .any(|(_, row)| matches!(row, Row::Agent { .. }))
             );
+            // Two displayed children share their parent's original witness.
+            // Admission and duplicate selection belong to the same Reader.
+            for id in 1..=2u64 {
+                let child = target
+                    .child(&AgentId::try_from(format!("{id:032x}")).unwrap())
+                    .unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(child.as_str()).unwrap(),
+                        records: vec![b"child directory entry".as_slice().into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(id.to_be_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let status = target.status().unwrap();
+            provider
+                .append(AppendRequest {
+                    path: status.clone(),
+                    records: vec![b"parent witness".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"witness".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let head = provider.head(status.clone()).await.unwrap();
+            explorer.reader.cache_mut().observe_tail(&status, head.tail);
+            explorer
+                .reader
+                .cache_mut()
+                .observe_origin(&status, head.origin);
+            let children = target.children().unwrap();
+            let page = provider
+                .children_page(ChildrenPageRequest {
+                    parent: Some(children.clone()),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 2,
+                    tail_stream: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(page.children.len(), 2);
+            explorer.reader.cache_mut().insert_listing(
+                &children,
+                0,
+                Listing {
+                    after: None,
+                    children: page.children.into_iter().map(|child| child.path).collect(),
+                    next: page.next_after,
+                    fresh: true,
+                    projections: Default::default(),
+                    version: None,
+                },
+                None,
+            );
+            explorer.anchor = Pos::Row {
+                parent: children,
+                page: 0,
+                offset: 0,
+            };
+            explorer.set_viewport(2, 0, 16);
+            explorer.reader.take_follow_selection_visits();
+            explorer.frame(3);
+            assert_eq!(explorer.rows().len(), 2);
+            assert_eq!(
+                explorer.reader.follows().collect::<Vec<_>>(),
+                vec![(&status, head.tail)]
+            );
+            assert_eq!(
+                explorer.reader.take_follow_selection_visits(),
+                5,
+                "both visible statuses and both witnesses must use the shared admission, retaining one source"
+            );
             let mut replacement =
                 crate::reader::Driver::new(std::sync::Arc::new(MemoryStream::default()));
             let waker = futures::task::noop_waker();
@@ -1003,9 +1078,7 @@ impl Explorer {
             })
             .chain(ancestors.iter().map(|(parent, _)| parent));
         for parent in pages {
-            if let Some(status) = owner(parent).and_then(|owner| owner.status().ok())
-                && !follows.contains(&status)
-            {
+            if let Some(status) = owner(parent).and_then(|owner| owner.status().ok()) {
                 follows.push(status);
             }
         }

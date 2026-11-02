@@ -1482,6 +1482,11 @@ impl Reader {
             .map(|(path, intent)| (path, intent.from))
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_follow_selection_visits(&mut self) -> usize {
+        std::mem::take(&mut self.follow_selection_visits)
+    }
+
     /// Whether this frame still folds follow deliveries. When false the
     /// driver stops polling follows, so session credit applies backpressure.
     #[must_use]
