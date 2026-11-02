@@ -69,27 +69,108 @@ type MemorySource =
     CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
 #[test]
-fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::GenerationMutationError;
+fn capture_parent_refusals_keep_the_checkout_live() -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::shared::outcome::{
         CallbackFailure as F, source_failure, source_stops_mount,
     };
 
-    for (cause, expected) in [
-        (GenerationMutationError::AlreadyExists, F::AlreadyExists),
-        (GenerationMutationError::MissingParent, F::NotFound),
-        (GenerationMutationError::MissingSource, F::NotFound),
-        (GenerationMutationError::NotDirectory, F::NotDirectory),
-        (GenerationMutationError::IsDirectory, F::IsDirectory),
-        (
-            GenerationMutationError::DirectoryNotEmpty,
-            F::DirectoryNotEmpty,
-        ),
-    ] {
-        let error = MountSourceError::from(crate::CaptureError::from(FsError::Mutation(cause)));
-        assert_eq!(source_failure(&error), expected, "{error:?}");
+    let storage = tempfile::tempdir()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let fs = runtime.block_on(Fs::local(crate::LocalOptions::new(
+        storage.path().join("fs"),
+    )))?;
+    let cancellation = CancellationToken::new();
+    let (source, _) = sources_with_fs(
+        &fs,
+        VolumeConfig::portable(Lifecycle::Ephemeral),
+        ConsistencyMode::Pinned,
+        MountPublication::CloseAndSync,
+    )?;
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join("first"), b"host first")?;
+    std::fs::create_dir(directory.path().join("nested"))?;
+    std::fs::write(directory.path().join("nested/child"), b"host child")?;
+    let identity = capture_root_identity(directory.path())?;
+    let parent = native_test_path("nested");
+    let capture_paths = [native_test_path("first"), native_test_path("nested/child")];
+    for parent_file in [false, true] {
+        if parent_file {
+            let work = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
+            source.create_file(&parent, metadata(), None, &work)?;
+            source.write_range(&parent, 0, Bytes::from_static(b"authored parent"))?;
+            source.sync()?;
+        }
+        let before = checkout_state(&source);
+        let work = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
+        let error = source
+            .runtime
+            .wait(|| {
+                source.capture_host(
+                    directory.path(),
+                    &capture_paths,
+                    identity,
+                    HostCaptureScope::ExactPaths,
+                    None,
+                    &work,
+                )
+            })
+            .expect_err("capture accepted a missing or non-directory authored parent");
+        assert_eq!(
+            source_failure(&error),
+            if parent_file {
+                F::NotDirectory
+            } else {
+                F::NotFound
+            },
+            "{error:?}"
+        );
         assert!(!source_stops_mount(&error), "{error:?}");
+        assert_eq!(checkout_state(&source), before);
+        assert!(source.lookup(&capture_paths[0])?.is_none());
+        if parent_file {
+            assert_eq!(
+                source.read_range(&parent, 0, 15)?.as_ref(),
+                b"authored parent"
+            );
+            let lookup = source.lookup(&capture_paths[1]).unwrap_err();
+            let create = source
+                .create_file(&capture_paths[1], metadata(), None, &work)
+                .unwrap_err();
+            for error in [lookup, create] {
+                assert_eq!(source_failure(&error), F::NotDirectory, "{error:?}");
+                assert!(!source_stops_mount(&error), "{error:?}");
+            }
+            assert_eq!(checkout_state(&source), before);
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("nested/child"))?,
+            b"host child"
+        );
     }
+    let work = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
+    source.runtime.wait(|| {
+        source.capture_host(
+            directory.path(),
+            &capture_paths[..1],
+            identity,
+            HostCaptureScope::ExactPaths,
+            None,
+            &work,
+        )
+    })?;
+    assert_eq!(
+        source.read_range(&capture_paths[0], 0, 10)?.as_ref(),
+        b"host first"
+    );
+    assert!(!checkout_state(&source).1);
+    Ok(())
+}
+
+#[test]
+fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::shared::outcome::source_stops_mount;
 
     let source = source(FilesystemProfile::Portable)?;
     let directory = tempfile::tempdir()?;
