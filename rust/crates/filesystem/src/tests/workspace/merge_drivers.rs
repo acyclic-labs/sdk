@@ -3,6 +3,7 @@ use super::*;
 #[tokio::test]
 async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<(), Box<dyn Error>>
 {
+    merge_directory_staging_credit().await?;
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("directory-main"))?;
     let longest_conflict = format!("/{}", "%".repeat(255));
@@ -277,7 +278,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         );
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
-        let preview = value!(
+        let mut preview = value!(
             join.preview_pages(
                 options,
                 WorkBudget {
@@ -288,17 +289,15 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             )
             .await
         )?;
-        let mut bounded =
-            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
-        let before = unbounded!(staging, head())?.id();
+        let conflict = preview
+            .next_conflict()
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("missing selected conflict")?;
         assert!(
             matches!(
-                bounded
-                    .write_page(
-                        MergeDirectorySection::Conflicts,
-                        step,
-                        crate::PublicationPermit::Unrestricted,
-                    )
+                preview
+                    .describe_conflict_file(conflict.value().clone())
                     .await,
                 Err(WorkspaceError::Work(
                     crate::WorkError::BudgetExceeded { .. }
@@ -306,17 +305,6 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             ),
             "selected conflict rendering minted another read allowance"
         );
-        assert_eq!(unbounded!(staging, head())?.id(), before);
-        assert!(matches!(
-            bounded
-                .write_page(
-                    MergeDirectorySection::Clean,
-                    step,
-                    crate::PublicationPermit::Unrestricted,
-                )
-                .await,
-            Err(WorkspaceError::InvalidMergeResolution)
-        ));
     }
 
     // Use an actual selected-body size and a complete rendering receipt, so
@@ -730,6 +718,101 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ));
     assert_eq!(unbounded!(main, head())?.id(), published);
     merge_directory_opaque_bindings().await?;
+    Ok(())
+}
+
+async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let target = unbounded!(fs, create_workspace("staging-credit-target"))?;
+    target.write_text("/file", "base").await?;
+    let source = fork_workspace(
+        &target,
+        "staging-credit-source",
+        ForkOptions::from_generation(unbounded!(target, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    source.write_text("/file", "changed").await?;
+    let staging = unbounded!(fs, create_workspace("staging-credit-output"))?;
+    let cancellation = CancellationToken::new();
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let options = ApplyOptions {
+        if_target: join.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let mut calibration = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    assert_eq!(calibration.conflict_count(), 0);
+    let allowance = calibration
+        .work()
+        .items_examined
+        .checked_add(1)
+        .ok_or("item count overflow")?;
+    drop(calibration);
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    let before = unbounded!(staging, head())?.id();
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let preview = value!(
+        join.preview_pages(
+            options,
+            WorkBudget {
+                items_examined: allowance,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .await
+    )?;
+    let mut bounded = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    // EOF consumes one cursor item but renders no record, path or body. A
+    // refusal here must be staging work, not a renderer's earlier boundary.
+    assert!(matches!(
+        bounded
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                step,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(WorkspaceError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
+    ));
+    assert_eq!(unbounded!(staging, head())?.id(), before);
+    assert!(matches!(
+        bounded
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                step,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(WorkspaceError::InvalidMergeResolution)
+    ));
+
+    let join = unbounded!(source.join_into(&target), plan())?;
+    let preview = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let mut admitted = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    admitted
+        .write_page(
+            MergeDirectorySection::Conflicts,
+            step,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?;
+    assert!(admitted.plan().conflicts_complete);
+    let bytes = unbounded!(
+        staging,
+        read(&format!("{}/plan.json", admitted.path()), 16384)
+    )?;
+    let plan: MergeDirectoryPlan = serde_json::from_slice(&bytes)?;
+    assert!(plan.conflicts_complete);
+    assert_eq!(plan.exposed_conflicts, 0);
+    assert_ne!(unbounded!(staging, head())?.id(), before);
     Ok(())
 }
 
