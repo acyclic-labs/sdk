@@ -113,20 +113,25 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
                 if !super::layered(path) && name != super::SEED {
                     continue;
                 }
-                match self.io.sdk(
-                    generation
-                        .read(
-                            &absolute.0,
-                            self.maximum_bytes,
-                            self.io,
-                            self.io.cancellation(),
-                        )
-                        .await,
-                ) {
-                    Ok(bytes) => return Ok((!super::is_off(&bytes)).then_some(bytes)),
-                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-                    Err(error) => return Err(error),
-                }
+                let (result, recorded) = generation
+                    .read(
+                        &absolute.0,
+                        self.maximum_bytes,
+                        self.io,
+                        self.io.cancellation(),
+                    )
+                    .await;
+                let bytes = match result {
+                    // Only absence of this path permits a lower layer. A
+                    // missing authority source can share the wire NotFound
+                    // code, but must retain its original terminal failure.
+                    Err(source) if source.is_absent() => {
+                        self.io.sdk::<(), WorkspaceError>((Ok(()), recorded))?;
+                        continue;
+                    }
+                    result => self.io.sdk((result, recorded))?,
+                };
+                return Ok((!super::is_off(&bytes)).then_some(bytes));
             }
             Ok(None)
         })
