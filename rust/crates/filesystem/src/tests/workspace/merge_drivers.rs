@@ -185,6 +185,69 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     assert_eq!(unbounded!(main, head())?.id(), pins.1);
     assert_eq!(unbounded!(agent, head())?.id(), pins.2);
 
+    // Admit preparation and exactly one cursor step. Rendering the selected
+    // file must charge its real record reads to that same original allowance.
+    {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let prepared_items = calibration.work().items_examined;
+        assert!(
+            matches!(
+                calibration
+                    .peek_conflict()
+                    .map_err(|failure| failure.error)?
+                    .value,
+                Some(MergeConflict::File(_))
+            ),
+            "the control must select a real file-record conflict"
+        );
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let preview = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    items_examined: prepared_items.checked_add(1).ok_or("item count overflow")?,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        let mut bounded =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        let before = unbounded!(staging, head())?.id();
+        assert!(
+            matches!(
+                bounded
+                    .write_page(
+                        MergeDirectorySection::Conflicts,
+                        step,
+                        crate::PublicationPermit::Unrestricted,
+                    )
+                    .await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "selected conflict rendering minted another read allowance"
+        );
+        assert_eq!(unbounded!(staging, head())?.id(), before);
+        assert!(matches!(
+            bounded
+                .write_page(
+                    MergeDirectorySection::Clean,
+                    step,
+                    crate::PublicationPermit::Unrestricted,
+                )
+                .await,
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
+
     // A foreign edit to plan.json cannot be silently overwritten by a later
     // page. Failure terminates the advanced cursor; no partial page appears.
     {
