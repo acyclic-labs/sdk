@@ -284,7 +284,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
 #[derive(Clone, Debug, Default)]
 pub struct CompletionMenu {
     request: Option<CompletionRequest>,
-    items: BTreeMap<(bool, usize, u64, usize), Rc<Completion>>,
+    items: BTreeMap<Rank, Rc<Completion>>,
     files: BTreeMap<String, (u64, Vec<Entry>)>,
     theme_commands: BTreeMap<String, usize>,
     next_file: u64,
@@ -395,56 +395,22 @@ impl CompletionMenu {
         if narrower {
             let old = std::mem::take(&mut self.items);
             for ((_, _, order, index), item) in old {
-                self.rank(order, index, item);
+                if let Some(key) = rank(self.request.as_ref(), &item, order, index, &mut self.work)
+                {
+                    self.items.insert(key, item);
+                }
             }
         } else {
             self.items.clear();
-            let entries: Vec<_> = self
-                .files
-                .iter()
-                .flat_map(|(_, (order, entries))| {
-                    entries
-                        .iter()
-                        .enumerate()
-                        .map(|(index, entry)| (*order, index, entry.clone()))
-                })
-                .collect();
-            for (order, index, entry) in entries {
-                self.rank_entry(order, index, &entry);
+            for (order, entries) in self.files.values() {
+                for (index, entry) in entries.iter().enumerate() {
+                    if let Some(key) =
+                        entry.rank(self.request.as_ref(), *order, index, &mut self.work)
+                    {
+                        self.items.insert(key, Rc::clone(&entry.item));
+                    }
+                }
             }
-        }
-    }
-
-    fn rank_entry(&mut self, order: u64, index: usize, entry: &Entry) {
-        if self.request.as_ref().is_some_and(|r| r.kind == entry.kind) {
-            self.rank(order, index, entry.item.clone());
-        }
-    }
-
-    fn rank(&mut self, order: u64, index: usize, item: Rc<Completion>) {
-        let Some(request) = &self.request else {
-            return;
-        };
-        self.work.candidates += 1;
-        let value = item
-            .value
-            .strip_prefix('/')
-            .filter(|_| request.kind == CompletionKind::Command)
-            .unwrap_or(&item.value);
-        if value.is_empty()
-            || value.chars().any(char::is_control)
-            || value.contains('"') && request.kind != CompletionKind::Theme
-            || request.kind == CompletionKind::Command && value.chars().any(char::is_whitespace)
-        {
-            return;
-        }
-        let score = match request.kind {
-            CompletionKind::Command => prefix(&item.value, &request.query).then_some(0),
-            CompletionKind::Theme => theme_prefix(&item.value, &request.query).then_some(0),
-            CompletionKind::Mention => fuzzy_score(&request.query, &item.value),
-        };
-        if let Some(score) = score {
-            self.items.insert((!item.tool, score, order, index), item);
         }
     }
 
@@ -550,6 +516,39 @@ impl CompletionMenu {
         self.dismiss(editor);
         true
     }
+}
+
+type Rank = (bool, usize, u64, usize);
+
+/// One borrowed matching boundary for refresh, insertion and removal. Only a
+/// retained match needs another reference to its catalog entry.
+fn rank(
+    request: Option<&CompletionRequest>,
+    item: &Completion,
+    order: u64,
+    index: usize,
+    work: &mut CompletionWork,
+) -> Option<Rank> {
+    let request = request?;
+    work.candidates += 1;
+    let value = item
+        .value
+        .strip_prefix('/')
+        .filter(|_| request.kind == CompletionKind::Command)
+        .unwrap_or(&item.value);
+    if value.is_empty()
+        || value.chars().any(char::is_control)
+        || value.contains('"') && request.kind != CompletionKind::Theme
+        || request.kind == CompletionKind::Command && value.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    let score = match request.kind {
+        CompletionKind::Command => prefix(&item.value, &request.query).then_some(0),
+        CompletionKind::Theme => theme_prefix(&item.value, &request.query).then_some(0),
+        CompletionKind::Mention => fuzzy_score(&request.query, &item.value),
+    }?;
+    Some((!item.tool, score, order, index))
 }
 
 fn same_version(a: &(Rc<()>, usize, usize), b: &(Rc<()>, usize, usize)) -> bool {
