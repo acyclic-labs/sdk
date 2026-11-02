@@ -187,7 +187,10 @@ pub async fn admit(
 /// # Errors
 /// [`Error::Invalid`] when a setting has an unknown field, wrong shape or
 /// invalid sampling value.
-pub fn decode(value: Value) -> Result<ProviderProfile> {
+pub fn decode(mut value: Value) -> Result<ProviderProfile> {
+    // Retain canonical declaration and effort objects once, before the shared
+    // renderer borrows them. Object order must not depend on preserve_order.
+    value.sort_all_objects();
     let profile: ProviderProfile = serde_json::from_value(value)
         .map_err(|error| Error::Invalid(format!("provider.ts: {error}")))?;
     profile.validate()?;

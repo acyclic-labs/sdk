@@ -61,7 +61,7 @@ async fn provider_layers_replace_native_data_without_changing_the_base() -> Resu
 
         // A user-authored module edits a real trained declaration. This changes
         // input data only; it does not request or widen executable authority.
-        let home = b"export default (base) => ({ ...base, tools: base.tools.map((tool, i) => i ? tool : ({ ...tool, definition: { ...tool.definition, description: 'A deliberate user edit' } })), sampling: { ...base.sampling, temperature: 0.2 } });";
+        let home = b"export default (base) => ({ ...base, tools: base.tools.map((tool, i) => i ? tool : ({ ...tool, definition: { ...tool.definition, description: 'A deliberate user edit', 'x-user': { z: 1, a: [{ z: 2, a: 3 }] } } })), sampling: { ...base.sampling, temperature: 0.2 } });";
         let layers = [
             seed,
             Layer {
@@ -73,6 +73,16 @@ async fn provider_layers_replace_native_data_without_changing_the_base() -> Resu
         let (edited, chain) = provider::admit(&path, &layers, &TREE, base.clone()).await?;
         assert_ne!(edited.tools[0].definition, inherited.tools[0].definition);
         assert_eq!(edited.tools[0].name, inherited.tools[0].name);
+        assert_eq!(
+            serde_json::to_vec(&edited.tools[0].definition).expect("admitted declaration"),
+            crate::contract::canonical_json_bytes(&edited.tools[0].definition)?,
+            "the retained declaration is directly usable by the wire renderer"
+        );
+        assert_eq!(
+            edited.tools[0].definition["x-user"]["a"][0]["a"],
+            json!(3),
+            "canonical order preserves arbitrary nested provider data"
+        );
         assert_eq!(edited.tools[1..], inherited.tools[1..]);
         assert_eq!(edited.sampling.temperature, Some(0.2));
         assert_eq!(chain.len(), 2);
