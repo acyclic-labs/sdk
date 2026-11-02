@@ -24,8 +24,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .await?;
         let targets = {
             let index = self.index();
-            let targets = work.vec_owned(objects.len())?;
-            let mut targets = Retained::from_owned(targets, &mut work.accounting())
+            let mut targets = Retained::allocate(objects.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             let mut visit = |id: ObjectId| -> Result<(), ObjectStoreError> {
                 work.accounting()
@@ -107,11 +106,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     end += 1;
                 }
             }
-            let writes = work.vec_owned::<ObjectWrite>(count)?;
-            let mut writes = Retained::from_owned(writes, &mut work.accounting())
+            let mut writes = Retained::allocate(count, &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
-            let spilled = work.vec_owned::<(ObjectId, u64, u64, usize)>(spilled_count)?;
-            let mut spilled = Retained::from_owned(spilled, &mut work.accounting())
+            let mut spilled = Retained::allocate(spilled_count, &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             {
                 let mut index = self.index_mut();
@@ -195,8 +192,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         ..WorkCounters::UNCHARGED
                     })
                     .map_err(crate::async_storage::object_error)?;
-                let reads = work.vec_owned(spilled.value.len())?;
-                let mut reads = Retained::from_owned(reads, &mut work.accounting())
+                let mut reads = Retained::allocate(spilled.value.len(), &mut work.accounting())
                     .map_err(crate::async_storage::object_error)?;
                 reads.value.extend(
                     spilled

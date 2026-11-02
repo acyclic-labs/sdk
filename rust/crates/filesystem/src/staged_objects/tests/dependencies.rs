@@ -33,7 +33,13 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     store.put_hashed(tree, &mut work).await?;
     // Ordering is shared scratch on the original frame, including ordinary
     // callers. Its returned vector stays funded until the drain releases it.
-    let resident_targets = [metadata_id, tree_id];
+    // Chunks skip decoding, so the copy counter measures only vector growth.
+    let mut resident_targets = [metadata_id; 2];
+    for (target, marker) in resident_targets.iter_mut().zip([3, 4]) {
+        let chunk = HashedObject::new(ObjectKind::BlobChunk, vec![marker].into());
+        *target = chunk.object_id();
+        store.put_hashed(chunk, &mut work).await?;
+    }
     let no_spill = None;
     for native in [false, true] {
         let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -74,7 +80,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
             };
             result?
         };
-        assert_eq!(ordered.value, [metadata_id, tree_id]);
+        assert_eq!(ordered.value, resident_targets);
         assert_eq!(ordering.spent().bytes_copied, size_of::<ObjectId>() as u64);
         assert_eq!(ordering.spent().backend_read_operations, 0);
         let retained = if native {
@@ -134,8 +140,9 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
         }));
         assert_eq!(denied.spent().backend_read_operations, 0);
         assert_eq!(denied.spent().backend_write_operations, 0);
-        assert!(matches!(store.lookup(metadata_id), Lookup::Resident(_)));
-        assert!(matches!(store.lookup(tree_id), Lookup::Resident(_)));
+        for target in resident_targets {
+            assert!(matches!(store.lookup(target), Lookup::Resident(_)));
+        }
     }
     // Real spill pressure leaves the old children on disk and their new parent resident.
     for marker in [1, 2] {

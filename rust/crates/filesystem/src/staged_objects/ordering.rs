@@ -14,8 +14,7 @@ fn push<T>(
             .checked_mul(2)
             .and_then(|n| n.checked_add(1))
             .ok_or(crate::WorkError::Overflow)?;
-        let replacement = work.vec_owned(capacity)?;
-        let mut replacement = Retained::from_owned(replacement, &mut work.accounting())
+        let mut replacement = Retained::allocate(capacity, &mut work.accounting())
             .map_err(crate::async_storage::object_error)?;
         work.accounting()
             .charge(WorkCounters {
@@ -39,11 +38,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         targets: &[ObjectId],
         work: &mut AuthorityWork<'_>,
     ) -> Result<Retained<Vec<ObjectId>>, ObjectStoreError> {
-        let output = work.vec_owned(0)?;
-        let mut output = Retained::from_owned(output, &mut work.accounting())
+        let mut output = Retained::allocate(0, &mut work.accounting())
             .map_err(crate::async_storage::object_error)?;
-        let pending = work.vec_owned(0)?;
-        let mut pending = Retained::from_owned(pending, &mut work.accounting())
+        let mut pending = Retained::allocate(0, &mut work.accounting())
             .map_err(crate::async_storage::object_error)?;
         let mut visited = FixedIndex::<bool, { ObjectId::ENCODED_LEN }>::default();
         for &target in targets {
@@ -121,8 +118,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .get_or_try_insert_with(key, &mut work.accounting(), |_| Ok(false))
                     .map_err(crate::async_storage::object_error)?;
                 push(&mut pending, (id, true), work)?;
-                let children = work.vec_owned(bytes.len() / 33)?;
-                let mut children = Retained::from_owned(children, &mut work.accounting())
+                let mut children = Retained::allocate(bytes.len() / 33, &mut work.accounting())
                     .map_err(crate::async_storage::object_error)?;
                 crate::kernel::visit_object_references(
                     id,
