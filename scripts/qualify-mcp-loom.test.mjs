@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
-import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualifyMcpLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -244,24 +244,10 @@ test("qualification opts into the crate cfg only for the model build and execute
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   assertGateStep(["--all-features"]);
-  assertGateStep(["--timer"]);
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
   assert.ok(policy, "the original qualification must retain its policy branch");
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
-});
-
-test("timer qualification instruments production Stream locks through the workspace wrapper", () => {
-  const calls = [];
-  qualifyTimerLoom((command, args, options) => {
-    calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
-    const timer = { ...artifact, target: { name: "main" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(2, 0, 4) };
-  });
-  assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
-    ["model-binary", ["timer_loom::"], undefined],
-  ]);
 });
 
 test("guest qualification selects every guest model in the instrumented main target", () => {

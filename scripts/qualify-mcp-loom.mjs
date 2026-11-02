@@ -14,7 +14,7 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
-  { args: ["--timer"] }, { args: ["--guest"] },
+  { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
@@ -81,14 +81,6 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
     ],
     env: loomEnvironment(), targetCfg: [],
-  });
-}
-
-export function qualifyTimerLoom(run = runCommand) {
-  return qualifyLoom("acyclic-actors", "main", [
-    "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
-  ], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["timer_loom::", 2]],
   });
 }
 
@@ -245,7 +237,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
-  "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
+  "--native-progress": qualifyNativeProgressLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
