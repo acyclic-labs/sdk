@@ -1,4 +1,4 @@
-//! Native event decoding and completion from the host's original turn terminal.
+//! Native completion retaining the host's original tool and turn refusals.
 use super::{Outcome, Value};
 
 /// Byte bound of one native event line and of a retained answer's source.
@@ -17,7 +17,7 @@ pub(super) fn decode(line: std::io::Result<String>) -> Option<(String, Value)> {
 }
 
 /// A preview is not a completed reply. Native hosts can also report a failed
-/// turn before exiting successfully; their original terminal owns the outcome.
+/// tool or turn before exiting successfully; that refusal owns the outcome.
 #[derive(Default)]
 pub(super) struct NativeAnswer {
     pub(super) pending: Option<String>,
@@ -26,6 +26,13 @@ pub(super) struct NativeAnswer {
 }
 
 impl NativeAnswer {
+    fn refuse<'a>(&mut self, parts: impl IntoIterator<Item = &'a str>) {
+        self.pending = None;
+        self.outcome = Some(Outcome::Failed {
+            message: bounded(parts),
+        });
+    }
+
     /// Framing loss invalidates a preview, but is not a native terminal.
     /// A later complete reply can recover; a native refusal stays authoritative.
     pub(super) fn omit(&mut self) {
@@ -51,6 +58,66 @@ impl NativeAnswer {
         match kind {
             Some("turn.started") => *self = Self::default(),
             Some("item.completed")
+                if matches!(
+                    event.pointer("/item/type").and_then(Value::as_str),
+                    Some("command_execution" | "mcp_tool_call" | "file_change")
+                ) =>
+            {
+                let item = &event["item"];
+                let status = item.get("status").and_then(Value::as_str);
+                let error = item.get("error").filter(|error| !error.is_null());
+                let command = item.get("type").and_then(Value::as_str) == Some("command_execution");
+                if status != Some("completed")
+                    || error.is_some()
+                    || (command && item.get("exit_code").and_then(Value::as_i64) != Some(0))
+                {
+                    let exit = item
+                        .get("exit_code")
+                        .and_then(Value::as_i64)
+                        .map(|code| code.to_string());
+                    self.refuse([
+                        "step=read native tool result; recovery=acyclic agents; native tool ",
+                        item.get("id").and_then(Value::as_str).unwrap_or("unknown"),
+                        ": status=",
+                        status.unwrap_or("absent"),
+                        ", exit_code=",
+                        exit.as_deref().unwrap_or("absent"),
+                        "; ",
+                        error
+                            .and_then(|error| {
+                                error
+                                    .as_str()
+                                    .or_else(|| error.get("message").and_then(Value::as_str))
+                            })
+                            .or_else(|| item.get("aggregated_output").and_then(Value::as_str))
+                            .unwrap_or("native tool did not complete successfully"),
+                    ]);
+                }
+            }
+            Some("user") => {
+                if let Some(part) = event
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .and_then(|parts| {
+                        parts.iter().find(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("tool_result")
+                                && part.get("is_error").and_then(Value::as_bool) == Some(true)
+                        })
+                    })
+                {
+                    self.refuse([
+                        "step=read native tool result; recovery=acyclic agents; native tool ",
+                        part.get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                        ": ",
+                        part.get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or("native tool result reported an error; see original events"),
+                    ]);
+                }
+            }
+            Some("item.completed")
                 if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
                     && self.outcome.is_none() =>
             {
@@ -63,39 +130,33 @@ impl NativeAnswer {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
             }
             Some("turn.failed" | "error") => {
-                self.pending = None;
-                self.outcome = Some(Outcome::Failed {
-                    message: event
-                        .pointer("/error/message")
-                        .or_else(|| event.get("message"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("step=read native reply: native model turn failed; recovery=acyclic agents")
-                        .into(),
-                });
+                self.refuse([event
+                    .pointer("/error/message")
+                    .or_else(|| event.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(
+                        "step=read native reply: native model turn failed; recovery=acyclic agents",
+                    )]);
             }
             Some("result") => {
-                self.outcome = if event.get("subtype").and_then(Value::as_str) == Some("success")
+                if event.get("subtype").and_then(Value::as_str) == Some("success")
                     && event.get("is_error").and_then(Value::as_bool) == Some(false)
                 {
-                    event
+                    self.outcome = event
                         .get("result")
                         .and_then(Value::as_str)
-                        .map(|text| Outcome::Succeeded(bounded([text])))
+                        .map(|text| Outcome::Succeeded(bounded([text])));
                 } else {
-                    Some(Outcome::Failed {
-                        message: event
-                            .get("result")
-                            .and_then(Value::as_str)
-                            .unwrap_or("step=read native reply: native model turn failed; recovery=acyclic agents")
-                            .into(),
-                    })
-                };
+                    self.refuse([event.get("result").and_then(Value::as_str).unwrap_or(
+                        "step=read native reply: native model turn failed; recovery=acyclic agents",
+                    )]);
+                }
             }
             Some("message_end")
                 if event.pointer("/message/role").and_then(Value::as_str) == Some("assistant") =>
             {
-                self.outcome = match event.pointer("/message/stopReason").and_then(Value::as_str) {
-                    Some("stop") => event
+                match event.pointer("/message/stopReason").and_then(Value::as_str) {
+                    Some("stop") => self.outcome = event
                         .pointer("/message/content")
                         .and_then(Value::as_array)
                         .map(|parts| {
@@ -105,16 +166,13 @@ impl NativeAnswer {
                                     .filter_map(|part| part.get("text").and_then(Value::as_str)),
                             ))
                         }),
-                    Some("error") => Some(Outcome::Failed {
-                        message: event
+                    Some("error") => self.refuse([event
                             .pointer("/message/errorMessage")
                             .and_then(Value::as_str)
-                            .unwrap_or("step=read native reply: native assistant turn failed; recovery=acyclic agents")
-                            .into(),
-                    }),
-                    Some("aborted") => Some(Outcome::Cancelled),
-                    _ => None,
-                };
+                            .unwrap_or("step=read native reply: native assistant turn failed; recovery=acyclic agents")]),
+                    Some("aborted") => self.outcome = Some(Outcome::Cancelled),
+                    _ => self.outcome = None,
+                }
             }
             _ => {}
         }
@@ -135,6 +193,46 @@ fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_native_tool_refusals_survive_successful_parent_terminals() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../../plugin/tests/hosts/fixtures/native-claude-workflow-refusal.json"
+        ))
+        .expect("recorded Claude workflow");
+        let events = fixture["events"].as_array().expect("recorded events");
+        let terminal = events.last().expect("original parent terminal");
+        for event in &events[..events.len() - 1] {
+            let part = &event["message"]["content"][0];
+            let mut reply = NativeAnswer::default();
+            reply.record(event);
+            reply.record(terminal);
+            let Some(Outcome::Failed { message }) = reply.outcome else {
+                panic!("recorded tool refusal was masked by successful parent terminal");
+            };
+            assert!(message.contains(part["tool_use_id"].as_str().expect("original tool id")));
+            assert!(message.contains(part["content"].as_str().expect("original refusal reason")));
+        }
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../../plugin/tests/hosts/fixtures/native-codex-tool-terminals.json"
+        ))
+        .expect("recorded Codex tool terminals");
+        let events = fixture["events"].as_array().expect("recorded events");
+        let mut reply = NativeAnswer::default();
+        for event in events {
+            reply.record(event);
+        }
+        let Some(Outcome::Failed { message }) = reply.outcome else {
+            panic!("recorded command failure was masked by successful parent terminal");
+        };
+        let item = events
+            .iter()
+            .map(|event| &event["item"])
+            .find(|item| item["status"] == "failed")
+            .expect("original failed command");
+        assert!(message.contains(item["id"].as_str().expect("original command id")));
+        assert!(message.contains(&item["exit_code"].to_string()));
+    }
 
     #[test]
     fn native_replies_require_their_original_successful_terminal() {

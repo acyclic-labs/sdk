@@ -474,10 +474,28 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             .is_err(),
         "a competitor cannot claim the handed-off input"
     );
-    // The Pi adapter must retain the native assistant refusal even when its
-    // process reports success and another writer still holds stderr open.
+    // Replay original Claude tool failures before its successful parent result.
+    // Both semantic refusals must survive a zero exit and an external writer.
+    let claude = if host == "claude-code" {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../../plugin/tests/hosts/fixtures/native-claude-workflow-refusal.json"
+        ))?;
+        let mut events = String::new();
+        for event in fixture["events"]
+            .as_array()
+            .ok_or("original Claude events absent")?
+        {
+            events.push_str(&serde_json::to_string(event)?);
+            events.push('\n');
+        }
+        events
+    } else {
+        String::new()
+    };
     let (events, exit) = if host == "pi" {
         (include_str!("../fixtures/pi-assistant-error.jsonl"), "0")
+    } else if host == "claude-code" {
+        (claude.as_str(), "0")
     } else {
         ("", "17")
     };
@@ -517,6 +535,17 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             failure.starts_with("No API key for provider: fixture"),
             "native semantic refusal was lost: {failure}"
         );
+    } else if host == "claude-code" {
+        assert!(
+            failure.contains("toolu_01VERw7PfxSLcASXXwP4rH3W"),
+            "{failure}"
+        );
+        assert!(
+            failure.contains("The command line is too long."),
+            "{failure}"
+        );
+    }
+    if !events.is_empty() {
         let file: crate::conversation::FileRef =
             serde_json::from_value(completed["events"].clone())?;
         file.descriptor().verify(events.as_bytes(), &mut None)?;
