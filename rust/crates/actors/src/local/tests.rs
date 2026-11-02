@@ -47,6 +47,34 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     };
     // The original operation commits, but its caller loses the reply.
     store.fork_actor(&[], &request).await?;
+    // The former acceptance identity must not select this generation's
+    // changed exclusion semantics. A restored v1 key fails this real retained
+    // envelope oracle, without a migration reader or synthetic provider.
+    {
+        use prost::Message as _;
+        use sha2::Digest as _;
+        let mut old = sha2::Sha256::new();
+        old.update(b"acyclic.actors.fork.v1\0");
+        old.update(store.path(&child)?.as_str().as_bytes());
+        old.update([0]);
+        old.update(request.encode_to_vec());
+        assert!(
+            provider
+                .inspect_idempotency(IdempotencyKey::new(old.finalize().to_vec())?)
+                .await?
+                .is_none()
+        );
+        let current = provider
+            .inspect_idempotency(fork_key(&store.path(&child)?, &request)?)
+            .await?
+            .ok_or("missing versioned acceptance")?;
+        let acyclic_stream::IdempotencyOutcome::Commit(envelope) = current.outcome else {
+            return Err("fork acceptance is not a commit".into());
+        };
+        assert!(envelope.mutations.iter().any(|mutation| matches!(mutation,
+            acyclic_stream::CommittedMutation::Fork(fork)
+                if disposition::is_fork_exclusion(&fork.exclude))));
+    }
     let accepted = store.load(&child).await?;
     assert_eq!(
         accepted.state().ok_or("missing child")?.cursor("inbox"),

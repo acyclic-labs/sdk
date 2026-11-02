@@ -515,7 +515,9 @@ impl PreparedPublish {
     }
 }
 
-/// Bind the original caller intent, before resolving mutable parent/input cuts.
+/// Bind the original caller intent and current fork format before resolving
+/// mutable parent/input cuts. Version 2 reserves the host failure subtree;
+/// older acceptance envelopes are outside this data generation.
 fn fork_key(
     child: &StreamPath,
     request: &crate::wire::ForkActorRequest,
@@ -523,7 +525,7 @@ fn fork_key(
     use prost::Message as _;
     use sha2::Digest as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"acyclic.actors.fork.v1\0");
+    hash.update(b"acyclic.actors.fork.v2\0");
     hash.update(child.as_str().as_bytes());
     hash.update([0]);
     hash.update(request.encode_to_vec());
@@ -719,7 +721,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// hosted platform alike); `account` is the caller's authenticated
     /// account, used when the request names none. The commit key binds the
     /// child and original request, so retrying an unchanged request recovers
-    /// its original fork before reading current heads. A child that exists
+    /// its original version-2 fork before reading current heads. Prior fork
+    /// formats require a fresh data generation; no legacy receipt is adopted.
+    /// A child that exists
     /// under another intent, or a parent that moves before acceptance, is
     /// [`Error::Conflict`]. Fresh work: one retry-identity lookup, one parent
     /// read, one head per `current_head` subscription, and one commit. Settled
