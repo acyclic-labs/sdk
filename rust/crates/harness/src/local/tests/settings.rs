@@ -29,7 +29,6 @@ pub(in crate::local) async fn write(
         &harness.signed,
         &harness.scratch,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let file = harness
@@ -41,7 +40,7 @@ pub(in crate::local) async fn write(
             source.as_bytes(),
             "text/typescript",
             path.rsplit('/').next().unwrap_or(path),
-            u64::MAX,
+            None,
             &IdempotencyKey::new(format!(
                 "settings:{path}:{}",
                 blake3::hash(source.as_bytes())
@@ -71,7 +70,7 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
                 harness.root
             ),
             None,
-            u64::MAX,
+            None,
             ContentAccess::default(),
         )
         .await?;
