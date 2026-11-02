@@ -241,7 +241,29 @@ fn an_unusable_peer_identity_is_refused_at_configuration() -> Outcome {
 
 #[tokio::test]
 async fn the_listener_yields_only_verified_connections_without_stalling() -> Outcome {
+    use futures::{FutureExt as _, future::Either};
+
     let fixture = Fixture::new()?;
+    let acceptor = TlsAcceptor::from(Arc::new(config(&fixture.tls(fixture.peer()))?));
+    // Drive the same real handshake under virtual time. The bare-handshake
+    // negative stays pending after the cut, then retires through owner drop.
+    for protected in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let mut peer = TcpStream::connect(listener.local_addr()?).await?;
+        let (socket, _) = listener.accept().await?;
+        tokio::time::pause();
+        let mut pending = Box::pin(if protected {
+            Either::Left(handshake(&acceptor, socket).map(|result| result.is_err()))
+        } else {
+            Either::Right(acceptor.accept(socket).map(|_| false))
+        });
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        tokio::time::advance(HANDSHAKE).await;
+        assert_eq!(pending.as_mut().now_or_never(), protected.then_some(true));
+        drop(pending);
+        tokio::time::resume();
+        assert_eq!(tokio::io::AsyncReadExt::read(&mut peer, &mut [0]).await?, 0);
+    }
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let mut incoming = Box::pin(incoming(listener, config(&fixture.tls(fixture.peer()))?));
