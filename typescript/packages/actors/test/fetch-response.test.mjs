@@ -120,18 +120,23 @@ test("queued body failure preserves the original response cause", async () => {
 });
 
 test("response failure survives a throwing close callback", async () => {
-  for (const boundary of ["body", "consumer", "terminal"]) {
+  for (const boundary of ["body", "consumer", "terminal", "pre-abort", "abort", "null-abort"]) {
     const terminal = Promise.withResolvers();
-    const failure = new Error(`${boundary} producer failed`);
+    const signal = new AbortController();
+    const failure = boundary === "null-abort" ? null : new Error(`${boundary} producer failed`);
     const cleanupFailure = new Error("host close failed");
     let controller, cancellation, closes = 0;
     const body = new ReadableStream({
       start(source) { controller = source; },
       cancel(cause) { cancellation = cause; },
     });
-    const response = openGuestResponse({
-      status:200,headers:new Headers(),body,trailers:terminal.promise,
-      close() { closes++; throw cleanupFailure; },
+    if (boundary === "pre-abort") signal.abort(failure);
+    let response;
+    assert.doesNotThrow(() => {
+      response = openGuestResponse({
+        status:200,headers:new Headers(),body,trailers:terminal.promise,
+        close() { closes++; throw cleanupFailure; },
+      },signal.signal);
     });
     const frames = response.frames[Symbol.asyncIterator]();
     const sameCause = cause => cause === failure;
@@ -139,7 +144,8 @@ test("response failure survives a throwing close callback", async () => {
     let thrown;
     if (boundary === "body") controller.error(failure);
     else if (boundary === "terminal") terminal.reject(failure);
-    else thrown = assert.rejects(frames.throw(failure),sameCause);
+    else if (boundary === "consumer") thrown = assert.rejects(frames.throw(failure),sameCause);
+    else if (boundary !== "pre-abort") signal.abort(failure);
     await Promise.all([pending,thrown]);
     assert.equal(closes,1);
     assert.equal(body.locked,false);

@@ -28,7 +28,9 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
     if ("close" in response) response.close();
   };
   const close = () => {
-    if (!closed) terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
+    if (closed) return;
+    if (signal?.aborted) fail(signal.reason);
+    else terminate(new DOMException("fetch response closed", "AbortError"));
   };
   const fail = (cause: unknown) => {
     try { terminate(cause); } catch { /* The original failure remains primary. */ }
