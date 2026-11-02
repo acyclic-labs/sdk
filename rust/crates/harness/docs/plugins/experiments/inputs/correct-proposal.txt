@@ -1,0 +1,2 @@
+The proposed ledger total is 47.
+Report the supported total.
