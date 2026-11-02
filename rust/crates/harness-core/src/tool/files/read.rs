@@ -12,6 +12,11 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if input.0.range.is_some() && input.0.selection.is_some() {
+            return Err(invalid(
+                "byte ranges and projections are mutually exclusive",
+            ));
+        }
         let mut original = input
             .0
             .version
@@ -36,11 +41,6 @@ impl FileTool {
             if let Some((selected, custody)) = selected {
                 original = Some((FileReadSource::Authored(selected), custody));
             }
-        }
-        if input.0.range.is_some() && input.0.selection.is_some() {
-            return Err(invalid(
-                "byte ranges and projections are mutually exclusive",
-            ));
         }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
             return super::lines::read(context, &input.0, original, offset, limit, work, io).await;

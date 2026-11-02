@@ -284,7 +284,7 @@ pub async fn discover_skills_from<S: SkillReader>(
     optional_root: bool,
 ) -> Result<Vec<SkillMetadata>> {
     Ok(
-        layer_skills(source, directory, name, work, revision, optional_root)
+        layer_skills(source, directory, name, work, revision, optional_root, None)
             .await?
             .into_iter()
             .filter_map(|(_, skill)| skill)
@@ -304,7 +304,17 @@ pub async fn discover_layered_skills<S: SkillReader>(
 ) -> Result<Vec<SkillMetadata>> {
     let mut effective = BTreeMap::new();
     for (source, revision) in layers.iter_mut() {
-        effective.extend(layer_skills(source, directory, name, work, Some(revision), true).await?);
+        let entries = layer_skills(
+            source,
+            directory,
+            name,
+            work,
+            Some(revision),
+            true,
+            Some(&effective),
+        )
+        .await?;
+        effective.extend(entries);
     }
     Ok(effective.into_values().flatten().collect())
 }
@@ -318,6 +328,7 @@ async fn layer_skills<S: SkillReader>(
     work: &mut DiscoveryWork,
     revision: Option<&S::Revision>,
     optional_root: bool,
+    lower: Option<&BTreeMap<String, Option<SkillMetadata>>>,
 ) -> Result<Vec<(String, Option<SkillMetadata>)>> {
     validate_content_path(name, &mut None)?;
     if name.contains('/') {
@@ -345,8 +356,34 @@ async fn layer_skills<S: SkillReader>(
         if file.kind != DiscoveryKind::File {
             return Err(Error::Invalid("skill entry is not a file".into()));
         }
-        let (prefix, pinned) =
-            skill_prefix(source, &child(&directory, name), &revision, work.limits).await?;
+        let path = child(&directory, name);
+        let (prefix, pinned) = skill_prefix(source, &path, &revision, work.limits).await?;
+        if let Some(Some(lower)) = lower.and_then(|lower| lower.get(&entry.name))
+            && lower.source.root.volume == crate::seed::volume(lower.source.root.volume.provider())?
+            && let Some(seed) = crate::layers::seed_skill(&path)
+        {
+            let same = if prefix.len() < work.limits.header_bytes as usize {
+                prefix.as_ref() == seed
+            } else if prefix.len() > seed.len() || !seed.starts_with(&prefix) {
+                false
+            } else {
+                // A short metadata prefix cannot establish body equality.
+                // This separate comparison remains bounded by the built-in
+                // file plus one byte, at the very same selected generation.
+                let maximum = u32::try_from(seed.len() + 1)
+                    .map_err(|_| Error::Invalid("seed skill comparison overflow".into()))?;
+                let (bytes, selected) = source.skill_prefix(&path, &revision, maximum)?.await?;
+                if selected != pinned || bytes.len() > maximum as usize {
+                    return Err(Error::Storage(
+                        "seed comparison changed its selection".into(),
+                    ));
+                }
+                bytes.as_ref() == seed
+            };
+            if same {
+                continue;
+            }
+        }
         let skill = if crate::layers::is_off(&prefix) {
             None
         } else {

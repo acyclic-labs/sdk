@@ -57,6 +57,17 @@ pub fn is_off(bytes: &[u8]) -> bool {
     bytes.trim_ascii() == b"off: true"
 }
 
+/// The complete built-in skill at this path, when one exists. Old authored
+/// copies have no layer semantics of their own: only byte equality with the
+/// built-in version makes a copy redundant. Headers alone never prove that.
+#[must_use]
+pub fn seed_skill(path: &str) -> Option<&'static [u8]> {
+    path.strip_prefix("skills/")?
+        .strip_suffix("/SKILL.md")
+        .filter(|name| !name.is_empty() && !name.contains('/'))?;
+    crate::seed::file(path)
+}
+
 /// Whether a tool path names a read-only layer view: the effective tree or
 /// the seed or the host's system metadata. Writes go to the home.
 #[must_use]

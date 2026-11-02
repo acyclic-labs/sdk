@@ -966,7 +966,10 @@ impl ToolContext {
         }
         let probe = acyclic_fs::ByteRange {
             offset: 0,
-            length: 32,
+            // The extra byte distinguishes a complete legacy seed copy from
+            // a user file with that same prefix and an appended body.
+            length: crate::layers::seed_skill(relative)
+                .map_or(32, |seed| (seed.len() as u64 + 1).max(32)),
         };
         let (selected, bytes, retained) =
             match self.read_tool_path_range(&home, None, probe, io).await {
@@ -988,7 +991,18 @@ impl ToolContext {
             None
         };
         if selected.byte_length <= probe.length && is_off(&bytes) {
+            drop(selected);
+            drop(custody);
             return Err(missing());
+        }
+        if seeded
+            && crate::layers::seed_skill(relative).is_some_and(|seed| {
+                selected.byte_length == seed.len() as u64 && bytes.as_ref() == seed
+            })
+        {
+            drop(selected);
+            drop(custody);
+            return Ok((seed.into(), None));
         }
         Ok((home.into(), Some((selected, custody))))
     }

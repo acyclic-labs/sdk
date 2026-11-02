@@ -254,6 +254,56 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         .is_err()
     );
 
+    // A legacy built-in copy inherits the seed's source. Changing only the
+    // body or appending after that body must retain the authored home source.
+    let skill_path = "skills/swarm-topology/SKILL.md";
+    let seed_body = std::str::from_utf8(crate::seed::file(skill_path).expect("built-in skill"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    for (body, inherited) in [
+        (seed_body.to_owned(), true),
+        (format!("{seed_body}\nuser appendix\n"), false),
+        (
+            seed_body.replace("# Choose the dependency graph", "# User dependency graph"),
+            false,
+        ),
+    ] {
+        write(&harness, skill_path, &body).await?;
+        let result = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({
+                "path": format!("{}{skill_path}", crate::layers::EFFECTIVE_PATH)
+            }),
+        )
+        .await?;
+        let source: FileReadSource = serde_json::from_value(result.value["file"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let FileReadSource::Authored(source) = source else {
+            panic!("layer retains authored identity")
+        };
+        let expected = if inherited {
+            &harness.seed.0
+        } else {
+            &harness.scratch
+        };
+        assert_eq!(&source.volume, expected);
+        for header_bytes in [16_384, 1_024] {
+            let mut work = crate::context::DiscoveryWork {
+                limits: crate::context::ContextDiscoveryLimits {
+                    header_bytes,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let skills = harness.skills_with_work(None, &mut work).await?;
+            let selected = skills
+                .iter()
+                .find(|skill| skill.source.path == skill_path)
+                .expect("layered skill");
+            assert_eq!(&selected.source.root.volume, expected);
+        }
+    }
+
     // Neither a home shadow nor a subsequent trusted host commit changes this run.
     write(&harness, path, "home shadow").await?;
     let reference = workspace_ref(
