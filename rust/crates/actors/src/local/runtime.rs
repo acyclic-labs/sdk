@@ -637,27 +637,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(false);
             }
             steps += 1;
-            if let Some((snapshot, publication)) = inner.pending.take() {
-                match self.submit_delivery(&snapshot, publication).await {
-                    Ok(observed) => {
-                        inner.observed = Some(Arc::new(
-                            observed.ok_or(Error::Invalid("actor receipt has no state"))?,
-                        ));
-                        continue;
-                    }
-                    Err(Error::Unknown {
-                        publication,
-                        source,
-                    }) => {
-                        inner.pending = Some((snapshot, *publication));
-                        return Err(Error::Stream(source));
-                    }
-                    Err(Error::PreconditionChanged) => continue,
-                    Err(error) => {
-                        inner.observed = None;
-                        return Err(error);
-                    }
-                }
+            if settle_pending(&self.store, &mut inner).await? {
+                continue;
             }
             if slot.refresh.swap(false, Ordering::AcqRel) {
                 inner.observed = None;
@@ -851,50 +832,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error) => return Err(error),
             };
             publication.require(self.handler.publication_conditions())?;
-            match self.submit_delivery(&snapshot, publication).await {
-                Ok(observed) => {
-                    inner.observed = Some(Arc::new(
-                        observed.ok_or(Error::Invalid("actor receipt has no state"))?,
-                    ));
-                }
-                Err(Error::PreconditionChanged) => {}
-                Err(Error::Unknown {
-                    publication,
-                    source,
-                }) => {
-                    inner.pending = Some((snapshot, *publication));
-                    return Err(Error::Stream(source));
-                }
-                Err(error) => {
-                    // Settlement can fail after a successful commit. Reopen the
-                    // actual state next time instead of rerunning its handler.
-                    inner.observed = None;
-                    return Err(error);
-                }
-            }
-        }
-    }
-
-    /// The original and unknown-acknowledgement paths share cancellation
-    /// retirement, so neither can leave a settled inline input blocking progress.
-    async fn submit_delivery(
-        &self,
-        snapshot: &Snapshot,
-        publication: PreparedPublish,
-    ) -> Result<Option<Snapshot>, Error> {
-        match self.store.submit_retained(publication).await {
-            Err(Error::CallSettled { call, trigger }) => {
-                let epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
-                let cancelled = self.store.prepare_settled_input(
-                    snapshot,
-                    epoch,
-                    &trigger,
-                    &call,
-                    key(snapshot, "settled-input")?,
-                )?;
-                self.store.submit_retained(cancelled).await
-            }
-            outcome => outcome,
+            inner.pending = Some((snapshot, publication));
+            settle_pending(&self.store, &mut inner).await?;
         }
     }
 
@@ -964,6 +903,60 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
         }
         Ok(None)
+    }
+}
+
+/// Delivery and control settle the same retained request before changing its
+/// actor cut. An unavailable producer leaves its original publication in place.
+async fn settle_pending<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    inner: &mut Inner,
+) -> Result<bool, Error> {
+    let Some((snapshot, publication)) = inner.pending.take() else {
+        return Ok(false);
+    };
+    match submit_delivery(store, &snapshot, publication).await {
+        Ok(observed) => {
+            inner.observed = Some(Arc::new(
+                observed.ok_or(Error::Invalid("actor receipt has no state"))?,
+            ));
+            Ok(true)
+        }
+        Err(Error::Unknown {
+            publication,
+            source,
+        }) => {
+            inner.pending = Some((snapshot, *publication));
+            Err(Error::Stream(source))
+        }
+        Err(Error::PreconditionChanged) => Ok(true),
+        Err(error) => {
+            inner.observed = None;
+            Err(error)
+        }
+    }
+}
+
+/// The original and unknown-acknowledgement paths share cancellation
+/// retirement, so neither can leave a settled inline input blocking progress.
+async fn submit_delivery<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    snapshot: &Snapshot,
+    publication: PreparedPublish,
+) -> Result<Option<Snapshot>, Error> {
+    match store.submit_retained(publication).await {
+        Err(Error::CallSettled { call, trigger }) => {
+            let epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
+            let cancelled = store.prepare_settled_input(
+                snapshot,
+                epoch,
+                &trigger,
+                &call,
+                key(snapshot, "settled-input")?,
+            )?;
+            store.submit_retained(cancelled).await
+        }
+        outcome => outcome,
     }
 }
 

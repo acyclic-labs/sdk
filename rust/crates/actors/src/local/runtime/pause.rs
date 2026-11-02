@@ -111,11 +111,12 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
         gate
     };
     // Closing admission leaves the current delivery's cancellation owner
-    // untouched. Its original lock releases only after completion and recorded
-    // settlement, before parking resources or admitting a queued control.
+    // untouched. Its lock protects both completion and any retained publication;
+    // settle the latter before changing its cut or parking resources.
     let mut delivery = slot.inner.lock().await;
     let epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
+        settle_pending(store, &mut delivery).await?;
         let snapshot = store.load(actor).await?;
         let state = snapshot
             .state()
