@@ -4,6 +4,7 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
+import {fuzz} from './no-polling.fuzz.mjs';
 import {newPollingSites, pollingSites, SourceSyntaxError, sourceInScope, validateDispositions} from './no-polling.mjs';
 import {newProjectPollingSites, projectPollingSites} from './no-polling-project.mjs';
 
@@ -11,6 +12,13 @@ const rust = 'rust/crates/example/src/lib.rs';
 const script = 'typescript/packages/example/test/control.ts';
 const disposition = (site, classification, producer, terminal, negativeControl) => ({
  file: site.file, fingerprint: site.fingerprint, classification, producer, terminal, negativeControl,
+});
+
+test('source decoder fuzz target preserves raw candidates, escapes and comment boundaries', () => {
+ fuzz(Buffer.from("printf ''"));
+ for (let byte = 0; byte < 256; byte++) {
+  fuzz(Uint8Array.from({length: byte}, (_, index) => (byte + index) & 255));
+ }
 });
 
 test('Python comments and multiline strings preserve executable timer detection', () => {
