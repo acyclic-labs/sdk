@@ -57,7 +57,9 @@ pub fn check(input: &[u8]) {
                 assert_eq!(
                     whole,
                     parse(input, width, media, maximum, operation)
-                        .map_err(|error| error_observation(&error))
+                        .map_err(|error| error_observation(&error)),
+                    "media={media}, maximum={maximum}, width={width}, input bytes={}",
+                    input.len()
                 );
             }
         }
