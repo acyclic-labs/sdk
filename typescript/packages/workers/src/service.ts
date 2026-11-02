@@ -1,5 +1,5 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "@acyclic-labs/actors";
-import { snapshotBytes } from "@acyclic-labs/auth";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { ResourceIdentity, validateResourceLabel } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";

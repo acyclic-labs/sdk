@@ -1,5 +1,5 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
-import { snapshotBytes } from "@acyclic-labs/auth";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
 import { awaitSignal } from "@acyclic-labs/auth/credential";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";

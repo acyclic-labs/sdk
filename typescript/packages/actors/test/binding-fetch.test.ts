@@ -56,7 +56,7 @@ test("Fetch binding retains the original status for response body disclosure", a
 });
 
 test("Fetch binding abort, refusal and producer loss release the original reader", async () => {
-  for (const input of ["request","init"]) for (const mode of ["abort","shared","producer-error"]) {
+  for (const input of ["request","init"]) for (const mode of ["abort","shared","detached","foreign-kind","producer-error"]) {
     let read!: () => void, release!: () => void, cancelled = 0, outcome = "pending";
     let failure: unknown;
     const reading = new Promise<void>(resolve => {read = resolve;});
@@ -65,23 +65,31 @@ test("Fetch binding abort, refusal and producer loss release the original reader
     const body = new ReadableStream<Uint8Array>({pull(controller) {
       read();
       if (mode === "shared") controller.enqueue(new Uint8Array(new SharedArrayBuffer(3)));
+      if (mode === "detached") {
+        const chunk = new Uint8Array(3);
+        structuredClone(chunk.buffer,{transfer:[chunk.buffer]});
+        controller.enqueue(chunk);
+      }
+      if (mode === "foreign-kind") controller.enqueue(new Uint16Array(3) as unknown as Uint8Array);
       if (mode === "producer-error") controller.error(reason);
     },cancel() {cancelled++;return cleanup;}},{highWaterMark:0});
     const abort = new AbortController();
     const init = {method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit;
     const request = input === "request" ? bindingRequest(new Request("https://example.com/",init)) : bindingRequest("https://example.com/",init);
     const pending = readBindingRequestBody(request,bindingSignal(request)).then(() => {outcome="fulfilled";},error => {outcome="rejected";failure=error;});
-    await reading;
-    if (mode === "abort") abort.abort(reason);
-    // Drain runnable promise jobs once while source cleanup remains held. A
-    // pending result would prove an unwanted dependency on that cleanup.
-    await new Promise<void>(resolve => {setImmediate(resolve);});
     try {
+      // Early failure or completion must fail setup rather than leave it
+      // waiting for a pull whose producer has already stopped.
+      expect(await Promise.race([reading.then(() => true),pending.then(() => false)])).toBe(true);
+      if (mode === "abort") abort.abort(reason);
+      // Drain runnable promise jobs once while source cleanup remains held. A
+      // pending result would prove an unwanted dependency on that cleanup.
+      await new Promise<void>(resolve => {setImmediate(resolve);});
       expect(outcome).toBe("rejected");
       expect(request.body!.locked).toBe(false);
       expect(cancelled).toBe(mode === "producer-error" ? 0 : 1);
-      if (mode === "shared") expect(failure).toBeInstanceOf(TypeError);
-      else expect(failure).toBe(reason);
+      if (mode === "abort" || mode === "producer-error") expect(failure).toBe(reason);
+      else expect(failure).toBeInstanceOf(TypeError);
     } finally {release();await pending;}
   }
 });
