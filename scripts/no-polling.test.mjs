@@ -44,6 +44,24 @@ test('PowerShell here-strings retain embedded child waits without consuming late
  assert.deepEqual(pollingSites(file, 'Write-Output "a`"b"; Write-Output \'it\'\'s here\''), []);
 });
 
+test('PowerShell casing preserves wait, loop and alias review', () => {
+ // Deliberately bad source edits; no external PowerShell output is fabricated.
+ const file = 'scripts/control.ps1';
+ for (const source of ['START-SLEEP -Seconds 1', 'WHILE (-not $ready) { Step }']) {
+  assert.ok(newPollingSites(file, '', source).length, source);
+ }
+ const source = '$Pause = [System.Threading.Thread]::Sleep; $PAUSE.Invoke(1)';
+ assert.deepEqual(pollingSites(file, source).filter(site => site.kind === 'timer-or-readiness').map(site => site.start),
+  ['$Pause', 'Sleep', '$PAUSE'].map(spelling => source.indexOf(spelling)));
+ const original = '$Pause = [System.Threading.Thread]::Sleep';
+ const accepted = pollingSites(file, original).map(site => disposition(site, 'caller-deadline',
+  'original caller deadline', 'original caller cancellation', 'remove the caller deadline'));
+ assert.ok(newPollingSites(file, original, source, accepted).length);
+ assert.ok(pollingSites(script, 'runHost("START-SLEEP -Seconds 1")')
+  .some(site => site.kind === 'embedded-timer-or-retry'));
+ assert.deepEqual(pollingSites(file, '# START-SLEEP 1\nWrite-Output "ordinary"'), []);
+});
+
 test('new direct and indirect readiness mutations are rejected', () => {
  // These are intentional bad source edits, not external-tool/provider captures.
  for (const source of [

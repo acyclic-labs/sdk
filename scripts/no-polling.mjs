@@ -4,8 +4,9 @@ import ts from 'typescript-parser';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_(?:for|until))?|thrd_sleep|usleep|(?:clock_)?nanosleep|Sleep(?:Ex)?|[dD]elay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
-const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b');
+// Case-insensitive candidates cover PowerShell in both sources and child programs.
+const temporal = /^(?:sleep(?:_(?:for|until)|Ex)?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/i;
+const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
@@ -183,7 +184,7 @@ function nativeTokens(source, file) {
   }
   const word = tail.match(wordPattern);
   emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation',
-   word && escapedIdentifiers ? escapedSpelling(word[0]) : undefined);
+   word && (powershell || escapedIdentifiers) ? (powershell ? word[0].toLowerCase() : escapedSpelling(word[0])) : undefined);
  }
  return out;
 }
