@@ -46,7 +46,6 @@ pub mod core;
 pub mod devices;
 #[cfg(feature = "filesystem")]
 pub mod distributed;
-mod effects;
 pub mod executor;
 pub mod experiments;
 #[cfg(feature = "metrics-export")]

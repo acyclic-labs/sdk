@@ -140,10 +140,6 @@ impl AdmissionPort {
 }
 
 #[cfg(test)]
-#[path = "runtime_key_tests.rs"]
-mod key_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

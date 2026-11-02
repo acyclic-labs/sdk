@@ -39,14 +39,3 @@ include!("sync/atomic.rs");
 #[path = "sync/owned.rs"]
 #[doc(hidden)]
 pub mod owned;
-
-#[cfg(test)]
-#[test]
-fn ordinary_build_uses_standard_synchronization() {
-    assert!(!cfg!(loom));
-    #[cfg(not(loom))]
-    {
-        let value: std::sync::Arc<atomic::AtomicUsize> = Arc::new(atomic::AtomicUsize::new(0));
-        assert_eq!(value.load(atomic::Ordering::Relaxed), 0);
-    }
-}

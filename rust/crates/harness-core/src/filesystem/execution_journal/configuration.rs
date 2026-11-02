@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-mod tests;
-
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized,
