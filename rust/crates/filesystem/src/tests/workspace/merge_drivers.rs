@@ -12,6 +12,11 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ] {
         main.write_text(path, content).await?;
     }
+    {
+        let mut transaction = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(transaction, create_dir_all("/pkg"))?;
+        commit(&mut transaction).await?;
+    }
     let agent = fork_workspace(
         &main,
         "directory-child",
@@ -24,6 +29,20 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     agent.write_text("/binary", "theirs\0").await?;
     main.write_text("/deleted", "modified").await?;
     agent.remove("/deleted").await?;
+    for (workspace, mode) in [(&main, 0o700), (&agent, 0o770)] {
+        let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(
+            transaction,
+            set_metadata(
+                "/pkg",
+                FileMetadata {
+                    posix_mode: MetadataField::Value(mode),
+                    ..FileMetadata::default()
+                }
+            )
+        )?;
+        commit(&mut transaction).await?;
+    }
     for index in 0..7 {
         agent
             .write_text(&format!("/clean-{index}"), "clean")
@@ -84,7 +103,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         "negative control: the fixture must require multiple pages"
     );
     assert_eq!(directory.plan().clean, 7);
-    assert!(directory.plan().conflicts >= 3);
+    assert!(directory.plan().conflicts >= 4);
     assert_eq!(
         directory.plan().exposed_conflicts,
         directory.plan().conflicts
@@ -98,7 +117,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     assert!(crate::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
     ));
-    for path in ["binary", "deleted"] {
+    for path in ["binary", "deleted", "pkg"] {
         let bytes = unbounded!(
             staging,
             read(&format!("{root}/conflicts/{path}.conflict.json"), 16384)
@@ -114,6 +133,10 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             document.conflict.theirs,
             ConflictValue::Binary(_)
         ));
+        if path == "pkg" {
+            assert_eq!(document.kind, MergeConflictFileKind::Mode);
+            assert!(matches!(document.conflict.key, ConflictKey::Metadata(_)));
+        }
     }
     assert_eq!(unbounded!(main, head())?.id(), pins.1);
     assert_eq!(unbounded!(agent, head())?.id(), pins.2);
@@ -237,6 +260,12 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             r#"{"remove":true}"#,
         )
         .await?;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/pkg.resolve.json"),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
     let staged = unbounded!(staging, head())?;
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
@@ -281,6 +310,10 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         unbounded!(main, stat("/deleted")),
         Err(WorkspaceError::NotFound)
     ));
+    assert_eq!(
+        unbounded!(main, stat("/pkg"))?.metadata.posix_mode,
+        Some(0o770)
+    );
     assert_eq!(unbounded!(agent, head())?.id(), pins.2);
     let published = unbounded!(main, head())?.id();
     assert!(matches!(

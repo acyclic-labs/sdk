@@ -401,6 +401,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     }
                 };
                 let mut reference = binding_conflict_view(self.preview.plan(), row.value().clone());
+                reference.key = view.key;
                 reference.path = view.path;
                 reference.kind = view.kind;
                 if absent(&view.ours) {
