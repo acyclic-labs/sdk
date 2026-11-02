@@ -131,11 +131,13 @@ impl engine::ResourceProvider for Observed {
         let open = prepared.open;
         let seen = self.seen.clone();
         prepared.open = Box::pin(async move {
-            Ok(Box::pin(open.await?.inspect(move |record| {
-                if matches!(record, Ok(acyclic_stream::FollowUpdate::Record(_))) {
-                    seen.notify_one();
-                }
-            })) as acyclic_stream::FollowStream)
+            Ok(open.await?.map_cursor(|records| {
+                Box::pin(records.inspect(move |record| {
+                    if matches!(record, Ok(acyclic_stream::FollowUpdate::Record(_))) {
+                        seen.notify_one();
+                    }
+                }))
+            }))
         });
         Ok(prepared)
     }
