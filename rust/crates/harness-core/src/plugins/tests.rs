@@ -94,6 +94,14 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
             "hook command",
         ),
         (
+            vec![(
+                "plugins/p/plugin.ts",
+                r#"export default { name: "p", description: "d",
+                  after: { usage: { path: "live/agents/self/usage.jsonl", from: "now" } } };"#,
+            )],
+            "after-hooks",
+        ),
+        (
             vec![
                 (
                     "plugins/p/plugin.ts",

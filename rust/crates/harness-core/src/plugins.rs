@@ -158,9 +158,6 @@ impl Event {
     }
 }
 
-/// The forms a hook file may take, by extension.
-const FORMS: [&str; 3] = ["ts", "sh", "ps1"];
-
 /// The enabled plugin set, lowered to hook rules.
 #[derive(Debug, Default)]
 pub struct Enabled {
@@ -218,6 +215,11 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
                 "{name} requires {missing}, which is not enabled"
             )));
         }
+        if let Some(after) = manifest.after.keys().next() {
+            return Err(invalid(format!(
+                "{root}hooks/after-{after}: after-hooks do not run on this host yet"
+            )));
+        }
         let settings = entry
             .config
             .clone()
@@ -225,16 +227,6 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
             .unwrap_or_else(|| Value::Object(Default::default()));
         let settings = String::from_utf8(crate::contract::canonical_json_bytes(&settings)?)
             .map_err(|error| invalid(error.to_string()))?;
-        for after in manifest.after.keys() {
-            for form in FORMS {
-                let hook = format!("{root}hooks/after-{after}.{form}");
-                if tree.read(&hook).await?.is_some() {
-                    return Err(invalid(format!(
-                        "{hook}: after-hooks do not run on this host yet"
-                    )));
-                }
-            }
-        }
         for event in Event::ALL {
             let read = |form: &str| {
                 let hook = format!("{root}hooks/before-{}.{form}", event.name());
