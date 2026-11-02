@@ -43,6 +43,7 @@ export async function waitForHook(path, match, closed) {
   watcher.on("error", failed);
   scan();
   closed.then(async result => {
+    if (settled) return;
     // Original exit seals publication. Drain its retained bytes through the
     // same read cursor before deciding that the expected event is missing.
     await scan();
