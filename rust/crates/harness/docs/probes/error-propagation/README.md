@@ -20,8 +20,10 @@ must end the trial with the primitive's typed loss/refusal, never a timeout.
 These are separately recorded controls, not hidden retries of failed trials.
 
 Needed: diamond binding, per-node original input/output references, event joins,
-lifecycle release and role fence. Use one live seed publication per fork until
-B2 can replace that recorded input. Not executed.
+lifecycle release and role fence. Publish the selected seed once through its
+actual owner, then use the shared recorded-model adapter with the common source
+recording and retain the first divergence per trial. Independent replay binding
+remains required. Not executed.
 
 | Arm | Assigned | Join adoption | Node adoption | Failure rate | USD/run |
 | --- | --- | --- | --- | --- | --- |

@@ -10,8 +10,11 @@ Load the three role files in `roles/` as one immutable profile snapshot. The
 coordinator and all descendants use the same cheap model. Bind that same
 snapshot on the execution host. Each population fork requires that exact
 snapshot, and adopted pins also bind descendant policy after a restart.
-Population lifecycle release described in [paired populations](../experiments.md)
-remains a prerequisite. Merely naming the role does not install its file.
+The population retains each original result before requesting exact-cut release,
+and holds trial credit until the parent removes membership. Full shared
+membership/layout support described in [paired populations](../experiments.md)
+remains a prerequisite. The executor must bind the admitted role's actual model
+and provider before activation; the role file alone does not enforce that choice.
 
 Measured workers use fresh model context so their coordinator's condition label,
 payload selection and scorer do not leak through inherited history. Grant them
@@ -24,7 +27,10 @@ the population's trial coordinators fork from the common source, not the
 communication graph inside each trial. Bind the per-trial graph through the
 shared topology mechanism and verify the actual edges. The graph specifications
 below are research protocols, not a second topology configuration format.
-Do not execute them as purported topology experiments before that binder exists.
+Use the shared admission order: fork dormant, configure the immutable topology,
+condition and grants, then trigger. The topology owner supplies `topology.toml`
+v1 over that entrance. No paid turn may activate before binding. Do not execute
+these as purported topology experiments before that binder exists.
 
 A scope is a flat, model-less data grouping: independent agents need no parent.
 These protocols use scopes for grants, discovery, budget, termination and
@@ -45,14 +51,38 @@ For example, ten independent cuts with two replicates each give twenty assigned
 trials per arm: set `replicates` to 2 in each admitted arms file. The supplied
 20-replicate single-cut files support only within-cut smoke measurements.
 
-Until recorded replay is available, create live forks and publish each payload
-once at its declared semantic event through the existing stream or volume
-owner. A run is eligible only when the intended injection's committed reference
-and authentic source identity were recorded. A sentence claiming a source in a
-prompt cannot establish that source. Once replay is available, select that
-recorded input, replace exactly one payload, replay through matching request
-digests, and switch to live at the first mismatch. Record the original reference,
-replacement reference and divergence. No speculative replay API is introduced.
+Use the shared `model::RecordedModel::new(live, recording, sink)` for replay.
+`Conversation::recording()` builds a source `Recording` offline from the whole
+agent tree. `model::replay_key` identifies content-stable requests; it preserves
+user/tool text exactly while normalizing harness-owned identity. Never substitute
+`request_digest`, which changes across forks. Read reconstructed request bytes
+through `ExecutionPayloadField::AdmittedRequest`; later journal `Request` values
+are segment manifests.
+
+Bind an independent replay provider to each dormant trial before activation.
+The current `Recording` is consumed by its adapter: sharing one adapter across
+arms would let the first arm consume the others' matches. Rebuilding the source
+recording per arm would repeatedly walk its whole history. The shared recording
+owner must provide reusable immutable source data with independent constant-work
+trial cursors, and the executor must expose the per-trial binding entrance.
+Those integration contracts remain prerequisites; these recipes add no second
+replay implementation.
+
+Publish the selected intervention once at its semantic event through the
+existing stream or volume owner, retaining the committed original/replacement
+references and authentic sender. A sentence claiming a source cannot establish
+that source. `RecordedModel` serves matching keys and falls back to live on a
+miss; that turn stays live. Its `DivergenceSink` reports the first divergence
+once per adapter as `{ dispatch, key }`. Attribute that observation to the trial;
+no divergence is distinct from an unobserved callback. Count actual live calls
+and paid cost separately from replayed settlements.
+
+Recorded tool results and post-dispatch failures replace execution of those
+tools. Agent tools and code-mode compositions still execute; inner code-mode
+calls replay by their stable call ids. Replayed tool output does not reproduce
+file writes or prove that an intervention was published. The committed-input and
+read-provenance requirements still apply. Source-identity contrasts use actual
+senders; replay request-key normalization is not permission to forge a source.
 
 Shared-file injection needs a committed file generation before the intended
 read. Commit through the volume owner once; no per-write flush or reread. The
@@ -92,6 +122,11 @@ agent identity, role, input sequence and original provenance. Use the infection
 indicator only after confirming the planted input reached that node. A causal
 chain needs the corresponding message edges or exact file generation read;
 matching final answers alone do not prove transmission or collusion.
+Retain replay observations with the same trial identity and original output cut:
+
+| Trial | Source recording | Original/replacement input refs | Divergence dispatch | Replay key | Live calls | Paid USD |
+| --- | --- | --- | --- | --- | --- | --- |
+| Not run | — | — | Unobserved | — | Unmeasured | Unknown |
 
 Report paired treatment-minus-baseline differences using the M1 statistics
 module. All trials from one problem/cut form one cluster, including every graph

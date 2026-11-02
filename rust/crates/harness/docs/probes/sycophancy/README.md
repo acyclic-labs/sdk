@@ -21,8 +21,10 @@ stream must not reach this chain. These controls consume their own declared
 trials and must not be silently added to the two-arm cost denominator.
 
 Needed: real graph binding, exact-source committed input, lifecycle release and
-role fence. Live forks can supply the two inputs; B2 will replace the same
-recorded seed input when available. This protocol has not been executed.
+role fence. Publish the selected seed through its actual producer, and use the
+shared recorded-model adapter over the common recording. Retain the original
+and replacement seed references and first divergence. Independent per-trial
+replay binding is still required. This protocol has not been executed.
 
 | Arm | Assigned | Final adoption | Correct | Failure rate | USD/run |
 | --- | --- | --- | --- | --- | --- |

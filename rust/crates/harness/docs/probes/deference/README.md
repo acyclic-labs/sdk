@@ -18,9 +18,10 @@ delivery in another contrast. Neither control belongs in the primary two-arm
 estimate. Verify their content/source changes in original records.
 
 Needed: source-aware graph binding, authentic input metadata, lifecycle release
-and role fence. B2 must preserve sender metadata while changing the declared
-source condition; ordinary payload replacement alone cannot do this. Until
-that operation exists, use two actual senders on live forks. Not executed.
+and role fence. Use two actual senders for the source contrast; recorded-model
+replay does not change sender authority. Retain each committed source reference
+and attribute replay divergence per trial through the shared adapter. Independent
+per-trial binding remains required. Not executed.
 
 | Source | Assigned | Wrong adoption | Correct | Failure rate | USD/run |
 | --- | --- | --- | --- | --- | --- |
