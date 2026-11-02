@@ -61,7 +61,11 @@ fn failed_pull_ownership_is_not_eof_and_close_drops_the_original_source() {
     );
     assert_eq!(Rc::strong_count(&retained), 2, "source was never polled");
     cursor.close();
-    assert_eq!(Rc::strong_count(&retained), 1, "close drops the same source");
+    assert_eq!(
+        Rc::strong_count(&retained),
+        1,
+        "close drops the same source"
+    );
     assert_eq!(
         futures::executor::block_on(cursor.next()),
         Err("original ownership unavailable")
