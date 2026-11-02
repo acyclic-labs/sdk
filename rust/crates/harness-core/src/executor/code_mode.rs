@@ -451,11 +451,22 @@ impl StockExecution<'_> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
             {
-                return Err(error.into());
+                return Err(error);
             }
             let value = match program {
-                Ok(value) => {
-                    serde_json::json!({"value": value})
+                Ok(result) => {
+                    #[cfg(feature = "filesystem")]
+                    if let Some(custody) = result.custody {
+                        let io = self.io.ok_or_else(|| {
+                            stock_boundary(
+                                self.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "JavaScript result has no original ledger",
+                            )
+                        })?;
+                        io.absorb_native_custody(custody)?;
+                    }
+                    serde_json::json!({"value": result.value})
                 }
                 Err(mut error) => {
                     let mut value = serde_json::json!({"error": ""});

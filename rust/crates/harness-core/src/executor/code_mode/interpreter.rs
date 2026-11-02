@@ -2,7 +2,6 @@ use super::{Call, CancellationToken, Request};
 use rquickjs::{
     AsyncContext, AsyncRuntime, CaughtError, Function, Module, Promise, prelude::Async,
 };
-use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 // Protective engine ceilings, independent of product capacity and tool
@@ -49,7 +48,7 @@ pub(super) async fn run(
     maximum: usize,
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
-) -> Result<Value, String> {
+) -> Result<super::allocator::EngineResult, String> {
     let compiled = crate::config::compile_module("code.ts", code.as_bytes())?;
     if let Some(import) = compiled
         .imports
@@ -61,6 +60,7 @@ pub(super) async fn run(
         ));
     }
     let bridge = allocator.clone();
+    let result_allocator = allocator.clone();
     let runtime = AsyncRuntime::new_with_alloc(allocator).map_err(|error| error.to_string())?;
     runtime.set_memory_limit(MEMORY_BYTES).await;
     let interrupt = cancellation.clone();
@@ -172,15 +172,15 @@ pub(super) async fn run(
                 Err(error) => return Ok(Err(error)),
             };
             let Some(json) = json else {
-                return Ok(Ok(Value::Null));
+                return result_allocator.decode_result(b"null").map(Ok);
             };
             let json = json.to_cstring()?;
             if json.len() > maximum {
                 return Ok(Err("JavaScript result exceeds admitted output".into()));
             }
-            serde_json::from_slice(json.as_str().as_bytes())
+            result_allocator
+                .decode_result(json.as_str().as_bytes())
                 .map(Ok)
-                .map_err(|_| rquickjs::Error::Unknown)
         }
         .await;
         program
@@ -586,7 +586,7 @@ mod tests {
         // error before inspecting the guest's resulting channel-closure error.
         let (calls, large_pages, directory_pages) = served?;
         assert_eq!(
-            result.unwrap().unwrap(),
+            result.unwrap().unwrap().value,
             serde_json::json!({
                 "lines":["β"],"conflict":"changed","absent":null,
                 "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
@@ -627,7 +627,7 @@ mod tests {
             ))
             .await
             .unwrap();
-            assert_eq!(result, expected);
+            assert_eq!(result.map(|result| result.value), expected);
         }
     }
 
