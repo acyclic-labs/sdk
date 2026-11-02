@@ -232,9 +232,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         if volume.provider() != &self.provider
-            || input
-                .bytes()
-                .is_some_and(|bytes| maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum))
+            || input.bytes().is_some_and(|bytes| {
+                maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+            })
         {
             return Err(stock_boundary(
                 io,

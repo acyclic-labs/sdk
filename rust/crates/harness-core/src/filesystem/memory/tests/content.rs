@@ -8,11 +8,18 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
     let storage =
         MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
             .await?;
+    let unbounded = FilesystemContentPublisher::new(
+        storage.host.clone(),
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        None,
+        None,
+    )?;
     let operation = OperationId::new();
     let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
     let mut source = futures::io::Cursor::new(bytes.as_slice());
-    let (original, _) = storage
-        .publisher
+    let (original, _) = unbounded
         .stage_stream_once(
             operation,
             "streamed",
@@ -38,8 +45,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
     assert_eq!(replayed, original);
     let mut replay = futures::io::Cursor::new(bytes.as_slice());
     assert_eq!(
-        storage
-            .publisher
+        unbounded
             .stage_stream_once(
                 operation,
                 "streamed",
@@ -54,8 +60,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
     );
     let mut changed = futures::io::Cursor::new(b"changed".as_slice());
     assert!(matches!(
-        storage
-            .publisher
+        unbounded
             .stage_stream_once(
                 operation,
                 "streamed",
