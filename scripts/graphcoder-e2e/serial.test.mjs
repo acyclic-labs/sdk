@@ -7,7 +7,68 @@ import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
 import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { schedule } from "./process.mjs";
+
+test("serial collection and command rejection retain original native failure evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "serial-failure-"));
+  const scope = new Processes({ onProgress(event) {
+    if (event.phase === "node-spawn") readFileSync(join(root, "missing-progress-sink"));
+  } });
+  try {
+    const cases = [{ id: "native" }];
+    let original;
+    const receipts = await runSuites(cases, async () => {
+      try { return await scope.run(process.execPath, ["-e", "process.exitCode=7"]); }
+      catch (error) { original = error; throw error; }
+    }, () => assert.fail("a failed capture cannot read a suite receipt"));
+    const matrix = JSON.parse(JSON.stringify(collect(cases, receipts, process.platform, { pass: true })));
+    assert.equal(matrix.pass, false);
+    assert.equal(scope.children.size, 0, "collection follows original physical retirement");
+    assert.equal(original.name, "ProcessObservationFailed");
+    assert.equal(original.cause.code, "ENOENT");
+    for (const result of [matrix.suites[0], matrix.results[0]]) {
+      assert.equal(result.receipt_failure.error, original.stack);
+      assert.match(result.receipt_failure.cause, /ENOENT/);
+      assert.match(result.receipt_failure.cause, /missing-progress-sink/);
+    }
+    const command = new Processes();
+    try {
+      const args = [fileURLToPath(new URL("serial.mjs", import.meta.url)), process.execPath, process.execPath, "1/1"];
+      const result = await command.run(process.execPath, args, { env: { ...process.env,
+        E2E_SCRATCH_ROOT: root, E2E_OUTPUT: join(root, "matrix"), E2E_WORKSPACE_ROOT: "", E2E_NTFS_ROOT: "" } });
+      assert.equal(result.code, 1, result.stderr);
+      const failure = JSON.parse(result.stderr.trim());
+      assert.match(failure.error, /AssertionError.*partition is empty or outside the inventory/s);
+      assert.equal(failure.assertion.actual, "false");
+      assert.equal(failure.assertion.expected, "true");
+      assert.equal(failure.step, "serial matrix admission or collection");
+      assert.deepEqual(failure.recovery.slice(1), args);
+      assert.equal(command.children.size, 0);
+    } finally { await command.close(); }
+  } finally {
+    await assert.rejects(scope.close(), error => error.name === "ProcessObservationFailed");
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("serial qualification retains the first assertion when a suite receipt is missing", async () => {
+  const cases = [{ id: "case" }], coverage = { pass: true };
+  let original;
+  const receipts = await runSuites(cases, async () => {
+    try { assert.equal("original result", "original expectation", "original operation"); }
+    catch (error) { original = error; throw error; }
+  }, async () => { throw new Error("unreachable receipt read"); });
+  const matrix = JSON.parse(JSON.stringify(collect(cases, receipts, process.platform, coverage)));
+  assert.equal(matrix.pass, false);
+  for (const result of [matrix.suites[0], matrix.results[0]]) {
+    assert.equal(result.receipt_failure.error, original.stack);
+    assert.equal(result.receipt_failure.assertion.operator, original.operator);
+    assert.match(result.receipt_failure.assertion.actual, /original result/);
+    assert.match(result.receipt_failure.assertion.expected, /original expectation/);
+  }
+});
 
 test('installed host admission launches the actual package entries',async()=>{
  const scope=new Processes();
