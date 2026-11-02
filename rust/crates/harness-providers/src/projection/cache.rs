@@ -143,8 +143,7 @@ pub(crate) fn encode(
             last: (index + 1 == count).then_some(count as u64),
             writer: &writer,
         });
-    acyclic_model_render::render(&body.header()?, marked, &body.tail()?, &mut &writer)
-        .map_err(|_| crate::invalid("model request encoding failed"))?;
+    body.render_segments(marked, &mut &writer)?;
     let output = writer.0.into_inner();
     // No retention is inferred from a provider default. The admitted Anthropic
     // profile explicitly projects the one top-level ephemeral marker.
