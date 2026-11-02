@@ -15,7 +15,11 @@ const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-executi
 import { answer, requireTools, runCase } from "./live.mjs";
 
 test("successful execution cannot erase the original returned native cause", () => {
-  for (const original of [captured["text-responses"], captured["jsonl-reopen"]]) executionSucceeded(original);
+  let stderrReads = 0;
+  for (const original of [captured["text-responses"], captured["jsonl-reopen"]]) executionSucceeded({
+    ...original, get stderr() { stderrReads++; return original.stderr; },
+  });
+  assert.equal(stderrReads, 0, "successful status admission must not reread its transcript for an unused error message");
   // Mutate only the original failure's independent exit/ACK observations.
   // Successful stdout comes from its separately retained shipping contract.
   // Neither can promote a retained native failure to a successful execution.
