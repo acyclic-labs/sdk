@@ -230,13 +230,35 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
             .publish(&request, &mut response, |_| Err(libc::EPIPE.into()))
             .is_err()
     );
-    request.inode = parent.state_to_finish().root_inode;
+    let before = work.receipt();
+    for view in [&parent, &child] {
+        request.inode = view.state_to_finish().root_inode;
+        assert_eq!(
+            protocol
+                .publish(&request, &mut response, |bytes| {
+                    let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
+                    reply.u32()?;
+                    assert_eq!(reply.u32()? as i32, -libc::ENODEV);
+                    Ok(())
+                })
+                .err()
+                .map(|error| error.errno()),
+            Some(libc::ENODEV)
+        );
+    }
+    let init =
+        PacketRequest::parse(&packet(26)?.request).map_err(std::io::Error::from_raw_os_error)?;
     assert_eq!(
         protocol
-            .publish(&request, &mut response, |_| Ok(()))
+            .publish(&init, &mut response, |_| Ok(()))
             .err()
             .map(|error| error.errno()),
         Some(libc::ENODEV)
+    );
+    assert_eq!(
+        work.receipt(),
+        before,
+        "closed transport admits no source work"
     );
     Ok(())
 }

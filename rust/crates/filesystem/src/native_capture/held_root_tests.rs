@@ -67,11 +67,10 @@ enum Expected {
 }
 
 fn expected(query: &str, errno: i32) -> Expected {
-    // An interrupted query is retried, and an `EPERM` open is retried without
-    // `O_NOATIME`; both name the same incarnation. A kernel without file
-    // handles is a filesystem without stable ids. Every other failure keeps
-    // its cause.
-    if errno == libc::EINTR || (query == "openat" && errno == libc::EPERM) {
+    // An `EPERM` open can omit `O_NOATIME` and name the same incarnation.
+    // A kernel without file handles is a filesystem without stable ids.
+    // Every other failure, including an interrupted call, keeps its cause.
+    if query == "openat" && errno == libc::EPERM {
         Expected::Same
     } else if query == "handle" && errno == libc::ENOSYS {
         Expected::Unstable
@@ -105,6 +104,13 @@ fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
                 (Expected::Cause(errno), Err(crate::demand::DemandError::Io(error)))
                     if error.raw_os_error() == Some(errno) => {}
                 (_, held) => return Err(format!("{query} errno {errno}: {held:?}")),
+            }
+            drop(fault);
+            let reopened = capture(directory.path()).map_err(|error| error.to_string())?;
+            if reopened != baseline {
+                return Err(format!(
+                    "{query} errno {errno}: later capture changed incarnation"
+                ));
             }
         }
     }
