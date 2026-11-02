@@ -232,13 +232,25 @@ pub(super) fn check_observations() -> Result {
             return Err("invalid observations admitted by quantile negative control".into());
         }
     }
-    let mut cohort = Measurements::new(
-        1,
-        RequestLedger::default(),
-        None,
-        "use samples with identical floor terms",
-        &[Operation::ObjectGet],
-    );
+    let requests = RequestLedger::default();
+    let recovery = "use samples with identical floor terms";
+    let operations = [Operation::ObjectGet];
+    let mut cohort = None;
+    let construction = acyclic_test_support::measure(|| {
+        cohort = Some(Measurements::new(1, requests, None, recovery, &operations));
+    });
+    if construction.count_total != 0 || construction.bytes_total != 0 {
+        return Err("measurement construction copied caller-owned inputs".into());
+    }
+    let copied = acyclic_test_support::measure(|| {
+        std::hint::black_box((recovery.to_owned(), operations.to_vec()));
+    });
+    if copied.count_total != 2
+        || copied.bytes_total != (recovery.len() + std::mem::size_of_val(&operations)) as u64
+    {
+        return Err("owned measurement-input negative did not expose both copies".into());
+    }
+    let mut cohort = cohort.ok_or("measurement construction did not complete")?;
     let mut record = |bytes, observation| {
         let identity = serde_json::json!({
             "request": {"operation": "object.get", "requested_copy_bytes": bytes},
@@ -495,7 +507,7 @@ pub(super) fn check_observations() -> Result {
     let original = super::durability::retain_diagnostics(
         Err::<(), _>(returned),
         || cohort.publish_partial(&mut partial),
-        &cohort.recovery,
+        cohort.recovery,
     )?
     .unwrap_err();
     let partial: serde_json::Value = serde_json::from_slice(&partial)?;
@@ -640,13 +652,13 @@ fn floor_units(terms: Terms) -> serde_json::Value {
     })
 }
 
-pub(super) struct Measurements {
+pub(super) struct Measurements<'a> {
     agents: usize,
     requests: RequestLedger,
     durability: DurabilityQuery,
-    recovery: String,
+    recovery: &'a str,
     rows: BTreeMap<Operation, Row>,
-    operations: Vec<Operation>,
+    operations: &'a [Operation],
 }
 
 struct Row {
@@ -711,21 +723,21 @@ pub(super) struct Observation {
     native_attempts: Option<[u64; 3]>,
 }
 
-impl Measurements {
+impl<'a> Measurements<'a> {
     pub(super) fn new(
         agents: usize,
         requests: RequestLedger,
         durability: DurabilityQuery,
-        recovery: &str,
-        operations: &[Operation],
+        recovery: &'a str,
+        operations: &'a [Operation],
     ) -> Self {
         Self {
             agents,
             requests,
             durability,
-            recovery: recovery.into(),
+            recovery,
             rows: BTreeMap::new(),
-            operations: operations.to_vec(),
+            operations,
         }
     }
 
@@ -843,7 +855,7 @@ impl Measurements {
         if row.terms != floor {
             return Err(format!("{} samples have different floor terms", operation.name()).into());
         }
-        row.work.record(observation.work, &self.recovery)?;
+        row.work.record(observation.work, self.recovery)?;
         row.raw_ns.push(ns(elapsed));
         row.observations.push(RetainedObservation {
             identity,
@@ -885,7 +897,7 @@ impl Measurements {
                 self.record(operation, floor, elapsed, observation, identity)
             })
         };
-        super::durability::retain_diagnostics(result, || diagnostic, &self.recovery)
+        super::durability::retain_diagnostics(result, || diagnostic, self.recovery)
     }
 
     pub(super) fn publish_partial(&self, output: &mut impl Write) -> Result {
@@ -912,7 +924,7 @@ impl Measurements {
             // Original physical retained-resource observers are required.
             idle: Idle::default(),
         };
-        for operation in self.operations {
+        for &operation in self.operations {
             let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {

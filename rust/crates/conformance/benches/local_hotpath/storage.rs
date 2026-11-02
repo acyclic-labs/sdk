@@ -152,7 +152,7 @@ pub(super) async fn run(
     rows.finish(floors)
 }
 
-async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let mut first = fixture
         .objects
         .list(None, 1)
@@ -247,7 +247,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
     Ok(())
 }
 
-async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let stream = Stream::new(fixture.stream.clone(), "benchmark/stream")?;
     let payload = Bytes::from(vec![0x5a; 1024]);
     let seed = stream.append(payload.clone(), key("stream-seed")?).await?;
@@ -352,7 +352,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
     Ok(())
 }
 
-async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let store = Store::new(fixture.stream.clone(), StreamPath::new("benchmark/actors")?);
     let mut address = None;
     let creates = if rows.includes(Operation::ActorCreate) {
@@ -560,7 +560,7 @@ async fn actor_delivery(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    rows: &mut Measurements,
+    rows: &mut Measurements<'_>,
 ) -> Result {
     use acyclic_harness_core::agent::{
         AgentPath, Control, Delivered, INBOX, InboxRecord, IntentId, Phase, Sender,
@@ -731,7 +731,7 @@ async fn actor_delivery(
     })
 }
 
-async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
+async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let cancellation = CancellationToken::new();
     let volume = fixture.volume(&id(0)?)?;
     let name = volume.volume.storage_name(&mut None)?;
@@ -838,7 +838,7 @@ async fn sessions(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    rows: &mut Measurements,
+    rows: &mut Measurements<'_>,
 ) -> Result {
     use acyclic_harness_core::agent::{AgentPath, IntentId};
     for index in 0..samples {
