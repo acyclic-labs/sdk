@@ -8,8 +8,8 @@ const recovery = 'node scripts/check-no-polling.mjs ' + (inventory
  ? '--inventory ' + JSON.stringify(output ?? 'no-polling-census.json')
  : JSON.stringify(base ?? 'HEAD'));
 try {
- const {sourceInScope} = await import('./no-polling.mjs');
- const {newProjectPollingSites, projectPollingSites} = await import('./no-polling-project.mjs');
+ const {sourceInScope} = await import('./no-polling-scope.mjs');
+ const {newProjectPollingSites, projectPollingSites} = await import('./source-policy/project.mjs');
  if (inventory ? process.argv.length !== 4 || !output || output.startsWith('-')
   : process.argv.length !== 3 || !base || base.startsWith('-'))
   throw new Error('expected one baseline Git revision, or --inventory followed by a new output file');
@@ -46,7 +46,7 @@ try {
     beforeSources.set(file, before.toString('utf8'));
    }
   }
-  const refused = newProjectPollingSites(beforeSources, afterSources, dispositions);
+  const refused = newProjectPollingSites(beforeSources, afterSources, dispositions, {inScope: sourceInScope});
   if (refused.length) {
    for (const site of refused) console.error(`step=no-polling file=${site.file}:${site.line} kind=${site.kind} fingerprint=${site.fingerprint}`);
    throw new Error('remove each new wait/retry, or record its exact producer, terminal and negative control under the repository rule');

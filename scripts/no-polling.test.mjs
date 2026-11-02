@@ -5,8 +5,9 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {fuzz} from './no-polling.fuzz.mjs';
-import {newPollingSites, pollingSites, SourceSyntaxError, sourceInScope, validateDispositions} from './no-polling.mjs';
-import {newProjectPollingSites, projectPollingSites} from './no-polling-project.mjs';
+import {newPollingSites, pollingSites, SourceSyntaxError, validateDispositions} from './source-policy/index.mjs';
+import {sourceInScope} from './no-polling-scope.mjs';
+import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
 
 const rust = 'rust/crates/example/src/lib.rs';
 const script = 'typescript/packages/example/test/control.ts';
@@ -492,6 +493,44 @@ test('scope covers native adapters, plugins and scripts as well as both language
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
  assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);
  assert.ok(pollingSites('typescript/packages/client/settings.json', '{"poll_interval": 10}').length);
+});
+
+test('shared policy covers consumer paths and configured temporal dependencies', () => {
+ // Source mutations mirror dependency schedules, not provider/tool output.
+ for (const source of [
+  'PeriodicReader::builder(exporter).build();',
+  'use metrics::PeriodicReader as Reader; Reader::builder(exporter).build();',
+  'provider.with_batch_exporter(exporter);',
+  'reader.with_interval(period);',
+  'batch.with_scheduled_delay(period);',
+  'client.http2_keepalive_interval(Some(period));',
+  'server.http2_keep_alive_interval(period);',
+  'client.keep_alive_interval(period);',
+  'socket.set_tcp_keepalive(&keepalive);',
+  'client.retry_config(RetryConfig::standard());',
+  'retry.with_initial_backoff(period);',
+  'keepalive.with_retries(0);',
+ ]) {
+  const file = 'lib/application/src/config.rs';
+  const before = new Map();
+  const after = new Map([[file, source]]);
+  const sites = newProjectPollingSites(before, after);
+  assert.ok(sites.length, source);
+  const accepted = sites.map(site => disposition(site, 'caller-deadline',
+   'original caller policy', 'original caller terminal', 'change original policy'));
+  assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
+  assert.throws(() => newProjectPollingSites(before, after, accepted, {inScope: sourceInScope}), /invalid exact/);
+  assert.ok(newProjectPollingSites(before, new Map([[file, source + source]]), accepted).length);
+ }
+ const source = 'printf value#fragment; sl\\eep 1';
+ for (const file of ['ops/control.sh', 'ops/control.bash']) {
+  assert.ok(newProjectPollingSites(new Map(), new Map([[file, source]])).length);
+ }
+ const helper = 'lib/control.mjs', caller = 'svc/start.mjs';
+ const before = new Map([[helper, 'export const pause = ms => new Promise(done => setTimeout(done, ms));'],
+  [caller, "import {pause} from '../lib/control.mjs';"]]);
+ const after = new Map(before).set(caller, before.get(caller) + ' await pause(25);');
+ assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller));
 });
 
 test('the entry point compares real Git objects and rejects modified and untracked sources', () => {

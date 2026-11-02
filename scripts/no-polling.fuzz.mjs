@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {pollingSites} from './no-polling.mjs';
+import {pollingSites} from './source-policy/index.mjs';
 
 // Byte-oriented source mutations, not captured tool output. Exercise the real
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
