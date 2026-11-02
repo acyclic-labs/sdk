@@ -824,9 +824,7 @@ impl Reader {
                 priority,
                 paging,
                 &mut self.next_ticket,
-                |key, priority| {
-                    inflight.set_priority(key, priority);
-                },
+                |key, priority| inflight.set_priority(key, priority),
             );
         }
         for key in self.demand.finish_plan() {
@@ -2140,6 +2138,7 @@ mod reader_tests {
                 paging,
                 ticket: 0,
             },
+            true,
         );
         reader.listed(
             &parent,
@@ -2214,7 +2213,7 @@ mod reader_tests {
                 Priority::Prefetch,
                 Paging::default(),
                 &mut reader.next_ticket,
-                |_, _| {},
+                |_, _| false,
             );
         };
         // Invalidation must leave dormant history and its accumulated age
@@ -2396,6 +2395,62 @@ mod reader_tests {
                     .await
                     .unwrap();
                 heads.insert(path.clone(), provider.head(path).await.unwrap());
+            }
+            // Retain actual provider replies with spare request credit. Active
+            // identities must leave the ready index, even when a visible want
+            // is withdrawn and then aliases that same original request again.
+            for count in [1, 31] {
+                let mut ready = Reader::new(ReaderPolicy {
+                    requests: 64,
+                    prefetch_requests: 0,
+                    ..ReaderPolicy::default()
+                })
+                .unwrap();
+                let wants = || {
+                    heads.keys().take(count).map(|stream| {
+                        (
+                            Want::Last {
+                                stream: stream.clone(),
+                                count: 1,
+                            },
+                            Priority::Visible,
+                        )
+                    })
+                };
+                ready.begin_frame(0);
+                ready.plan(wants());
+                let active = ready.poll(0);
+                assert_eq!(active.len(), count);
+                ready.demand.take_visits();
+                for _ in 0..3 {
+                    assert!(ready.poll(0).is_empty());
+                }
+                assert_eq!(
+                    ready.demand.take_visits(),
+                    0,
+                    "ready dispatch visited active requests"
+                );
+                ready.plan([]);
+                assert_eq!(ready.inflight.len(), count);
+                ready.plan(wants());
+                assert!(ready.poll(0).is_empty());
+                assert_eq!(
+                    ready.demand.take_visits(),
+                    0,
+                    "reattached want queued an active request"
+                );
+                let Op::Head { id, stream } = &active[0] else {
+                    panic!("original provider head");
+                };
+                ready.complete(*id, Outcome::Failed(Failure::Unavailable), 1);
+                let retry = ready.poll(ready.retry_at);
+                assert_eq!(retry.len(), 1, "original failure stranded its demand");
+                assert_eq!(ready.demand.take_visits(), 1);
+                assert!(matches!(&retry[0], Op::Head { stream: retried, .. } if retried == stream));
+                ready.complete(retry[0].id(), Outcome::Head(heads[stream].clone()), 2);
+                ready.complete(*id, Outcome::Head(heads[stream].clone()), 2);
+                assert!(ready.poll(ready.retry_at).is_empty());
+                assert_eq!(ready.demand.take_visits(), 0);
             }
             // Hold real provider replies while priorities, demand and authority
             // change. Credit must follow each original live identity exactly

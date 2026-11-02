@@ -20,6 +20,7 @@ pub(super) struct Demands {
 struct Entry {
     demand: Demand,
     mark: bool,
+    active: bool,
 }
 
 pub(super) struct Ordered<'a> {
@@ -59,10 +60,14 @@ impl Demands {
     /// A retry keeps the original observations unless a newer plan admitted
     /// its own. A withdrawn demand cannot be revived by the failed flight.
     pub(super) fn restore_paging(&mut self, key: &OpKey, paging: Paging) {
-        if let Some(entry) = self.entries.get_mut(key)
-            && entry.demand.paging.witnesses.is_empty()
-        {
-            entry.demand.paging = paging;
+        if let Some(entry) = self.entries.get_mut(key) {
+            if entry.demand.paging.witnesses.is_empty() {
+                entry.demand.paging = paging;
+            }
+            if entry.active {
+                entry.active = false;
+                self.order[class(entry.demand.priority)].insert((entry.demand.ticket, key.clone()));
+            }
         }
     }
 
@@ -76,7 +81,7 @@ impl Demands {
         priority: Priority,
         paging: Paging,
         next_ticket: &mut u64,
-        changed: impl FnOnce(&OpKey, Priority),
+        changed: impl FnOnce(&OpKey, Priority) -> bool,
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
@@ -88,14 +93,16 @@ impl Demands {
             };
             if entry.demand.priority != priority {
                 changed(&key, priority);
-                self.order[class(entry.demand.priority)]
-                    .remove(&(entry.demand.ticket, key.clone()));
-                self.order[class(priority)].insert((entry.demand.ticket, key));
+                if !entry.active {
+                    self.order[class(entry.demand.priority)]
+                        .remove(&(entry.demand.ticket, key.clone()));
+                    self.order[class(priority)].insert((entry.demand.ticket, key));
+                }
                 entry.demand.priority = priority;
             }
             entry.mark = self.mark;
         } else {
-            changed(&key, priority);
+            let active = changed(&key, priority);
             let ticket = *next_ticket;
             *next_ticket += 1;
             self.insert(
@@ -105,6 +112,7 @@ impl Demands {
                     paging,
                     ticket,
                 },
+                active,
             );
         }
     }
@@ -115,26 +123,29 @@ impl Demands {
         self.entries
             .extract_if(.., move |_, entry| entry.mark != mark)
             .map(move |(key, entry)| {
-                order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
+                entry.unqueue(&key, order);
                 key
             })
     }
 
-    pub(super) fn insert(&mut self, key: OpKey, demand: Demand) {
+    pub(super) fn insert(&mut self, key: OpKey, demand: Demand, active: bool) {
         self.remove(&key);
-        self.order[class(demand.priority)].insert((demand.ticket, key.clone()));
+        if !active {
+            self.order[class(demand.priority)].insert((demand.ticket, key.clone()));
+        }
         self.entries.insert(
             key,
             Entry {
                 demand,
                 mark: self.mark,
+                active,
             },
         );
     }
 
     pub(super) fn remove(&mut self, key: &OpKey) {
         if let Some(entry) = self.entries.remove(key) {
-            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
+            entry.unqueue(key, &mut self.order);
         }
     }
 
@@ -164,7 +175,7 @@ impl Demands {
             {
                 self.invalidation_visits += 1;
             }
-            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            entry.unqueue(&key, &mut self.order);
         }
     }
 
@@ -174,7 +185,7 @@ impl Demands {
             {
                 self.invalidation_visits += 1;
             }
-            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            entry.unqueue(&key, &mut self.order);
         }
     }
 
@@ -211,9 +222,17 @@ impl Demands {
             .expect("dispatch retains its selected demand");
         let order = &mut self.order[class(entry.demand.priority)];
         order.remove(&(entry.demand.ticket, key.clone()));
-        order.insert((ticket, key.clone()));
+        entry.active = true;
         entry.demand.ticket = ticket;
         std::mem::take(&mut entry.demand.paging)
+    }
+}
+
+impl Entry {
+    fn unqueue(&self, key: &OpKey, order: &mut [BTreeSet<(u64, OpKey)>; 2]) {
+        if !self.active {
+            order[class(self.demand.priority)].remove(&(self.demand.ticket, key.clone()));
+        }
     }
 }
 

@@ -41,7 +41,7 @@ impl Requests {
         self.by_id.insert(id, flight);
     }
 
-    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) {
+    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> bool {
         if let Some(id) = self.keys.get(key) {
             let flight = self
                 .by_id
@@ -52,6 +52,9 @@ impl Requests {
                 flight.priority = priority;
                 self.prefetch += usize::from(priority == Priority::Prefetch);
             }
+            true
+        } else {
+            false
         }
     }
 
