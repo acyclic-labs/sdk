@@ -332,8 +332,9 @@ interface WasmActorsModule extends ActorsNominalBinding {
 }
 
 type DeploymentDeclaration = import("./generated/semantic/actors/readonly.js").Binding;
+type CapturedDeploymentBinding = Omit<DeploymentDeclaration, "targetAccount"> & { readonly targetAccount: Uint8Array<ArrayBuffer> };
 
-function captureDeploymentBinding(input: DeploymentDeclaration): DeploymentDeclaration {
+function captureDeploymentBinding(input: DeploymentDeclaration): CapturedDeploymentBinding {
   const binding = { ...input };
   for (const value of [binding.name, binding.capability, binding.resource]) {
     if (typeof value !== "string") throw new TypeError("binding fields must be text");
@@ -345,10 +346,10 @@ function captureDeploymentBinding(input: DeploymentDeclaration): DeploymentDecla
   binding.targetAccount = new Uint8Array(binding.targetAccount);
   const stateTransaction = binding.stateTransaction ?? false;
   if (typeof stateTransaction !== "boolean") throw new TypeError("binding state selector must be boolean");
-  return Object.freeze(binding);
+  return Object.freeze(binding) as CapturedDeploymentBinding;
 }
 
-function validateCapturedBinding(wasm: WasmActorsModule, binding: DeploymentDeclaration): void {
+function validateCapturedBinding(wasm: WasmActorsModule, binding: CapturedDeploymentBinding): void {
   const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
   wasm.validateDeploymentBinding(name, capability, resource, binding.targetAccount, actorNamespace, workerService, binding.stateTransaction ?? false, guestAdmission);
 }
@@ -361,7 +362,7 @@ export async function validateDeploymentBinding(input: DeploymentDeclaration): P
 
 /** Capture declarations before initialization, then admit them through one loaded
  * Rust module. The returned snapshots retain exactly the fields Rust checked. */
-export async function admitDeploymentBindings(input: readonly DeploymentDeclaration[]): Promise<readonly DeploymentDeclaration[]> {
+export async function admitDeploymentBindings(input: readonly DeploymentDeclaration[]): Promise<readonly CapturedDeploymentBinding[]> {
   const selected = input.map(captureDeploymentBinding);
   if (selected.length !== 0) {
     const wasm = await loadWasmModule();

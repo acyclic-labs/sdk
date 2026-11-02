@@ -3,22 +3,28 @@ import { ResourceIdentity, validateResourceLabel } from "@acyclic-labs/auth/addr
 import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";
 
+const encoder = new TextEncoder();
+const noDeploymentEnvelope = new Uint8Array(0);
+
 /** Private Worker-to-Worker binding, authorized by its named deployment binding. */
 export class WorkerServiceBinding {
   readonly #identity: ResourceIdentity;
+  readonly #worker: Semantic.ActorNamespace;
   readonly #transport: Pick<ActorsClient, "invokeWorker">;
   readonly #binding: string;
   constructor(account: Uint8Array, worker: string, transport: Pick<ActorsClient, "invokeWorker">, binding: string) {
     if (typeof worker !== "string") throw new TypeError("worker name must be text");
-    this.#identity = new ResourceIdentity(account, new TextEncoder().encode(worker));
-    validateResourceLabel(this.#identity.id);
+    const id = encoder.encode(worker);
+    validateResourceLabel(id);
+    this.#identity = new ResourceIdentity(account, id);
+    this.#worker = worker as Semantic.ActorNamespace;
     if (typeof binding !== "string" || binding.length === 0) throw new TypeError("binding name is required");
     this.#transport = transport; this.#binding = binding;
   }
   get identity(): ResourceIdentity { return ResourceIdentity.decode(this.#identity.encode()); }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeWorkerRequest {
-    return { workerName: new TextDecoder().decode(this.#identity.id) as Semantic.ActorNamespace,
-      accountId: this.#identity.account, method, url, body, headers, bindingName: this.#binding,
+    return { workerName: this.#worker,
+      accountId: this.#identity.account, method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {
