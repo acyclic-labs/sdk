@@ -18,7 +18,6 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use std::sync::{Arc, Mutex};
 
 struct Selected {
-    operation: OperationId,
     step: u32,
     cut: BoundaryCut,
     messages: Vec<ModelMessage>,
@@ -38,6 +37,7 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub issuer: RuntimeAuthority,
     pub admission: TurnAdmission,
     pub agent: AgentState,
+    operation: OperationId,
     pub inbox: u64,
     pub cursor: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
@@ -63,6 +63,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
         agent: AgentState,
+        operation: OperationId,
         inbox: u64,
         cursor: u64,
         files: Arc<AgentInternalFiles<A, O>>,
@@ -75,6 +76,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             issuer,
             admission,
             agent,
+            operation,
             inbox,
             cursor,
             files,
@@ -82,6 +84,15 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             maximum,
             admitted: Mutex::default(),
         }
+    }
+
+    fn require_operation(&self, operation: OperationId) -> Result<()> {
+        if operation != self.operation {
+            return Err(Error::Invalid(
+                "steering boundary belongs to another turn".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -91,13 +102,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn select(
-        &self,
-        operation: OperationId,
-        step: u32,
-        frozen: Option<BoundaryCut>,
-    ) -> Result<Selected> {
-        let from = frozen.map(|cut| cut.from).unwrap_or({
+    async fn select(&self, step: u32, frozen: Option<BoundaryCut>) -> Result<Selected> {
+        let from = if let Some(cut) = frozen {
+            cut.from
+        } else {
             let admitted = self
                 .admitted
                 .lock()
@@ -105,7 +113,7 @@ where
             admitted
                 .through
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
-        });
+        };
         // The first request uses the turn's frozen original input and Notice
         // selection. Arrivals become steering only after that request's next
         // model boundary; a resumed first request cannot gain a newer prefix.
@@ -116,7 +124,6 @@ where
                 ));
             }
             return Ok(Selected {
-                operation,
                 step,
                 cut: BoundaryCut {
                     from,
@@ -249,6 +256,7 @@ where
                     let bytes = reader
                         .read(file, file.descriptor().byte_length(), None, None)?
                         .await?;
+                    let operation = self.operation;
                     let id = identity(operation, step, item);
                     let destination =
                         format!("messages/.steering/{operation}/{step:010}/{item:020}");
@@ -276,7 +284,6 @@ where
         }
         flush_notices(&mut notices, &mut messages);
         Ok(Selected {
-            operation,
             step,
             cut: BoundaryCut {
                 from,
@@ -300,7 +307,8 @@ where
         frozen: Option<BoundaryCut>,
     ) -> BoxProviderFuture<'_, Result<Vec<ModelMessage>>> {
         Box::pin(async move {
-            let selected = self.select(operation, step, frozen).await?;
+            self.require_operation(operation)?;
+            let selected = self.select(step, frozen).await?;
             let messages = selected.messages.clone();
             self.admitted
                 .lock()
@@ -311,6 +319,7 @@ where
     }
 
     fn selection(&self, operation: OperationId, step: u32) -> Result<BoundaryCut> {
+        self.require_operation(operation)?;
         let admitted = self
             .admitted
             .lock()
@@ -318,13 +327,14 @@ where
         admitted
             .selected
             .as_ref()
-            .filter(|selected| selected.operation == operation && selected.step == step)
+            .filter(|selected| selected.step == step)
             .map(|selected| selected.cut)
             .ok_or_else(|| Error::Storage("request has no selected steering range".into()))
     }
 
     fn admitted(&self, operation: OperationId, step: u32) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
+            self.require_operation(operation)?;
             let mut admitted = self
                 .admitted
                 .lock()
@@ -335,7 +345,7 @@ where
             let selected = admitted
                 .selected
                 .as_mut()
-                .filter(|selected| selected.operation == operation && selected.step == step)
+                .filter(|selected| selected.step == step)
                 .ok_or_else(|| {
                     Error::Storage("admitted request has no selected steering range".into())
                 })?;
@@ -357,6 +367,7 @@ where
         operation: OperationId,
     ) -> BoxProviderFuture<'_, Result<Option<SteeringTranscript>>> {
         Box::pin(async move {
+            self.require_operation(operation)?;
             let Some((through, bytes)) = ({
                 let admitted = self
                     .admitted

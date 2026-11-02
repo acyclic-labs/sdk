@@ -429,8 +429,19 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         )
         .await?;
     let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+    let foreign = OperationId::from_bytes([217; 16]);
+    assert!(matches!(
+        boundary.messages(foreign, 0, None).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
     assert!(boundary.messages(operation, 0, None).await?.is_empty());
     boundary.admitted(operation, 0).await?;
+    // Replayed admission must still belong to this original turn. A foreign
+    // operation cannot use the already-admitted step to bypass that check.
+    assert!(matches!(
+        boundary.admitted(foreign, 0).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
     for (name, wake, paths) in [
         ("quiet-old", false, vec!["a"]),
         ("quiet-latest", false, vec!["b", "a"]),
@@ -487,6 +498,14 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             .validate_limits(Default::default(), &mut None)?;
     }
     let cut = boundary.selection(operation, 1)?;
+    assert!(matches!(
+        boundary.selection(foreign, 1),
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    assert!(matches!(
+        boundary.admitted(foreign, 1).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
     assert_eq!(
         cut,
         BoundaryCut {
@@ -521,6 +540,10 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         .await?
         .ok_or("no transcript")?;
     assert_eq!(transcript.through, cut.through);
+    assert!(matches!(
+        boundary.transcript(foreign).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
     let later = boundary.messages(operation, 2, None).await?;
     assert_eq!(later.len(), 1);
     assert!(matches!(
