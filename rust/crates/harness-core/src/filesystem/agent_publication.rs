@@ -59,25 +59,15 @@ pub async fn plan_agent_merge(
         .await
         .map_err(|failure| Error::from(failure.error))?
         .value;
-    let changes = base
-        .diff_to(
+    let child_wins_bindings = ignore_for(source)
+        .await?
+        .newly_ignored_paths_between(
+            &base,
             &head,
-            u32::MAX,
+            &tracked,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map_err(|failure| Error::from(failure.error))?
-        .value
-        .0
-        .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map_err(|failure| Error::from(failure.error))?
-        .value
-        .0;
-    let child_wins_bindings = ignore_for(source)
-        .await?
-        .newly_ignored_paths_at(&head, &changes, &tracked)
         .await?;
     Ok(MultiRootMergeRoot {
         source_workspace_id: workspace.id(),

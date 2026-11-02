@@ -21,16 +21,21 @@ struct GitIgnoreRule {
 }
 
 impl GitIgnorePolicy {
-    /// Identifies changed, newly ignored paths whose child binding wins.
-    pub async fn newly_ignored_paths_at<A, O>(
+    /// Identifies newly ignored child bindings over two pinned generations.
+    /// Retains only the shared changed-path frontier and the selected output;
+    /// each changed path is released before advancing to the next one.
+    pub async fn newly_ignored_paths_between<A, O, W>(
         &self,
-        generation: &Generation<A, O>,
-        changes: &[crate::ChangedPath],
+        from: &Generation<A, O>,
+        to: &Generation<A, O>,
         already_tracked: &BTreeSet<String>,
+        work: W,
+        cancellation: &CancellationToken,
     ) -> Result<BTreeSet<String>, GitCaptureError>
     where
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
     {
         // Joins bind host namespaces by their ignore rules alone, exactly as
         // before they were kept out of the repository view: the
@@ -42,7 +47,13 @@ impl GitIgnorePolicy {
         };
         let mut paths = BTreeSet::new();
         let mut nested_policies = BTreeMap::new();
-        for change in changes {
+        let mut changes = from
+            .changed_paths_to(to, work, cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        while let Some(row) = changes.next().await.map_err(|failure| failure.error)?.value {
+            let change = row.value();
             let path = portable_changed_path(&change.path)?;
             let is_directory = change
                 .after
@@ -53,7 +64,7 @@ impl GitIgnorePolicy {
                 continue;
             }
             if !git_path_eligible_with_root_at(
-                generation,
+                to,
                 &mut nested_policies,
                 &rules,
                 &path,
