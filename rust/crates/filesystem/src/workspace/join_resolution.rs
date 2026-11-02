@@ -231,8 +231,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         {
             return Ok(None);
         }
-        let mut bodies = Vec::with_capacity(3);
-        for record in records {
+        let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
+        for (record, body) in records.into_iter().zip(&mut bodies) {
             let Some(bytes) = self
                 .target_head
                 .workspace
@@ -248,35 +248,43 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     ConflictKind::Binary,
                 )));
             };
-            bodies.push(bytes);
+            *body = Some(bytes);
         }
-        let text = bodies
-            .iter()
-            .all(|bytes| std::str::from_utf8(bytes).is_ok());
-        let mut values = bodies.into_iter().map(|bytes| {
-            if text {
-                ConflictValue::Text(String::from_utf8(bytes.to_vec()).unwrap_or_default())
-            } else {
-                ConflictValue::Binary(bytes.to_vec())
-            }
-        });
+        let [Some(base), Some(ours), Some(theirs)] = bodies else {
+            return Err(WorkspaceError::InvalidMergeResolution);
+        };
+        let bodies = [base, ours, theirs];
+        let limits = crate::text_merge::ByteMergeLimits {
+            max_bytes: self
+                .target_head
+                .workspace
+                .volume
+                .config
+                .limits
+                .maximum_read_bytes,
+        };
+        let (kind, [base, ours, theirs]) = match bodies
+            .each_ref()
+            .map(|bytes| crate::text_merge::text_from_bytes(bytes, limits))
+        {
+            [Ok(base), Ok(ours), Ok(theirs)] => (
+                ConflictKind::Text,
+                [base, ours, theirs].map(|text| ConflictValue::Text(text.to_owned())),
+            ),
+            _ => (
+                ConflictKind::Binary,
+                bodies
+                    .each_ref()
+                    .map(|bytes| ConflictValue::Binary(bytes.to_vec())),
+            ),
+        };
         Ok(Some(crate::ConflictView {
             key: ConflictKey::File(file_id),
             path,
-            kind: if text {
-                ConflictKind::Text
-            } else {
-                ConflictKind::Binary
-            },
-            base: values
-                .next()
-                .ok_or(WorkspaceError::InvalidMergeResolution)?,
-            ours: values
-                .next()
-                .ok_or(WorkspaceError::InvalidMergeResolution)?,
-            theirs: values
-                .next()
-                .ok_or(WorkspaceError::InvalidMergeResolution)?,
+            kind,
+            base,
+            ours,
+            theirs,
         }))
     }
 
