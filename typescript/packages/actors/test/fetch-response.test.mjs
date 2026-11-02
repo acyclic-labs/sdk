@@ -178,16 +178,30 @@ test("native HTTP/2 keeps upload streaming, terminal trailers and original close
   const completed = Promise.withResolvers();
   const failures = [];
   const closes = new Map();
+  const cancellations = new Map();
   server.on("stream", (stream, request) => {
     const path = String(request[":path"]);
     stream.on("error", error => failures.push(error));
     const terminal = Promise.withResolvers();
     stream.once("end", () => terminal.resolve(new Headers({ "grpc-status": "0", "x-terminal": "original" })));
+    // Count calls to the actual native reader; cancelling an already-ended
+    // stream does not reach its underlying source, but still costs a promise.
+    const body = Readable.toWeb(Readable.from(stream, { objectMode: false }));
+    const getReader = body.getReader.bind(body);
+    body.getReader = () => {
+      const reader = getReader();
+      const cancel = reader.cancel.bind(reader);
+      reader.cancel = cause => {
+        cancellations.set(path, (cancellations.get(path) ?? 0) + 1);
+        return cancel(cause);
+      };
+      return reader;
+    };
     const exchange = openGuestResponse({
       status: 200, headers: new Headers({ "content-type": "application/grpc+proto" }),
       // toWeb on a Duplex waits for its writable completion too. This is the
       // original upload's readable iterator, independent of response EOF.
-      body: Readable.toWeb(Readable.from(stream, { objectMode: false })), trailers: terminal.promise,
+      body, trailers: terminal.promise,
       close() {
         closes.set(path, (closes.get(path) ?? 0) + 1);
         if (path === "/cancel") cancelled.resolve();
@@ -229,6 +243,7 @@ test("native HTTP/2 keeps upload streaming, terminal trailers and original close
     assert.equal(terminal["x-terminal"], "original");
     await completed.promise;
     assert.equal(closes.get("/complete"), 1);
+    assert.equal(cancellations.get("/complete") ?? 0, 0);
 
     const stopped = client.request({ ":method": "POST", ":path": "/cancel" }, { endStream: false });
     const received = once(stopped, "data");
