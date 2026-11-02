@@ -43,6 +43,46 @@ pub enum RecordedToolOutcome {
     },
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl RecordedToolOutcome {
+    fn copy_with_custody(
+        &self,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<(Self, crate::NativeCustody)> {
+        use crate::executor::json::{JsonBounds, RECORD_MAXIMUM_DEPTH, json_value_copy_bounded};
+        let before = io.owned_bytes()?;
+        let outcome = match self {
+            Self::Completed(result) => {
+                let value = json_value_copy_bounded(
+                    &result.value,
+                    JsonBounds {
+                        maximum_bytes: u64::MAX,
+                        maximum_items: io.remaining()?.items_examined,
+                        maximum_depth: RECORD_MAXIMUM_DEPTH,
+                    },
+                    Some(crate::wire::ErrorCode::Storage),
+                    &mut |charge| io.codec_charge(charge, false),
+                )?;
+                Self::Completed(crate::tool::ToolResult { value })
+            }
+            Self::Failed { reason, cause } => {
+                let message = crate::executor::stock_string_copy(&cause.message, Some(io))?;
+                Self::Failed {
+                    reason: *reason,
+                    cause: crate::executor::ToolFailureCause {
+                        class: cause.class,
+                        message,
+                    },
+                }
+            }
+        };
+        // Transfer only the output's storage. Temporary lookup funding stays
+        // with this preparation until its owned key has been destroyed.
+        let custody = io.take_native_custody(io.owned_since(before)?)?;
+        Ok((outcome, Some(custody)))
+    }
+}
+
 /// One recorded model call.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecordedCall {
@@ -398,6 +438,11 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
+    struct Quiet;
+    impl DivergenceSink for Quiet {
+        fn diverged(&self, _: Divergence) {}
+    }
+
     proptest! {
         #[test]
         fn recorded_call_consumption_preserves_order_and_unused_count(
@@ -447,10 +492,6 @@ mod tests {
 
     #[test]
     fn trial_admission_shares_source_without_copying_its_population() {
-        struct Quiet;
-        impl DivergenceSink for Quiet {
-            fn diverged(&self, _: Divergence) {}
-        }
         let live: Arc<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
         let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
@@ -660,6 +701,119 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
+        let live: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        let operation = OperationId::new();
+        let call_id = "0";
+        // Generated opaque copy operands, not provider or tool-output fixtures.
+        for size in [1usize, 2048] {
+            let text = "0".repeat(size);
+            for original in [
+                RecordedToolOutcome::Completed(crate::tool::ToolResult {
+                    value: Value::Array(vec![Value::String(text.clone())]),
+                }),
+                RecordedToolOutcome::Failed {
+                    reason: crate::executor::ToolFailureKind::ExecutorRejected,
+                    cause: crate::executor::ToolFailureCause {
+                        class: crate::executor::ToolErrorClass::Failed,
+                        message: text.clone(),
+                    },
+                },
+            ] {
+                let mut source = Recording::default();
+                source.insert(
+                    [0; 32],
+                    RecordedCall {
+                        events: Vec::new(),
+                        tools: vec![(call_id.into(), original.clone())],
+                    },
+                );
+                let source = Arc::new(source);
+                let trial =
+                    RecordedModel::new(Arc::clone(&live), Arc::clone(&source), Arc::clone(&sink));
+                trial
+                    .lock()
+                    .tools
+                    .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+                // Admit the lookup key, then refuse the payload copy itself.
+                budget.bytes_copied = call_id.len() as u64;
+                let refused = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(error, _)| error)?;
+                let baseline = refused.live_allocation_bytes();
+                assert!(matches!(
+                    trial.recorded_tool_result(operation, call_id, Some(&refused)),
+                    Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded { .. }
+                        ),
+                        ..
+                    })
+                ));
+                assert_eq!(refused.live_allocation_bytes(), baseline);
+                assert_eq!(trial.lock().tools.len(), 1);
+
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(error, _)| error)?;
+                cancellation.cancel();
+                assert!(matches!(
+                    trial.recorded_tool_result(operation, call_id, Some(&work)),
+                    Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                        ..
+                    })
+                ));
+                assert_eq!(trial.lock().tools.len(), 1);
+
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(error, _)| error)?;
+                let baseline = work.live_allocation_bytes();
+                let before = work.receipt();
+                let copied = trial
+                    .recorded_tool_result(operation, call_id, Some(&work))?
+                    .unwrap();
+                assert_eq!(copied.0, original);
+                assert!(copied.1.as_ref().unwrap().work().shares_ledger(&work));
+                assert_eq!(
+                    work.receipt().bytes_copied - before.bytes_copied,
+                    (call_id.len() + size) as u64,
+                    "one lookup copy and one payload copy, with no document copy"
+                );
+                assert!(work.live_allocation_bytes() > baseline);
+                assert!(
+                    trial
+                        .recorded_tool_result(operation, call_id, None)?
+                        .is_none()
+                );
+                assert_eq!(source.calls[&[0; 32]][0].tools[0].1, original);
+                drop(copied);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+
+                // A plain clone allocates but charges none of the original
+                // work: this detects the previous unaccounted-copy path.
+                let before = work.receipt();
+                let unaccounted = acyclic_test_support::measure(|| {
+                    std::hint::black_box(original.clone());
+                });
+                assert!(unaccounted.count_total > 0);
+                assert_eq!(work.receipt(), before);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn replay_preserves_admitted_nesting_and_owned_identity_rules() -> Result<()> {
         for depth in [126, 127, 128] {
@@ -827,9 +981,36 @@ impl ModelProvider for RecordedModel {
         &self,
         operation: OperationId,
         call_id: &str,
-    ) -> Option<RecordedToolOutcome> {
-        let (key, index, ordinal) = self.lock().tools.remove(&(operation, call_id.to_owned()))?;
-        Some(self.recording.calls[&key][index].tools[ordinal].1.clone())
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<(RecordedToolOutcome, crate::NativeCustody)>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let lookup = (
+            operation,
+            crate::executor::stock_string_copy(call_id, io.as_ref())?,
+        );
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let lookup = {
+            let _ = work;
+            (operation, call_id.to_owned())
+        };
+        let mut replay = self.lock();
+        let Some(&(key, index, ordinal)) = replay.tools.get(&lookup) else {
+            return Ok(None);
+        };
+        let original = &self.recording.calls[&key][index].tools[ordinal].1;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let copied = match io.as_ref() {
+            Some(io) => original.copy_with_custody(io)?,
+            None => (original.clone(), None),
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let copied = (original.clone(), None);
+        replay.tools.remove(&lookup);
+        Ok(Some(copied))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {

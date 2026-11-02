@@ -253,12 +253,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// `operation`, taken once. Only a replaying provider
     /// ([`super::RecordedModel`]) has one, for calls made by an answer it
     /// served from its recording.
+    /// The original native work admits the owned copy before consuming the
+    /// settlement and returns its custody. Refusal leaves it available.
     fn recorded_tool_result(
         &self,
         _operation: OperationId,
         _call_id: &str,
-    ) -> Option<super::RecordedToolOutcome> {
-        None
+        _work: crate::NativeWork<'_>,
+    ) -> Result<Option<(super::RecordedToolOutcome, crate::NativeCustody)>> {
+        Ok(None)
     }
     /// Pure native capability query.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

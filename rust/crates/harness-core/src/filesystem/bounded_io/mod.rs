@@ -139,7 +139,7 @@ impl PreparationIo {
             cancellation,
         }
     }
-    pub(in crate::filesystem) fn owned_since(&self, before: u64) -> Result<u64> {
+    pub(crate) fn owned_since(&self, before: u64) -> Result<u64> {
         self.owned_bytes()?
             .checked_sub(before)
             .ok_or_else(|| self.invalid("preparation custody underflows"))

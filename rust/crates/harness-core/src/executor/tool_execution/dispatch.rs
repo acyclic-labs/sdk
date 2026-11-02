@@ -21,9 +21,12 @@ impl<'io> StockExecution<'io> {
         let replayed = if started || !tool.executor.replays_recorded() {
             None
         } else {
-            self.stock
-                .provider
-                .recorded_tool_result(operation_id, &invocation.call_id)
+            stock_recorded_tool_result(
+                self.stock.provider.as_ref(),
+                operation_id,
+                &invocation.call_id,
+                self.io,
+            )?
         };
         let dispatch = if started || replayed.is_some() {
             None
