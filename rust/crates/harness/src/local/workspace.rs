@@ -241,6 +241,8 @@ impl LocalWorkspace {
     /// `execution_grant` confines shell commands and lifecycle hooks. Supply it
     /// only after host authentication and approval; it does not authorize file
     /// publication, change workspace grants or make other tools read-only.
+    /// Binding compiles that static native policy once on the shared workers;
+    /// unavailable confinement refuses before checkout recovery effects.
     /// A different selected workspace must fit the same grant or launch refuses.
     pub async fn executor(
         self: &Arc<Self>,

@@ -42,6 +42,15 @@ An embedded native host can supply the same grant when binding
 `LocalWorkspace::executor`. That binding retains the grant for its shell and
 lifecycle hook launches, including the original selected workspace and capture
 owners. Hooks use the executor's already selected ordinary environment. A
+static grant is compiled once on the shared native workers before checkout
+recovery effects. Unsupported confinement refuses at binding; compilation
+failure cannot select an unconfined executor. An already compiled grant and
+the default no-grant binding submit no compilation task. The same immutable
+native policy serves shell and hook launches selecting that static ceiling;
+per-call grants keep their own native-policy lifetime. Explicit host
+binding remains unmetered, like grant construction; the shared async compiler
+also accepts the original caller's native-work and task-storage ledger.
+Retained policy storage remains the host owner's responsibility. A
 workspace outside the grant refuses; a definitive native refusal remains
 unauthorized or unsupported instead of becoming an unknown process outcome.
 The original signed scope, volume access checks and approval path still apply.

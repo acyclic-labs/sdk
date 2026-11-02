@@ -166,12 +166,13 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
+#[tokio::test(flavor = "current_thread")]
+async fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     use crate::ProcessTree;
     use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
+    crate::initialize_native_io_services().unwrap();
     let root = tempfile::tempdir().unwrap();
-    retained_policy_preparation(root.path());
+    retained_policy_preparation(root.path()).await;
     let workspace = root.path().join("workspace");
     let external = root.path().join("external");
     std::fs::create_dir(&workspace).unwrap();
@@ -207,7 +208,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             ExecutionAccess::WorkspaceWrite => grant,
         };
         let grant = if compiled {
-            match grant.compile_native() {
+            match grant.compile_native_async(None).await {
                 Ok(grant) => grant,
                 Err(error) if error.kind() == io::ErrorKind::Unsupported => {
                     assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
@@ -375,7 +376,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
 }
 
 #[cfg(target_os = "linux")]
-fn retained_policy_preparation(root: &Path) {
+async fn retained_policy_preparation(root: &Path) {
     use std::sync::atomic::Ordering::Acquire;
     let workspace = root.join("retained");
     let nested = workspace.join("nested");
@@ -389,7 +390,7 @@ fn retained_policy_preparation(root: &Path) {
         ExecutionNetwork::TcpPorts(BTreeSet::from([443, 8443])),
     )
     .unwrap();
-    let compiled = match original.clone().compile_native() {
+    let compiled = match original.clone().compile_native_async(None).await {
         Ok(grant) => grant,
         Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
         Err(error) => panic!("retained policy compilation: {error}"),
@@ -428,6 +429,18 @@ fn retained_policy_preparation(root: &Path) {
     drop(readonly.prepare_launch(None, Some(&narrow)).unwrap());
     assert!(narrow.write_attempts.load(Acquire) > 0);
     let readonly = readonly.compile_native().unwrap();
+    // Binding an already retained policy needs neither task storage nor native
+    // work, even when both are refused by the original admission ledger.
+    let cached = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
+    cached
+        .deny_allocations
+        .store(true, std::sync::atomic::Ordering::Release);
+    let readonly = readonly
+        .compile_native_async(Some(cached.clone()))
+        .await
+        .unwrap();
+    assert_eq!(cached.used_allocations.load(Acquire), 0);
+    assert_eq!(cached.read_attempts.load(Acquire), 0);
     let warm = crate::tests::ReadBudgetMeter::new(4, 0);
     drop(readonly.prepare_launch(None, Some(&warm)).unwrap());
     assert_eq!(warm.write_attempts.load(Acquire), 0);
@@ -685,7 +698,10 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
         [],
         ExecutionNetwork::Off,
     )?;
-    for release_producer in [true, false] {
+    for (compile, release_producer) in [false, true]
+        .into_iter()
+        .flat_map(|compile| [true, false].map(|release| (compile, release)))
+    {
         let coordinator = std::thread::current().id();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, released) = mpsc::channel();
@@ -706,9 +722,16 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
         let ceiling = grant.clone();
         let requested = grant.clone();
         let mut proof = tokio::spawn(async move {
-            ceiling
-                .check_attenuation_async(&requested, Some(proof_meter))
-                .await
+            if compile {
+                requested
+                    .compile_native_async(Some(proof_meter))
+                    .await
+                    .map(drop)
+            } else {
+                ceiling
+                    .check_attenuation_async(&requested, Some(proof_meter))
+                    .await
+            }
         });
         // The very executor waiting for native I/O must produce this event.
         tokio::select! {
@@ -731,24 +754,43 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
         }
         assert_eq!(
             meter.read_attempts.load(Ordering::Acquire),
-            if release_producer { 2 } else { 1 }
+            if release_producer {
+                if compile { 7 } else { 2 }
+            } else {
+                1
+            }
+        );
+        assert_eq!(
+            meter.write_attempts.load(Ordering::Acquire),
+            if compile && release_producer { 4 } else { 0 }
         );
         println!(
-            "deferred proof: native reads={}, task allocation reservations={}",
+            "deferred grant: compilation={compile}, native reads={}, task allocation reservations={}",
             meter.read_attempts.load(Ordering::Acquire),
             meter.used_allocations.load(Ordering::Acquire)
         );
     }
     // Refused task storage and cancelled requests never reach a native root
     // operation. The successful identical real-object proof above is control.
-    for cancelled in [false, true] {
+    for (compile, cancelled) in [false, true]
+        .into_iter()
+        .flat_map(|compile| [false, true].map(|cancelled| (compile, cancelled)))
+    {
         let meter = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
         meter.cancelled.store(cancelled, Ordering::Release);
         meter.deny_allocations.store(!cancelled, Ordering::Release);
-        let error = grant
-            .check_attenuation_async(&grant, Some(meter.clone()))
-            .await
-            .unwrap_err();
+        let error = if compile {
+            grant
+                .clone()
+                .compile_native_async(Some(meter.clone()))
+                .await
+                .map(drop)
+        } else {
+            grant
+                .check_attenuation_async(&grant, Some(meter.clone()))
+                .await
+        }
+        .unwrap_err();
         assert_eq!(
             error.kind(),
             if cancelled {

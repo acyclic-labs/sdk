@@ -340,17 +340,64 @@ impl ExecutionGrant {
     /// Like grant construction, this explicit host operation is unmetered.
     /// Per-launch root and cwd work keeps its original invocation meter.
     pub fn compile_native(self) -> io::Result<Self> {
+        self.compile_native_controlled(None).map_err(failure)
+    }
+
+    /// Compiles the same authorized policy on the shared native workers.
+    /// An already compiled policy returns without submitting a task. Native
+    /// work and task storage use `meter`; retained policy storage, like grant
+    /// construction, remains the explicit host owner's responsibility.
+    pub async fn compile_native_async(
+        self,
+        meter: Option<Arc<dyn crate::NativeReadMeter>>,
+    ) -> io::Result<Self> {
+        if let Some(meter) = &meter {
+            meter.check().map_err(failure)?;
+        }
+        #[cfg(target_os = "linux")]
+        if self.native_policy_is_compiled() {
+            return Ok(self);
+        }
+        #[cfg(not(target_os = "linux"))]
+        return self.compile_native();
         #[cfg(target_os = "linux")]
         {
-            if self
-                .compiled
-                .as_ref()
-                .is_some_and(|policy| policy.access() == self.access)
-            {
+            let compile_meter = meter.clone();
+            crate::run_blocking_io(
+                move || {
+                    self.compile_native_controlled(compile_meter.as_deref())
+                        .map_err(failure)
+                },
+                meter.map(|meter| (meter, false)),
+            )
+            .map_err(failure)?
+            .offloaded()
+            .await
+            .map_err(failure)?
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_policy_is_compiled(&self) -> bool {
+        self.compiled
+            .as_ref()
+            .is_some_and(|policy| policy.access() == self.access)
+    }
+
+    fn compile_native_controlled(
+        self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Self> {
+        if let Some(meter) = meter {
+            meter.check().map_err(failure)?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if self.native_policy_is_compiled() {
                 return Ok(self);
             }
-            let workspace = self.policy.workspace.bind_controlled(None)?;
-            let policy = linux::Policy::new(&self.policy, self.access, &workspace, None)?;
+            let workspace = self.policy.workspace.bind_controlled(meter)?;
+            let policy = linux::Policy::new(&self.policy, self.access, &workspace, meter)?;
             Ok(Self {
                 compiled: Some(Arc::new(policy)),
                 ..self

@@ -104,6 +104,17 @@ impl CheckoutTools {
                 "workspace differs from the bound project volume".into(),
             ));
         }
+        // The host has already authorized this static ceiling. Compile before
+        // checkout recovery, then share it across the original shell/hook path.
+        let execution_grant = match execution_grant {
+            Some(grant) => Some(
+                grant
+                    .compile_native_async(None)
+                    .await
+                    .map_err(Error::process_io)?,
+            ),
+            None => None,
+        };
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         let shared = StateArc::clone(&workspace.state);
         {
