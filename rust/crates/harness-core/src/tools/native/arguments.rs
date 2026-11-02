@@ -111,8 +111,15 @@ fn resolve(template: &Value, call: &Call<'_>) -> Result<Option<Value>> {
             };
             let first = line(call, bound(0))?.unwrap_or(1);
             last.checked_sub(first)
-                .map(|span| Some(Value::from(span + 1)))
-                .ok_or_else(|| Error::Invalid(format!("{} precedes {}", bound(1), bound(0))))
+                .and_then(|span| span.checked_add(1))
+                .map(|count| Some(Value::from(count)))
+                .ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "{}..{} is not a representable inclusive line span",
+                        bound(0),
+                        bound(1)
+                    ))
+                })
         }
         Some("case") => {
             let selector = name("$case");

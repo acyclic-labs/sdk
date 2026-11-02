@@ -111,6 +111,16 @@ fn google_calls_map_to_canonical_inputs() -> Result<()> {
             json!({"path":"src/lib.rs","selection":{"kind":"lines","limit":4}}),
         ),
         (
+            "read_file",
+            json!({"file_path":"src/lib.rs","start_line":1,"end_line":u64::MAX}),
+            json!({"path":"src/lib.rs","selection":{"kind":"lines","offset":0,"limit":u64::MAX}}),
+        ),
+        (
+            "read_file",
+            json!({"file_path":"src/lib.rs","start_line":u64::MAX,"end_line":u64::MAX}),
+            json!({"path":"src/lib.rs","selection":{"kind":"lines","offset":u64::MAX - 1,"limit":1}}),
+        ),
+        (
             "replace",
             json!({"file_path":"a.txt","instruction":"fix","old_string":"a","new_string":"b","allow_multiple":true}),
             json!({"path":"a.txt","old_text":"a","new_text":"b","replace_all":true}),
@@ -128,14 +138,16 @@ fn google_calls_map_to_canonical_inputs() -> Result<()> {
     ] {
         assert_eq!(adapt(google, variant, call)?, canonical, "{variant}");
     }
-    assert!(
-        adapt(
-            google,
-            "read_file",
-            json!({"file_path":"a","start_line":5,"end_line":4})
-        )
-        .is_err()
-    );
+    for (start, end) in [(5, 4), (0, u64::MAX)] {
+        assert!(matches!(
+            adapt(
+                google,
+                "read_file",
+                json!({"file_path":"a","start_line":start,"end_line":end})
+            ),
+            Err(Error::Invalid(_))
+        ));
+    }
     Ok(())
 }
 
