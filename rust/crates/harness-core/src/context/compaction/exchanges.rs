@@ -1,12 +1,11 @@
 use super::{
-    Context, ModelContentPart, quota_vector,
+    Context, ModelContentPart, quota_vector, retire_vector,
     selection::{compaction_error, compaction_step},
 };
 use crate::{Result, model::ModelRole};
 
-pub(super) type PendingCalls<'a> = Vec<(&'a str, usize)>;
-
 /// A message's dependency component. Only roots own the size and final endpoint.
+/// An endpoint at the source length marks an incomplete exchange.
 #[derive(Clone, Copy)]
 pub(super) struct Group {
     pub root: usize,
@@ -17,10 +16,10 @@ pub(super) struct Group {
 /// Native bytes on any assistant part, its assistant calls and their results
 /// share a component.
 /// Plain text between them remains independently selectable.
-pub(super) fn exchange_groups<'a>(
-    context: &'a Context,
+pub(super) fn exchange_groups(
+    context: &Context,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(Vec<Group>, PendingCalls<'a>)> {
+) -> Result<Vec<Group>> {
     let parts = context
         .messages
         .iter()
@@ -70,8 +69,29 @@ pub(super) fn exchange_groups<'a>(
                     _ => {}
                 }
             }
-            if let Some(first) = track_part(part, position, &mut pending) {
-                link(&mut groups, first, position, quota)?;
+            match part {
+                ModelContentPart::ToolCall(call) => {
+                    if let Some(&(_, first)) = pending.iter().find(|(id, _)| *id == call.call_id) {
+                        // Reusing an outstanding id cannot make its earlier
+                        // call independently evictable from the same result.
+                        link(&mut groups, first, position, quota)?;
+                    } else {
+                        pending.push((&call.call_id, position));
+                    }
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    match pending.iter().position(|(id, _)| *id == call_id) {
+                        Some(index) => {
+                            let first = pending.swap_remove(index).1;
+                            link(&mut groups, first, position, quota)?;
+                        }
+                        None => {
+                            let root = root(&mut groups, position, quota)?;
+                            groups[root].end = context.messages.len();
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -83,7 +103,8 @@ pub(super) fn exchange_groups<'a>(
     for position in 0..groups.len() {
         root(&mut groups, position, quota)?;
     }
-    Ok((groups, pending))
+    retire_vector(pending, quota)?;
+    Ok(groups)
 }
 
 fn root(
@@ -125,26 +146,4 @@ fn link(
         groups[last].size = 0;
     }
     Ok(())
-}
-
-pub(super) fn track_part<'a>(
-    part: &'a ModelContentPart,
-    position: usize,
-    pending: &mut PendingCalls<'a>,
-) -> Option<usize> {
-    match part {
-        ModelContentPart::ToolCall(crate::model::ToolCall { call_id, .. }) => {
-            if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
-                prior.1 = position;
-            } else {
-                pending.push((call_id, position));
-            }
-            None
-        }
-        ModelContentPart::ToolResult { call_id, .. } => pending
-            .iter()
-            .position(|(id, _)| *id == call_id)
-            .map(|index| pending.swap_remove(index).1),
-        _ => None,
-    }
 }

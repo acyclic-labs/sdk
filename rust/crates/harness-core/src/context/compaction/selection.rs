@@ -1,6 +1,6 @@
 use super::*;
 
-use super::exchanges::{Group, PendingCalls, exchange_groups, track_part};
+use super::exchanges::{Group, exchange_groups};
 
 impl ThresholdCompaction {
     /// Plans a bounded projection preserving complete tool exchanges.
@@ -44,7 +44,7 @@ impl ThresholdCompaction {
                 "no older source fits the compaction policy",
             ));
         }
-        let (groups, pending) = exchange_groups(context, &mut quota)?;
+        let groups = exchange_groups(context, &mut quota)?;
         for group in groups.iter().rev() {
             compaction_step(&mut quota)?;
             if group.size > 0 && group.root < through && through <= group.end {
@@ -89,7 +89,6 @@ impl ThresholdCompaction {
         let maximum = mandatory.checked_add(1).ok_or_else(|| {
             compaction_error(quota.work(), "compaction projection count overflows")
         })?;
-        retire_vector(pending, &mut quota)?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
         if maximum > context.messages.len() || maximum > maximum_messages {
@@ -102,15 +101,14 @@ impl ThresholdCompaction {
     }
 }
 
-pub(in crate::context) fn mandatory_flags<'a>(
-    context: &'a Context,
+pub(in crate::context) fn mandatory_flags(
+    context: &Context,
     covered: usize,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(Vec<bool>, PendingCalls<'a>, Vec<Group>)> {
-    let (groups, mut pending) = exchange_groups(context, quota)?;
+) -> Result<(Vec<bool>, Vec<Group>)> {
+    let groups = exchange_groups(context, quota)?;
     let selected = mandatory_selection(context, covered, &groups, quota)?;
-    pending.clear();
-    Ok((selected, pending, groups))
+    Ok((selected, groups))
 }
 
 fn mandatory_selection(
@@ -160,7 +158,7 @@ pub(crate) fn mandatory_messages(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut messages = Vec::new();
     let made = (|| {
-        let (selected, pending, groups) = mandatory_flags(context, covered, &mut quota)?;
+        let (selected, groups) = mandatory_flags(context, covered, &mut quota)?;
         messages = quota_vector(selected.iter().filter(|keep| **keep).count(), &mut quota)?;
         for (message, keep) in context.messages.iter().zip(&selected) {
             compaction_step(&mut quota)?;
@@ -172,7 +170,6 @@ pub(crate) fn mandatory_messages(
                 )?);
             }
         }
-        retire_vector(pending, &mut quota)?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)
     })();
@@ -200,7 +197,7 @@ pub(crate) fn compact_context(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let made = (|| {
-        let (mut selected, mut pending, groups) =
+        let (mut selected, groups) =
             mandatory_flags(context, summary.source_messages as usize, &mut quota)?;
         let mut count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
@@ -222,6 +219,12 @@ pub(crate) fn compact_context(
             compaction_step(&mut quota)?;
             let keep = selected[group.root];
             selected[position] |= keep;
+            if keep && groups[group.root].end == context.messages.len() {
+                return Err(compaction_error(
+                    quota.work(),
+                    "compaction boundary splits a tool exchange",
+                ));
+            }
         }
         result.messages = quota_vector::<ModelMessage>(count + 1, &mut quota)?;
         let file = if quota.work().is_some() {
@@ -240,16 +243,6 @@ pub(crate) fn compact_context(
             if !*selected {
                 continue;
             }
-            for part in message.content.parts() {
-                compaction_step(&mut quota)?;
-                let call = track_part(part, position, &mut pending);
-                if matches!(part, ModelContentPart::ToolResult { .. }) && call.is_none() {
-                    return Err(compaction_error(
-                        quota.work(),
-                        "compaction boundary splits a tool exchange",
-                    ));
-                }
-            }
             if context.current_input_index.map(|index| index as usize) == Some(position) {
                 result.current_input_index =
                     Some(u32::try_from(result.messages.len()).map_err(|_| {
@@ -262,13 +255,6 @@ pub(crate) fn compact_context(
                 &mut quota,
             )?);
         }
-        if !pending.is_empty() {
-            return Err(compaction_error(
-                quota.work(),
-                "compaction boundary splits a tool exchange",
-            ));
-        }
-        retire_vector(pending, &mut quota)?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
         let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
