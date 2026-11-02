@@ -233,6 +233,8 @@ Both projections roll back only touched keys and the journal's original length;
 native rollback also handles callback unwind. Neither copies unrelated metadata,
 pending writes or staged journal frames on the first write. JavaScript still
 copies byte values at its guest boundary; explicit enumeration visits its output.
+Replacing an existing native metadata value retains its original map key; only
+the transaction's undo storage allocates when the caller already owns the key.
 `flush` publishes all pending metadata, journal frames and alarm in **one**
 conditional Stream commit against the original actor head and journal tail.
 Only its confirmed result acknowledges durability. Failed/unknown publication
@@ -247,6 +249,13 @@ the original conditional commit. `Store::submit_retained` returns the confirmed
 authored Snapshot without a reread or decode; `Store::claim` likewise returns
 its confirmed placement cut. The original owner and exact-head fences still
 apply. A retained cut is a snapshot, not a fresh observation of another owner.
+Native `fund_escrow` retains funding supplied by the admitting host, and
+`debit_escrow` stages checked spend in this same transaction. Missing funding
+refuses; finite zero and explicitly unbounded `None` remain distinct. Discarded
+candidates roll back, while a committed debit never expires. Copied branch
+funding cannot be spent by a new placement. These values convey no grant or
+execution authority; suballocation and refund delivery must join their original
+owner's publication. Guest metadata packets cannot replace the balance.
 `Store::observe` performs the required fresh head observation before handler
 admission. An unchanged tail and commit anchor retain the original typed state
 without decoding it again; a changed cut is decoded before delivery continues.
