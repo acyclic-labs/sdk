@@ -38,32 +38,29 @@ pub(super) struct ReplacedFile {
 }
 
 /// The record that `name` in directory `directory` binds in `view`, if any.
-/// The directory is found by identity, so a renamed or moved directory still
-/// names the same binding in every generation, as the kernel sees it.
+/// Read the original directory/name identity directly, as the kernel does.
+/// A directory's current path and aliases cannot substitute another binding.
 async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     view: &Generation<A, O>,
     directory: FileId,
-    name: &str,
-) -> Result<Option<WorkspaceStat>, WorkspaceError> {
-    let paths = view
-        .paths_for_file_id(
-            directory,
-            1,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+    name: &LogicalName,
+) -> Result<Option<FileRecord>, WorkspaceError> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    view.workspace
+        .volume
+        .fs
+        .workspace_merge_record_with_accounting(
+            &view.workspace.volume,
+            view.id,
+            &MergeConflict::Binding {
+                directory_id: directory,
+                name: name.clone(),
+            },
+            &mut accounting,
+            &cancellation,
         )
         .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let Some(parent) = paths.into_iter().next() else {
-        return Ok(None);
-    };
-    let path = if parent == "/" {
-        format!("/{name}")
-    } else {
-        format!("{parent}/{name}")
-    };
-    bound_record(view, &path).await
 }
 
 /// The record `path` binds in `view`, if any.
@@ -120,9 +117,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             id: self.base.id,
             publication_closure: None,
         };
-        let Some((parent, name)) = path.rsplit_once('/') else {
+        let Some((parent, _)) = path.rsplit_once('/') else {
             return Ok(None);
         };
+        let namespace = customer_path(path, volume.config)?;
+        let (_, name) = namespace
+            .split_last()
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
         let parent = if parent.is_empty() { "/" } else { parent };
         if bound_record(editing, path)
             .await?
@@ -152,9 +153,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         {
             return Ok(None);
         }
-        let replacement = fs
-            .workspace_conflict_record(volume, side.id, replacement.file_id)
-            .await?;
+        let replacement = Some(replacement);
         let [base, ours, theirs] = records;
         let records = if ours_replaced {
             [base, replacement, theirs]
