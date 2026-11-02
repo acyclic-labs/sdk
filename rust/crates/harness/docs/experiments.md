@@ -53,7 +53,8 @@ tree or second validation parse.
 `experiments::Population::admit` checks the version, identities, role context and
 declared model selection before execution. All executable roles in the host's
 snapshot must use `openai/gpt-6-luna`, `anthropic/claude-haiku-5-5`, or
-`google/gemini-3.8-flash`. This includes descendant roles, so the stock profile
+`google/gemini-3.8-flash`. This includes the source/coordinator and descendant
+roles, so the stock profile
 snapshot with its more expensive advisor/reviewer is refused. The parent must
 admit every arm role, and arm roles must inherit context. Each fork carries the
 admitted whole-role snapshot identity. The host compares it before history,

@@ -25,14 +25,13 @@ impl Population {
         hash.update(&serde_json::to_vec(&file)?);
         hash.update(&profiles.snapshot());
         for (_, role) in profiles.roles() {
-            if role.context() != SpawnContext::TopLevel
-                && ![
-                    super::CheapModel::Luna,
-                    super::CheapModel::Haiku,
-                    super::CheapModel::Flash,
-                ]
-                .iter()
-                .any(|model| model.key() == role.model())
+            if ![
+                super::CheapModel::Luna,
+                super::CheapModel::Haiku,
+                super::CheapModel::Flash,
+            ]
+            .iter()
+            .any(|model| model.key() == role.model())
             {
                 return Err(Error::Role(format!(
                     "{} selects an unapproved model",

@@ -4,13 +4,15 @@ use crate::{
     profile::{Profiles, RoleFile},
 };
 
-fn profiles(worker_model: &str) -> Result<Profiles, crate::Error> {
+fn profiles(root_model: &str, worker_model: &str) -> Result<Profiles, crate::Error> {
     // These are configured role inputs, not captured provider responses.
-    let root = "---\nversion: 1\nname: orchestrator\nmodel: openai/gpt-6-luna\ncontext: top_level\nmay_spawn: [worker]\n---\nCoordinate.\n";
+    let root = format!(
+        "---\nversion: 1\nname: orchestrator\nmodel: {root_model}\ncontext: top_level\nmay_spawn: [worker]\n---\nCoordinate.\n"
+    );
     let worker = format!(
         "---\nversion: 1\nname: worker\nmodel: {worker_model}\ncontext: fork\nmay_spawn: []\n---\nAnswer the task.\n"
     );
-    Profiles::new([RoleFile::parse(root)?, RoleFile::parse(&worker)?])
+    Profiles::new([RoleFile::parse(&root)?, RoleFile::parse(&worker)?])
 }
 
 fn arms() -> ArmsFile {
@@ -37,7 +39,7 @@ fn arms() -> ArmsFile {
 #[test]
 fn enormous_population_has_lazy_unique_reproducible_forks_from_one_cut()
 -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = profiles(CheapModel::Luna.key())?;
+    let profiles = profiles(CheapModel::Luna.key(), CheapModel::Luna.key())?;
     let population = Population::admit(arms(), &profiles, &profiles.root()?)?;
     // N cannot be enumerated in a test or represented by N times the arm count.
     // Taking three replicates demonstrates no eager multiplication/allocation.
@@ -80,9 +82,11 @@ fn enormous_population_has_lazy_unique_reproducible_forks_from_one_cut()
 #[test]
 fn unsafe_admission_and_mismatched_pairs_are_refused_before_execution()
 -> Result<(), Box<dyn std::error::Error>> {
-    let expensive = profiles("anthropic/claude-sonnet-5-5")?;
+    let expensive = profiles(CheapModel::Luna.key(), "anthropic/claude-sonnet-5-5")?;
     assert!(Population::admit(arms(), &expensive, &expensive.root()?).is_err());
-    let profiles = profiles(CheapModel::Haiku.key())?;
+    let expensive_root = profiles("anthropic/claude-sonnet-5-5", CheapModel::Luna.key())?;
+    assert!(Population::admit(arms(), &expensive_root, &expensive_root.root()?).is_err());
+    let profiles = profiles(CheapModel::Luna.key(), CheapModel::Haiku.key())?;
     assert!(Population::admit(arms(), &profiles, &profiles.root()?).is_err());
     // Authored configuration inputs exercise the actual streaming boundary.
     let valid = serde_json::to_value(arms())?;
