@@ -208,7 +208,6 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
             operation_id: operation,
             input: ModelContent::Text("input".into()),
             selected_context: None,
-            max_steps: 2,
         };
         let journal = Journal::default();
         let output = executor.execute(input.clone(), &journal).await?;

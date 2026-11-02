@@ -174,7 +174,6 @@ fn input(count: usize, text: &str) -> TurnInput {
             },
             messages,
         }),
-        max_steps: 1,
     }
 }
 

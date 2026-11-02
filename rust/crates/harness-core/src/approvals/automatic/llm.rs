@@ -84,7 +84,6 @@ pub(super) async fn review_model(
             io,
         )?),
         selected_context: None,
-        max_steps: 1,
     };
     drop(binding);
     let result = executor.infer(execution.0, &input, io).await?;

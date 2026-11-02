@@ -839,7 +839,6 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
         operation_id: OperationId::from_bytes([7; 16]),
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
-        max_steps: 1,
     };
     let first = original_executor
         .model_step(&journal, &input, 0, &[])

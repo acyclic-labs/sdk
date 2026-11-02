@@ -158,7 +158,6 @@ async fn dispatch_claims_have_no_fallible_post_publication_barrier() -> Result<(
                     operation_id: operation,
                     input: ModelContent::Text("input".into()),
                     selected_context: None,
-                    max_steps: 2,
                 },
                 &journal,
             )

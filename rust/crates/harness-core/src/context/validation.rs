@@ -170,7 +170,6 @@ pub(crate) fn restrict_context_limits(
         path_bytes: pinned.path_bytes.min(admitted.path_bytes),
         attachments: pinned.attachments.min(admitted.attachments),
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
-        model_steps: pinned.model_steps.min(admitted.model_steps),
         model_events_per_step: pinned
             .model_events_per_step
             .min(admitted.model_events_per_step),

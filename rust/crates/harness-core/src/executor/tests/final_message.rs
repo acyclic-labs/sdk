@@ -65,7 +65,6 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             operation_id: OperationId::new(),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
-            max_steps: 2,
         };
         let result = executor.execute(input.clone(), &journal).now_or_never();
         if completed {
@@ -278,7 +277,7 @@ proptest! {
             Capabilities::new(["tool:call:example.echo"]), Limits::default())?, allowed()?)?;
         let journal = Journal::default();
         let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()),
-            selected_context: None, max_steps: 4 };
+            selected_context: None };
         let actual = futures::executor::block_on(executor.execute(input.clone(), &journal))?;
         let expected = completed.unwrap_or_else(|| final_chunks.concat());
         prop_assert_eq!(&actual.text, &expected);
@@ -356,7 +355,6 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 2,
     };
     let output = executor
         .execute(input, &Journal::default())

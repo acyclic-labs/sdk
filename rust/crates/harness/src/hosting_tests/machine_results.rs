@@ -127,10 +127,7 @@ impl TurnExecutors for NativeTurns {
                 .into(),
                 &crate::tools::shell::PLATFORM,
             )?;
-            let limits = Limits {
-                model_steps: 4,
-                ..Default::default()
-            };
+            let limits = Limits::default();
             let bindings = Bindings {
                 targets: Some(Arc::new(InProcessTargets::home(
                     InProcessTargets::local_record("selected-machine", "owner"),

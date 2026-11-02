@@ -31,7 +31,6 @@ pub struct Scenario {
     pub resume: Vec<String>,
     #[serde(default)]
     pub limits: BTreeMap<String, Value>,
-    pub max_steps: Option<u32>,
     #[serde(default)]
     pub replay: bool,
     pub expect: Expectations,
@@ -80,7 +79,7 @@ impl Scenario {
 
     pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
-            Some("summary") => &["prompt", "max_steps", "discovery"][..],
+            Some("summary") => &["prompt", "discovery"][..],
             _ => &["instruction"][..],
         };
         for key in forbidden {
@@ -131,8 +130,6 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"prompt":"x","turns":[],"message_tokens":-1,"expect":{"text":"x"}}"#,
         r#"{"summary":true,"prompt":"x","turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","prompt":"x","instruction":"x","turns":[],"expect":{"text":"x"}}"#,
-        r#"{"kind":"summary","instruction":"x","max_steps":16,"turns":[],"expect":{"text":"x"}}"#,
-        r#"{"kind":"summary","instruction":"x","max_steps":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","discovery":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"typo":true},"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"instructions":[{"typo":true}]},"turns":[],"expect":{"text":"x"}}"#,
