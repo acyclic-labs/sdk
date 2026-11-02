@@ -1,4 +1,6 @@
 use super::*;
+#[path = "projection/production_render_tests.rs"]
+mod production_render_tests;
 use acyclic_harness_core::{
     context::ModelContextCapacity,
     conversation::Limits,
