@@ -316,6 +316,17 @@ impl Pool {
                 if let Some(credit) = &mut credit {
                     credit.debit()?;
                 }
+                if matches!(frame.body, Some(Body::InputEnd(_))) {
+                    route
+                        .input
+                        .as_ref()
+                        .ok_or(StreamError::Unavailable)?
+                        .0
+                        .finishing(sent)?;
+                    // The original queue verdict is insufficient for half-close:
+                    // retain its waiter until the peer accepts ordered EOF.
+                    return self.queue(&node, frame).map(|_| ());
+                }
                 let queued = self.queue(&node, frame)?;
                 if queued.is_ok()
                     && let Some(credit) = credit
@@ -574,6 +585,12 @@ impl Pool {
                     Ok(())
                 }
             }
+            Some(Body::InputEnd(end)) if route.opened && end.trailers.is_empty() => route
+                .input
+                .as_ref()
+                .ok_or(StreamError::InvalidResponse)?
+                .0
+                .finished(),
             Some(Body::Window(grant)) if route.opened => route
                 .input
                 .as_ref()

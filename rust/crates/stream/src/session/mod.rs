@@ -739,7 +739,18 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     .input
                     .as_mut()
                     .ok_or(StreamError::InvalidArgument)?
-                    .finish(Ok(end))
+                    .finish(Ok(end))?;
+                // Echo only the terminal, without copying trailers or consuming
+                // data credit. The caller retains its original route until this
+                // proves all preceding input crossed the physical transport.
+                self.controls.push_back(frame(
+                    input.channel_id,
+                    input.generation,
+                    Body::InputEnd(wire::SessionInputEnd {
+                        trailers: Vec::new(),
+                    }),
+                ));
+                Ok(())
             }
             _ => Err(StreamError::InvalidArgument),
         }

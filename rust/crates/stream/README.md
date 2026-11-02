@@ -28,7 +28,9 @@ subsequent publication and transport cleanup keep their original owners.
 `session::Client::actor_call_input` admits a product request header before its
 input reaches EOF. Its `CallInputSender` sends original immutable fragments under
 both call and connection credit; `finish` sends ordered trailers without needing
-data credit. The product implements `CallProvider::call_input` and consumes the
+data credit and waits for the same server's terminal acknowledgement. Until then,
+the original route retains queued input even after reply retirement; connection
+loss returns a typed failure. The product implements `CallProvider::call_input` and consumes the
 same `CallInput`. Retaining a returned chunk retains its receive credit. An
 unsupported product refuses streaming input rather than collecting it.
 

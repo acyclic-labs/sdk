@@ -10,6 +10,49 @@ struct Calls {
 struct InputCalls {
     admitted: tokio::sync::mpsc::UnboundedSender<(CallInput, oneshot::Sender<Bytes>)>,
 }
+
+// Hold the actual request stream at EOF while the original server and client
+// continue running. No alternate dispatch, credit or terminal is supplied.
+struct HeldInputTerminal {
+    calls: Arc<dyn CallProvider>,
+    lifetime: tokio::sync::watch::Receiver<()>,
+    held: tokio::sync::mpsc::UnboundedSender<oneshot::Sender<()>>,
+}
+impl transport::Transport for HeldInputTerminal {
+    fn session(
+        &self,
+        source: transport::Requests,
+    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+        let held = self.held.clone();
+        let calls = self.calls.clone();
+        let mut lifetime = self.lifetime.clone();
+        Box::pin(async move {
+            let source = stream::unfold((source, held), |(mut source, held)| async move {
+                let frame = source.next().await?;
+                if matches!(frame.body, Some(Body::InputEnd(_))) {
+                    let (release, released) = oneshot::channel();
+                    held.send(release).ok()?;
+                    released.await.ok()?;
+                }
+                Some((Ok(frame), (source, held)))
+            });
+            serve_on_with_products(
+                Arc::new(MemoryStream::default()),
+                testing::authority(),
+                Products {
+                    calls: Some(calls),
+                    ..Products::default()
+                },
+                "local".into(),
+                Limits::default(),
+                Box::pin(source),
+                Some(Box::pin(async move {
+                    let _ = lifetime.changed().await;
+                })),
+            )
+        })
+    }
+}
 impl CallProvider for InputCalls {
     fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
         Ok("actors:/fixture".into())
@@ -72,13 +115,16 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     });
     let (admitted, mut dispatches) = tokio::sync::mpsc::unbounded_channel();
     let (host, lifetime) = tokio::sync::watch::channel(());
-    let client = Client::in_process_with_products(
-        Arc::new(MemoryStream::default()),
-        testing::authority(),
-        None,
-        Arc::new(InputCalls { admitted }),
+    let (held, mut terminals) = tokio::sync::mpsc::unbounded_channel();
+    let endpoint: transport::Endpoint = Arc::new(HeldInputTerminal {
+        calls: Arc::new(InputCalls { admitted }),
+        lifetime,
+        held,
+    });
+    let client = Client::with_transport(
+        endpoint,
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         Arc::new(crate::runtime::PlatformExecutor),
-        Some(lifetime),
     );
     client.register_credential(0, credential.into())?;
     client.register_credential(1, testing::credential())?;
@@ -144,7 +190,20 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         name: Bytes::from_static(b"digest"),
         value: Bytes::from_static(b"original terminal"),
     }];
-    upload.finish(trailers.clone()).await?;
+    let mut finish = Box::pin(upload.finish(trailers.clone()));
+    assert!(futures::poll!(finish.as_mut()).is_pending());
+    let release = terminals
+        .recv()
+        .await
+        .ok_or("transport did not reach EOF")?;
+    assert!(
+        futures::poll!(finish.as_mut()).is_pending(),
+        "queue acceptance must not retire the final route before transport EOF"
+    );
+    release
+        .send(())
+        .map_err(|_| "EOF transport was discarded")?;
+    finish.await?;
     assert!(
         input.next_chunk().await?.is_none(),
         "EOF must not need a returned data credit"
@@ -225,15 +284,18 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     stopped.send(second_original.clone()).await?;
     let held = input.next_chunk().await?.ok_or("no held input")?;
     let held_second = input.next_chunk().await?.ok_or("no second held input")?;
+    let mut finish = Box::pin(stopped.finish(Vec::new()));
+    assert!(futures::poll!(finish.as_mut()).is_pending());
+    let _withheld = terminals
+        .recv()
+        .await
+        .ok_or("no blocked terminal before host loss")?;
     drop(host);
     assert!(
         matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
         "producer loss cannot become EOF"
     );
-    assert_eq!(
-        stopped.send(Bytes::from_static(b"late")).await,
-        Err(StreamError::Unavailable)
-    );
+    assert_eq!(finish.await, Err(StreamError::Unavailable));
     futures::pin_mut!(lost);
     assert!(matches!(
         lost.next().await,

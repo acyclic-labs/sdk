@@ -134,6 +134,7 @@ pub(super) struct State {
 }
 struct Terminal {
     cause: Option<StreamError>,
+    finish: Option<oneshot::Sender<Result<(), StreamError>>>,
     // Exactly the reply cursor and, after successful open, its input sender.
     // Route ownership observes their terminal without keeping either alive.
     clients: u8,
@@ -145,6 +146,7 @@ impl State {
             connection: Mutex::new(None),
             terminal: Mutex::new(Terminal {
                 cause: None,
+                finish: None,
                 clients: 1,
             }),
             changed: gate::Gate::new(),
@@ -161,13 +163,46 @@ impl State {
         Ok(())
     }
     pub(super) fn close(&self, cause: StreamError) {
-        if let Ok(mut terminal) = self.terminal.lock() {
+        let finish = if let Ok(mut terminal) = self.terminal.lock() {
             if terminal.cause.is_none() {
                 terminal.cause = Some(cause);
             }
-        }
+            terminal.finish.take()
+        } else {
+            None
+        };
         self.window.close();
         let _ = self.changed.set(true);
+        // Publish the original cause before abandoning the queue waiter.
+        drop(finish);
+    }
+    pub(super) fn finishing(
+        &self,
+        finish: oneshot::Sender<Result<(), StreamError>>,
+    ) -> Result<(), StreamError> {
+        let mut terminal = self.terminal.lock().map_err(|_| StreamError::Unavailable)?;
+        if let Some(cause) = &terminal.cause {
+            let cause = cause.clone();
+            drop(terminal);
+            let _ = finish.send(Err(cause));
+            return Ok(());
+        }
+        if terminal.finish.is_some() {
+            return Err(StreamError::InvalidResponse);
+        }
+        terminal.finish = Some(finish);
+        Ok(())
+    }
+    pub(super) fn finished(&self) -> Result<(), StreamError> {
+        let finish = self
+            .terminal
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .finish
+            .take()
+            .ok_or(StreamError::InvalidResponse)?;
+        let _ = finish.send(Ok(()));
+        Ok(())
     }
     fn cause(&self) -> StreamError {
         self.terminal
@@ -289,6 +324,8 @@ impl CallInputSender {
         result
     }
     /// Send the original ordered EOF/trailers without requiring data credit.
+    /// Retains the call until its server accepts that terminal, so completion
+    /// cannot discard queued input when the reply has already retired.
     pub async fn finish(mut self, trailers: Vec<wire::SessionHeader>) -> Result<(), StreamError> {
         let value = frame(
             self.state.id,
