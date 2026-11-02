@@ -19,6 +19,11 @@ fn native_name_bytes(
             let text = std::str::from_utf8(name).map_err(|_| {
                 MountSourceError::Invalid("authenticated UTF-8 name is malformed".into())
             })?;
+            let units = crate::native_name::windows_unicode_units(text).ok_or_else(|| {
+                MountSourceError::Unsupported(
+                    "authenticated name cannot be represented as one Windows component".into(),
+                )
+            })?;
             let mut length = 0_usize;
             for scalar in text.chars() {
                 inputs.items(1)?;
@@ -27,7 +32,7 @@ fn native_name_bytes(
                     .ok_or(MountSourceError::Work(WorkError::Overflow))?;
             }
             let mut bytes = inputs.vec(length)?;
-            for unit in text.encode_utf16() {
+            for unit in units {
                 let delta = crate::WorkCounters {
                     items_examined: 1,
                     bytes_encoded: 2,

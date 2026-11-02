@@ -209,10 +209,10 @@ pub(super) fn materialize_host_path(
         let count = match name.encoding() {
             NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
             NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-                let text = std::str::from_utf8(name.as_bytes())
-                    .map_err(|_| MaterializeError::UnrepresentableName)?;
+                let units = crate::native_name::windows_name_units(name)
+                    .ok_or(MaterializeError::UnrepresentableName)?;
                 let mut count = 0_usize;
-                for _ in text.encode_utf16() {
+                for _ in units {
                     receipt.custody.work().charge(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::UNCHARGED
@@ -251,17 +251,10 @@ pub(super) fn materialize_host_path(
         #[cfg(unix)]
         units.extend_from_slice(name.as_bytes());
         #[cfg(windows)]
-        match name.encoding() {
-            NameEncoding::WindowsUtf16Le => units.extend(
-                crate::kernel::types::utf16le_units(name.as_bytes())
-                    .ok_or_else(|| MaterializeError::UnrepresentableName)?,
-            ),
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
-                std::str::from_utf8(name.as_bytes())
-                    .map_err(|_| MaterializeError::UnrepresentableName)?
-                    .encode_utf16(),
-            ),
-        }
+        units.extend(
+            crate::native_name::windows_name_units(name)
+                .ok_or(MaterializeError::UnrepresentableName)?,
+        );
     }
     let retained = vec_bytes(&units);
     receipt.owned_arc(units, retained)

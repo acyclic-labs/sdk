@@ -82,14 +82,23 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
     let path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     assert_eq!(path.0, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());
 
-    let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
-    assert!(matches!(
-        materialize_host_path(
-            None,
-            NamespacePath::new(vec![invalid], limits)?.components(),
-            &mut receipt
-        ),
-        Err(MaterializeError::UnrepresentableName)
-    ));
+    for bytes in [vec![0xff], b"left\\right".to_vec(), b"..\\escape".to_vec()] {
+        let invalid = LogicalName::new(NameEncoding::PosixBytes, bytes, 255)?;
+        let before = receipt.custody.work().receipt();
+        let live = receipt.custody.bytes();
+        assert!(matches!(
+            materialize_host_path(
+                None,
+                NamespacePath::new(vec![invalid], limits)?.components(),
+                &mut receipt
+            ),
+            Err(MaterializeError::UnrepresentableName)
+        ));
+        assert_eq!(receipt.custody.bytes(), live);
+        assert_eq!(
+            receipt.custody.work().receipt().allocation_operations,
+            before.allocation_operations
+        );
+    }
     Ok(())
 }

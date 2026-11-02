@@ -213,26 +213,10 @@ pub(crate) fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
     work: &mut W,
     emit: &mut dyn FnMut(u16, &mut W) -> Result<(), W::Error>,
 ) -> Result<(), W::Error> {
-    match component.encoding() {
-        NameEncoding::WindowsUtf16Le => {
-            for unit in crate::kernel::types::utf16le_units(component.as_bytes())
-                .ok_or_else(W::invalid_request)?
-            {
-                work.check()?;
-                emit(unit, work)?;
-            }
-        }
-        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            let text =
-                std::str::from_utf8(component.as_bytes()).map_err(|_| W::invalid_request())?;
-            if text.contains(['/', '\\']) {
-                return Err(W::invalid_request());
-            }
-            for unit in text.encode_utf16() {
-                work.check()?;
-                emit(unit, work)?;
-            }
-        }
+    let units = crate::native_name::windows_name_units(component).ok_or_else(W::invalid_request)?;
+    for unit in units {
+        work.check()?;
+        emit(unit, work)?;
     }
     Ok(())
 }
