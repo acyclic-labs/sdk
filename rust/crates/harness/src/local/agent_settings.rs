@@ -214,11 +214,11 @@ pub(super) async fn plugins(
         generation: "",
         bytes: crate::seed::file(MANIFEST),
     };
-    let seeded = |error: Error| match error {
-        Error::Invalid(reason) => {
+    let seeded = |error: config::AdmissionError| match error {
+        config::AdmissionError::Invalid(reason) => {
             Error::Invalid(format!("the seed's plugins are not admissible: {reason}"))
         }
-        error => error,
+        config::AdmissionError::Source(error) => error,
     };
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
@@ -233,14 +233,14 @@ pub(super) async fn plugins(
     ];
     let (rules, outcome) = match load(&tree, &layers, &enabler).await {
         Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
-        Err(Error::Invalid(reason)) => (
+        Err(config::AdmissionError::Invalid(reason)) => (
             load(&tree, &layers[..1], &enabler)
                 .await
                 .map_err(seeded)?
                 .rules,
             (AdmissionStatus::Invalid, Some(reason)),
         ),
-        Err(error) => return Err(error),
+        Err(config::AdmissionError::Source(error)) => return Err(error),
     };
     record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
     Ok(rules)
@@ -266,10 +266,12 @@ impl Refused {
         }
     }
 
-    fn evaluated(error: Error) -> Self {
+    fn evaluated(error: config::AdmissionError) -> Self {
         match error {
-            Error::Invalid(reason) => Self::Settings(AdmissionStatus::Invalid, reason),
-            error => Self::Operation(error),
+            config::AdmissionError::Invalid(reason) => {
+                Self::Settings(AdmissionStatus::Invalid, reason)
+            }
+            config::AdmissionError::Source(error) => Self::Operation(error),
         }
     }
 
@@ -397,6 +399,7 @@ async fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::tests::settings::write;
     use crate::local::tests::{text, volume, volume_config};
 
     #[tokio::test]
@@ -408,29 +411,12 @@ mod tests {
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?;
-        let write = ContentGrant::verify(
-            &harness.verifier,
-            &harness.signed,
-            &harness.scratch,
-            VolumeOperation::Write,
-            u64::MAX,
-            &mut None,
-        )?;
-        harness
-            .files
-            .put_content(
-                &harness.scratch,
-                &write,
-                "options.ts",
-                b"export const sampling = {temperature: 0.25};",
-                "text/typescript",
-                "options.ts",
-                u64::MAX,
-                &crate::IdempotencyKey::new("settings-import-control".to_owned())?,
-                None,
-                ContentAccess::default(),
-            )
-            .await?;
+        write(
+            &harness,
+            "options.ts",
+            "export const sampling = {temperature: 0.25};",
+        )
+        .await?;
         let volumes = Volumes {
             files: &harness.files,
             verifier: &harness.verifier,
@@ -479,21 +465,7 @@ mod tests {
                 (_, Ok(_)) => panic!("{prefix}: imported settings escaped their read boundary"),
             }
         }
-        harness
-            .files
-            .put_content(
-                &harness.scratch,
-                &write,
-                config::AGENT,
-                b"export default base => base;",
-                "text/typescript",
-                config::AGENT,
-                u64::MAX,
-                &crate::IdempotencyKey::new("settings-bound-control".to_owned())?,
-                None,
-                ContentAccess::default(),
-            )
-            .await?;
+        write(&harness, config::AGENT, "export default base => base;").await?;
         let bounded = Volumes {
             maximum_bytes: 0,
             ..volumes
@@ -511,6 +483,55 @@ mod tests {
             matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
             "the entry read bound became seed fallback"
         );
+
+        // The entry fits, but its imported source exceeds the same bound.
+        // Invalid module code may fall back; this original read refusal may not.
+        for (path, source) in [
+            ("options.ts", "/*".to_owned() + &"x".repeat(1024) + "*/ export const sampling = {};"),
+            (config::AGENT, "import {sampling} from './options.ts'; export default base => ({...base, sampling});".to_owned()),
+        ] {
+            write(&harness, path, &source).await?;
+        }
+        let bounded = Volumes {
+            maximum_bytes: 128,
+            ..bounded
+        };
+        let refused = admit(
+            &bounded,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            harness.clock.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
+            "the imported source read bound became seed fallback"
+        );
+
+        #[cfg(feature = "hooks")]
+        {
+            for (path, source) in [
+                (
+                    crate::plugins::MANIFEST,
+                    "export default {guard: {enabled: true}};".to_owned(),
+                ),
+                (
+                    "plugins/guard/plugin.ts",
+                    "/*".to_owned()
+                        + &"x".repeat(1024)
+                        + "*/ export default {name: 'guard', description: ''};",
+                ),
+            ] {
+                write(&harness, path, &source).await?;
+            }
+            let refused = plugins(&bounded, harness.root, harness.clock.as_ref()).await;
+            assert!(
+                matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
+                "the plugin source read bound became seed fallback"
+            );
+        }
         Ok(())
     }
 

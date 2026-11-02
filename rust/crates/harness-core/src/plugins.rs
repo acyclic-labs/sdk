@@ -17,8 +17,7 @@
 //! enabled hook is never silently skipped. The authoring types are generated
 //! from these decode shapes by [`crate::config::typescript`].
 use crate::{
-    Error, Result,
-    config::{self, Surface, Tree},
+    config::{self, AdmissionError, Surface, Tree},
     hooks::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, Hooks, RequestMatch},
     layers::Layer,
 };
@@ -171,11 +170,16 @@ pub struct Enabled {
 /// enabled by `enabler`. Plugin folders and their imports resolve in `tree`.
 ///
 /// # Errors
-/// [`Error::Invalid`] when `plugins.ts` or an enabled plugin is invalid: an
+/// [`AdmissionError::Invalid`] when `plugins.ts` or an enabled plugin is invalid: an
 /// unknown or disabled requirement, a manifest naming another folder, a
 /// hook file outside the hook grammar, or a hook this host cannot run.
-pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Result<Enabled> {
-    let invalid = |reason: String| Error::Invalid(format!("{MANIFEST}: {reason}"));
+/// Source read failures retain their original cause in [`AdmissionError::Source`].
+pub async fn load(
+    tree: &dyn Tree,
+    layers: &[Layer<'_>],
+    enabler: &str,
+) -> std::result::Result<Enabled, AdmissionError> {
+    let invalid = |reason: String| AdmissionError::Invalid(format!("{MANIFEST}: {reason}"));
     let (value, _) =
         config::compose(MANIFEST, layers, tree, Value::Object(Default::default())).await?;
     let Plugins(entries) =

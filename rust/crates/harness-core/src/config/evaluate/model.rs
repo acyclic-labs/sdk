@@ -27,7 +27,9 @@ impl Tree for Files {
     }
 }
 
-fn observed(result: Result<Evaluated>) -> std::result::Result<Evaluated, String> {
+fn observed(
+    result: std::result::Result<Evaluated, AdmissionError>,
+) -> std::result::Result<Evaluated, String> {
     result.map_err(|error| error.to_string())
 }
 

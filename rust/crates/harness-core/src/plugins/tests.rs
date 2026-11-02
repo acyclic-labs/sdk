@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Error, Result};
 use futures::future::BoxFuture;
 
 /// An effective tree held in memory.
@@ -25,7 +26,7 @@ async fn enable(manifest: &'static str, files: &[(&'static str, &'static str)]) 
         generation: "1",
         bytes: Some(manifest.as_bytes()),
     }];
-    load(&tree, &layers, "root").await
+    load(&tree, &layers, "root").await.map_err(Into::into)
 }
 
 const GUARD: &str = r#"export default { name: "guard", description: "Deny force pushes.",

@@ -27,7 +27,7 @@ const TREE: Files = Files(&[
 
 async fn error(source: &str, surface: Surface) -> String {
     match evaluate("agent.ts", source.as_bytes(), &TREE, &json!({}), surface).await {
-        Err(Error::Invalid(message)) => message,
+        Err(AdmissionError::Invalid(message)) => message,
         other => panic!("{source}: {other:?}"),
     }
 }

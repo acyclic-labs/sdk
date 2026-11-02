@@ -50,17 +50,41 @@ pub struct Evaluated {
     pub digest: [u8; 32],
 }
 
+/// A rejected configuration or a failure of its original source operation.
+/// Only invalid configuration permits an admission fallback. In particular,
+/// a source's `Error::Invalid` can describe a read bound, not invalid code.
+#[derive(Debug, thiserror::Error)]
+pub enum AdmissionError {
+    /// Invalid module code, imports, plain-data output or decoded settings.
+    #[error("{0}")]
+    Invalid(String),
+    /// The unchanged source failure, including its original cause and custody.
+    #[error(transparent)]
+    Source(#[from] Error),
+}
+
+impl From<AdmissionError> for Error {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Invalid(reason) => Self::Invalid(reason),
+            AdmissionError::Source(error) => error,
+        }
+    }
+}
+
 /// Evaluates the module at `path` holding `source`, with `base` as the value
 /// below it. Imports resolve in `tree`. A throw, an exhausted budget, an
 /// import outside the tree, a cycle, a missing `export default` or a result
-/// that is not plain data is [`Error::Invalid`], naming `path`.
+/// that is not plain data is [`AdmissionError::Invalid`], naming `path`.
+/// Source and accounting failures retain their original operation in
+/// [`AdmissionError::Source`], even when their public code is `Invalid`.
 pub async fn evaluate(
     path: &str,
     source: &[u8],
     tree: &dyn Tree,
     base: &Value,
     surface: Surface,
-) -> Result<Evaluated> {
+) -> std::result::Result<Evaluated, AdmissionError> {
     evaluate_cached(path, source, tree, base, surface, cache()).await
 }
 
@@ -71,8 +95,8 @@ async fn evaluate_cached(
     base: &Value,
     surface: Surface,
     cache: &Cache,
-) -> Result<Evaluated> {
-    let invalid = |reason: String| Error::Invalid(format!("{path}: {reason}"));
+) -> std::result::Result<Evaluated, AdmissionError> {
+    let invalid = |reason: String| AdmissionError::Invalid(format!("{path}: {reason}"));
     let modules = closure(path, source, tree).await?.map_err(invalid)?;
     let mut digest = blake3::Hasher::new_derive_key(VERSION);
     for (name, module) in &modules {
@@ -119,7 +143,7 @@ pub async fn compose(
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<(Value, Vec<Link>)> {
+) -> std::result::Result<(Value, Vec<Link>), AdmissionError> {
     let mut value = base;
     let mut chain = Vec::new();
     for layer in crate::layers::held(layers) {
