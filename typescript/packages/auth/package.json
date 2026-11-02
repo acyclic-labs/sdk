@@ -6,6 +6,10 @@
   "description": "Shared Acyclic capability chain contract",
   "license": "Apache-2.0",
   "exports": {
+    "./refusal": {
+      "types": "./dist/refusal.d.ts",
+      "default": "./dist/refusal.js"
+    },
     "./credential-connect": {
       "types": "./dist/credential-connect.d.ts",
       "default": "./dist/credential-connect.js"
