@@ -282,6 +282,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 FileDescriptor::new([0; 32], 0, stock_string_copy(media_type, io)?)?
             };
             let operation = bounded_io::operation_key(idempotency_key, io)?;
+            let provisional = crate::executor::with_history_io(io, |work| {
+                FileRef::new(
+                    volume.copy(work)?,
+                    stock_string_copy(path, io)?,
+                    bounded_io::hex_key(&operation.into_bytes(), io)?,
+                    descriptor,
+                    stock_string_copy(display_name, io)?,
+                    work,
+                )
+            })?;
             let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
             let root = self.open(&workspace, io).await?;
             // Host records stay with the same volume owner as their readers
@@ -346,8 +356,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // The original transaction stages immutable chunks. Its one
             // publication below binds the resulting digest and metadata.
             let mut staged = None;
-            let descriptor = if input.bytes().is_some() {
-                descriptor
+            let mut provisional = if input.bytes().is_some() {
+                provisional
             } else {
                 let prepared = crate::conversation::BoundedContentFuture::new(io, || async {
                 use sha2::Digest;
@@ -371,6 +381,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 if active_io.cancellation().is_cancelled() { Error::Cancelled }
                                 else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
                             })?;
+                        active_io.charge(acyclic_fs::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
                         if source.length > maximum_bytes {
                             return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                                 "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
@@ -381,29 +392,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let transaction = active_io.sdk(opened.begin_transaction(
                         operation, active_io, active_io.cancellation()).await)?;
                     let content = active_io.sdk(transaction.stage_content(
-                        &mut source, maximum_bytes.max(1), active_io, active_io.cancellation()).await)?;
+                        &mut source, maximum_bytes.max(1), active_io, active_io.cancellation()).await)
+                        .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;
                     if source.length > maximum_bytes {
                         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                             "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                     }
                     staged = Some((transaction, content));
                 }
-                let descriptor = descriptor.with_content_identity(source.hash.finalize().into(), source.length)?;
-                Ok((descriptor, staged))
+                let provisional = provisional.with_content_identity(source.hash.finalize().into(), source.length)?;
+                Ok((provisional, staged))
                 })?.await?;
                 staged = prepared.1;
                 prepared.0
             };
-            let mut provisional = crate::executor::with_history_io(io, |work| {
-                FileRef::new(
-                    volume.copy(work)?,
-                    stock_string_copy(path, io)?,
-                    bounded_io::hex_key(&operation.into_bytes(), io)?,
-                    descriptor,
-                    stock_string_copy(display_name, io)?,
-                    work,
-                )
-            })?;
             let receipt_identity = if internal_class.is_some() {
                 provisional.path()
             } else {

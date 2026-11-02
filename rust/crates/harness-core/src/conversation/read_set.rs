@@ -69,7 +69,11 @@ impl TurnReadSet {
             return Err(Error::Invalid("read-set settlement version is unsupported; recovery: supply a version-1 TurnReadSet".into()));
         }
         if let ReadSetObservation::Closed { file } = &self.observation {
-            if self.cut.is_none() || file.descriptor().media_type() != "application/x-ndjson" {
+            if self.cut.is_none()
+                || file.descriptor().media_type() != "application/x-ndjson"
+                || file.volume().owner() != &VolumeOwner::Agent(self.agent)
+                || file.volume().class() != VolumeClass::AgentPrivate
+            {
                 return Err(Error::Invalid("read-set closure lacks its cut or JSONL descriptor; recovery: publish the complete pinned read_set::source before settlement".into()));
             }
             file.validate(&mut None)?;
