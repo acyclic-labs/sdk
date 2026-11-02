@@ -148,6 +148,33 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     assert_eq!(old_bytes, session.view(&old_path).unwrap().retained_bytes());
     let old_next = session.view(&old_path).unwrap().next_sequence();
     let revision = session.revision();
+    for (resource, expected) in [
+        (
+            "streams:/another-selected-path",
+            WireSessionError::NotRequested,
+        ),
+        (
+            "fs:/volume/output",
+            WireSessionError::Stream(StreamError::Unsupported),
+        ),
+        (
+            "streams:/%65vents",
+            WireSessionError::Stream(StreamError::InvalidArgument),
+        ),
+        (
+            "streams:/a%2Fb",
+            WireSessionError::Stream(StreamError::InvalidPath),
+        ),
+    ] {
+        let refused = session
+            .replace_streams([(old_path.clone(), follow(resource.into()))])
+            .unwrap_err();
+        assert_eq!(refused.code(), expected.code());
+        assert_eq!(session.revision(), revision);
+        assert_eq!(session.followed_interests(), 12);
+        assert_eq!(session.retained_bytes(), old_bytes);
+        assert_eq!(session.view(&old_path).unwrap().next_sequence(), old_next);
+    }
     let (streams, mut resources) = tree.visible(32);
     resources.extend((0..5).map(|id| follow(format!("fs:/volume/excess{id}/output"))));
     assert!(matches!(
