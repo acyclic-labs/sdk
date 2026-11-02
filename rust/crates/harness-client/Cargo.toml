@@ -33,6 +33,7 @@ url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-stream = { path = "../stream", default-features = false, features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
 tokio = { version = "1.48.0", features = ["macros", "rt", "time"] }
 
 [lints]

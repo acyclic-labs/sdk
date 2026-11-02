@@ -13,7 +13,7 @@ use std::{
     task::{Context, Poll},
 };
 
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 mod viewport_tests;
 mod views;
 use views::Views;

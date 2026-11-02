@@ -571,6 +571,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-harness-core",
  "acyclic-stream",
+ "acyclic-test-support",
  "base64 0.22.1",
  "blake3",
  "bytes",

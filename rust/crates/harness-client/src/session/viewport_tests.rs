@@ -165,8 +165,105 @@ async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
     assert_eq!(view.records().len(), 4);
 }
 
+fn refused_without_allocations(
+    session: &mut WireSession,
+    expected: WireSessionError,
+    refuse: impl FnOnce(&mut WireSession) -> Result<(), WireSessionError>,
+) {
+    let state = |session: &WireSession| {
+        (
+            session.revision(),
+            session.followed_interests(),
+            session.retained_views(),
+            session.retained_bytes(),
+        )
+    };
+    let before = state(session);
+    let mut result = None;
+    let work = acyclic_test_support::measure(|| result = Some(refuse(session)));
+    assert_eq!(result.unwrap().unwrap_err().code(), expected.code());
+    assert_eq!(state(session), before);
+    assert_eq!(work.count_total, 0, "refusal allocated temporary storage");
+    assert_eq!(work.bytes_total, 0);
+}
+
+fn restricted_filter() -> Option<wire::SessionFilter> {
+    Some(wire::SessionFilter {
+        keys: vec![wire::KeyRange {
+            start: Bytes::from_static(b"restricted"),
+            end: Bytes::from_static(b"restricted\0"),
+        }],
+        ..Default::default()
+    })
+}
+
 #[tokio::test]
 async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
+    let (mut admission, admission_scheduler) = client();
+    admission.policy = DemandPolicy::new(1, 1).unwrap();
+    let request = follow("fs:/volume/admission".into());
+    admission.begin_resource(request.clone()).unwrap();
+    for (request, expected) in [
+        (request.clone(), WireSessionError::AlreadyOpen),
+        (
+            follow("fs:/volume/excess".into()),
+            WireSessionError::Demand(DemandError::SelectedCapacity),
+        ),
+    ] {
+        refused_without_allocations(&mut admission, expected, |session| {
+            session.begin_resource(request)
+        });
+    }
+    for changed_credential in [true, false] {
+        let mut request = request.clone();
+        if changed_credential {
+            request.credential = 1;
+        } else {
+            request.filter = restricted_filter();
+        }
+        refused_without_allocations(
+            &mut admission,
+            WireSessionError::InvalidSubscription,
+            |session| session.replace_interests(std::iter::empty(), [request]),
+        );
+    }
+    // A retained terminal view bypasses duplicate and selected-capacity refusal,
+    // exposing the revision check before admission can take name ownership.
+    admission.resources.clear();
+    admission.revision = u64::MAX;
+    let overflow = request.clone();
+    refused_without_allocations(
+        &mut admission,
+        WireSessionError::Stream(StreamError::Capacity),
+        |session| session.begin_resource(overflow),
+    );
+    // The former eager-name ownership must fail the same zero-allocation oracle.
+    let eager_request = request.clone();
+    let name_len = validate_resource_subscription(&eager_request)
+        .unwrap()
+        .0
+        .len();
+    let mut result = None;
+    let eager = acyclic_test_support::measure(|| {
+        let name = validate_resource_subscription(&eager_request)
+            .unwrap()
+            .0
+            .to_owned();
+        std::hint::black_box(name);
+        result = Some(admission.begin_resource(eager_request));
+    });
+    assert!(matches!(
+        result.unwrap(),
+        Err(WireSessionError::Stream(StreamError::Capacity))
+    ));
+    assert_eq!(eager.count_total, 1);
+    assert_eq!(eager.bytes_total, name_len as u64);
+    eprintln!(
+        "resource refusal allocations: borrowed=0 eager={}",
+        eager.count_total
+    );
+    admission_scheduler.tasks.lock().unwrap().clear();
+
     let tree = Tree::new(64);
     let (mut session, scheduler) = client();
     let (streams, resources) = tree.visible(0);
@@ -355,13 +452,7 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             assert_eq!(session.revision(), revision);
             assert_eq!(view(&session), retained);
             let (mut streams, mut resources) = tree.visible(0);
-            let filter = Some(wire::SessionFilter {
-                keys: vec![wire::KeyRange {
-                    start: Bytes::from_static(b"restricted"),
-                    end: Bytes::from_static(b"restricted\0"),
-                }],
-                ..Default::default()
-            });
+            let filter = restricted_filter();
             if resource {
                 resources[0].filter = filter;
             } else {
