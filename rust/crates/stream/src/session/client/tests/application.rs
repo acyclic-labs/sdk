@@ -38,6 +38,58 @@ fn sequence(delivery: &ApplicationDelivery) -> Result<u64, StreamError> {
 }
 
 #[tokio::test]
+async fn bootstrap_selection_preserves_uncommitted_replay_and_filtered_resume() -> TestResult {
+    for filtered in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        append(&provider, "events", 2).await?;
+        let fixture = Fixture::open(provider.clone(), "bootstrap").await?;
+        let client = fixture.client()?;
+        let session = client.session_client()?;
+        let mut selected = subscription();
+        if let Some(Kind::Follow(follow)) = &mut selected.kind {
+            follow.bootstrap_head = true;
+        }
+        if filtered {
+            selected.filter = Some(wire::SessionFilter {
+                keys: vec![wire::KeyRange {
+                    start: Bytes::from_static(b"absent"),
+                    end: Bytes::from_static(b"absent0"),
+                }],
+                ..Default::default()
+            });
+        }
+        let mut source = session.deliveries(selected).await?;
+        if !filtered {
+            let original = source.checkpoint()?;
+            let delivery = data(&mut source).await?;
+            assert_eq!(sequence(&delivery)?, 1);
+            assert_eq!(source.checkpoint()?, original);
+            assert_eq!(original.resume.as_ref().ok_or("no initial cut")?.next, 0);
+            drop(delivery);
+            drop(source);
+            source = session.deliveries(original).await?;
+            let delivery = data(&mut source).await?;
+            assert_eq!(sequence(&delivery)?, 1);
+            assert!(delivery.commit()?);
+        }
+        let mut checkpoint = source.checkpoint()?;
+        assert_eq!(checkpoint.resume.as_ref().ok_or("no selected cut")?.next, 2);
+        let Some(Kind::Follow(follow)) = &checkpoint.kind else {
+            return Err("lost selected follow".into());
+        };
+        assert_eq!(follow.preceding_commit_id.len(), 32);
+        drop(source);
+        append(&provider, "events", 1).await?;
+        checkpoint.filter = None;
+        let mut resumed = session.deliveries(checkpoint).await?;
+        let delivery = data(&mut resumed).await?;
+        assert_eq!(sequence(&delivery)?, 2);
+        assert!(delivery.commit()?);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn crash_before_application_commit_replays_despite_returned_credit() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 3).await?;

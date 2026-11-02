@@ -612,18 +612,13 @@ impl Pool {
     fn opened(route: &mut Route, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
         if let Kind::Follow(follow) = &route.kind {
             if follow.bootstrap_head && route.received == 0 {
-                let selected = opened
-                    .selection
-                    .as_ref()
-                    .ok_or(StreamError::InvalidResponse)?;
-                route.received = if selected.has_bootstrap {
-                    selected
-                        .from
-                        .checked_sub(1)
-                        .ok_or(StreamError::InvalidResponse)?
-                } else {
-                    selected.from
-                };
+                let (_, selected, bootstrap) = wire_codec::selection_from_opened(opened)?;
+                route.received = route.progress.select_bootstrap(
+                    route.generation,
+                    &selected,
+                    bootstrap,
+                    follow.delivery == wire::SessionDelivery::All as i32,
+                )?;
             }
         }
         if let Some(ready) = route.ready.take() {

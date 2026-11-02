@@ -25,7 +25,8 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
     if (signal?.aborted) this.#abort.abort(signal.reason);
     else signal?.addEventListener("abort", abort, { once: true });
     this.#source = Promise.resolve().then(() => {
-      this.#abort.signal.throwIfAborted();
+      // Setup owns disposal of an already-created upstream cursor. It must
+      // receive cancellation even when close wins before this queued turn.
       return open(this.#abort.signal);
     });
     this.opened = this.#source.then(source => source.opening);

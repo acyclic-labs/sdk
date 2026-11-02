@@ -114,6 +114,25 @@ describe("website Stream contract", () => {
     })).toThrow();
   });
 
+  test("closing typed cursors before adapter setup closes their original WASM owners", async () => {
+    const provider = new MemoryStreamProvider();
+    const read = provider.read.bind(provider), follow = provider.follow.bind(provider);
+    let readOwner: ReturnType<typeof read> | undefined, followOwner: ReturnType<typeof follow> | undefined;
+    provider.read = (...args) => readOwner = read(...args);
+    provider.follow = (...args) => followOwner = follow(...args);
+    const stream = new StreamClient(provider).json("selected/close", answer);
+    await stream.append({ answer: 1 }, { idempotencyKey: key("selected/close-seed") });
+    const selected = stream.read({ from: 0n, limit: 1 });
+    await selected.close();
+    if (readOwner === undefined) throw new Error("read lost its original owner");
+    expect((await readOwner.next()).done).toBe(true);
+    const live = stream.follow({ from: 1n });
+    await live.close();
+    if (followOwner === undefined) throw new Error("follow lost its original owner");
+    await stream.append({ answer: 2 }, { idempotencyKey: key("selected/close-later") });
+    expect((await followOwner.next()).done).toBe(true);
+  });
+
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
     const client = new StreamClient(new MemoryStreamProvider());
     // @ts-expect-error A typed JSON stream must provide a parser; a caller-selected generic is not an overload.
