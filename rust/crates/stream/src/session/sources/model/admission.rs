@@ -25,6 +25,8 @@ fn channel(latest: bool, pending: usize, credited: bool) -> Channel {
         sent: Default::default(),
         applied: Default::default(),
         ending: None,
+        socket: None,
+        input: None,
     }
 }
 

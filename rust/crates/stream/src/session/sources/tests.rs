@@ -217,6 +217,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                                 applied: Default::default(),
                                 ending: ending.then_some(StreamError::Unavailable.code()),
                                 socket: None,
+                                input: None,
                             };
                             let room = (room & 1 != 0, room & 2 != 0, room & 4 != 0);
                             let expected = !ending
