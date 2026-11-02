@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod analysis;
+pub mod plan;
 pub mod probes;
 pub mod reports;
 pub mod stats;
@@ -21,6 +22,11 @@ pub enum Error {
         "analyze observation stream: {0}; recovery: choose distinct arms, retain every declared assignment in strictly increasing (population, replicate) order with baseline then treatment, and call analysis::Contrast::new and Contrast::analyze again"
     )]
     Analysis(&'static str),
+    /// An invalid or unrepresentable assignment declaration.
+    #[error(
+        "plan experiment assignments: {0}; recovery: correct the positive arm count and representable arm-by-replicate count, then call plan::AssignmentPlan::new again"
+    )]
+    Plan(&'static str),
     /// Original observation decoder failure.
     #[error(
         "decode observation: {0}; recovery: correct the version-2 JSON object and call Observation::decode"
