@@ -610,7 +610,7 @@ mod tests {
         write(
             &harness,
             path,
-            "export default base => ({...base, sampling: {...base.sampling, unknown: true}});",
+            "export default base => ({...base, sampling: {...base.sampling, topP: 0}});",
         )
         .await?;
         let refused_source = Source::new(&volumes).await?;
