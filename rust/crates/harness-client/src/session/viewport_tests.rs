@@ -190,7 +190,7 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let (streams, resources) = tree.visible(32);
     let expected: Vec<_> = resources
         .iter()
-        .map(|sub| validate_resource_subscription(sub).unwrap().0)
+        .map(|sub| validate_resource_subscription(sub).unwrap().0.to_owned())
         .collect();
     session.replace_streams(streams).unwrap();
     assert_eq!(session.retained_bytes(), 0);
@@ -222,7 +222,7 @@ fn agent_viewport_releases_output_panes_on_scroll_out() {
     assert_eq!(client.residency(), (12, 12, 0));
     for old in tree.visible(0).1 {
         let (name, _) = validate_resource_subscription(&old).unwrap();
-        assert!(client.resource_view(&name).is_err());
+        assert!(client.resource_view(name).is_err());
     }
     client
         .set_viewport(selection(32), (33..36).map(selection), std::iter::empty())
@@ -244,7 +244,10 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             } else {
                 streams[0].1.clone()
             };
-            let name = validate_resource_subscription(&resources[0]).unwrap().0;
+            let name = validate_resource_subscription(&resources[0])
+                .unwrap()
+                .0
+                .to_owned();
             session.replace_interests(streams, resources).unwrap();
             let terminal = if failed {
                 vec![Err(StreamError::Unavailable)]
