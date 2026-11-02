@@ -50,7 +50,7 @@ exactly one registration per provisioned agent and leave none ready after the
 global drain. It does not measure physical memory or allocations inside a
 provider. Reported control traffic remains visible even if the dispatch check passes.
 
-Run the native 1,000 versus 10,000 idle-agent vector explicitly on Linux or ivar:
+Run the native 1,000 versus 10,000 idle-agent vector explicitly:
 
 ```sh
 cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::agent_scale -- --ignored --nocapture
