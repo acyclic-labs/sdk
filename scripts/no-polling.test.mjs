@@ -341,6 +341,11 @@ test('quoted host programs and native wait deadlines require exact review', () =
 });
 
 test('escaped host identifiers and embedded child programs cannot conceal readiness waits', () => {
+ const shell = JSON.parse(readFileSync(new URL('./fixtures/no-polling/shell-words.json', import.meta.url), 'utf8'));
+ for (const {word, stdout} of shell.records) {
+  assert.equal(stdout, 'sleep\n');
+  assert.deepEqual(pollingSites('scripts/control.sh', word + ' 1').map(site => site.start), [0], word);
+ }
  // Policy mutations exercise the original source checker, not a fake OS result.
  for (const [file, source, kind] of [
   ['scripts/control.cs', String.raw`class Control { void Run() { Thread.\u0053le\u0065p(1); } }`, 'timer-or-readiness'],
