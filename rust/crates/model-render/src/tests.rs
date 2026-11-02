@@ -599,7 +599,10 @@ proptest! {
             prop_assert_eq!(visited, items.len());
             result.unwrap();
             let prefix = if family == Family::Gemini && items.len() % 2 == 1 {
-                &prefix[..prefix.len() - 2]
+                // These generated turns contain one parts array. Its closing
+                // bracket moves when the instruction is appended, regardless
+                // of whether the role field precedes or follows that array.
+                &prefix[..prefix.iter().rposition(|byte| *byte == b']').unwrap()]
             } else { prefix };
             prop_assert!(summary.starts_with(prefix));
             prop_assert!(summary.ends_with(closer.bytes()));
