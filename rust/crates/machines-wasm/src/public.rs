@@ -144,7 +144,7 @@ fn parse_id<T>(
     value: String,
     parse: impl FnOnce(&str) -> Result<T, acyclic_machines::IdentityError>,
 ) -> Result<T, JsValue> {
-    let value = super::normalize_identity(kind.to_owned(), value)?;
+    let value = super::normalize_identity(kind, &value)?;
     parse(&value).map_err(|e| err(e.to_string()))
 }
 fn key(value: String) -> Result<acyclic_machines::IdempotencyKey, JsValue> {

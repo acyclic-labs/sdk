@@ -11,6 +11,32 @@ fn deserialize_uuid<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     admit_uuid(Uuid::deserialize(deserializer)?).map_err(serde::de::Error::custom)
 }
 
+fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_sha1_bytes(bytes).into_uuid()
+}
+
+/// Normalizes a Machines identity, preserving non-nil UUIDs in canonical form.
+/// Other nonempty values use the revision-one SHA-256 domain and caller kind.
+/// Empty values return an identity error.
+pub fn normalize_identity(kind: &str, value: &str) -> Result<String, IdentityError> {
+    if let Ok(parsed) = Uuid::parse_str(value)
+        && !parsed.is_nil()
+    {
+        return Ok(parsed.to_string());
+    }
+    if value.is_empty() {
+        return Err(IdentityError);
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"acyclic-machines-identity-v1\0");
+    digest.update(kind.as_bytes());
+    digest.update([0]);
+    digest.update(value.as_bytes());
+    Ok(uuid_from_digest(digest.finalize().into()).to_string())
+}
+
 macro_rules! uuid_identity {
     ($name:ident, $description:literal) => {
         #[doc = $description]
@@ -38,9 +64,7 @@ macro_rules! uuid_identity {
 
             /// Derives a deterministic, never-nil identity from a domain-separated SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
             pub fn from_digest(digest: [u8; 32]) -> Self {
-                let mut bytes = [0_u8; 16];
-                bytes.copy_from_slice(&digest[..16]);
-                Self(uuid::Builder::from_sha1_bytes(bytes).into_uuid())
+                Self(uuid_from_digest(digest))
             }
 
             /// Returns the canonical 16-byte UUID representation.
@@ -87,6 +111,53 @@ impl MachineId {
 
 #[cfg(test)]
 mod resource_identity_tests {
+    #[test]
+    fn normalization_preserves_revision_one_bytes_and_domains()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (kind, value, expected) in [
+            (
+                "machine",
+                "machine-label",
+                "f505efb2-cd64-5ea0-9974-9ba4f3406d41",
+            ),
+            (
+                "idempotency",
+                "caller-key",
+                "17349194-b4fc-57e4-8d9b-9b394f7ef694",
+            ),
+            (
+                "checkpoint",
+                "checkpoint-label",
+                "35d49ad2-6173-566b-899b-3b9e7ca6dd8f",
+            ),
+            (
+                "operation",
+                "operation-label",
+                "e244134d-f2b2-5427-966f-fed03a393176",
+            ),
+            (
+                "machine",
+                "00000000-0000-0000-0000-000000000000",
+                "1e2580b5-4e09-54f6-8a53-c545d68d48f0",
+            ),
+            ("machine", "λ/東京", "f7b55a84-f196-5927-b8d1-b58c87631e9c"),
+            (
+                "operation",
+                "machine-label",
+                "ce6b2acf-3009-5161-80df-3e82cd99b3ea",
+            ),
+            (
+                "machine",
+                "{01020304-0506-4708-890A-0B0C0D0E0F10}",
+                "01020304-0506-4708-890a-0b0c0d0e0f10",
+            ),
+        ] {
+            assert_eq!(super::normalize_identity(kind, value)?, expected);
+        }
+        assert!(super::normalize_identity("machine", "").is_err());
+        Ok(())
+    }
+
     #[test]
     fn addressing_retains_machine_wire_bytes() -> Result<(), Box<dyn std::error::Error>> {
         let id = super::MachineId::parse("12345678-1234-4234-9234-123456789abc")?;
