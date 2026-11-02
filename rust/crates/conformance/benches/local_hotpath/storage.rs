@@ -1,6 +1,5 @@
 use super::{
     actor_delivery::{Entries, EntryError},
-    calibrate::Floors,
     population::{Fixture, id, key, require_root},
     report::{Measurements, Observation, Quantiles, RawSamples, Result, Terms, emit, ns},
 };
@@ -87,7 +86,6 @@ pub(super) async fn run(
     fixture: &Fixture,
     agents: usize,
     samples: usize,
-    floors: &Floors,
     recovery: &str,
     operations: &[Operation],
 ) -> Result<(bool, acyclic_test_support::scale::Point)> {
@@ -149,7 +147,7 @@ pub(super) async fn run(
             recovery,
         )?;
     }
-    rows.finish(floors)
+    rows.finish()
 }
 
 async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {

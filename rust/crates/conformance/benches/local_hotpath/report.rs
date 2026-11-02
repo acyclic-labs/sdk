@@ -522,6 +522,36 @@ pub(super) fn check_observations() -> Result {
     {
         return Err("family failure lost or qualified its original partial receipts".into());
     }
+    // Exercise the completed production report, including its retained sample
+    // backing. Standalone primitive medians cannot qualify public-path ratios.
+    let mut completed = Vec::new();
+    let (complete, _) = cohort.finish_to(&mut completed)?;
+    let completed: serde_json::Value = serde_json::from_slice(&completed)?;
+    let unknown_floor = |receipt: &serde_json::Value| {
+        receipt["ratio_qualified"] == false
+            && ["floor_ns", "p50_ratio", "p99_ratio"]
+                .into_iter()
+                .all(|field| receipt.get(field) == Some(&serde_json::Value::Null))
+    };
+    if !complete
+        || completed["cohort_completed"] != true
+        || !unknown_floor(&completed)
+        || completed["raw_ns"] != partial["raw_ns"]
+        || completed["original_work_receipts"] != partial["original_work_receipts"]
+    {
+        return Err("completed report qualified a surrogate floor or lost original samples".into());
+    }
+    for field in ["floor_ns", "p50_ratio", "p99_ratio", "ratio_qualified"] {
+        let mut restored = completed.clone();
+        restored[field] = if field == "ratio_qualified" {
+            true.into()
+        } else {
+            1.0.into()
+        };
+        if unknown_floor(&restored) {
+            return Err(format!("surrogate floor negative accepted restored {field}").into());
+        }
+    }
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
         "control": "invalid quantile observations and mismatched floor terms", "result": "rejected",
@@ -916,7 +946,11 @@ impl<'a> Measurements<'a> {
         Ok(())
     }
 
-    pub(super) fn finish(mut self, floors: &super::calibrate::Floors) -> Result<(bool, Point)> {
+    pub(super) fn finish(self) -> Result<(bool, Point)> {
+        self.finish_to(&mut std::io::stdout().lock())
+    }
+
+    fn finish_to(mut self, output: &mut impl Write) -> Result<(bool, Point)> {
         let mut complete = true;
         let mut point = Point {
             agents: u64::try_from(self.agents)?,
@@ -933,18 +967,19 @@ impl<'a> Measurements<'a> {
                     }
                     _ => "the operation adapter did not supply observations",
                 };
-                emit(serde_json::json!({
-                    "schema": 1, "kind": "refused", "operation": operation.name(), "agents": self.agents,
-                    "reason": reason,
-                    "recovery": self.recovery,
-                }))?;
+                emit_to(
+                    output,
+                    serde_json::json!({
+                        "schema": 1, "kind": "refused", "operation": operation.name(), "agents": self.agents,
+                        "reason": reason,
+                        "recovery": self.recovery,
+                    }),
+                )?;
                 continue;
             };
             let terms = row.terms;
             let quantiles = Quantiles::new(&mut row.raw_ns.clone())?;
-            let floor_ns = floors.compose(terms);
-            let timer = floors.timer();
-            emit(RawSamples {
+            emit_to(output, RawSamples {
                 fields: row.evidence(serde_json::json!({
                     "schema": 1, "kind": "operation", "operation": operation.name(),
                     "measurement_label": match operation {
@@ -954,17 +989,13 @@ impl<'a> Measurements<'a> {
                     },
                     "agents": self.agents, "active": 1, "quantiles": quantiles,
                     "cohort_completed": true,
-                    "floor": terms, "floor_ns": floor_ns,
+                    "floor": terms, "floor_ns": null,
                     "guarantee": guarantee(operation),
                     "floor_units": floor_units(terms),
                     "ratio_qualified": false,
-                    "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
-                    "p50_ratio": quantiles.p50_ns / floor_ns,
-                    "p99_ratio": quantiles.p99_ns / floor_ns,
-                    "timer_only_quantiles": timer,
-                    "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
-                    "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
-                    "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
+                    "ratio_qualification": "unknown: no authenticated physical work or matched public-path device cohort; semantic terms and standalone calibration do not qualify a floor",
+                    "p50_ratio": null,
+                    "p99_ratio": null,
                     "work_columns": METRICS,
                     "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
                     "work_observations": row.work.observations,

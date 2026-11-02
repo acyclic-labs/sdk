@@ -217,7 +217,7 @@ fn run() -> Result {
         "population_scope": "initial settled dormant roots; creation samples retain new durable identities; session samples add resident roots",
         "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
-    let floors = calibrate::run(&options.root, options.samples)?;
+    calibrate::run(&options.root, options.samples)?;
     use acyclic_native_runtime::obs::{Metrics, Operations};
     use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -259,7 +259,6 @@ fn run() -> Result {
                     &fixture,
                     agents,
                     options.samples,
-                    &floors,
                     &recovery,
                     &options.operations,
                 )
