@@ -1,6 +1,97 @@
 use super::*;
 use proptest::prelude::*;
 
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[test]
+fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
+    let stock = uncompacted_executor(
+        Model::new("generated".into(), "collection".into(), "1".into())?,
+        Arc::new(ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::new(),
+        input: ModelContent::Text(String::new()),
+        selected_context: None,
+    };
+    for native in [false, true] {
+        for authoritative in [false, true] {
+            let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                let sibling = stock_string_copy("retained sibling", Some(io))?;
+                let sibling_bytes = sibling.capacity() as u64;
+                let mut events = Vec::new();
+                // Generated operands use the original production ledger.
+                for delta in ["first", "second"] {
+                    stock_vec_push(
+                        &mut events,
+                        ModelEvent::Content {
+                            delta: stock_string_copy(delta, Some(io))?,
+                        },
+                        Some(io),
+                    )?;
+                    stock_vec_push(
+                        &mut events,
+                        ModelEvent::Reasoning {
+                            delta: stock_string_copy("ignored reasoning", Some(io))?,
+                        },
+                        Some(io),
+                    )?;
+                }
+                if authoritative {
+                    stock_vec_push(
+                        &mut events,
+                        ModelEvent::MessageCompleted {
+                            text: stock_string_copy("final", Some(io))?,
+                        },
+                        Some(io),
+                    )?;
+                }
+                let mut prior = Vec::new();
+                let result = execution.collect_step_events(&input, 0, events, &mut prior)?;
+                assert_eq!(
+                    result.text,
+                    if authoritative {
+                        "final"
+                    } else {
+                        "firstsecond"
+                    }
+                );
+                assert!(prior.is_empty());
+                assert!(result.calls.is_empty());
+                assert_eq!(result.metadata, Value::Null);
+                assert_eq!(
+                    io.owned_bytes()?,
+                    sibling_bytes + result.text.capacity() as u64
+                );
+                stock_retire_text(result.text, Some(io))?;
+                assert_eq!(io.owned_bytes()?, sibling_bytes);
+                stock_retire_text(sibling, Some(io))?;
+                Ok::<_, Error>(())
+            })
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+            observed.0?;
+            assert_eq!(observed.2, 0);
+            if native {
+                assert_eq!(
+                    observed.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
     use futures::FutureExt as _;
