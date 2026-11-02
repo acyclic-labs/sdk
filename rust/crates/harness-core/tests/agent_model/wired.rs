@@ -947,10 +947,12 @@ async fn admitted_root_after_its_child(
             Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
         };
         let (child_scope, root_scope) = (admission(&own)?, admission(&binding.volume)?);
+        let owner =
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?;
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
+                owner.clone(),
                 host.clone(),
                 issuer.clone(),
                 TurnAdmission::Admitted {

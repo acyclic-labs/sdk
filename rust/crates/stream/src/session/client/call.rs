@@ -184,7 +184,10 @@ impl Client {
     }
 }
 
-fn validate_call(invocation: &Bytes, maximum_reply_bytes: Option<usize>) -> Result<(), StreamError> {
+fn validate_call(
+    invocation: &Bytes,
+    maximum_reply_bytes: Option<usize>,
+) -> Result<(), StreamError> {
     if invocation.is_empty()
         || invocation.len() > crate::MAX_COMMAND_BYTES
         || maximum_reply_bytes == Some(0)
