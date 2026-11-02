@@ -208,6 +208,27 @@ impl CallPath {
         })
     }
 
+    /// A gate publishes the final request to the next admitted hop without
+    /// accepting the call or taking custody of its reply. The target still
+    /// accepts and settles this original caller-owned journal.
+    ///
+    /// Join this step with the gate actor's checkpoint/cursor commit. That
+    /// commit supplies exclusive gate progression; this guard prevents a
+    /// concurrent deny or cancellation from leaving a request dispatched after
+    /// its terminal. The actor must validate the authenticated subject, current
+    /// route, policy and hold before constructing the publication. A target
+    /// must still use [`Self::accept`] before executing external work.
+    ///
+    /// The record is moved unchanged: no payload encoding or copying, reply
+    /// stream, acceptance, extra commit or wait is introduced.
+    #[must_use]
+    pub fn forward(&self, target: &StreamPath, request: AppendRecord) -> Commit {
+        Commit {
+            conditions: self.open(None).collect(),
+            mutations: vec![append(target, request)],
+        }
+    }
+
     /// One chunk from the executor that accepted under `fence`.
     ///
     /// # Errors
@@ -572,3 +593,7 @@ impl Journal {
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod model;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "call/gate_tests.rs"]
+mod gate_tests;
