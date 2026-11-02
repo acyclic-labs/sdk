@@ -1,5 +1,33 @@
 import { expect, test } from "bun:test";
-import { CredentialCache, CredentialSnapshot, credentialProvider, credentialStream, resolveCredential } from "../src/credential.js";
+import { CredentialCache, CredentialSnapshot, credentialProvider, credentialStream, resolveCredential, validateCredential } from "../src/credential.js";
+
+test("opaque admission preserves the canonical Unicode and UTF-8 boundary", async () => {
+  for (const [token, accepted] of [
+    ["\uFEFF", true],
+    ["\u0085", false],
+    ["\u2003", false],
+    ["é".repeat(6144), true],
+    ["é".repeat(6145), false],
+    ["\uD800".repeat(4096), true],
+    ["\uD800".repeat(4097), false],
+    ["a".repeat(12289), false],
+    ["credential\r", false],
+    ["credential\n", false],
+    ["credential\0", false],
+  ] as const) {
+    if (accepted) {
+      validateCredential(token);
+      const request = await resolveCredential(credentialProvider({ token }));
+      expect(request.token()).toBe(token);
+    } else {
+      expect(() => validateCredential(token)).toThrow(TypeError);
+      expect(() => credentialProvider({ token })).toThrow(TypeError);
+    }
+  }
+  for (const value of [undefined, null, 1, {}, new String("credential")]) {
+    expect(() => validateCredential(value)).toThrow(TypeError);
+  }
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

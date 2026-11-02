@@ -11,6 +11,14 @@ fn error(value: VerifyError) -> JsValue {
     error.into()
 }
 
+/// Admit opaque bearer text through the same predicate as native transports.
+/// The shared JavaScript adapter bounds and clears its UTF-8 backing. The
+/// original immutable JavaScript string stays with its caller.
+#[wasm_bindgen(js_name = validCredential)]
+pub fn valid_credential(value: &JsValue) -> bool {
+    acyclic_auth::credential::javascript::valid_credential(value)
+}
+
 /// Encode public signed blocks and a guarded proof with the shared Rust writer.
 /// This does not sign, authenticate or admit a capability. The caller owns and
 /// clears its JavaScript proof and output buffers.
