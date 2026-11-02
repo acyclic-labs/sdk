@@ -187,7 +187,7 @@ pub struct IdempotencyKey(pub String);
 crate::core::ownership::owned_tuple!(IdempotencyKey, (value));
 
 impl IdempotencyKey {
-    /// Creates a bounded non-empty caller retry identity.
+    /// Creates a non-empty caller retry identity without control characters.
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = Self(value.into());
         value.validate()?;
@@ -202,7 +202,7 @@ impl IdempotencyKey {
         Ok(())
     }
 
-    /// Returns the validated string representation.
+    /// Borrows the caller retry identity.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
