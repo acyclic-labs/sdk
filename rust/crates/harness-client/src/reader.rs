@@ -819,12 +819,13 @@ impl Reader {
             // Reclassify only the original request for this resolved intent.
             // Multiple projections keep their strongest admitted priority.
             let inflight = &mut self.inflight;
+            let refused = &self.refused;
             self.demand.want(
                 key,
                 priority,
                 paging,
                 &mut self.next_ticket,
-                |key, priority| inflight.set_priority(key, priority),
+                |key, priority| inflight.set_priority(key, priority) || refused.contains(key),
             );
         }
         for key in self.demand.finish_plan() {
@@ -993,9 +994,7 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.refused.contains(key)
-                || self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied)
-            {
+            if self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied) {
                 continue;
             }
             let id = self.next_id;
@@ -1087,8 +1086,11 @@ impl Reader {
             }
             (_, Outcome::Failed(failure)) => {
                 if failure != Failure::Denied {
-                    self.demand
-                        .restore_paging(&flight.key, std::mem::take(&mut flight.paging));
+                    self.demand.restore_paging(
+                        &flight.key,
+                        std::mem::take(&mut flight.paging),
+                        failure != Failure::Refused,
+                    );
                 }
                 if failure == Failure::Denied {
                     self.denied(flight.key.path());
@@ -1158,7 +1160,8 @@ impl Reader {
             self.demand.remove(&flight.key);
             self.recovered();
         } else {
-            self.demand.restore_paging(&flight.key, flight.paging);
+            self.demand
+                .restore_paging(&flight.key, flight.paging, false);
             self.refuse(flight.key);
         }
     }
@@ -1361,6 +1364,7 @@ impl Reader {
             && let Some(first) = self.refused.iter().next().cloned()
         {
             self.refused.remove(&first);
+            self.demand.set_ready(&first, true);
         }
         self.refused.insert(key);
     }
@@ -1503,7 +1507,9 @@ impl Reader {
     pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
         self.issues.remove(stream);
         for range in OpKey::path_ranges(stream) {
-            self.refused.extract_if(range, |_| true).for_each(drop);
+            for key in self.refused.extract_if(range, |_| true) {
+                self.demand.set_ready(&key, true);
+            }
         }
         self.generation += 1;
     }
@@ -1549,7 +1555,7 @@ impl Reader {
         let Some(flight) = self.inflight.remove(&id) else {
             return false;
         };
-        self.demand.restore_paging(&flight.key, flight.paging);
+        self.demand.restore_paging(&flight.key, flight.paging, true);
         self.cancelled.push(id);
         true
     }
@@ -2556,6 +2562,81 @@ mod reader_tests {
                     )
                 })
             };
+            // Refusal parks the same logical demand at its original rotated
+            // age. Transport recovery and new aliases cannot acknowledge it.
+            let mut refused = Reader::new(policy).unwrap();
+            refused.begin_frame(0);
+            refused.plan(wants());
+            let refused_ops = refused.poll(0);
+            assert_eq!(refused_ops.len(), heads.len());
+            for op in &refused_ops {
+                refused.complete(op.id(), Outcome::Failed(Failure::Refused), 0);
+            }
+            refused.network_changed(true, 1);
+            refused.demand.take_visits();
+            assert!(
+                refused.poll(1).is_empty(),
+                "refusal retried without acknowledgment"
+            );
+            assert_eq!(
+                refused.demand.take_visits(),
+                0,
+                "refused demand returned to ready order"
+            );
+            refused.plan([]);
+            refused.plan(wants());
+            assert!(
+                refused.poll(1).is_empty(),
+                "withdrawn refusal alias bypassed acknowledgment"
+            );
+            assert_eq!(refused.demand.take_visits(), 0);
+            // Acknowledging the parent does not acknowledge independently
+            // refused descendants. Only its captured provider reply resumes.
+            refused.acknowledge_issue(&denied);
+            let acknowledged = refused.poll(1);
+            assert_eq!(acknowledged.len(), 1, "acknowledgment lost original demand");
+            assert!(matches!(&acknowledged[0], Op::Head { stream, .. } if stream == &denied));
+            refused.complete(
+                acknowledged[0].id(),
+                Outcome::Head(heads[&denied].clone()),
+                1,
+            );
+            assert_eq!(
+                refused.cache.record(&denied, 0).unwrap().as_slice(),
+                b"original committed body"
+            );
+            assert!(refused.poll(1).is_empty());
+            refused.demand.take_visits();
+            // Reversing acknowledgment order retains the original admitted
+            // ages rather than creating a new queue or changing fairness.
+            let older = heads.keys().nth(1).unwrap();
+            let newer = heads.keys().nth(2).unwrap();
+            refused.acknowledge_issue(newer);
+            refused.acknowledge_issue(older);
+            let resumed = refused.poll(1);
+            assert_eq!(resumed.len(), 2);
+            assert!(matches!(&resumed[0], Op::Head { stream, .. } if stream == older));
+            assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == newer));
+            assert_eq!(refused.demand.take_visits(), 2);
+
+            // Mutate only the tail of the actual captured provider fact.
+            // Invalid bytes retain the same explicit acknowledgment boundary.
+            let mut invalid = Reader::new(policy).unwrap();
+            invalid.plan([first_want.clone()]);
+            let original = invalid.poll(0);
+            let mut corrupt = heads[&denied].clone();
+            corrupt.tail = 0;
+            invalid.complete(original[0].id(), Outcome::Head(corrupt), 0);
+            assert!(invalid.cache.record(&denied, 0).is_none());
+            invalid.demand.take_visits();
+            assert!(invalid.poll(0).is_empty());
+            assert_eq!(invalid.demand.take_visits(), 0, "invalid head stayed ready");
+            invalid.acknowledge_issue(&denied);
+            let resumed = invalid.poll(0);
+            assert_eq!(resumed.len(), 1, "invalid head lost explicit retry");
+            invalid.complete(resumed[0].id(), Outcome::Head(heads[&denied].clone()), 0);
+            assert!(invalid.cache.record(&denied, 0).is_some());
+
             let mut deadlines = Reader::new(policy).unwrap();
             deadlines.begin_frame(10);
             deadlines.plan([first_want.clone()]);

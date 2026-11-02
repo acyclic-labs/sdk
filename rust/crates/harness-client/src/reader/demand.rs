@@ -1,4 +1,4 @@
-//! One demand owner with maintained ready age order; active requests are absent.
+//! One demand owner with maintained ready age order; active and refused work is absent.
 
 use super::{Demand, OpKey, Paging, Priority};
 use std::{
@@ -21,7 +21,8 @@ struct Entry {
     demand: Demand,
     mark: bool,
     /// Only ready entries belong to the age index. Dispatch keeps the demand
-    /// and its rotated ticket until the original request settles.
+    /// and its rotated ticket until the original request settles. Refusals
+    /// retain that ticket while awaiting the original acknowledgment.
     ready: bool,
 }
 
@@ -60,17 +61,21 @@ impl Demands {
     }
 
     /// A retry keeps the original observations unless a newer plan admitted
-    /// its own, and becomes ready at its rotated age. A withdrawn demand
-    /// cannot be revived by the failed flight.
-    pub(super) fn restore_paging(&mut self, key: &OpKey, paging: Paging) {
+    /// its own. Only a retry becomes ready at its rotated age; a refusal
+    /// retains its observations without entering the ready order. A withdrawn
+    /// demand cannot be revived by the failed flight.
+    pub(super) fn restore_paging(&mut self, key: &OpKey, paging: Paging, retry: bool) {
         if let Some(entry) = self.entries.get_mut(key) {
             if entry.demand.paging.witnesses.is_empty() {
                 entry.demand.paging = paging;
             }
-            if !entry.ready {
-                self.order[class(entry.demand.priority)].insert((entry.demand.ticket, key.clone()));
-                entry.ready = true;
-            }
+            entry.set_ready(key, &mut self.order, retry);
+        }
+    }
+
+    pub(super) fn set_ready(&mut self, key: &OpKey, ready: bool) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.set_ready(key, &mut self.order, ready);
         }
     }
 
@@ -79,7 +84,8 @@ impl Demands {
     }
 
     /// Reclassification reports whether this operation already owns a live
-    /// request, including a newly admitted alias of a withdrawn visible want.
+    /// request or a retained refusal, including a newly admitted alias of a
+    /// withdrawn visible want.
     pub(super) fn want(
         &mut self,
         key: OpKey,
@@ -107,7 +113,7 @@ impl Demands {
             }
             entry.mark = self.mark;
         } else {
-            let active = reclassify(&key, priority);
+            let blocked = reclassify(&key, priority);
             let ticket = *next_ticket;
             *next_ticket += 1;
             self.insert_entry(
@@ -117,7 +123,7 @@ impl Demands {
                     paging,
                     ticket,
                 },
-                !active,
+                !blocked,
             );
         }
     }
@@ -239,11 +245,24 @@ impl Demands {
             .entries
             .get_mut(key)
             .expect("dispatch retains its selected demand");
-        let order = &mut self.order[class(entry.demand.priority)];
-        order.remove(&(entry.demand.ticket, key.clone()));
-        entry.ready = false;
+        entry.set_ready(key, &mut self.order, false);
         entry.demand.ticket = ticket;
         std::mem::take(&mut entry.demand.paging)
+    }
+}
+
+impl Entry {
+    fn set_ready(&mut self, key: &OpKey, order: &mut [BTreeSet<(u64, OpKey)>; 2], ready: bool) {
+        if self.ready != ready {
+            let order = &mut order[class(self.demand.priority)];
+            let aged = (self.demand.ticket, key.clone());
+            if ready {
+                order.insert(aged);
+            } else {
+                order.remove(&aged);
+            }
+            self.ready = ready;
+        }
     }
 }
 
