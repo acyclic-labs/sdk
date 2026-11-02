@@ -170,9 +170,16 @@ impl WireItem {
         // Derive this fixed semantic fact once at ingress, never by decoding
         // the selected history during rendering.
         #[derive(Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        enum Role {
+            User,
+            Model,
+            #[serde(other)]
+            Other,
+        }
+        #[derive(Deserialize)]
         struct Turn<'a> {
-            #[serde(borrow)]
-            role: Option<&'a str>,
+            role: Option<Role>,
             #[serde(borrow)]
             parts: Option<&'a RawValue>,
         }
@@ -180,8 +187,8 @@ impl WireItem {
             let wire = wire?;
             let turn = serde_json::from_str::<Turn<'_>>(wire.get()).ok()?;
             let model = match turn.role? {
-                "model" => true,
-                "user" => false,
+                Role::Model => true,
+                Role::User => false,
                 _ => return None,
             };
             let parts = turn.parts?.get();
