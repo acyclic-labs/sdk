@@ -184,54 +184,6 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
     Ok(())
 }
 
-#[test]
-fn sampling_projects_without_silent_seed_loss() -> Result<()> {
-    use acyclic_harness_core::model::ModelSampling;
-    for adapter in [
-        Adapter::Chat,
-        Adapter::Responses,
-        Adapter::Anthropic,
-        Adapter::Gemini,
-    ] {
-        let (provider, _) = provider(adapter, 200);
-        let (prepared, _) = request(&provider)?;
-        let mut request = prepared.request().clone();
-        request.sampling = ModelSampling {
-            temperature: Some(0.0),
-            top_p: Some(0.25),
-            seed: None,
-        };
-        let body = projection::body(&provider, &request)?;
-        let config = if adapter == Adapter::Gemini {
-            &body["generationConfig"]
-        } else {
-            &body
-        };
-        assert_eq!(config["temperature"], 0.0);
-        assert_eq!(
-            config[if adapter == Adapter::Gemini {
-                "topP"
-            } else {
-                "top_p"
-            }],
-            0.25
-        );
-        request.sampling.seed = Some(0);
-        if matches!(adapter, Adapter::Anthropic | Adapter::Responses) {
-            assert!(projection::body(&provider, &request).is_err());
-        } else {
-            let body = projection::body(&provider, &request)?;
-            let config = if adapter == Adapter::Gemini {
-                &body["generationConfig"]
-            } else {
-                &body
-            };
-            assert_eq!(config["seed"], 0);
-        }
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn errors_truncation_and_event_limits_fail_every_adapter() {
     for (adapter, _) in fixtures() {

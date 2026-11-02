@@ -1,6 +1,7 @@
 pub(crate) mod arguments;
 pub(crate) mod cache;
 mod call;
+mod fields;
 pub(crate) mod gemini;
 mod gemini_results;
 pub(crate) mod image;
@@ -20,6 +21,7 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolResultContent,
     },
 };
+use fields::{Field, Fields};
 pub(crate) use profile::validate as validate_profile;
 use serde_json::{Value, json};
 use wire::{Body, Item, Message};
@@ -264,8 +266,7 @@ pub(crate) fn body_named<'a>(
     let max = provider
         .admitted_capacity()
         .output_reservation(request.max_output_tokens)?;
-    let mut fields = serde_json::Map::new();
-    let map = &mut fields;
+    let mut fields = Fields::default();
     let model = request.model.name.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
@@ -274,57 +275,47 @@ pub(crate) fn body_named<'a>(
         } else {
             model
         };
-    map.insert("model".into(), json!(model));
+    if adapter != Adapter::Gemini {
+        fields.insert(Field::Model, json!(model));
+    }
     match adapter {
         Adapter::Chat => {
-            map.insert("stream".into(), json!(true));
-            map.insert("stream_options".into(), json!({"include_usage":true}));
-            map.insert("max_completion_tokens".into(), json!(max));
+            fields.insert(Field::Stream, json!(true));
+            fields.insert(Field::StreamOptions, json!({"include_usage":true}));
+            fields.insert(Field::MaxCompletionTokens, json!(max));
         }
         Adapter::Responses => {
-            map.insert("include".into(), json!(["reasoning.encrypted_content"]));
-            map.insert("stream".into(), json!(true));
-            map.insert("store".into(), json!(false));
-            map.insert("max_output_tokens".into(), json!(max));
+            fields.insert(Field::Include, json!(["reasoning.encrypted_content"]));
+            fields.insert(Field::Stream, json!(true));
+            fields.insert(Field::Store, json!(false));
+            fields.insert(Field::MaxOutputTokens, json!(max));
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
-                map.remove("max_output_tokens");
-                map.insert(
-                    "instructions".into(),
+                fields.remove(Field::MaxOutputTokens);
+                fields.insert(
+                    Field::Instructions,
                     serde_json::Value::String(text::join(system, "\n\n")),
                 );
-                map.insert("tool_choice".into(), json!("auto"));
-                map.insert("parallel_tool_calls".into(), json!(true));
+                fields.insert(Field::ToolChoice, json!("auto"));
+                fields.insert(Field::ParallelToolCalls, json!(true));
             }
         }
         Adapter::Anthropic => {
-            map.insert("stream".into(), json!(true));
-            map.insert("max_tokens".into(), json!(max));
+            fields.insert(Field::Stream, json!(true));
+            fields.insert(Field::MaxTokens, json!(max));
             if !system.is_empty() {
-                map.insert(
-                    "system".into(),
+                fields.insert(
+                    Field::System,
                     serde_json::Value::String(text::join(system, "\n\n")),
                 );
             }
         }
         Adapter::Gemini => {
-            map.remove("model");
-
-            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
+            fields.insert(Field::GenerationConfig, json!({"maxOutputTokens":max}));
             if !system.is_empty() {
-                let mut part = serde_json::Map::new();
-                part.insert(
-                    "text".into(),
-                    serde_json::Value::String(text::join(system, "\n\n")),
-                );
-                let mut instruction = serde_json::Map::new();
-                instruction.insert(
-                    "parts".into(),
-                    serde_json::Value::Array(vec![serde_json::Value::Object(part)]),
-                );
-                map.insert(
-                    "systemInstruction".into(),
-                    serde_json::Value::Object(instruction),
+                fields.insert(
+                    Field::SystemInstruction,
+                    json!({"parts": [{"text": text::join(system, "\n\n")}]}),
                 );
             }
         }
@@ -333,28 +324,30 @@ pub(crate) fn body_named<'a>(
         profile::project(adapter, profile, &mut fields);
     }
     let sampling = request.sampling;
-    let target = if adapter == Adapter::Gemini {
-        fields.get_mut("generationConfig").and_then(Value::as_object_mut)
-            .ok_or_else(|| invalid("sampling projection failed: generationConfig is absent; recovery: reconstruct the Gemini request"))?
+    if adapter == Adapter::Gemini {
+        let config = fields.get_mut(Field::GenerationConfig).and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid("sampling projection failed: generationConfig is absent; recovery: reconstruct the Gemini request"))?;
+        for (name, value) in [
+            ("temperature", sampling.temperature.map(Value::from)),
+            ("topP", sampling.top_p.map(Value::from)),
+            ("seed", sampling.seed.map(Value::from)),
+        ] {
+            if let Some(value) = value {
+                config.insert(name.into(), value);
+            }
+        }
     } else {
-        &mut fields
-    };
-    for (name, value) in [
-        ("temperature", sampling.temperature.map(Value::from)),
-        (
-            if adapter == Adapter::Gemini {
-                "topP"
-            } else {
-                "top_p"
-            },
-            sampling.top_p.map(Value::from),
-        ),
-        ("seed", sampling.seed.map(Value::from)),
-    ] {
-        if let Some(value) = value {
-            target.insert(name.into(), value);
+        for (field, value) in [
+            (Field::Temperature, sampling.temperature.map(Value::from)),
+            (Field::TopP, sampling.top_p.map(Value::from)),
+            (Field::Seed, sampling.seed.map(Value::from)),
+        ] {
+            if let Some(value) = value {
+                fields.insert(field, value);
+            }
         }
     }
+    fields.freeze();
     let messages_field = match adapter {
         Adapter::Responses => "input",
         Adapter::Gemini => "contents",

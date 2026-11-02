@@ -1,8 +1,9 @@
 //! Projection accepts only the sealed result of the profile file resolver.
+use super::fields::{Field, Fields};
 use crate::{Adapter, invalid};
 use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Reasoning};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 fn prefix_cache_key(prefix: [u8; 32]) -> String {
     let digest = blake3::Hash::from(prefix).to_hex();
@@ -44,17 +45,13 @@ pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Resul
     Ok(())
 }
 
-pub(super) fn project(
-    adapter: Adapter,
-    binding: &ModelProfileBinding,
-    fields: &mut Map<String, Value>,
-) {
+pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &mut Fields) {
     match adapter {
         Adapter::Responses => {
             // Roles share this key because their directives and restrictions
             // append to the conversation instead of replacing its prefix.
             fields.insert(
-                "prompt_cache_key".into(),
+                Field::PromptCacheKey,
                 Value::String(prefix_cache_key(binding.prefix_digest())),
             );
         }
@@ -66,34 +63,28 @@ pub(super) fn project(
             } else {
                 "5m"
             };
-            fields.insert(
-                "cache_control".into(),
-                json!({"type":"ephemeral","ttl":ttl}),
-            );
+            fields.insert(Field::CacheControl, json!({"type":"ephemeral","ttl":ttl}));
         }
         Adapter::Chat | Adapter::Gemini => {}
     }
     match (adapter, binding.reasoning()) {
         (Adapter::Responses, Reasoning::Effort(effort)) => {
-            fields.insert(
-                "reasoning".into(),
-                json!({"effort":effort,"summary":"auto"}),
-            );
+            fields.insert(Field::Reasoning, json!({"effort":effort,"summary":"auto"}));
         }
         (Adapter::Chat, Reasoning::Effort(effort)) => {
-            fields.insert("reasoning_effort".into(), json!(effort));
+            fields.insert(Field::ReasoningEffort, json!(effort));
         }
         (Adapter::Anthropic, Reasoning::Adaptive(effort)) => {
             fields.insert(
-                "thinking".into(),
+                Field::Thinking,
                 json!({"type":"adaptive","display":"summarized"}),
             );
-            fields.insert("output_config".into(), json!({"effort":effort}));
+            fields.insert(Field::OutputConfig, json!({"effort":effort}));
         }
         (Adapter::Gemini, Reasoning::Level(effort)) => {
             // This object was constructed by this same projector, never supplied
             // by a caller. The output reservation remains on its original field.
-            if let Some(Value::Object(config)) = fields.get_mut("generationConfig") {
+            if let Some(Value::Object(config)) = fields.get_mut(Field::GenerationConfig) {
                 config.insert(
                     "thinkingConfig".into(),
                     json!({"thinkingLevel":effort,"includeThoughts":true}),
