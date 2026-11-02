@@ -138,6 +138,36 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let document: MergeDirectoryPlan = serde_json::from_slice(&encoded)?;
     assert_eq!(document, *directory.plan());
     assert_eq!((document.base, document.ours, document.theirs), pins);
+    // Read the producer's persisted clean descriptor through the ordinary
+    // bounded directory/read path, rather than fabricating its wire format.
+    let pinned_staging = unbounded!(staging, head())?;
+    let (clean_page, _clean_allocation) = unbounded!(
+        pinned_staging,
+        list_directory(&format!("{root}/clean"), None, 1)
+    )?;
+    let clean_entry = clean_page
+        .entries
+        .first()
+        .ok_or("clean descriptor missing")?;
+    let clean_path = format!("{root}/clean/{}", clean_entry.name.unicode_text()?);
+    let clean_bytes = unbounded!(pinned_staging, read(&clean_path, 16384))?;
+    let mut clean_document: serde_json::Value = serde_json::from_slice(&clean_bytes)?;
+    assert_eq!(
+        clean_document["version"],
+        serde_json::json!(1),
+        "persisted clean descriptors must declare their format"
+    );
+    let _: MergeCleanFile = serde_json::from_slice(&clean_bytes)?;
+    crate::workspace::check_merge_directory_resolution(&clean_bytes);
+    for version in [0, 2, 255] {
+        clean_document["version"] = version.into();
+        assert!(serde_json::from_value::<MergeCleanFile>(clean_document.clone()).is_err());
+    }
+    clean_document
+        .as_object_mut()
+        .ok_or("clean object")?
+        .remove("version");
+    assert!(serde_json::from_value::<MergeCleanFile>(clean_document).is_err());
     let text = unbounded!(staging, read(text_path, 16384))?;
     assert!(crate::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
