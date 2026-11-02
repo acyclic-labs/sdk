@@ -81,6 +81,17 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
     )
     .await?;
     drop(harness);
+    let harness = open(directory.path()).await?;
+    assert_eq!(
+        harness
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.temperature),
+        Some(0.25)
+    );
+    drop(harness);
+    // Reopening identical source must not reuse an upload identity with a
+    // newly timestamped admission body.
     let mut harness = open(directory.path()).await?;
     let sampling = Sampling {
         temperature: Some(0.25),
