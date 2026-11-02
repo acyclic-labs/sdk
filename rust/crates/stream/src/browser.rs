@@ -268,16 +268,18 @@ impl BrowserStream {
 
     async fn with_retained<T>(
         &self,
-        lookup: impl AsyncFn(&MemoryStream) -> Result<Option<T>, StreamError>,
-    ) -> Result<Option<T>, StreamError> {
+        lookup: impl AsyncFn(&MemoryStream) -> Result<T, StreamError>,
+        retained: impl Fn(&T) -> bool,
+    ) -> Result<T, StreamError> {
         {
             let cache = self.inner.cache.lock().await;
             // Only completed durable replay certifies this cache. A cancelled
             // transaction can leave tentative results in an invalid provider.
-            if cache.valid
-                && let Some(value) = lookup(&cache.provider).await?
-            {
-                return Ok(Some(value));
+            if cache.valid {
+                let value = lookup(&cache.provider).await?;
+                if retained(&value) {
+                    return Ok(value);
+                }
             }
         }
         // Immutable hits need no current observation. Absence still requires
@@ -341,13 +343,28 @@ impl StreamProvider for BrowserStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.with_retained(async |provider| provider.inspect_idempotency_inner(key.clone()).await)
-            .await
+        self.with_retained(
+            async |provider| provider.inspect_idempotency_inner(key.clone()).await,
+            Option::is_some,
+        )
+        .await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
+        }
+        if request.paths.is_empty() && request.children.is_none() && !request.retained.is_empty() {
+            return self
+                .with_retained(
+                    async |provider| provider.capture_heads(&request, true).await,
+                    |view| {
+                        view.retained
+                            .iter()
+                            .all(|selected| selected.record.is_some())
+                    },
+                )
+                .await;
         }
         self.with_provider(async move |provider| provider.capture_heads(&request, true).await)
             .await
@@ -384,6 +401,7 @@ impl StreamProvider for BrowserStream {
                 Err(StreamError::NotFound) => Ok(None),
                 Err(error) => Err(error),
             },
+            Option::is_some,
         )
         .await?
         .ok_or(StreamError::NotFound)

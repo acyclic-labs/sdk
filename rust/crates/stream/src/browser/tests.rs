@@ -37,6 +37,21 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
         .read_commit(receipt.commit_id)
         .await
         .expect("envelope");
+    let retained = crate::HeadsRequest {
+        retained: [crate::RetainedRecord {
+            commit_id: receipt.commit_id,
+            path: request.path.clone(),
+            sequence: receipt.start,
+        }]
+        .into_iter()
+        .collect(),
+        durable_through: None,
+        projection: crate::HeadProjection::History,
+        paths: Default::default(),
+        children: None,
+        limit: 1,
+        at_least: crate::RevisionCut::of(receipt.revision.clone()),
+    };
     let transactions = provider.inner.transactions.get();
     for _ in 0..2 {
         assert_eq!(
@@ -57,8 +72,32 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
             observed.outcome,
             IdempotencyOutcome::Append(AppendOutcome::Committed(receipt.clone()))
         );
+        let view = provider
+            .heads(retained.clone())
+            .now_or_never()
+            .expect("retained record opened a transaction")
+            .expect("retained view");
+        view.validate_for(&retained).expect("original selection");
+        let record = view.retained[0].record.as_ref().expect("retained record");
+        let crate::CommittedMutation::Append(append) = &envelope.mutations[0] else {
+            panic!("original append");
+        };
+        assert_eq!(record, &append.records[0]);
+        assert_eq!(record.value.as_ptr(), append.records[0].value.as_ptr());
     }
     assert_eq!(provider.inner.transactions.get(), transactions);
+
+    let mut mixed = retained.clone();
+    mixed.paths.push(request.path.clone());
+    mixed.limit = 2;
+    let mut current = Box::pin(provider.heads(mixed.clone()));
+    assert!(futures::poll!(current.as_mut()).is_pending());
+    assert!(provider.inner.transactions.get() > transactions);
+    current
+        .await
+        .expect("current and retained view")
+        .validate_for(&mixed)
+        .expect("mixed selection");
 
     let cold = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
@@ -87,7 +126,22 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
     assert!(provider.inner.transactions.get() > transactions);
     assert_eq!(missing.await, Err(StreamError::NotFound));
 
-    for inspect in [false, true] {
+    let mut absent = retained.clone();
+    absent.retained[0].commit_id = CommitId::from_bytes([42; 32]);
+    let transactions = provider.inner.transactions.get();
+    let mut missing = Box::pin(provider.heads(absent.clone()));
+    assert!(futures::poll!(missing.as_mut()).is_pending());
+    assert!(provider.inner.transactions.get() > transactions);
+    let view = missing.await.expect("missing retained publication");
+    view.validate_for(&absent).expect("absent selection");
+    assert!(view.retained[0].record.is_none());
+
+    enum Lookup {
+        Commit,
+        Key,
+        Retained,
+    }
+    for lookup in [Lookup::Commit, Lookup::Key, Lookup::Retained] {
         let tentative = AppendRequest {
             path: StreamPath::new("tentative").expect("path"),
             records: vec!["not committed to IndexedDB".into()],
@@ -110,19 +164,32 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
             receipt
         };
         let transactions = provider.inner.transactions.get();
-        if inspect {
-            assert_eq!(
+        match lookup {
+            Lookup::Key => assert_eq!(
                 provider
                     .inspect_idempotency(tentative.idempotency_key)
                     .await
                     .expect("repair key"),
                 None
-            );
-        } else {
-            assert_eq!(
+            ),
+            Lookup::Commit => assert_eq!(
                 provider.read_commit(receipt.commit_id).await,
                 Err(StreamError::NotFound)
-            );
+            ),
+            Lookup::Retained => {
+                let mut selected = retained.clone();
+                selected.retained[0] = crate::RetainedRecord {
+                    commit_id: receipt.commit_id,
+                    path: tentative.path,
+                    sequence: receipt.start,
+                };
+                let view = provider
+                    .heads(selected.clone())
+                    .await
+                    .expect("repair retained record");
+                view.validate_for(&selected).expect("repaired selection");
+                assert!(view.retained[0].record.is_none());
+            }
         }
         assert!(provider.inner.transactions.get() > transactions);
         assert_eq!(
