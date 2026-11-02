@@ -141,11 +141,12 @@ pub type Pending<'a> = futures::future::LocalBoxFuture<'a, Result<Reply, Unknown
 
 /// Adapter to the ORIGINAL authenticated issuer and its existing durable store.
 ///
-/// Before signing, atomically bind `(issuer, account, operation_key)` to the
-/// request digest. A different digest refuses with `Conflict`; an identical one
-/// returns the retained terminal result without signing again. Retain the exact
-/// accepted certificate or refusal before acknowledging it. Resolve an uncertain
-/// original commit through that store; never mint a replacement result.
+/// Before disclosure, atomically bind `(issuer, account, operation_key)`, the
+/// request digest and the terminal decision in the original transaction. A
+/// different digest refuses with `Conflict`; an identical one returns the
+/// retained result without signing again. Deduplicate concurrent work through
+/// the original keyed owner, without a separate reservation commit. Resolve an
+/// uncertain original commit through that store; never mint a replacement result.
 ///
 /// Both methods retain original caller admission and custody through dispatch.
 /// Source loss must end their wait as `Unknown::Unavailable`, including before
@@ -226,6 +227,7 @@ impl<P: Provider> Client<P> {
             } else {
                 provider.issue(context, request).await
             }?;
+            let now = context.now_unix_millis().map_err(Unknown::Stopped)? / 1000;
             if reply.request_digest != request.digest {
                 return Err(Unknown::InvalidReply);
             }
@@ -245,12 +247,7 @@ impl<P: Provider> Client<P> {
                         return Err(Unknown::InvalidReply);
                     }
                     let certificates = verification
-                        .verify_certificates(
-                            certificates,
-                            &request.issuer,
-                            trust,
-                            context.now_unix_millis().map_err(Unknown::Stopped)? / 1000,
-                        )
+                        .verify_certificates(certificates, &request.issuer, trust, now)
                         .map_err(Unknown::Authority)?;
                     Ok(Outcome::Accepted(certificates))
                 }

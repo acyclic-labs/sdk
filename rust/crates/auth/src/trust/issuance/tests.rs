@@ -338,17 +338,25 @@ impl Provider for Source {
 #[test]
 fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
     block_on(async {
-        for stopped in [false, true] {
+        for reason in [
+            BudgetError::ClockUnavailable,
+            BudgetError::Stopped(Stopped::Cancelled),
+            BudgetError::Stopped(Stopped::Deadline),
+        ] {
             let (_reply, receive) = oneshot::channel();
             let (entered, _ready) = oneshot::channel();
-            let context = if stopped {
-                Context::from_clock(
+            let context = match reason {
+                BudgetError::Stopped(Stopped::Cancelled) => Context::from_clock(
                     1_000_000,
                     futures::future::ready(Stopped::Cancelled),
                     Arc::new(OriginalClock(AtomicU64::new(100_000))),
-                )
-            } else {
-                Context::from_stopped(1_000_000, pending())
+                ),
+                BudgetError::Stopped(Stopped::Deadline) => Context::from_clock(
+                    100_000,
+                    pending(),
+                    Arc::new(OriginalClock(AtomicU64::new(100_000))),
+                ),
+                BudgetError::ClockUnavailable => Context::from_stopped(1_000_000, pending()),
             };
             let mut client = Client::new(
                 Source {
@@ -362,23 +370,16 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                 .issue(&crate::testing::Snapshot::default())
                 .await
                 .err();
-            assert_eq!(
-                error,
-                Some(if stopped {
-                    BudgetError::Stopped(Stopped::Cancelled)
-                } else {
-                    BudgetError::ClockUnavailable
-                })
-            );
+            assert_eq!(error, Some(reason));
             assert!(client.provider.entered.lock().unwrap().is_some());
         }
-        for cause in ["source", "caller", "expiry", "ready-caller"] {
+        for cause in ["source", "caller", "expiry", "deadline", "ready-caller"] {
             let (send, receive) = oneshot::channel();
             let (entered, ready) = oneshot::channel();
             let (cancel, cancelled) = oneshot::channel::<()>();
             let clock = Arc::new(OriginalClock(AtomicU64::new(100_000)));
-            let original = request(8, 0, |_| {});
             let (model, trust) = IssuerModel::new(true);
+            let original = request(8, model.root.minimum_key_epoch(), |_| {});
             let certificate = model.root.certify_request(&model.birth, &original).unwrap();
             // Negative control: this exact certificate is valid at dispatch.
             assert!(
@@ -391,7 +392,11 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                 decision: Decision::Accepted(certificate),
             };
             let context = Context::from_clock(
-                2_000_000,
+                if cause == "deadline" {
+                    200_000
+                } else {
+                    2_000_000
+                },
                 async move {
                     let _ = cancelled.await;
                     Stopped::Cancelled
@@ -418,6 +423,10 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                         clock.0.store(1_000_000, Ordering::SeqCst);
                         assert!(response.take().unwrap().send(reply).is_ok());
                     }
+                    "deadline" => {
+                        clock.0.store(200_000, Ordering::SeqCst);
+                        assert!(response.take().unwrap().send(reply).is_ok());
+                    }
                     _ => {
                         drop(caller.take());
                         assert!(response.take().unwrap().send(reply).is_ok());
@@ -440,6 +449,10 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                     "expiry" => assert!(matches!(
                         outcome,
                         Outcome::Unknown(Unknown::Authority(VerifyError::Time))
+                    )),
+                    "deadline" => assert!(matches!(
+                        outcome,
+                        Outcome::Unknown(Unknown::Stopped(BudgetError::Stopped(Stopped::Deadline)))
                     )),
                     _ => assert!(matches!(outcome, Outcome::Unknown(Unknown::Unavailable))),
                 },

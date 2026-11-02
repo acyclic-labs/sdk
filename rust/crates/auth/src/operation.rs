@@ -185,14 +185,12 @@ impl Context {
         let remaining = self
             .deadline_unix_millis
             .saturating_sub(self.now_unix_millis()?);
-        if remaining == 0 {
-            return Err(Stopped::Deadline.into());
-        }
         Ok(Duration::from_millis(remaining))
     }
 
     /// Read the original custodian's clock, fencing source loss before and
-    /// after the read. An event-only context cannot supply an ambient fallback.
+    /// after the read and enforcing the original absolute deadline even before
+    /// its alarm callback runs. An event-only context cannot supply a fallback.
     ///
     /// # Errors
     /// Refuses a stopped invocation or an unavailable original clock.
@@ -201,6 +199,9 @@ impl Context {
         let clock = self.clock.as_ref().ok_or(BudgetError::ClockUnavailable)?;
         let now = clock.now_unix_millis()?;
         self.check()?;
+        if now >= self.deadline_unix_millis {
+            return Err(Stopped::Deadline.into());
+        }
         Ok(now)
     }
 
