@@ -187,7 +187,9 @@ impl StockExecution<'_> {
         let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if compose_tools {
+        // Summaries retain the selected source, including its existing notices.
+        // Only the transient instruction is appended; tools cannot be invoked.
+        if compose_tools && self.summary.is_none() {
             self.code_tools_notice(&mut context, &tools)?;
         }
         let message_count = context.messages.len();
