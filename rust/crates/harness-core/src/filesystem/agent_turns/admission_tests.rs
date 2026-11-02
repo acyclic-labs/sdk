@@ -132,6 +132,8 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
         });
         let host = FilesystemTurnHost::new(
             stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                .expect("actor binding"),
             filesystem.clone(),
             issuer.clone(),
             TurnAdmission::LocalRoot,

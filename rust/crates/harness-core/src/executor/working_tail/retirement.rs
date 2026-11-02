@@ -15,7 +15,7 @@ impl SteeringHistory {
         range: std::ops::Range<usize>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if !range.is_empty() {
+        if range.start < range.end {
             stock_vec_push(&mut self.ranges, range, io)?;
         }
         Ok(())
@@ -114,7 +114,7 @@ pub(super) fn retire_prefix(
         steering.ranges.retain_mut(|range| {
             range.start = range.start.saturating_sub(count);
             range.end = range.end.saturating_sub(count);
-            !range.is_empty()
+            range.start < range.end
         });
     } else {
         drop(messages.drain(..count));

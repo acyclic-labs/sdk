@@ -198,7 +198,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
                 .is_err()
         );
         let mut tail = prior.clone();
-        let mut steering = working_tail::retirement::SteeringHistory::default();
+        let mut steering = crate::executor::working_tail::retirement::SteeringHistory::default();
         steering.admit(2..4, None)?;
         session
             .retire_working_history(&mut tail, Some(&mut steering))
