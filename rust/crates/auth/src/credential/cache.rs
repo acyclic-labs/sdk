@@ -327,14 +327,16 @@ impl CredentialCache {
             .ok_or(CredentialCacheError::Stale)?;
         if let Ok(snapshot) = &result {
             valid(snapshot, &validity)?;
-            rejected = self.0.rejected.load();
-            if rejected
-                .as_ref()
-                .is_some_and(|rejected| rejected.token() == snapshot.token())
-            {
-                return Err(CredentialCacheError::Rejected);
-            }
             if !flight.published {
+                rejected = self.0.rejected.load();
+                if rejected.as_ref().is_some_and(|rejected| {
+                    crate::crypto::authentication_eq(
+                        rejected.token().as_bytes(),
+                        snapshot.token().as_bytes(),
+                    )
+                }) {
+                    return Err(CredentialCacheError::Rejected);
+                }
                 _retired = (
                     self.0.current.swap(Some(snapshot.clone())),
                     self.0.rejected.swap(None),
@@ -566,6 +568,47 @@ mod tests {
             }
             CredentialCache(inner).invalidate().unwrap();
             self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn refresh_cohort_has_fixed_rejection_work() {
+        use futures::{channel::oneshot, executor::block_on, future::join_all};
+
+        for size in [1, 8, 64] {
+            let (send, receive) = oneshot::channel::<()>();
+            let gate = receive.shared();
+            let cache = CredentialCache::new(
+                move |_| {
+                    let gate = gate.clone();
+                    async move {
+                        gate.await.unwrap();
+                        CredentialSnapshot::new(
+                            "synthetic-cohort".into(),
+                            CredentialRevision::Bytes([1; 32]),
+                            100,
+                        )
+                    }
+                },
+                || CredentialValidity {
+                    now_unix_seconds: 1,
+                    revision: Some(CredentialRevision::Bytes([1; 32])),
+                },
+            );
+            let mut cohort = Box::pin(join_all((0..size).map(|_| cache.resolve())));
+            assert!(cohort.as_mut().now_or_never().is_none());
+            assert_eq!(cache.0.rejected.loads.load(Ordering::Relaxed), 1);
+            send.send(()).unwrap();
+            for result in block_on(cohort) {
+                assert!(result.is_ok());
+            }
+            assert_eq!(cache.0.rejected.loads.load(Ordering::Relaxed), 2);
+            assert!(block_on(cache.resolve()).is_ok());
+            assert_eq!(cache.0.rejected.loads.load(Ordering::Relaxed), 2);
+            // Inject one redundant original observation: the same counter
+            // detects the cost even when it returns no rejected snapshot.
+            drop(cache.0.rejected.load());
+            assert_eq!(cache.0.rejected.loads.load(Ordering::Relaxed), 3);
         }
     }
 
