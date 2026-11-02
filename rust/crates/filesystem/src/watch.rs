@@ -3838,14 +3838,21 @@ impl NativeWatch {
             .collect())
     }
 
-    /// Waits for a settled native batch or a required rescan. This consumes no
-    /// hints and performs no filesystem I/O. Cancellation and permanent producer
-    /// loss wake the same condition and return their original typed failure.
-    pub fn wait_for_changes_with_native_work(
+    /// Waits for retained hints, invalidation or loss of this native source.
+    /// The future retains only the subscription and may outlive the watcher.
+    pub fn changed_with_native_work(
         &self,
         original: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeWatchError> {
-        original.admit(WorkCounters::UNCHARGED)?;
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        let available = self.ensure_arrival_available();
+        let changed = self.subscription().changed_with_native_work(original);
+        async move {
+            available?;
+            changed.await
+        }
+    }
+
+    fn ensure_arrival_available(&self) -> Result<(), NativeWatchError> {
         if let Some(owner) = &self.pending_source_watch {
             return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
         }
@@ -3859,49 +3866,7 @@ impl NativeWatch {
             #[cfg(not(windows))]
             NativeWatchDriver::Adapter(_) => {}
         }
-        let shared = Arc::clone(&self.shared);
-        let fenced = Arc::clone(&self.fenced);
-        let _cancel = original.cancellation().on_cancel(Some(original), move || {
-            let _state = shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            fenced.notify_all();
-        })?;
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        loop {
-            original.admit(WorkCounters::UNCHARGED)?;
-            if state.source_lost {
-                return Err(NativeWatchError::SourceUnavailable);
-            }
-            if state.rescan.is_some() {
-                return Err(NativeWatchError::RescanInProgress);
-            }
-            #[cfg(target_os = "linux")]
-            let settled = !state.delivering;
-            #[cfg(not(target_os = "linux"))]
-            let settled = true;
-            if settled && state.has_changes(self.queued.load(Ordering::Acquire)) {
-                return Ok(());
-            }
-            state = self
-                .fenced
-                .wait(state)
-                .map_err(|_| NativeWatchError::StatePoisoned)?;
-        }
-    }
-
-    /// Waits for retained hints, invalidation or loss of this native source.
-    /// The future retains only the subscription and may outlive the watcher.
-    pub fn changed_with_native_work(
-        &self,
-        original: &crate::NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
-        self.subscription().changed_with_native_work(original)
+        Ok(())
     }
 
     pub(crate) fn subscription(&self) -> NativeWatchSubscription {

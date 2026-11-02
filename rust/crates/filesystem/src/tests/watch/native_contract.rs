@@ -169,9 +169,19 @@ pub(super) fn cookie_is_hidden(held: bool) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-#[test]
-fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retirement()
+#[tokio::test]
+async fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::future::Future as _;
+    use std::task::{Context, Waker};
+
+    struct Wakes(AtomicUsize);
+    impl std::task::Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     let mut fixture = fixture(true)?;
     let original = native_watch_work()?;
     let file = fixture.directory.path().join("arrival");
@@ -185,7 +195,7 @@ fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retiremen
     // is entered. Both orderings retain the same batch, without a fence write.
     std::fs::write(&file, b"first")?;
     let before = original.receipt();
-    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    fixture.watch.changed_with_native_work(&original).await?;
     let after = original.receipt();
     assert_eq!(
         before.backend_read_operations,
@@ -201,13 +211,13 @@ fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retiremen
     // The original fence settles delivery before the arrival observer exists.
     std::fs::write(&file, b"second")?;
     fixture.watch.fence()?;
-    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    fixture.watch.changed_with_native_work(&original).await?;
     assert_notice(&poll(&mut fixture.watch)?, &expected, &fixture.excluded);
     baseline(&mut fixture.watch)?;
 
     let renamed = fixture.directory.path().join("renamed");
     std::fs::rename(&file, &renamed)?;
-    fixture.watch.wait_for_changes_with_native_work(&original)?;
+    fixture.watch.changed_with_native_work(&original).await?;
     let batch = poll(&mut fixture.watch)?;
     match batch {
         WatchBatch::Changes { changes, .. } => assert!(changes.iter().any(
@@ -224,47 +234,51 @@ fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_retiremen
     let cancellation = CancellationToken::new();
     let waiting = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    std::thread::scope(|scope| {
-        let (entered, entering) = std::sync::mpsc::channel();
-        let watch = &fixture.watch;
-        let waiter = scope.spawn(move || {
-            entered.send(()).expect("observer entry receiver");
-            watch.wait_for_changes_with_native_work(&waiting)
-        });
-        entering.recv().expect("observer entry producer");
-        cancellation.cancel();
-        assert!(matches!(
-            waiter.join().expect("arrival observer"),
-            Err(NativeWatchError::Cancelled(_))
-        ));
-    });
+    let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::clone(&wakes));
+    let mut cancelled = std::pin::pin!(fixture.watch.changed_with_native_work(&waiting));
+    assert!(
+        cancelled
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+    cancellation.cancel();
+    assert_ne!(wakes.0.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        cancelled.await,
+        Err(NativeWatchError::Cancelled(_))
+    ));
 
     #[cfg(target_os = "linux")]
-    std::thread::scope(|scope| {
-        let (entered, entering) = std::sync::mpsc::channel();
-        let watch = &fixture.watch;
-        let original = &original;
-        let waiter = scope.spawn(move || {
-            entered.send(()).expect("observer entry receiver");
-            watch.wait_for_changes_with_native_work(original)
-        });
-        entering.recv().expect("observer entry producer");
+    {
+        let before = wakes.0.load(Ordering::Relaxed);
+        let mut retired = std::pin::pin!(fixture.watch.changed_with_native_work(&original));
+        assert!(
+            retired
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(wakes.0.load(Ordering::Relaxed), before);
         let NativeWatchDriver::Source(source) = &fixture.watch.watcher else {
             panic!("the held fixture must retain its native producer");
         };
         // Retire the actual original producer; no replacement error or timer.
         source
-            .stop_with_work(&mut crate::NativeMaterializationWork::clone(original))
+            .stop_with_work(&mut crate::NativeMaterializationWork::clone(&original))
             .expect("native producer retirement");
+        assert!(wakes.0.load(Ordering::Relaxed) > before);
         assert!(matches!(
-            waiter.join().expect("arrival observer"),
+            retired.await,
             Err(NativeWatchError::SourceUnavailable)
         ));
         // The terminal state remains observable after its first notification.
         assert!(matches!(
-            watch.wait_for_changes_with_native_work(original),
+            fixture.watch.changed_with_native_work(&original).await,
             Err(NativeWatchError::SourceUnavailable)
         ));
-    });
+    }
     Ok(())
 }
