@@ -183,10 +183,9 @@ impl FollowFilter {
             let body = crate::AppendRecord {
                 value: record.value,
                 headers: record.headers,
-            };
-            let body = body
-                .retain_changes(|key| self.matches_entry(key, &body.headers))?
-                .ok_or(StreamError::InvalidArgument)?;
+            }
+            .retain_changes(|key, headers| self.matches_entry(key, headers))?
+            .ok_or(StreamError::InvalidArgument)?;
             record.value = body.value;
             record.headers = body.headers;
         }
@@ -412,7 +411,7 @@ mod tests {
                     value: record.value,
                     headers: record.headers,
                 }
-                .retain_changes(|key| filter.matches_entry(key, &headers))?
+                .retain_changes(|key, _| filter.matches_entry(key, &headers))?
                 .ok_or(StreamError::InvalidArgument)?;
                 record.value = body.value;
                 record.headers = body.headers;
