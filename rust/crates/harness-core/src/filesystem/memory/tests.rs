@@ -631,7 +631,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
         let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
         let (content, _bytes, _retained) = context.read_tool_path("notes/one.txt", Some(&source.generation), None).await?;
-        assert!(source.matches_content(&content));
+        assert!(source.path_selection().matches_content(&content));
+        assert_eq!(source.byte_length, content.descriptor().byte_length());
         let mut complete = crate::tool::ToolResult { value: json!({"file":{"content":content},"text":"one"}) };
         let pinned = ToolInvocation { arguments: json!({"path":"notes/one.txt","version":version}), ..invocation.clone() };
         read.projection.project(&pinned, &complete, None)?;
