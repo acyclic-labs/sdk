@@ -194,13 +194,8 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let preparation = self.resolve_model_request(
-            journal,
-            input,
-            (step, prior_messages, purpose),
-            request,
-            phase,
-        );
+        let preparation =
+            self.resolve_model_request(journal, input, (step, prior_messages, purpose), request);
         let request = if started {
             preparation.await?
         } else {
@@ -278,7 +273,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
         turn: (u32, &[ModelMessage], ModelPurpose),
         retained_request: Option<crate::model::PreparedModelRequest>,
-        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (step, prior_messages, purpose) = turn;
         let mut request = match retained_request {
@@ -297,7 +291,7 @@ impl StockExecution<'_> {
                 recorded
             }
             None if purpose == ModelPurpose::Response => {
-                self.prepared_response(journal, input, step, prior_messages, phase)
+                self.prepared_response(journal, input, step, prior_messages)
                     .await?
             }
             None => self.prepare_request(input, step, prior_messages).await?,

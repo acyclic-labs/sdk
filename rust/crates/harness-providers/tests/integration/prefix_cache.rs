@@ -2,6 +2,8 @@
 //! byte-exact extension of the request before it, across a tool call, a
 //! tools.changed delta, a waking notice and a fork whose child continues and
 //! forks a grandchild of its own, and a history window that advances a page.
+//! Then the window kernel: an overflow backstop keeps the header bytes, and
+//! the turn's next step extends the evicted request.
 //!
 //! The run is the shared hosting composition (one [`Bound`] over in-memory
 //! streams and objects, the stock preset's executors) with each provider
@@ -11,7 +13,7 @@ use super::TestResult;
 use acyclic_harness::{
     agent::{AgentId, AgentPath, InboxRecord, IntentId, Message, Sender},
     approvals::ApprovalPolicy,
-    context::{CompactionPolicy, ModelContextCapacity},
+    context::{CompactionPolicy, ModelContextCapacity, ThresholdCompaction},
     contract::{Capabilities, capability},
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef, wire::Notice},
     executor::Executor,
@@ -40,6 +42,13 @@ use std::{
     time::Duration,
 };
 
+/// The backstop marker's opening bytes.
+const MARKER: &[u8] = b"[context backstop:";
+
+fn holds(body: &[u8], needle: &[u8]) -> bool {
+    body.windows(needle.len()).any(|window| window == needle)
+}
+
 /// One recorded generation request: the agent that sent it and its exact body.
 struct Sent {
     agent: &'static str,
@@ -47,9 +56,11 @@ struct Sent {
 }
 
 /// Scripted replies in request order, then a plain answer for any later turn.
+/// Counts are 32 tokens until a per-byte weight is scripted.
 struct Scripted {
     path: &'static str,
     state: Mutex<(&'static str, VecDeque<Step>, Vec<Sent>)>,
+    weight: std::sync::atomic::AtomicU64,
 }
 
 impl Scripted {
@@ -59,7 +70,11 @@ impl Scripted {
 
     fn reply(&self, request: HttpRequest) -> acyclic_harness::Result<Bytes> {
         if request.url.ends_with("/count") {
-            return Ok(Bytes::from_static(br#"{"input_tokens":32}"#));
+            let tokens = match self.weight.load(Ordering::SeqCst) {
+                0 => 32,
+                weight => request.body.len() as u64 * weight,
+            };
+            return Ok(Bytes::from(format!(r#"{{"input_tokens":{tokens}}}"#)));
         }
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
@@ -206,7 +221,14 @@ fn executors(
             .executors(
                 (model.model().clone(), model),
                 tools,
-                (limits, CompactionPolicy::Disabled),
+                (
+                    limits,
+                    // Usable: 2^20 - 1024 tokens.
+                    CompactionPolicy::Threshold(ThresholdCompaction {
+                        response_reserve_tokens: 1024,
+                        recent_tokens: 1,
+                    }),
+                ),
                 Arc::new(Tasks(bindings)),
             )
             .with_profiles(profiles()?),
@@ -321,7 +343,7 @@ fn extends(family: &str, what: &str, earlier: &[u8], later: &[u8]) -> TestResult
     .into())
 }
 
-async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
+async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]) -> TestResult {
     let transport = Arc::new(Scripted {
         path,
         state: Mutex::new((
@@ -350,6 +372,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
             ]),
             Vec::new(),
         )),
+        weight: 0.into(),
     });
     let model = Arc::new(resolve(adapter, transport.clone())?);
     let changing = Arc::new(Changing {
@@ -494,6 +517,26 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     }
 
     let sent = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
+    // Near, then (about 1.2M of 1M usable tokens) over, the window, each
+    // turn with a tool call. The irreducible set stays far inside it.
+    for (name, weight) in [("m12", 20), ("m13", 40)] {
+        transport.weight.store(weight, Ordering::SeqCst);
+        transport
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .1
+            .extend([program(name, "3 + 3"), text("filled")]);
+        agents
+            .send(
+                &root,
+                &user(),
+                &message(&root, name, "Fill the window").await?,
+            )
+            .await?;
+        agents.drain(&root).await?;
+    }
+    let tight = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     let bodies = |agent| -> Vec<&Bytes> {
         sent.iter()
             .filter(|sent| sent.agent == agent)
@@ -547,17 +590,52 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     reshaped.truncate(reshaped.len() - 1);
     reshaped.extend_from_slice(b",\"after\":0}");
     assert!(departure(&reshaped, parent[1]).is_some());
+
+    let tight: Vec<&Bytes> = tight.iter().map(|sent| &sent.body).collect();
+    let [near, before, evicted, continued] = tight[..] else {
+        return Err(format!("{family}: {} requests near the window", tight.len()).into());
+    };
+    // Within the window nothing is evicted.
+    assert!(
+        !holds(before, MARKER),
+        "{family}: evicted within the window"
+    );
+    extends(family, "the step near the window", near, before)?;
+    // The backstop replaces the oldest messages with its marker: the bytes
+    // before the message array stay cached, and the turn's next step extends
+    // the evicted request.
+    assert!(
+        holds(evicted, MARKER),
+        "{family}: the backstop never evicted"
+    );
+    let start = before
+        .windows(messages.len())
+        .position(|window| window == messages)
+        .ok_or_else(|| format!("{family}: no message array"))?
+        + messages.len();
+    let kept = departure(before, evicted).unwrap_or(before.len());
+    assert!(
+        kept >= start,
+        "{family}: the backstop rewrote the header at byte {kept} (messages at {start})"
+    );
+    extends(family, "the step after the backstop", evicted, continued)?;
     Ok(())
 }
 
 #[tokio::test]
 async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
-    run(Adapter::Anthropic, "messages", "anthropic").await
+    run(
+        Adapter::Anthropic,
+        "messages",
+        "anthropic",
+        b"\"messages\":[",
+    )
+    .await
 }
 
 #[tokio::test]
 async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
-    run(Adapter::Responses, "responses", "responses").await
+    run(Adapter::Responses, "responses", "responses", b"\"input\":[").await
 }
 
 #[tokio::test]
@@ -566,11 +644,12 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         Adapter::Gemini,
         "models/model:streamGenerateContent",
         "gemini",
+        b"\"contents\":[",
     )
     .await
 }
 
 #[tokio::test]
 async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
-    run(Adapter::Chat, "chat/completions", "chat").await
+    run(Adapter::Chat, "chat/completions", "chat", b"\"messages\":[").await
 }
