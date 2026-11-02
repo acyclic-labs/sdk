@@ -15,6 +15,7 @@ pub mod javascript;
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
 mod sealed;
+mod transport;
 mod unique;
 #[cfg(not(target_arch = "wasm32"))]
 pub use prepared::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};

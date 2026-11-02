@@ -750,9 +750,9 @@ pub(super) fn creation_commit(
         {
             return Err(FsError::HandleAllocationFailed);
         }
-        let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<
+        let control_bytes = acyclic_auth::operation::bytes_owner_allocation_bytes::<
             crate::kernel::Owned<Vec<u8>>,
-        >()?;
+        >() as u64;
         let mut control = allocation.work().claim(
             control_bytes,
             u64::from((control_bytes) != 0),

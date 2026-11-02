@@ -6,13 +6,6 @@ use crate::storage::ObjectId;
 use std::mem::size_of;
 use thiserror::Error;
 
-pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
-    let (layout, _) = std::alloc::Layout::new::<std::sync::atomic::AtomicUsize>()
-        .extend(std::alloc::Layout::new::<T>())
-        .map_err(|_| WorkError::Overflow)?;
-    Ok(usize_to_u64(layout.pad_to_align().size()))
-}
-
 /// Tracks live and reserved logical allocation bytes. Promotion retains this
 /// same ledger when a value crosses an owned asynchronous boundary.
 #[derive(Debug, Default)]
