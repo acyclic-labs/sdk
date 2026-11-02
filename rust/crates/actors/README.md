@@ -83,6 +83,15 @@ new invocation instead of replay. Retry an uncertain sealed publication with
 its original key. Physical retention remains owned by Streams. The persisted
 format is version one, with no migration path or separate queue service.
 
+The browser host projects this same decoder as `WasmActorFailure.decode`,
+using the selected child path and its canonical Streams `Record` bytes.
+`WasmActorHost.failuresPath` selects the ordinary page root, and
+`prepareDisposition` returns a canonical Streams `CommitRequest` without
+submitting it. The host checks that the failure belongs to its admitted Actor.
+Submit through the original authenticated Streams owner and retain the exact
+request bytes and key through an unknown outcome. No DLQ transport, second
+decoder or JavaScript failure format is introduced.
+
 Delivery also returns a lost claim, changed admission cut or refused checkpoint
 as `Conflict`, releasing this placement. It does not claim another epoch or
 invoke the handler again within that delivery. A new placement or explicit

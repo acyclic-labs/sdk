@@ -184,6 +184,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     assert_eq!(failed.input(&captured)?, *ticket.record());
     assert!(matches!(
         store.prepare_disposition(
+            &address,
             &failed,
             FailureDisposition::Replay(&captured),
             key("terminal-failure/replay")?

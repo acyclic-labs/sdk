@@ -162,12 +162,36 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         "foreign selection cannot authorize disposition"
     );
     let before = provider.requests();
-    let replay = store.prepare_disposition(
+    let limits = RuntimeLimits::new(1, 1)?;
+    let host = crate::hosting::Host::new(
+        Store::new(provider.clone(), state_root()?),
+        owner.clone(),
+        Arc::new(crate::conformance::Package::new()?),
+        Arc::new(SystemClock),
+        limits,
+    );
+    let foreign_host = crate::hosting::Host::new(
+        Store::new(provider.clone(), state_root()?),
+        actor("another-failure-owner")?,
+        Arc::new(crate::conformance::Package::new()?),
+        Arc::new(SystemClock),
+        limits,
+    );
+    assert!(matches!(
+        foreign_host.prepare_disposition(
+            &failed,
+            FailureDisposition::Purge,
+            key("failure/foreign-host")?,
+        ),
+        Err(Error::Invalid(_))
+    ));
+    let replay = host.prepare_disposition(
         &failed,
         FailureDisposition::Replay(&captured),
         key("failure/replay")?,
     )?;
     let purge = store.prepare_disposition(
+        &owner,
         &failed,
         FailureDisposition::Purge,
         key("failure/purge-race")?,
@@ -209,7 +233,12 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let foreign = Store::new(provider.clone(), StreamPath::new("another/actors")?);
     assert!(
         foreign
-            .prepare_disposition(&failed, FailureDisposition::Purge, key("failure/foreign")?)
+            .prepare_disposition(
+                &owner,
+                &failed,
+                FailureDisposition::Purge,
+                key("failure/foreign")?
+            )
             .is_err()
     );
     // Another failed input can be purged without reading its retained body.
@@ -243,8 +272,12 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         return Err("missing second failed input".into());
     };
     let before = provider.requests();
-    let purge =
-        store.prepare_disposition(&second, FailureDisposition::Purge, key("failure/purge")?)?;
+    let purge = store.prepare_disposition(
+        &owner,
+        &second,
+        FailureDisposition::Purge,
+        key("failure/purge")?,
+    )?;
     assert_eq!(
         provider.requests().since(before).data(),
         0,

@@ -318,19 +318,22 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
-    /// Resolve an exact selected failure once, without rereading heads or live
-    /// resources. Replay appends the original value/headers and owner activation
-    /// in the SAME commit as its terminal. A stale competing disposition conflicts.
+    /// Resolve an exact selected failure for the supplied Actor once, without
+    /// rereading heads or live resources. Replay appends the original value/headers
+    /// and owner activation in the SAME commit as its terminal. A stale competing
+    /// disposition conflicts.
     /// Retry the sealed publication after an unknown acknowledgement; never create
     /// a fresh intent to recover the original attempt.
     pub fn prepare_disposition(
         &self,
+        actor: &crate::addressing::ActorReference,
         failed: &FailedDelivery,
         disposition: FailureDisposition<'_>,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
-        let actor = self.actor(&failed.state)?;
-        if location(&failed.state, failed.revision)? != failed.path {
+        if self.path(actor)? != failed.state
+            || location(&failed.state, failed.revision)? != failed.path
+        {
             return Err(Error::Invalid("foreign failed-input path"));
         }
         let (resolution, replay) = match disposition {
@@ -376,7 +379,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }],
                 },
             })?;
-            prepared.join(self.activation(&actor))?;
+            prepared.join(self.activation(actor))?;
         }
         Ok(prepared)
     }
