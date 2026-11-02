@@ -274,9 +274,14 @@ mod tests {
         // close loses priority the attempted console read fails differently.
         input.signal()?;
         assert_eq!(
-            console_read(input.event.as_raw_handle() as usize, &closed, &mut [0; 1], None)
-                .unwrap_err()
-                .kind(),
+            console_read(
+                input.event.as_raw_handle() as usize,
+                &closed,
+                &mut [0; 1],
+                None
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::NotConnected,
         );
         Ok(())

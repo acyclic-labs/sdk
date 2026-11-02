@@ -430,7 +430,7 @@ mod tests {
                 tty.reader.as_raw_handle() as usize,
                 &tty.closed,
                 &mut [0; 24],
-                Instant::now() + Duration::from_secs(5),
+                Some(Instant::now() + Duration::from_secs(5)),
             );
             assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
             // Removing only the published event fails that same close oracle
@@ -441,7 +441,7 @@ mod tests {
                     tty.reader.as_raw_handle() as usize,
                     &unpublished,
                     &mut [0; 24],
-                    Instant::now() + Duration::from_millis(1),
+                    Some(Instant::now() + Duration::from_millis(1)),
                 )?,
                 0
             );
