@@ -65,7 +65,7 @@ const args = ["--workspace", workspace, "--settings-root", settings, "--catalog"
 async function run(replay) {
   const env = { ...process.env, HOME: settings, USERPROFILE: settings, CODEX_HOME: join(settings, "codex-home"),
     LOCALAPPDATA: join(settings, "AppData/Local"), APPDATA: join(settings, "AppData/Roaming"),
-    XDG_DATA_HOME: settings, OPENAI_API_KEY: "", GRAPHCODER_MODEL: "" };
+    XDG_DATA_HOME: settings, OPENAI_API_KEY: "", ACYCLIC_MODEL: "" };
   const command = mode === "prompt" ? [...args, "-p", "qualify final answer"] : [...args, "--input-format", "jsonl"];
   const child = spawn(binary, command, { env, cwd: workspace, windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"], signal: AbortSignal.timeout(8000), killSignal: "SIGKILL" });

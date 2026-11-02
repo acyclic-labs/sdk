@@ -22,7 +22,7 @@ A reconnect resumes after the last emitted record; consumers deduplicate by
 source stream and sequence. Pages and transport credit bound memory, not the
 total history or session count. EOF, cancellation and follow delivery are events.
 
-`graphcoder sessions` and `graphcoder history` expose the same bounded page
+`acyclic sessions` and `acyclic history` expose the same bounded page
 request: `--page-size` controls rows and `--page-bytes` controls encoded reply
 credit. Both default to the shared client's page settings. Return `--cursor`
 unchanged to continue. If one row and its continuation exceed credit, the query

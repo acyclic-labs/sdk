@@ -1,12 +1,12 @@
 # Headless event output
 
-`graphcoder exec` uses the ordinary conversation driver and authenticated session.
+`acyclic exec` uses the ordinary conversation driver and authenticated session.
 `--output-format jsonl` projects its original streams and execution journals.
 There is no separate execution history or headless server.
 
 ```sh
-graphcoder --operation review-17 --output-format jsonl \
-  --event-cursor review-17.cursor.json exec 'Review the selected changes'
+acyclic exec --operation review-17 --output-format jsonl \
+  --event-cursor review-17.cursor.json 'Review the selected changes'
 ```
 
 Select the same session when resuming, using its original connection and
@@ -109,8 +109,8 @@ validation and complete serialization; a rejected result preserves the previous
 artifact. This is final-result validation. Provider-native constrained generation
 requires the selected provider's own enforcement contract.
 
-`graphcoder sessions` reads one bounded page of the selected agent's direct
-children through `children_page`. `graphcoder history` seeks directly to the
+`acyclic sessions` reads one bounded page of the selected agent's direct
+children through `children_page`. `acyclic history` seeks directly to the
 newest compact turn summaries. Its opaque `next` continuation visits older turns
 under the same frozen opening cut; a fresh initial query includes new appends.
 Pass either continuation unchanged using `--cursor`. Select and follow only

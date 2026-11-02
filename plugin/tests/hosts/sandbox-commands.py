@@ -125,7 +125,6 @@ def main():
     parser.add_argument('--inside')
     parser.add_argument('--host', choices=['codex', 'pi'])
     parser.add_argument('--binary')
-    parser.add_argument('--graphcoder')
     parser.add_argument('--native')
     parser.add_argument('--package')
     parser.add_argument('--scratch')
@@ -134,7 +133,7 @@ def main():
     if args.inside:
         inside(args.inside)
         return
-    assert all([args.host, args.binary, args.graphcoder, args.native, args.package, args.scratch])
+    assert all([args.host, args.binary, args.native, args.package, args.scratch])
     assert not args.pi_sandbox_codex or args.host == 'pi'
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='plugin-sandbox-', dir=args.scratch) as fixture:
@@ -160,7 +159,7 @@ def main():
                 path.mkdir(parents=True)
                 owner_env[name] = str(path)
             owner = subprocess.Popen(['node', str(Path(__file__).with_name('workspace-owner.mjs')),
-                                      args.graphcoder, str(workspace), str(state), str(root)],
+                                      args.binary, str(workspace), str(state), str(root)],
                                      cwd=workspace, env=owner_env, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=owner_log, text=True)
             try:
