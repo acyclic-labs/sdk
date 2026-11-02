@@ -208,27 +208,79 @@ mod tests {
     #[tokio::test]
     async fn acyclic_files_use_the_real_conditional_publisher_and_pinned_reader()
     -> crate::Result<()> {
+        use crate::conversation::{ContentPublisher, VolumeClass, VolumeOwner, VolumeRef};
+        use crate::core::{AggregateKind, Authority, AuthorityRoot};
+        use crate::filesystem::{
+            FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
+        };
         use crate::{
             Capabilities, OperationId,
             conversation::{Limits, VolumeOperation},
-            runtime::{Bindings, RuntimeScope, ToolContext},
+            runtime::{Bindings, ContentBindings, RuntimeScope, ToolContext},
             tool::ToolInvocation,
         };
+        use acyclic_fs::access::{Action, Capability};
         use std::sync::Arc;
-        let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
-        let content = storage.content_bindings();
+        let agent = crate::AgentId::new();
+        let provider = crate::resources::ProviderRef::new(
+            "a1".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let host = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+        )?);
+        let volume = VolumeRef::new(
+            provider,
+            "files".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        // Deletion is explicitly admitted. A volume write grant alone retains
+        // its original Create/Write ceiling and cannot authorize deletion.
+        let filesystem = Capability::whole_volume(
+            None,
+            &[
+                Action::List,
+                Action::Read,
+                Action::ReadHistory,
+                Action::Create,
+                Action::Write,
+                Action::Delete,
+            ],
+        )
+        .to_scope_label()
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let grants = Capabilities::new([
-            content
-                .volume
-                .capability(VolumeOperation::Read, &mut None)?,
-            content
-                .volume
-                .capability(VolumeOperation::Write, &mut None)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+            filesystem,
             "tool:call:read".into(),
             "tool:call:write".into(),
             "tool:call:remove".into(),
         ]);
+        let issuer = AuthorityRoot::new(
+            "a1",
+            [43; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "a1".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
+        let verifier = issuer.verifier(&mut None)?;
+        let publisher =
+            FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 65536, None)?;
+        let content = ContentBindings {
+            volume,
+            reader: FilesystemContentVerifier::new(host, &verifier, &scope, 65536, None)?,
+            writer: Some(publisher.clone()),
+        };
         let task = Arc::new(
             Bindings {
                 scope: RuntimeScope::new(
@@ -262,6 +314,10 @@ mod tests {
             try { await write('file.txt', 'wrong', 'absent'); throw new Error('create replaced a file'); }
             catch (error) { if (!(error instanceof ConflictError)) throw error; }
             const absent = await read('missing.txt');
+            await write('denied.txt', 'preserved', 'any');
+            try { await remove('denied.txt', 'any'); throw new Error('write grant authorized deletion'); }
+            catch (error) { if (!(error instanceof DeniedError)) throw error; }
+            if ((await read('denied.txt')).text() !== 'preserved') throw new Error('denied removal changed content');
             const removeVersion = await write('remove.txt', 'old', 'any');
             const retained = await read('remove.txt');
             await write('remove.txt', 'new', 'any');
@@ -370,11 +426,31 @@ mod tests {
                     if invocation.arguments["selection"]["kind"] == "directory" {
                         directory_pages += 1;
                     }
-                    let context = ToolContext::new(
-                        task.clone(),
-                        invocation.operation_id,
-                        &invocation.call_id,
-                    )?;
+                    let acting = if name == "remove" && invocation.arguments["path"] == "denied.txt"
+                    {
+                        Arc::new(
+                            task.scoped(
+                                Capabilities::new([
+                                    publisher
+                                        .volume()
+                                        .capability(VolumeOperation::Read, &mut None)?,
+                                    publisher
+                                        .volume()
+                                        .capability(VolumeOperation::Write, &mut None)?,
+                                    "tool:call:remove".into(),
+                                ]),
+                                Limits {
+                                    file_bytes: 65536,
+                                    render_bytes: 4096,
+                                    ..Limits::default()
+                                },
+                            )?,
+                        )
+                    } else {
+                        task.clone()
+                    };
+                    let context =
+                        ToolContext::new(acting, invocation.operation_id, &invocation.call_id)?;
                     let recovering =
                         name == "remove" && invocation.arguments["path"] == "recovery.txt";
                     let reply = match tool
@@ -384,22 +460,23 @@ mod tests {
                     {
                         Ok(result) => {
                             if recovering {
-                                storage
+                                publisher
                                     .stage(
                                         OperationId::new(),
                                         "recovery.txt",
                                         b"later",
                                         "text/plain",
                                         "recovery.txt",
-                                    )
+                                        crate::conversation::ContentAccess::default(),
+                                    )?
                                     .await?;
-                                let generation =
-                                    storage.list_private_directory("", None, None, 1).await?.0;
                                 let context = ToolContext::new(
                                     task.clone(),
                                     invocation.operation_id,
                                     &invocation.call_id,
                                 )?;
+                                let before_file =
+                                    context.read_tool_path("recovery.txt", None, None).await?.0;
                                 let work = acyclic_fs::NativeMaterializationWork::new(
                                     acyclic_fs::performance::work_budget(100_000, 16_000_000),
                                     &acyclic_fs::CancellationToken::new(),
@@ -416,7 +493,7 @@ mod tests {
                                 assert_eq!(recovered.unwrap(), result);
                                 assert_eq!(
                                     tool.executor
-                                        .reconcile(invocation.clone(), Some(context))
+                                        .reconcile(invocation.clone(), Some(context.clone()))
                                         .await?,
                                     Some(result.clone())
                                 );
@@ -434,8 +511,8 @@ mod tests {
                                     before.durability_operations
                                 );
                                 assert_eq!(
-                                    storage.list_private_directory("", None, None, 1).await?.0,
-                                    generation
+                                    context.read_tool_path("recovery.txt", None, None).await?.0,
+                                    before_file
                                 );
                             }
                             let version =
@@ -467,7 +544,7 @@ mod tests {
         // One initial page, two resumed pages, one root page and three refusals.
         // Breaking after the first entry does not prefetch the next page.
         assert_eq!(directory_pages, 7);
-        assert_eq!(calls, 13 + 19 + 15 + large_pages + directory_pages);
+        assert_eq!(calls, 13 + 19 + 18 + large_pages + directory_pages);
         Ok(())
     }
 
