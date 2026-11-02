@@ -7,6 +7,83 @@ fn bytes(value: &[u8]) -> OwnedBytes {
 }
 
 #[tokio::test]
+async fn empty_ranges_preserve_native_presence_without_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    async fn read(
+        medium: &LocalMedium,
+        key: &str,
+        range: Range<u64>,
+    ) -> (Result<Option<OwnedBytes>, MediumError>, usize) {
+        let (schedule, mut events) = Schedule::new();
+        let mut operation = Box::pin(schedule.scope(medium.read(key, Some(range))));
+        let mut jobs = 0;
+        let result = loop {
+            tokio::select! {
+                result = &mut operation => break result,
+                boundary = events.recv() => {
+                    let boundary = boundary.expect("original read producer ended before its result");
+                    jobs += usize::from(boundary.name == "native:submitted");
+                    boundary.release();
+                }
+            }
+        };
+        schedule.drained().await;
+        (result, jobs)
+    }
+
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    assert!(medium.create("key", bytes(b"original")).await?);
+    assert!(medium.create("empty", bytes(b"")).await?);
+    assert_eq!(medium.close().await?, LocalClose::Released);
+    let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+
+    for (key, offset, present) in [
+        ("key", 0, true),
+        ("key", 8, true),
+        ("empty", 0, true),
+        ("absent", 0, false),
+    ] {
+        let (result, jobs) = read(&medium, key, offset..offset).await;
+        assert_eq!(result?.as_deref(), present.then_some(&b""[..]));
+        assert_eq!(jobs, 0, "empty range dispatched a physical job for {key}");
+    }
+    let (result, jobs) = read(&medium, "key", 9..9).await;
+    assert!(
+        matches!(result, Err(MediumError::Failed(error)) if error.kind() == std::io::ErrorKind::InvalidInput)
+    );
+    assert_eq!(
+        jobs, 0,
+        "out-of-range index refusal dispatched physical work"
+    );
+
+    // Cost negative: actual requested bytes still go through the original
+    // native owner and return the selected bytes from the reopened log.
+    let (result, jobs) = read(&medium, "key", 1..5).await;
+    assert_eq!(result?.as_deref(), Some(&b"rigi"[..]));
+    assert_eq!(jobs, 1);
+
+    // Hold the same index lock an append or compaction owns during I/O.
+    // One caller turn must yield to the existing worker, never wait on it.
+    let contended = {
+        let _log = medium.shared.log();
+        let mut read = Box::pin(medium.read("key", Some(8..8)));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(read.as_mut().poll(&mut context).is_pending());
+        read
+    };
+    assert_eq!(contended.await?.as_deref(), Some(&b""[..]));
+
+    assert!(medium.remove("key").await?);
+    let (result, jobs) = read(&medium, "key", 8..8).await;
+    assert!(result?.is_none());
+    assert_eq!(jobs, 0, "removed payload was treated as present");
+    assert_eq!(medium.close().await?, LocalClose::Released);
+    Ok(())
+}
+
+#[tokio::test]
 async fn owned_close_reports_physical_completion_and_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::Blobs as _;
