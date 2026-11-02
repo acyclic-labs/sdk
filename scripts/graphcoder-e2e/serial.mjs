@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
-import { publishReport } from "./report.mjs";
+import { failureReport, publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 
@@ -22,10 +22,10 @@ export function collect(cases, receipts, platform, coverage) {
   const suites = [], results = [], expectedSuites = variants(cases, platform);
   assert.equal(receipts.length, expectedSuites.length, "every case variant needs a suite receipt");
   for (let index = 0; index < expectedSuites.length; index++) {
-    const test = expectedSuites[index], { code, report, error, seconds, execution } = receipts[index];
+    const test = expectedSuites[index], { code, report, failure: receiptFailure, seconds, execution } = receipts[index];
     const expected = [test.id];
     try {
-      assert.ok(report, error ?? "missing suite receipt");
+      assert.ok(report, receiptFailure?.error ?? "missing suite receipt");
       assert.equal(report.platform, platform, "suite OS mismatch");
       assert.deepEqual(report.selected, [test.id], "suite must select exactly its case");
       assert.equal(report.qualification, false, "selected suite is diagnostic");
@@ -37,9 +37,11 @@ export function collect(cases, receipts, platform, coverage) {
       suites.push({ case: test.id, seconds: report.seconds, code, execution });
       results.push(...report.results);
     } catch (failure) {
+      const detail = { ...failureReport(failure),
+        receipt_failure: receiptFailure };
       suites.push({ case: test.id, seconds: seconds ?? null, code: code === 0 ? 1 : code,
-        error: failure.stack, execution });
-      results.push(...expected.map(id => ({ case: id, platform, status: "fail", error: failure.stack })));
+        ...detail, execution });
+      results.push(...expected.map(id => ({ case: id, platform, status: "fail", ...detail })));
     }
   }
   return { platform, qualification: true, coverage, suites, results,
@@ -58,7 +60,7 @@ export async function runSuites(cases, run, read) {
       receipts.push({ code: result.code, report, execution: result,
         seconds: (performance.now() - start) / 1000 });
     } catch (error) {
-      receipts.push({ code: result?.code ?? 1, report: null, error: error.stack,
+      receipts.push({ code: result?.code ?? 1, report: null, failure: failureReport(error),
         execution: result, seconds: (performance.now() - start) / 1000 });
     }
   }
@@ -226,7 +228,8 @@ async function main() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await main(); }
   catch (error) {
-    console.error(`step=serial matrix admission or collection: ${error.message}; recovery=${JSON.stringify(process.argv)}; inspect retained receipts and correct the rejected input before rerunning`);
+    console.error(JSON.stringify({ ...failureReport(error), step: "serial matrix admission or collection",
+      recovery: process.argv }));
     process.exitCode = 1;
   }
 }
