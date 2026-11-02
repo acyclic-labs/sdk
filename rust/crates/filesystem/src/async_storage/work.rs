@@ -353,14 +353,18 @@ impl<'a> AuthorityWork<'a> {
 
     #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
-        self.record_completed(delta).map_err(Into::into)
+        self.record_completed(delta)
     }
 
-    pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), WorkError> {
+    pub(crate) fn record_completed(
+        &mut self,
+        delta: WorkCounters,
+    ) -> Result<(), AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             return Ok(());
         }
+        self.allocations.ensure_active().map_err(authority_error)?;
         self.work = self
             .work
             .with_backend(delta, self.allocations.live_bytes())?;
@@ -368,7 +372,8 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Records the completed provider prefix and returns its value.
-    pub fn accept<T, E: From<WorkError>>(
+    /// Suspended custody refuses the merge; active completion records even after cancellation.
+    pub fn accept<T, E: From<WorkError> + From<AuthorityStoreError>>(
         &mut self,
         result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
     ) -> Result<T, E> {
@@ -376,7 +381,10 @@ impl<'a> AuthorityWork<'a> {
             Ok(receipt) => receipt.work,
             Err(failure) => *failure.work,
         };
-        self.record_completed(delta).map_err(E::from)?;
+        self.record_completed(delta).map_err(|error| match error {
+            AuthorityStoreError::Work(error) => E::from(error),
+            error => E::from(error),
+        })?;
         result
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)

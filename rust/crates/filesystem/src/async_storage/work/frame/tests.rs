@@ -59,6 +59,23 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             Err(AuthorityStoreError::AccountingHandoffActive)
         ));
         assert!(matches!(
+            borrowed.record_completed(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            }),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            borrowed.accept::<_, AuthorityStoreError>(Ok(OperationReceipt {
+                value: (),
+                work: WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                },
+            })),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
             borrowed.scope(),
             Err(AuthorityStoreError::AccountingHandoffActive)
         ));
@@ -123,6 +140,37 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         Err(AuthorityStoreError::Cancelled)
     ));
     assert_eq!(stopped.spent().items_examined, 1);
+    stopped.accept::<_, AuthorityStoreError>(Ok(OperationReceipt {
+        value: (),
+        work: WorkCounters {
+            items_examined: 2,
+            ..WorkCounters::UNCHARGED
+        },
+    }))?;
+    assert_eq!(stopped.spent().items_examined, 3);
+    assert!(matches!(
+        stopped.accept::<(), _>(Err(OperationFailure::new(
+            AuthorityStoreError::Cancelled,
+            WorkCounters {
+                items_examined: 3,
+                ..WorkCounters::UNCHARGED
+            },
+        ))),
+        Err(AuthorityStoreError::Cancelled)
+    ));
+    assert_eq!(stopped.spent().items_examined, 6);
+    let completed_before = stopped.spent();
+    assert!(matches!(
+        stopped.accept::<_, FsError>(Ok(OperationReceipt {
+            value: (),
+            work: WorkCounters {
+                items_examined: u64::MAX,
+                ..WorkCounters::UNCHARGED
+            },
+        })),
+        Err(FsError::Work(WorkError::Overflow))
+    ));
+    assert_eq!(stopped.spent(), completed_before);
     assert_eq!(original.spent(), before);
     drop(first);
     drop(second);
