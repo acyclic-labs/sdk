@@ -26,7 +26,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
     }
   } catch (error) {
-    failures = [new Error(`step=drive JSONL conversation: ${error.message}`, { cause: error })];
+    failures = [error];
     // Retire only this executable: the owner may also hold other cases and
     // their provider. EOF alone need not stop work owned by this executable.
     active.child.stdin.end();
@@ -39,7 +39,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
   }
   if (failures) {
     if (failures.length === 1) throw failures[0];
-    throw new Error(failures[0].message, { cause: new AggregateError(failures, "conversation completion failures") });
+    throw new AggregateError(failures, "conversation completion failures", { cause: failures[0] });
   }
   assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}`);
   assert.equal(result.signal, null, "step=verify conversation retirement");

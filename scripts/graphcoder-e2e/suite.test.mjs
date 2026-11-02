@@ -12,7 +12,8 @@ import { conversation } from "./conversation.mjs";
 test("conversation rejection retires only its producer and retains independent capture failure", async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "conversation-failure-"));
   try {
-    for (const failedObservation of [false, true]) {
+    const captured = JSON.parse(readFileSync(new URL("./fixtures/rejected-conversation-reply.json", import.meta.url), "utf8")).capture;
+    for (const [failedObservation, rejectedReply] of [[false, false], [true, false], [false, true], [true, true]]) {
       let retirementAtEof, retirementRequested = false, selected, original;
       const captures = [], processes = new Processes({ onProgress(event) {
         if (event.phase === "node-spawn" && event.ordinal === 1 && failedObservation)
@@ -31,28 +32,37 @@ test("conversation rejection retires only its producer and retains independent c
         await peerEvents.next(event => event.pid > 0);
         const running = conversation(processes, process.execPath, {
           workspace: root, args: ["-e",
-            "const server=require('node:net').createServer();server.listen(0,'127.0.0.1',()=>console.error(JSON.stringify(server.address())));process.stdin.resume()", "--"],
-        }, { operation: "selected-operation", turns: [{ id: "turn", text: "unused" }] }, result => captures.push(result),
+            "const server=require('node:net').createServer();server.listen(0,'127.0.0.1',()=>console.error(JSON.stringify(server.address())));require('node:readline').createInterface({input:process.stdin}).on('line',()=>process.stdout.write(process.argv[1]))", captured.stdout, "--"],
+        }, { operation: "selected-operation", turns: [{ id: "spawn", text: "unused", answer: "SPAWNED" }] }, result => captures.push(result),
         async (_, active) => {
           selected = active;
           const kill = active.killExecutable;
           active.killExecutable = () => { retirementRequested = true; return kill(); };
           // The actual bound socket keeps the native child alive after EOF.
           await new Spool(active.child.stderr, active.closed).next(event => event.port > 0);
+          if (rejectedReply) return;
           try { readFileSync(join(root, "original-missing-input")); }
           catch (error) { original = error; throw error; }
         });
         await assert.rejects(running, error => {
-          assert.match(error.message, /drive JSONL conversation.*original-missing-input/);
+          const primary = failedObservation ? error.errors[0] : error;
+          if (rejectedReply) {
+            assert.ok(primary instanceof assert.AssertionError);
+            assert.equal(primary.actual, JSON.parse(captured.stdout).text);
+            assert.equal(primary.expected, "SPAWNED");
+            const report = failureReport(primary);
+            assert.equal(report.assertion.operator, "strictEqual");
+            assert.ok(report.assertion.actual.includes(primary.actual));
+            assert.equal(report.assertion.expected, "'SPAWNED'");
+          } else assert.equal(primary, original, "retain the exact original native error");
           assert.doesNotMatch(error.message, /recovery=/, "the caller owns its recovery command");
-          if (!failedObservation) assert.equal(error.cause, original);
-          else {
-            assert.ok(error.cause instanceof AggregateError);
-            assert.equal(error.cause.errors[0].cause, original);
-            assert.ok(error.cause.errors.slice(1).every(failure =>
+          if (failedObservation) {
+            assert.ok(error instanceof AggregateError);
+            assert.equal(error.cause, primary);
+            assert.ok(error.errors.slice(1).every(failure =>
               failure.name === "ProcessObservationFailed" && failure.cause.code === "ENOENT"));
             const report = failureReport(error);
-            assert.match(report.cause, /original-missing-input/);
+            assert.ok(report.cause.includes(rejectedReply ? JSON.parse(captured.stdout).text : "original-missing-input"));
             assert.match(report.cause, /missing-progress-sink/);
           }
           return true;
