@@ -111,12 +111,10 @@ impl TurnContext for Grants {
                 return executor.with_tool_authority(scope, authority.approval.clone());
             }
             let harness = crate::runtime::Bindings {
-                targets: None,
                 filesystem: authority.workspace_tools.clone(),
                 scope,
                 content: Some(authority.content.clone()),
-                artifacts: None,
-                seed: None,
+                ..crate::runtime::Bindings::local()
             }
             .build()?;
             Tasks::bind(&harness, executor, agent, turn, authority).map(|(executor, _)| executor)
