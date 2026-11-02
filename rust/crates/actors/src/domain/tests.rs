@@ -166,6 +166,27 @@ fn invoke_round_trips_without_rewriting_wire_fields() {
         ),
         expected_header,
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut reserved = expected_header.clone();
+        reserved.body = Vec::with_capacity(64 * 1024);
+        let capacity = reserved.body.capacity();
+        let typed = InvokeActorRequest::try_from(reserved).expect("empty original body");
+        let mut header = None;
+        let allocations = acyclic_test_support::measure(|| {
+            header = Some(InvokeActorHeader::try_from(typed));
+        });
+        assert_eq!(allocations.count_total, 0);
+        assert_eq!(
+            allocations.bytes_current,
+            -(capacity as i64),
+            "an empty body's reserved backing must retire before header exposure"
+        );
+        assert_eq!(
+            wire::InvokeActorRequest::from(header.expect("converted").expect("empty body")),
+            expected_header
+        );
+    }
     assert!(
         InvokeActorHeader::try_from(wire.clone()).is_err(),
         "mixed inputs must refuse"

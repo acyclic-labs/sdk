@@ -275,7 +275,9 @@ macro_rules! invocation_header {
                 if !request.body.is_empty() {
                     return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
                 }
-                Ok(Self(request))
+                // An empty Vec may still retain a former payload allocation.
+                // A header retains metadata only, including for local callers.
+                Ok(request.into_parts().0)
             }
         }
 
