@@ -186,6 +186,62 @@ fn succeeded(output: &Output) -> String {
     stdout
 }
 
+fn verify_execution_payloads(lines: &[Value]) {
+    // Reconstruct only captured binary output, never a hand-authored
+    // provider fixture. Every referenced field must have exact bytes.
+    let mut payloads = std::collections::BTreeMap::new();
+    for line in lines.iter().filter(|line| line["kind"] == "execution") {
+        let record: acyclic_harness::executor::ExecutionRecord =
+            serde_json::from_value(line["record"].clone()).unwrap();
+        for (field, reference) in
+            acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
+        {
+            let key = (
+                record.operation_id.to_string(),
+                record.sequence,
+                serde_json::to_string(&field).unwrap(),
+            );
+            assert!(
+                payloads
+                    .insert(key, (reference.clone(), Vec::new()))
+                    .is_none()
+            );
+        }
+    }
+    for line in lines
+        .iter()
+        .filter(|line| line["kind"] == "execution_payload")
+    {
+        let turn: acyclic_harness::OperationId =
+            serde_json::from_value(line["turn"].clone()).unwrap();
+        let key = (
+            turn.to_string(),
+            line["sequence"].as_u64().unwrap(),
+            serde_json::to_string(&line["field"]).unwrap(),
+        );
+        let (reference, body) = payloads
+            .get_mut(&key)
+            .expect("chunk has no original observation");
+        let original: acyclic_harness::conversation::FileRef =
+            serde_json::from_value(line["file"].clone()).unwrap();
+        assert_eq!(&original, reference);
+        assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
+        let (bytes, _) = acyclic_harness::client::AgentReply::Content {
+            data: line["data"].as_str().unwrap().into(),
+            length: reference.descriptor().byte_length(),
+        }
+        .content()
+        .unwrap();
+        assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
+        assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
+        body.extend_from_slice(&bytes);
+    }
+    assert!(!payloads.is_empty());
+    for (_, (reference, bytes)) in payloads {
+        reference.descriptor().verify(&bytes, &mut None).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let fixture = fixture();
@@ -547,59 +603,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
                     .count(),
                 2
             );
-            // Reconstruct only captured binary output, never a hand-authored
-            // provider fixture. Every referenced field must have exact bytes.
-            let mut payloads = std::collections::BTreeMap::new();
-            for line in &execution {
-                let record: acyclic_harness::executor::ExecutionRecord =
-                    serde_json::from_value(line["record"].clone()).unwrap();
-                for (field, reference) in
-                    acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
-                {
-                    let key = (
-                        record.operation_id.to_string(),
-                        record.sequence,
-                        serde_json::to_string(&field).unwrap(),
-                    );
-                    assert!(
-                        payloads
-                            .insert(key, (reference.clone(), Vec::new()))
-                            .is_none()
-                    );
-                }
-            }
-            for line in lines
-                .iter()
-                .filter(|line| line["kind"] == "execution_payload")
-            {
-                let turn: acyclic_harness::OperationId =
-                    serde_json::from_value(line["turn"].clone()).unwrap();
-                let key = (
-                    turn.to_string(),
-                    line["sequence"].as_u64().unwrap(),
-                    serde_json::to_string(&line["field"]).unwrap(),
-                );
-                let (reference, body) = payloads
-                    .get_mut(&key)
-                    .expect("chunk has no original observation");
-                let original: acyclic_harness::conversation::FileRef =
-                    serde_json::from_value(line["file"].clone()).unwrap();
-                assert_eq!(&original, reference);
-                assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
-                let (bytes, _) = acyclic_harness::client::AgentReply::Content {
-                    data: line["data"].as_str().unwrap().into(),
-                    length: reference.descriptor().byte_length(),
-                }
-                .content()
-                .unwrap();
-                assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
-                assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
-                body.extend_from_slice(&bytes);
-            }
-            assert!(!payloads.is_empty());
-            for (_, (reference, bytes)) in payloads {
-                reference.descriptor().verify(&bytes, &mut None).unwrap();
-            }
+            verify_execution_payloads(&lines);
         }
         assert!(cursor.exists());
         let checkpoint: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
@@ -715,6 +719,21 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         .collect::<Vec<_>>();
     assert_eq!(lines.last().unwrap()["kind"], "completed");
     assert_eq!(lines.last().unwrap()["success"], true);
+    let inbox = lines.iter().find(|line| line["kind"] == "result").unwrap()["inbox"]
+        .as_u64()
+        .unwrap();
+    let execution = lines.iter().filter(|line| line["kind"] == "execution");
+    assert!(execution.clone().all(|line| line["input"] == inbox));
+    assert_eq!(
+        execution
+            .filter(|line| line["record"]["event"]["kind"] == "model_started")
+            .count(),
+        1
+    );
+    verify_execution_payloads(&lines);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
+    assert_eq!(saved["execution"]["position"]["input"], inbox + 1);
+    assert_eq!(saved["execution"]["position"]["after"], 0);
     assert_eq!(
         model.generated(),
         3,
