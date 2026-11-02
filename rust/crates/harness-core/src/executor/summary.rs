@@ -165,7 +165,12 @@ impl StockExecution<'_> {
                     stock_retire_text(delta, io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    if completed.len() as u64 > self.stock.limits.render_bytes {
+                    if self
+                        .stock
+                        .limits
+                        .render_bytes
+                        .is_some_and(|maximum| completed.len() as u64 > maximum)
+                    {
                         return Err(stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,
