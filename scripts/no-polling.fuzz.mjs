@@ -15,6 +15,12 @@ export function fuzz(data) {
  assert.deepEqual(pollingSites('scripts/control.ps1', source).map(site => site.start), [source.lastIndexOf('Sleep')]);
  assert.throws(() => pollingSites('scripts/control.ps1', comment.slice(0, -2)), /unterminated block comment/);
  const word = 'value' + Buffer.from(data).toString('hex');
+ for (const command of ['sl\\eep', 'sl\\\neep', 's\\l\\e\\e\\p']) {
+  const source = `${command} ${word}`;
+  assert.ok(pollingSites('scripts/control.sh', source).some(site => site.kind === 'timer-or-readiness'), source);
+  assert.ok(pollingSites('scripts/control.mjs', 'runHost(' + JSON.stringify(source) + ')')
+   .some(site => site.kind === 'embedded-timer-or-retry'), source);
+ }
  for (const [extension, command, wait, escape] of [['ps1', 'Write-Output', 'Start-Sleep', '`'], ['sh', 'printf', 'sleep', '\\']]) {
   const arguments_ = [word + '#fragment', escape + '#fragment', word + escape + ' #fragment',
    word + escape + '\n#fragment', word + '"quoted"#fragment'];
