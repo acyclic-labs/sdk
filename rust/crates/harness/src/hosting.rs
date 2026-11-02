@@ -600,10 +600,13 @@ where
                 items: self.bound.project_heads(self.within_tree(agent)?).await?,
             }),
             AgentCommand::History { agent, page } => {
-                use crate::executor::json::json_byte_length;
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
                 use futures::TryStreamExt as _;
                 let agent = self.within_tree(agent)?;
+                let mut credit = PageCredit::new(page, |next| AgentReply::History {
+                    items: Vec::new(),
+                    next,
+                })?;
                 let mut cursor = match page.cursor() {
                     Some(cursor) => {
                         let bytes = STANDARD
@@ -657,61 +660,30 @@ where
                     }
                 }
                 items.reverse();
-                let envelopes = [None, Some(String::new())].map(|next| {
-                    json_byte_length(
-                        &AgentReply::History {
-                            items: Vec::new(),
-                            next,
-                        },
-                        u64::MAX,
-                        &mut None,
-                    )
-                    .map_err(|_| Error::Record("history page encoding failed"))
-                });
-                let [end_envelope, next_envelope] = envelopes;
-                let (end_envelope, next_envelope) = (end_envelope?, next_envelope?);
-                let mut bytes = 0;
                 let mut before = cursor.before;
-                let mut accepted = 0;
                 for item in &items {
-                    let size = json_byte_length(item, u64::MAX, &mut None)
-                        .map_err(|_| Error::Record("history item encoding failed"))?
-                        + u64::from(accepted != 0);
                     cursor.before = item.conversation - 1;
-                    let envelope = if cursor.before == 0 {
-                        end_envelope
+                    let next_bytes = if cursor.before == 0 {
+                        None
                     } else {
-                        let length = json_byte_length(&cursor, u64::MAX, &mut None)
-                            .map_err(|_| Error::Record("history cursor encoding failed"))?;
-                        next_envelope + length.div_ceil(3) * 4
+                        Some(page_json_bytes(&cursor)?.div_ceil(3) * 4)
                     };
-                    let encoded =
-                        acyclic_harness_client::encoded_agent_reply_size(bytes + size + envelope)
-                            .map_err(|_| Error::Stream(StreamError::Capacity))?;
-                    if encoded > u64::from(page.bytes()) {
-                        if accepted == 0 {
-                            return Err(Error::Stream(StreamError::Capacity));
-                        }
+                    if !credit.accept(item, next_bytes)? {
                         break;
                     }
-                    bytes += size;
                     before = cursor.before;
-                    accepted += 1;
                 }
-                items.truncate(accepted);
+                items.truncate(credit.items);
                 cursor.before = before;
-                if items.is_empty()
-                    && acyclic_harness_client::encoded_agent_reply_size(end_envelope)
-                        .map_err(|_| Error::Stream(StreamError::Capacity))?
-                        > u64::from(page.bytes())
-                {
-                    return Err(Error::Stream(StreamError::Capacity));
-                }
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }
             AgentCommand::Children { agent, page } => {
                 let agent = self.within_tree(agent)?;
+                let mut credit = PageCredit::new(page, |next| AgentReply::Children {
+                    items: Vec::new(),
+                    next,
+                })?;
                 let (hierarchy_version, after) = match page.cursor() {
                     Some(cursor) => {
                         let (version, after) = parse_children_cursor(cursor)?;
@@ -786,12 +758,26 @@ where
                         item.status = Some(StatusRecord::decode(&record.value)?);
                     }
                 }
-                Ok(AgentReply::Children {
-                    items,
-                    next: listed
-                        .next_after
-                        .map(|after| children_cursor(&listed.hierarchy_version, &after)),
-                })
+                for (index, item) in items.iter().enumerate() {
+                    let next_bytes =
+                        (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
+                            children_cursor_bytes(&listed.hierarchy_version, &item.agent) as u64
+                        });
+                    if !credit.accept(item, next_bytes)? {
+                        break;
+                    }
+                }
+                let continued = credit.items < items.len() || listed.next_after.is_some();
+                items.truncate(credit.items);
+                let next = if continued {
+                    let last = items
+                        .last()
+                        .ok_or(Error::Record("children page cannot continue without a row"))?;
+                    Some(children_cursor(&listed.hierarchy_version, &last.agent))
+                } else {
+                    None
+                };
+                Ok(AgentReply::Children { items, next })
             }
             AgentCommand::Spawn {
                 parent,
@@ -987,11 +973,17 @@ fn text(content: &ModelContent) -> Result<&str, Error> {
     }
 }
 
+/// AgentPath admits only fixed ASCII segments and hex identities, so this
+/// cursor's content needs no JSON escaping. Share its size with allocation.
+fn children_cursor_bytes(version: &CommitId, after: &AgentPath) -> usize {
+    version.as_bytes().len() * 2 + 1 + after.as_str().len()
+}
+
 /// A children page's continuation: the listing's hierarchy version, which a
-/// later page must name, and the last listed path.
-fn children_cursor(version: &CommitId, after: &StreamPath) -> String {
+/// later page must name, and the last returned agent.
+fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut cursor = String::with_capacity(65 + after.as_str().len());
+    let mut cursor = String::with_capacity(children_cursor_bytes(version, after));
     for byte in version.as_bytes() {
         cursor.push(char::from(HEX[usize::from(byte >> 4)]));
         cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
@@ -999,6 +991,64 @@ fn children_cursor(version: &CommitId, after: &StreamPath) -> String {
     cursor.push(':');
     cursor.push_str(after.as_str());
     cursor
+}
+
+fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
+    crate::executor::json::json_byte_length(value, u64::MAX, &mut None)
+        .map_err(|_| Error::Record("agent page encoding failed"))
+}
+
+/// Count each bounded row once, then reserve its actual canonical wire envelope.
+/// Cursor content is counted separately from its quotes in the empty envelope.
+struct PageCredit {
+    end_envelope: u64,
+    next_envelope: u64,
+    bytes: u64,
+    items: usize,
+    maximum: u64,
+}
+
+impl PageCredit {
+    fn new(
+        page: &AgentPageRequest,
+        empty: impl Fn(Option<String>) -> AgentReply,
+    ) -> Result<Self, Error> {
+        let end_envelope = page_json_bytes(&empty(None))?;
+        let maximum = u64::from(page.bytes());
+        if !acyclic_harness_client::encoded_agent_reply_size(end_envelope)
+            .is_ok_and(|encoded| encoded <= maximum)
+        {
+            return Err(Error::Stream(StreamError::Capacity));
+        }
+        Ok(Self {
+            end_envelope,
+            next_envelope: page_json_bytes(&empty(Some(String::new())))?,
+            bytes: 0,
+            items: 0,
+            maximum,
+        })
+    }
+
+    fn accept(
+        &mut self,
+        item: &impl serde::Serialize,
+        next_bytes: Option<u64>,
+    ) -> Result<bool, Error> {
+        let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        if !acyclic_harness_client::encoded_agent_reply_size(bytes + envelope)
+            .is_ok_and(|encoded| encoded <= self.maximum)
+        {
+            return if self.items == 0 {
+                Err(Error::Stream(StreamError::Capacity))
+            } else {
+                Ok(false)
+            };
+        }
+        self.bytes = bytes;
+        self.items += 1;
+        Ok(true)
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

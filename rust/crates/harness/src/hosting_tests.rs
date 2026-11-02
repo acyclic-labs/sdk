@@ -799,17 +799,25 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         ));
         owner.denied.store(false, Ordering::SeqCst);
     }
-    assert!(
-        matches!(
-            call(&client, "agents", &AgentCommand::History {
-                agent: root.clone(),
-                page: AgentPageRequest::new(1, 1, None)?,
-            }).await?,
-            Err(AgentControlFailure::Refused { code, .. })
-                if code == Error::Stream(StreamError::Capacity).code()
-        ),
-        "an empty page must reserve its complete canonical envelope"
-    );
+    for query in [
+        AgentCommand::History {
+            agent: root.clone(),
+            page: AgentPageRequest::new(1, 1, None)?,
+        },
+        AgentCommand::Children {
+            agent: root.clone(),
+            page: AgentPageRequest::new(1, 1, None)?,
+        },
+    ] {
+        assert!(
+            matches!(
+                call(&client, "agents", &query).await?,
+                Err(AgentControlFailure::Refused { code, .. })
+                    if code == Error::Stream(StreamError::Capacity).code()
+            ),
+            "an empty page must reserve its complete canonical envelope"
+        );
+    }
     let spawn = AgentCommand::Spawn {
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
@@ -1158,9 +1166,17 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
 #[test]
 fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     let version = CommitId::from_bytes([0xa5; 32]);
-    let after = StreamPath::new("agents/root/children/a")?;
+    let after = AgentPath::root(&crate::agent::AgentId::from_bytes([0x5a; 16]))
+        .child(&crate::agent::AgentId::from_bytes([0x3c; 16]))?;
     let cursor = children_cursor(&version, &after);
-    assert_eq!(parse_children_cursor(&cursor)?, (version, after));
+    assert_eq!(
+        page_json_bytes(&cursor)? - 2,
+        children_cursor_bytes(&version, &after) as u64
+    );
+    assert_eq!(
+        parse_children_cursor(&cursor)?,
+        (version, StreamPath::new(after.as_str())?)
+    );
     assert!(parse_children_cursor("agents/root/children/a").is_err());
     Ok(())
 }
