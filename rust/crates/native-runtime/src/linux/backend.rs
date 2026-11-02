@@ -113,18 +113,14 @@ impl Owner {
         uncertain_completion(error)
     }
 
-    fn read_batch(
-        &mut self,
-        file: &Arc<NativeFilePayload>,
-        reads: &[OwnedRead],
-    ) -> io::Result<Vec<Bytes>> {
+    fn read_batch(&mut self, file: &Arc<HeldFile>, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
         reads
             .iter()
             .map(|read| self.read_one(file, *read))
             .collect()
     }
 
-    fn read_one(&mut self, file: &Arc<NativeFilePayload>, read: OwnedRead) -> io::Result<Bytes> {
+    fn read_one(&mut self, file: &Arc<HeldFile>, read: OwnedRead) -> io::Result<Bytes> {
         let mut bytes = Vec::new();
         let mut count = 0;
         while count < read.length {
@@ -184,11 +180,7 @@ impl Owner {
         Ok(Bytes::from(bytes))
     }
 
-    fn write_batch(
-        &mut self,
-        file: &Arc<NativeFilePayload>,
-        writes: Vec<OwnedWrite>,
-    ) -> io::Result<()> {
+    fn write_batch(&mut self, file: &Arc<HeldFile>, writes: Vec<OwnedWrite>) -> io::Result<()> {
         let mut writes = chunk_owned_writes(writes).peekable();
         while let Some(first) = writes.next() {
             let first = first?;
@@ -221,7 +213,7 @@ impl Owner {
     // append-only journal recovery. Gaps and bounded runs finish in input order.
     fn write_contiguous(
         &mut self,
-        file: &Arc<NativeFilePayload>,
+        file: &Arc<HeldFile>,
         mut offset: u64,
         buffers: [Bytes; IO_ENTRIES],
         length: usize,

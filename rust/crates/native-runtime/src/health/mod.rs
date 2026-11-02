@@ -1,11 +1,11 @@
-use crate::{NativeFilePayload, OperationFence};
+use crate::{HeldFile, OperationFence};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 #[derive(Default)]
 pub(crate) struct FileHealth {
     pub(crate) tail: Mutex<Option<Arc<OperationFence>>>,
     pub(crate) uncertain: AtomicBool,
-    pub(crate) poison_anchor: Mutex<Option<Arc<NativeFilePayload>>>,
+    pub(crate) poison_anchor: Mutex<Option<Arc<HeldFile>>>,
     /// Live [`HealthOwner`]s; the one that releases the last unregisters.
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     owners: owners::OwnerCount,

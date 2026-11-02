@@ -7,24 +7,24 @@ use std::os::fd::AsFd as _;
 #[test]
 fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
     let temporary = tempfile::NamedTempFile::new()?;
-    let import = || NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error);
+    let import = || temporary.reopen().map(HeldFile::new);
     let original = import()?;
     let before = crate::device_flush::classification_work();
-    operations::sync_owned_file(&original.file, Durability::Full, None)?;
+    original.sync_once()?;
     let resolved = crate::device_flush::classification_work();
     assert_eq!(resolved, before.map(|count| count + 1));
     for _ in 0..2 {
-        operations::sync_owned_file(&original.file, Durability::Full, None)?;
+        original.sync_once()?;
     }
     assert_eq!(crate::device_flush::classification_work(), resolved);
 
     // The same inode and device do not confer another owner's cached lease.
     let replacement = import()?;
-    operations::sync_owned_file(&replacement.file, Durability::Full, None)?;
+    replacement.sync_once()?;
     let replaced = crate::device_flush::classification_work();
     assert_eq!(replaced, resolved.map(|count| count + 1));
     drop(original);
-    operations::sync_owned_file(&replacement.file, Durability::Full, None)?;
+    replacement.sync_once()?;
     assert_eq!(crate::device_flush::classification_work(), replaced);
 
     for _ in 0..2 {
@@ -36,11 +36,20 @@ fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
         "restoring borrowed classification must add two syscalls and a lookup per flush"
     );
 
+    // Importing into the async runtime retains the same shared file owner.
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    operations::sync_owned_file(&native.file, Durability::Full, None)?;
+    let admitted = crate::device_flush::classification_work();
+    assert_eq!(admitted, replaced.map(|count| count + 3));
+    native.file.sync_once()?;
+    operations::sync_owned_file(&native.file, Durability::Full, None)?;
+    assert_eq!(crate::device_flush::classification_work(), admitted);
+
     // A real unsupported descriptor cannot borrow the previous file's success.
-    let invalid =
-        NativeFile::from_file(File::open("/dev/null")?, None).map_err(|(error, _)| error)?;
+    let invalid = HeldFile::new(File::open("/dev/null")?);
     let before = crate::device_flush::classification_work();
-    let owned = operations::sync_owned_file(&invalid.file, Durability::Full, None)
+    let owned = invalid
+        .sync_once()
         .expect_err("device cannot perform a full flush");
     let borrowed = crate::sync_descriptor_once(invalid.as_file().as_fd())
         .expect_err("same original native refusal");

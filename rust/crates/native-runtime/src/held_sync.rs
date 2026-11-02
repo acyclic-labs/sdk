@@ -72,7 +72,7 @@ pub fn sync_descriptor_once(
     #[cfg(windows)] descriptor: BorrowedHandle<'_>,
 ) -> io::Result<()> {
     #[cfg(target_vendor = "apple")]
-    return crate::apple::sync_descriptor_once(descriptor);
+    return crate::apple::sync_descriptor_once(descriptor, None);
     #[cfg(not(target_vendor = "apple"))]
     sync_descriptor_requested_once(descriptor, crate::Durability::Full)
 }

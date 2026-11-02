@@ -1,6 +1,6 @@
 use super::driver::{submit_read, submit_write};
 use super::io::*;
-use crate::{NativeFilePayload, OwnedRead, OwnedWrite};
+use crate::{HeldFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::{
@@ -60,7 +60,7 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
         .open(directory.path().join("positional"))?;
     file.write_all(b"abcdefghijklmnop")?;
     file.seek(SeekFrom::Start(13))?;
-    let file = Arc::new(NativeFilePayload {
+    let file = Arc::new(HeldFile {
         file,
         _allocation: None,
     });

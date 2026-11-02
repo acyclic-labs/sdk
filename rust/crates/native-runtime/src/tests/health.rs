@@ -240,7 +240,7 @@ fn last_native_file_owner_releases_both_physical_allocations() -> io::Result<()>
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
     // Independent owners model the two complete Arc allocations, including
     // their headers, without assuming the standard library's Arc layout.
-    let payload = Arc::new(NativeFilePayload {
+    let payload = Arc::new(HeldFile {
         file: temporary.reopen()?,
         #[cfg(target_vendor = "apple")]
         device: Default::default(),

@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use super::NativeFilePayload;
+use super::HeldFile;
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use compio_buf::{IntoInner, SetLen, Slice};
@@ -148,14 +148,14 @@ const OWNER_THREADS: usize = 4;
 const OWNER_MAILBOX: usize = 16;
 // Each owner retains at most one retired request and its original buffer.
 
-type OwnedReadOp = ReadAt<Slice<Vec<u8>>, SharedFd<Arc<NativeFilePayload>>>;
-type OwnedWriteOp = WriteVectoredAt<[Bytes; IO_ENTRIES], SharedFd<Arc<NativeFilePayload>>>;
+type OwnedReadOp = ReadAt<Slice<Vec<u8>>, SharedFd<Arc<HeldFile>>>;
+type OwnedWriteOp = WriteVectoredAt<[Bytes; IO_ENTRIES], SharedFd<Arc<HeldFile>>>;
 type ReadFinish = Box<dyn FnOnce(io::Result<Vec<Bytes>>) + Send>;
 type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send>;
 
 enum OwnerJob {
-    Read(Arc<NativeFilePayload>, Vec<OwnedRead>, ReadFinish),
-    Write(Arc<NativeFilePayload>, Vec<OwnedWrite>, WriteFinish),
+    Read(Arc<HeldFile>, Vec<OwnedRead>, ReadFinish),
+    Write(Arc<HeldFile>, Vec<OwnedWrite>, WriteFinish),
     Stop,
 }
 
@@ -292,7 +292,7 @@ impl OwnerPool {
 }
 
 pub(super) fn submit_read(
-    file: Arc<NativeFilePayload>,
+    file: Arc<HeldFile>,
     reads: Vec<OwnedRead>,
     finish: ReadFinish,
 ) -> io::Result<()> {
@@ -303,7 +303,7 @@ pub(super) fn submit_read(
 }
 
 pub(super) fn submit_write(
-    file: Arc<NativeFilePayload>,
+    file: Arc<HeldFile>,
     writes: Vec<OwnedWrite>,
     finish: WriteFinish,
 ) -> io::Result<()> {

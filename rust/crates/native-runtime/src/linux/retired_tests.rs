@@ -12,7 +12,7 @@ fn retired_compio_proactor_cannot_drop_pending_key() -> io::Result<()> {
     };
     if std::env::var_os(CHILD).is_some() {
         let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload {
+        let file = Arc::new(HeldFile {
             file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)

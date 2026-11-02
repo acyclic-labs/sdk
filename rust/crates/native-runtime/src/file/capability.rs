@@ -2,7 +2,7 @@ use crate::*;
 
 /// One file owned by the native I/O runtime.
 pub struct NativeFile {
-    pub(crate) file: Arc<NativeFilePayload>,
+    pub(crate) file: Arc<HeldFile>,
     pub(crate) health: HealthOwner,
     #[cfg(windows)]
     pub(crate) overlapped: bool,
@@ -36,7 +36,7 @@ impl NativeFile {
     ) -> io::Result<Self> {
         let allocation = meter
             .as_ref()
-            .map(|meter| ReadAllocation::new(meter, arc_allocation_bytes::<NativeFilePayload>()))
+            .map(|meter| ReadAllocation::new(meter, arc_allocation_bytes::<HeldFile>()))
             .transpose()?;
         let file = create()?;
         Self::import_file(file, meter.map(NativeFileMeter::Owned), allocation)
@@ -67,7 +67,7 @@ impl NativeFile {
         if owner.is_some() {
             return Err((io::ErrorKind::Unsupported.into(), file));
         }
-        let bytes = arc_allocation_bytes::<NativeFilePayload>();
+        let bytes = arc_allocation_bytes::<HeldFile>();
         let allocation = if let Some(allocation) = prepared_allocation {
             Some(allocation)
         } else if let Some(owner) = &owner {
@@ -83,7 +83,7 @@ impl NativeFile {
             }
             None
         };
-        let payload = Arc::new(NativeFilePayload {
+        let payload = Arc::new(HeldFile {
             file,
             #[cfg(target_vendor = "apple")]
             device: Default::default(),
@@ -105,7 +105,7 @@ impl NativeFile {
                 overlapped: false,
             }),
             Err(error) => {
-                let NativeFilePayload {
+                let HeldFile {
                     file, _allocation, ..
                 } = Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
                 if _allocation.is_none()
@@ -126,7 +126,7 @@ impl NativeFile {
         let health = 0;
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let health = arc_allocation_bytes::<FileHealth>();
-        (arc_allocation_bytes::<NativeFilePayload>() + health) as u64
+        (arc_allocation_bytes::<HeldFile>() + health) as u64
     }
 
     /// Imports a Windows handle for overlapped I/O.
@@ -177,9 +177,7 @@ impl NativeFile {
         meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> io::Result<NativeCompletion<()>>
     where
-        F: FnOnce(&NativeFilePayload, Option<&dyn NativeReadMeter>) -> io::Result<()>
-            + Send
-            + 'static,
+        F: FnOnce(&HeldFile, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send + 'static,
     {
         let file = Arc::clone(&self.file);
         let health = self.health.clone();

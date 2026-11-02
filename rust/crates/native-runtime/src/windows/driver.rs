@@ -1,6 +1,6 @@
 //! Owned completion batches on one Windows proactor.
 use super::io::{overlapped_range, reopen_overlapped};
-use crate::{NativeFilePayload, OwnedRead, OwnedWrite};
+use crate::{HeldFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use compio_buf::IntoInner as _;
 use compio_driver::{
@@ -23,7 +23,7 @@ const COMPLETION_QUANTUM: usize = 256;
 #[derive(Clone, Debug)]
 enum DriverFile {
     Reopened(SharedFd<OwnedFd>),
-    Original(Arc<NativeFilePayload>),
+    Original(Arc<HeldFile>),
 }
 impl compio_driver::AsFd for DriverFile {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -39,8 +39,8 @@ type ReadFinish = Box<dyn FnOnce(io::Result<Vec<Bytes>>) + Send>;
 type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send>;
 
 enum Job {
-    Read(Arc<NativeFilePayload>, bool, Vec<OwnedRead>, ReadFinish),
-    Write(Arc<NativeFilePayload>, bool, Vec<OwnedWrite>, WriteFinish),
+    Read(Arc<HeldFile>, bool, Vec<OwnedRead>, ReadFinish),
+    Write(Arc<HeldFile>, bool, Vec<OwnedWrite>, WriteFinish),
 }
 #[derive(Clone)]
 struct Driver {
@@ -85,7 +85,7 @@ fn driver() -> io::Result<Driver> {
     Ok(driver)
 }
 pub(crate) fn submit_read(
-    file: Arc<NativeFilePayload>,
+    file: Arc<HeldFile>,
     overlapped: bool,
     reads: Vec<OwnedRead>,
     finish: ReadFinish,
@@ -99,7 +99,7 @@ pub(crate) fn submit_read(
     Ok(())
 }
 pub(crate) fn submit_write(
-    file: Arc<NativeFilePayload>,
+    file: Arc<HeldFile>,
     overlapped: bool,
     writes: Vec<OwnedWrite>,
     finish: WriteFinish,
@@ -157,7 +157,7 @@ struct DriverState {
     ready: mpsc::Receiver<u64>,
     pending: HashMap<u64, Pending>,
     batches: HashMap<u64, Batch>,
-    attached_original: HashMap<usize, Weak<NativeFilePayload>>,
+    attached_original: HashMap<usize, Weak<HeldFile>>,
     next_id: u64,
 }
 impl DriverState {
@@ -218,7 +218,7 @@ impl DriverState {
     }
     fn attach(
         &mut self,
-        file: &Arc<NativeFilePayload>,
+        file: &Arc<HeldFile>,
         overlapped: bool,
         access: u32,
     ) -> io::Result<DriverFile> {
@@ -252,7 +252,7 @@ impl DriverState {
     }
     fn submit_read_job(
         &mut self,
-        file: &Arc<NativeFilePayload>,
+        file: &Arc<HeldFile>,
         overlapped: bool,
         reads: &[OwnedRead],
         finish: ReadFinish,
@@ -327,7 +327,7 @@ impl DriverState {
     }
     fn submit_write_job(
         &mut self,
-        file: &Arc<NativeFilePayload>,
+        file: &Arc<HeldFile>,
         overlapped: bool,
         writes: Vec<OwnedWrite>,
         finish: WriteFinish,
