@@ -87,6 +87,16 @@ async fn provider_layers_replace_native_data_without_changing_the_base() -> Resu
         let mut malformed = serde_json::to_value(&edited).unwrap();
         malformed["tools"][0]["definition"] = json!(false);
         assert!(provider::decode(malformed).is_err());
+        for (field, value) in [
+            ("temperature", json!(-1)),
+            ("topP", json!(0)),
+            ("topP", json!(1.01)),
+            ("maxOutputTokens", json!(0)),
+        ] {
+            let mut invalid = serde_json::to_value(&edited).unwrap();
+            invalid["sampling"][field] = value;
+            assert!(provider::decode(invalid).is_err(), "{field}");
+        }
     }
     Ok(())
 }

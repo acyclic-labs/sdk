@@ -115,7 +115,21 @@ pub struct ProviderSampling {
 /// Decode the shared evaluator's result once, at settings admission.
 ///
 /// # Errors
-/// [`Error::Invalid`] when a setting has an unknown field or wrong shape.
+/// [`Error::Invalid`] when a setting has an unknown field, wrong shape or
+/// invalid sampling value.
 pub fn decode(value: Value) -> Result<ProviderProfile> {
-    serde_json::from_value(value).map_err(|error| Error::Invalid(format!("provider.ts: {error}")))
+    let profile: ProviderProfile = serde_json::from_value(value)
+        .map_err(|error| Error::Invalid(format!("provider.ts: {error}")))?;
+    crate::model::ModelSampling {
+        seed: None,
+        temperature: profile.sampling.temperature,
+        top_p: profile.sampling.top_p,
+    }
+    .validate()?;
+    if profile.sampling.max_output_tokens == Some(0) {
+        return Err(Error::Invalid(
+            "provider.ts sampling admission failed: zero maxOutputTokens; recovery: use a positive value or null".into(),
+        ));
+    }
+    Ok(profile)
 }
