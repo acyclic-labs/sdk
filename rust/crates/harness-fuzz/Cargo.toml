@@ -8,6 +8,14 @@ publish = false
 cargo-fuzz = true
 
 [[bin]]
+name = "config_evaluation"
+path = "fuzz_targets/config_evaluation.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "local_state_directory"
 path = "fuzz_targets/local_state_directory.rs"
 required-features = ["runtime"]
