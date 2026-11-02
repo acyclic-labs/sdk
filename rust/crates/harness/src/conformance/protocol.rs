@@ -254,6 +254,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             id: IntentId::try_from("spawn")?,
             brief: ModelContent::Text("Run only after explicit placement".into()),
             role: "worker".into(),
+            profile_snapshot: None,
         };
         let spawned = call(endpoint, &spawn).await??;
         let AgentReply::Spawned { agent: child, .. } = &spawned else {
@@ -268,6 +269,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             id: IntentId::try_from("spawn")?,
             brief: ModelContent::Text("A conflicting prompt".into()),
             role: "worker".into(),
+            profile_snapshot: None,
         };
         if call(endpoint, &changed).await?.is_ok() {
             return Err("changed spawn prompt was accepted".into());

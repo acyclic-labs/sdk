@@ -811,11 +811,44 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         ),
         "an empty page must reserve its complete canonical envelope"
     );
+    // Both entrances reject a mismatched whole-role epoch before history,
+    // state, brief publication or activation, even with no running actor.
+    let mut stale_snapshot = crate::profile::Profiles::builtin().snapshot();
+    stale_snapshot[0] ^= 1;
+    for command in [
+        AgentCommand::Spawn {
+            parent: root.clone(),
+            id: IntentId::try_from("stale-spawn")?,
+            brief: ModelContent::Text("child".into()),
+            role: "worker".into(),
+            profile_snapshot: Some(stale_snapshot),
+        },
+        AgentCommand::Fork {
+            parent: root.clone(),
+            id: IntentId::try_from("stale-fork")?,
+            at: 0,
+            brief: ModelContent::Text("child".into()),
+            role: "worker".into(),
+            profile_snapshot: Some(stale_snapshot),
+        },
+    ] {
+        let before = stream.requests();
+        assert!(matches!(
+            call(&client, "agents", &command).await?,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == "agent_conflict"
+                    && reason.contains("profile snapshot")
+                    && reason.contains("recovery:")
+        ));
+        let requests = stream.requests().since(before);
+        assert_eq!(requests.control() + requests.data(), 0);
+    }
     let spawn = AgentCommand::Spawn {
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
         brief: ModelContent::Text("child".into()),
         role: "worker".into(),
+        profile_snapshot: server.bound().profile_snapshot(),
     };
     // A host that runs no children refuses the spawn itself, typed, and
     // commits nothing: no child is created to wait forever.
@@ -837,6 +870,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             id: IntentId::try_from("s0")?,
             brief: ModelContent::Text("child".into()),
             role: role.into(),
+            profile_snapshot: None,
         };
         assert!(matches!(
             call(&client, "agents", &refused).await?,

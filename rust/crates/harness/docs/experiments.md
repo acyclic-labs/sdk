@@ -40,8 +40,9 @@ isolation.
 ```
 
 Replace the example source with a real agent and saved zero-based turn. The
-first arm is the comparison baseline. Use pilots of 20–50 replicates per arm,
-and obtain approval before scaling up. The format has no hidden population cap;
+first arm is the comparison baseline. Use pilots of 20–50 total assigned trials
+per arm across independent cuts, and obtain approval before scaling up. The
+format has no hidden population cap;
 the replicate count is the user's reservation. Arm order rotates between
 replicates to reduce a fixed temporal ordering effect.
 
@@ -50,9 +51,11 @@ actual model selection before execution. All executable roles in the host's
 snapshot must use `openai/gpt-6-luna`, `anthropic/claude-haiku-5-5`, or
 `google/gemini-3.8-flash`. This includes descendant roles, so the stock profile
 snapshot with its more expensive advisor/reviewer is refused. The parent must
-admit every arm role, and arm roles must inherit context. Supply exactly the
-same immutable profile snapshot as the host; the current remote fork command
-does not transmit a snapshot fence.
+admit every arm role, and arm roles must inherit context. Each fork carries the
+admitted whole-role snapshot identity. The host compares it before history,
+staging or activation and refuses a mismatch with a recovery instruction.
+Every adopted role pin also binds that snapshot: changing only a future
+descendant's policy refuses resumed turns and spawns under the new snapshot.
 
 `population::run` (features `filesystem` and `hosting`) returns a stream of
 completed runs. Supply the existing authenticated `AgentControls` and explicit
@@ -125,8 +128,10 @@ plan with cluster-level simulation or independent pilot clusters.
 
 ## Work and validation
 
-Admission reads the arms configuration once and checks/sorts the finite role
-snapshot. Trial enumeration and rotation take O(1) work, allocate nothing, and
+Profile admission hashes the sorted role files once and caches the snapshot
+identity. Population admission reads the arms configuration once, checks each
+executable role once and borrows the cached identity without sorting again.
+Trial enumeration and rotation take O(1) work, allocate nothing, and
 never multiply the replicate count by the arm count. Intent derivation hashes
 fixed-size identity fields. Streaming statistics allocate nothing per update.
 
@@ -135,6 +140,10 @@ invocation, makes one control exchange, and follows one status stream. It copies
 the input brief once into the command and returns one result identity and arm
 name. It adds zero direct syscalls, durability barriers, extra commits or model
 calls. The shared fork owner retains its existing staging and commit costs.
+The snapshot precondition adds one fixed-width comparison and one 32-byte
+identity to each trial command: zero extra allocations, I/O, round trips or
+waits. Existing fixed-width role pins bind the full epoch without growing the
+adopted record. A failed precondition performs zero provider operations.
 Using ordinary full agent observation would open two follows and transfer
 conversation records; lifecycle-only observation opens one and transfers zero
 conversation records.

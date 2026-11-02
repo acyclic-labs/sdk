@@ -279,6 +279,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
                 id: IntentId::try_from("fork-shell")?,
                 brief: ModelContent::Text("shell".into()),
                 role: "worker".into(),
+                profile_snapshot: None,
             },
         )
         .await?

@@ -26,13 +26,21 @@ struct Role {
 }
 
 /// Parsed role files, each admitted with its pin and directive. Replacing a
-/// file builds the next snapshot; an agent's pin then refuses this one, so a
-/// role change is a new fork rather than an edit of a running agent.
+/// file builds the next snapshot; every existing pin then refuses it, so a
+/// policy change requires a newly admitted root rather than editing agents.
 pub struct Profiles {
     roles: HashMap<String, Role>,
+    snapshot: [u8; 32],
 }
 
 impl Profiles {
+    /// Canonical identity of every role in this immutable epoch. Computed
+    /// once at admission; checking a command never walks the role collection.
+    #[must_use]
+    pub const fn snapshot(&self) -> [u8; 32] {
+        self.snapshot
+    }
+
     /// Immutable role files in this epoch, for admission of population-wide
     /// policies before any model work begins. Ordering is unspecified.
     pub fn roles(&self) -> impl Iterator<Item = (&AgentProfilePin, &RoleFile)> {
@@ -101,7 +109,26 @@ impl Profiles {
                 role.file.admit_child(&target.file)?;
             }
         }
-        let profiles = Self { roles: admitted };
+        let mut ordered: Vec<_> = admitted.values().collect();
+        ordered.sort_unstable_by(|left, right| left.pin.role.cmp(&right.pin.role));
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.profiles.snapshot.v1");
+        for role in ordered {
+            hash.update(&role.file.0.digest);
+        }
+        let snapshot = *hash.finalize().as_bytes();
+        // A resumed agent must retain every descendant policy, including
+        // roles it has not spawned yet. Keep that guarantee in its existing
+        // fixed-width pin rather than adding an unbounded policy manifest.
+        for role in admitted.values_mut() {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.profiles.pin.v1");
+            hash.update(&snapshot);
+            hash.update(&role.file.0.digest);
+            role.pin.digest = *hash.finalize().as_bytes();
+        }
+        let profiles = Self {
+            roles: admitted,
+            snapshot,
+        };
         profiles.root()?;
         Ok(profiles)
     }
@@ -125,7 +152,7 @@ impl Profiles {
     /// another revision of it.
     ///
     /// # Errors
-    /// When the role is absent or its file changed since the pin.
+    /// When the role is absent or any role changed since the pin.
     pub fn pinned(&self, pin: &AgentProfilePin) -> Result<&RoleFile> {
         self.role(pin).map(|role| &role.file)
     }
@@ -139,11 +166,19 @@ impl Profiles {
         self.roles
             .get(&pin.role)
             .filter(|role| role.pin == *pin)
-            .ok_or_else(|| invalid("agent profile differs from its pinned role file"))
+            .ok_or_else(|| {
+                invalid(
+                    "admit pinned role: profile snapshot differs; recovery: construct Profiles::new from the original role files",
+                )
+            })
     }
 }
 
 impl SpawnProfiles for Profiles {
+    fn snapshot(&self) -> [u8; 32] {
+        self.snapshot()
+    }
+
     fn root(&self) -> Result<AgentProfilePin> {
         Profiles::root(self)
     }

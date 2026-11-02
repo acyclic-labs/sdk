@@ -169,6 +169,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
+    profile_snapshot: Option<[u8; 32]>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -184,6 +185,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             clock: self.clock.clone(),
             handler: self.handler.clone(),
             spawns: self.spawns.clone(),
+            profile_snapshot: self.profile_snapshot,
         }
     }
 }
@@ -352,6 +354,7 @@ where
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let profiles = turns.executors.profiles();
+        let profile_snapshot = profiles.as_ref().map(|profiles| profiles.snapshot());
         let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -399,6 +402,7 @@ where
             clock: turns.clock,
             handler,
             spawns,
+            profile_snapshot,
         })
     }
 
@@ -446,6 +450,13 @@ where
     #[must_use]
     pub const fn agents(&self) -> &Arc<AgentHost<P>> {
         &self.agents
+    }
+
+    /// Identity of the exact immutable roles used by both admission and turns.
+    /// `None` means this binding admits no role-based children.
+    #[must_use]
+    pub const fn profile_snapshot(&self) -> Option<[u8; 32]> {
+        self.profile_snapshot
     }
 
     /// The turns of this binding's agents: their approvals and decisions.

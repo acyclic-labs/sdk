@@ -9,6 +9,7 @@ use crate::{
 pub struct Population {
     file: ArmsFile,
     digest: blake3::Hash,
+    profile_snapshot: [u8; 32],
 }
 
 impl Population {
@@ -20,11 +21,10 @@ impl Population {
         parent: &AgentProfilePin,
     ) -> Result<Self, Error> {
         file.validate()?;
-        let mut roles: Vec<_> = profiles.roles().collect();
-        roles.sort_unstable_by(|(left, _), (right, _)| left.role.cmp(&right.role));
         let mut hash = blake3::Hasher::new_derive_key("acyclic.experiments.population.v1");
         hash.update(&serde_json::to_vec(&file)?);
-        for (pin, role) in roles {
+        hash.update(&profiles.snapshot());
+        for (_, role) in profiles.roles() {
             if role.context() != SpawnContext::TopLevel
                 && ![
                     super::CheapModel::Luna,
@@ -39,7 +39,6 @@ impl Population {
                     role.name()
                 )));
             }
-            hash.update(&pin.digest);
         }
         for arm in &file.arms {
             let pin = profiles
@@ -58,12 +57,19 @@ impl Population {
         Ok(Self {
             file,
             digest: hash.finalize(),
+            profile_snapshot: profiles.snapshot(),
         })
     }
 
     /// Stable identity for joining result rows and paired observations.
     pub fn digest(&self) -> String {
         self.digest.to_hex().to_string()
+    }
+
+    /// Host precondition carried by every trial, including resumed invocations.
+    #[must_use]
+    pub const fn profile_snapshot(&self) -> [u8; 32] {
+        self.profile_snapshot
     }
 
     /// One trial at a time, without multiplying counts or preallocating N rows.
