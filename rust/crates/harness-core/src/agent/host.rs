@@ -49,8 +49,8 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     runtime: Runtime<P>,
     within: ActorReference,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
-    /// The creation templates this host's turns run under, and the pin of every
-    /// root it creates; `None` binds no roles.
+    /// The creation reader shared with this host's turns; `None` disables
+    /// template creation.
     templates: Option<Arc<dyn SpawnTemplates>>,
 }
 
@@ -419,7 +419,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         mut adopted: ForkAdopted,
     ) -> Result<Spawn, Error> {
         if adopted.profile.is_some() {
-            return Err(Error::Record("a root's role profile is pinned by its host"));
+            return Err(Error::Record(
+                "a root's creation config is admitted by its host",
+            ));
         }
         adopted.profile = self
             .templates

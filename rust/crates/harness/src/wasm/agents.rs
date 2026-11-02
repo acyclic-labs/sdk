@@ -144,7 +144,7 @@ struct WasmBrowserAgentOptions {
     #[tsify(optional)]
     handler_timeout_ms: Option<u64>,
     /// This host places and wakes child agents. Its turns then run under the
-    /// built-in role profiles; otherwise both spawn entrances refuse.
+    /// filesystem creation templates; otherwise both spawn entrances refuse.
     #[serde(default)]
     #[tsify(optional)]
     children: bool,
@@ -526,7 +526,7 @@ impl WasmAgents {
             Some(composer),
         )
         .map_err(agent_error)?;
-        // Roots are pinned to the same profiles the turns run under.
+        // Both spawn entrances use the same admitted template reader.
         let agents = Arc::new(if options.children {
             agents.with_templates(Arc::new(crate::filesystem::Templates::new(
                 Arc::clone(&filesystem),

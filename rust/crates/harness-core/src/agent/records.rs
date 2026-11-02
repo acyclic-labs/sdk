@@ -363,7 +363,7 @@ pub struct Approval {
 /// An authorized caller asks this agent to spawn a child. The agent's next
 /// step spawns it exactly as its own turn's spawn tool does; the child is
 /// named by this record's inbox sequence, so no two requests collide. The host
-/// admits the child's role against this agent's role before committing it.
+/// admits the child's template against this agent's creation capabilities.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnRequest {
@@ -373,7 +373,7 @@ pub struct SpawnRequest {
     pub id: IntentId,
     /// Task brief, staged on the parent's private volume.
     pub brief: Box<FileRef>,
-    /// The child's admitted role profile.
+    /// The child's admitted creation snapshot.
     pub profile: CreationConfig,
     /// Select a retained prior turn instead of the current conversation head.
     pub history: Option<super::HistorySelection>,
