@@ -4,6 +4,9 @@
 
 use production::{Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait};
 
+#[path = "agent_control_contract.rs"]
+mod contract;
+
 const STEPS: usize = 6;
 const MAX_CHILDREN: usize = 2 * MAX_FANOUT + 1;
 
@@ -148,17 +151,7 @@ fn check_alarm(kernel: Kernel, model: &Model) {
         assert!(deadline >= CONTINUE_NOW, "alarm is not a real deadline");
     }
     let control = model.control;
-    let runnable = if control.closed {
-        model.pending > 0
-    } else {
-        match control.mode {
-            Mode::Done => false,
-            Mode::Approval => control.turn && model.approval_queued,
-            Mode::Running => control.turn,
-            Mode::Await(deadline) => control.turn && deadline.is_some(),
-            Mode::Idle => model.queued > 0,
-        }
-    };
+    let runnable = contract::runnable(control, model.queued > 0, model.approval_queued, model.pending);
     assert!(set.is_some() == runnable, "lost or spurious wake-up");
     if control.closed || matches!(control.mode, Mode::Done) {
         assert!(!control.turn, "turn retained after completion or archive");

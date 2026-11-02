@@ -8,6 +8,8 @@
 pub mod correspondence;
 pub mod differential;
 mod fixtures;
+/// Finite trace conformance through the same checked correspondence inventory.
+pub mod trace;
 pub use fixtures::source_path;
 /// Construct a future before entering its polling frame. Large test and model
 /// futures otherwise retain construction temporaries beside their polling stack.

@@ -515,6 +515,13 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
 
 #[tokio::test]
 async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
+    #[cfg(feature = "test-support")]
+    return super::control_trace::runtime(spawn_and_archive()).await;
+    #[cfg(not(feature = "test-support"))]
+    spawn_and_archive().await
+}
+
+async fn spawn_and_archive() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider.clone(),
@@ -574,6 +581,8 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
         host.archive(&root, &user(), &by).await?,
         Delivered::Committed { .. }
     ));
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
     let late = InboxRecord::ApprovalRequested(ApprovalRequested {
         child,
         id: intent("late"),

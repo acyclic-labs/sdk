@@ -191,6 +191,104 @@ fn mapping(kernel: &str, model: &str, shell: &str, harness: &str) -> Result<(), 
         })
 }
 
+#[cfg(feature = "test-support")]
+pub(crate) fn original() -> Result<(Inventory, Mapping), String> {
+    let (inventory, mapping) = extract(
+        include_str!("../src/agent/kernel.rs"),
+        include_str!("formal/agent_control_model.rs"),
+        include_str!("../src/agent/machine.rs"),
+        include_str!("formal/agent_control.rs"),
+    )?;
+    trace_mapping(include_str!("../src/agent/control_trace.rs"), &inventory)?;
+    Ok((inventory, mapping))
+}
+
+fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
+    let file = syn::parse_file(source).map_err(|error| error.to_string())?;
+    let variants: BTreeSet<_> = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(item) if item.ident == "Decision" => Some(item),
+            _ => None,
+        })
+        .flat_map(|item| {
+            item.variants
+                .iter()
+                .map(|variant| variant.ident.to_string().to_lowercase())
+        })
+        .collect();
+    if variants != inventory.actions {
+        return Err("trace decisions and model actions differ".into());
+    }
+    let mut methods = BTreeSet::new();
+    for item in &file.items {
+        let Item::Impl(item) = item else { continue };
+        let syn::Type::Path(target) = &*item.self_ty else {
+            continue;
+        };
+        if !target.path.is_ident("Decision") {
+            continue;
+        }
+        for item in &item.items {
+            let syn::ImplItem::Fn(method) = item else {
+                continue;
+            };
+            let name = method.sig.ident.to_string();
+            if name != "action" && name != "conforms" {
+                continue;
+            }
+            methods.insert(name.clone());
+            let Some(syn::Stmt::Expr(Expr::Match(arms), _)) = method.block.stmts.last() else {
+                return Err("trace adapter is not an explicit action match".into());
+            };
+            let mut matched = BTreeSet::new();
+            for arm in &arms.arms {
+                let syn::Pat::TupleStruct(pattern) = &arm.pat else {
+                    return Err("trace adapter has an implicit action".into());
+                };
+                let action = pattern
+                    .path
+                    .segments
+                    .last()
+                    .ok_or("trace action missing")?
+                    .ident
+                    .to_string()
+                    .to_lowercase();
+                if !matched.insert(action.clone()) {
+                    return Err("trace adapter repeats an action".into());
+                }
+                if name == "action" {
+                    let Expr::Lit(value) = &*arm.body else {
+                        return Err("trace action name missing".into());
+                    };
+                    if !matches!(&value.lit, syn::Lit::Str(value) if value.value() == action) {
+                        return Err("trace action name differs from its decision".into());
+                    }
+                } else {
+                    let mut calls = Calls::default();
+                    calls.visit_expr(&arm.body);
+                    let kernels: BTreeSet<_> = calls
+                        .paths
+                        .into_iter()
+                        .filter(|path| path.first().is_some_and(|name| name == "kernel"))
+                        .collect();
+                    if kernels != BTreeSet::from([vec!["kernel".into(), action]]) {
+                        return Err("trace replay differs from its proof kernel binding".into());
+                    }
+                }
+            }
+            if matched != inventory.actions {
+                return Err("trace adapter does not cover every action".into());
+            }
+        }
+    }
+    if methods != BTreeSet::from(["action".into(), "conforms".into()]) {
+        return Err("trace adapter is missing its original action or replay method".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     let kernel = include_str!("../src/agent/kernel.rs");
@@ -238,6 +336,20 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     // Exercise the shared checker with mutations of the independently extracted
     // shipping graph, rather than a second handwritten model of that graph.
     let (inventory, mapped) = extract(kernel, model, shell, harness)?;
+    let trace = include_str!("../src/agent/control_trace.rs");
+    trace_mapping(trace, &inventory)?;
+    let changed = trace.replacen("=> \"admit\"", "=> \"pick\"", 1);
+    assert_ne!(changed, trace);
+    assert_eq!(
+        trace_mapping(&changed, &inventory).unwrap_err(),
+        "trace action name differs from its decision"
+    );
+    let changed = trace.replacen("kernel::satisfy(control)", "kernel::admit(control)", 1);
+    assert_ne!(changed, trace);
+    assert_eq!(
+        trace_mapping(&changed, &inventory).unwrap_err(),
+        "trace replay differs from its proof kernel binding"
+    );
     let mut changed = mapped.clone();
     changed.bindings.insert("alarm".into(), "absent".into());
     assert_eq!(
