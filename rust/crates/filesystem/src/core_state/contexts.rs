@@ -93,15 +93,24 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 {
                     return Ok(false);
                 }
-                if !context_children_index_ready(root, log)? {
+                let affected_parents = after
+                    .iter()
+                    .flat_map(|(id, replacement)| {
+                        let previous = before
+                            .get(id)
+                            .and_then(Option::as_ref)
+                            .and_then(|record| record.parent_context_id);
+                        let next = replacement.parent_context_id;
+                        [previous, next]
+                            .into_iter()
+                            .filter(move |_| previous != next)
+                            .flatten()
+                    })
+                    .collect::<BTreeSet<_>>();
+                if !affected_parents.is_empty() && !context_children_index_ready(root, log)? {
                     let contexts = load_all_contexts(root, log)?;
                     log.commit(root, index_change(contexts)?)?;
                 }
-                let affected_parents = before
-                    .values()
-                    .filter_map(|record| record.as_ref()?.parent_context_id)
-                    .chain(after.values().filter_map(|record| record.parent_context_id))
-                    .collect::<BTreeSet<_>>();
                 let mut children = WorkspaceContextChildren::new();
                 for &parent in &affected_parents {
                     let current = log

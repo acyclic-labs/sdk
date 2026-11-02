@@ -117,6 +117,114 @@ async fn workspace_contexts_are_durable_and_discoverable() {
 }
 
 #[tokio::test]
+async fn context_metadata_never_reads_or_rewrites_child_membership() {
+    for native in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = WorkspaceContextId::from_bytes([51; 16]);
+        let child = WorkspaceContextId::from_bytes([52; 16]);
+        let store = LocalCoreStateStore::new(directory.path());
+        register_contexts(
+            &store,
+            directory.path(),
+            &[(parent, None), (child, Some(parent))],
+        )
+        .await;
+        let mut selected = WorkspaceContextStore::load(&store, child)
+            .await
+            .unwrap()
+            .unwrap();
+        let namespace = store.namespace().unwrap();
+        let index = RecordKey::ChildIndex.paths(&namespace).unwrap().current;
+        let bucket = children_paths(&namespace, parent).current;
+        // Any accidental index check or bucket read fails, including a warm
+        // native path that used to skip only the bucket rewrite.
+        std::fs::write(&index, b"not-json").unwrap();
+        std::fs::write(&bucket, b"not-json").unwrap();
+        drop(namespace);
+        drop(store);
+        let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(super::native::finite_budget(), &cancellation)
+                .unwrap();
+        selected.revision += 1;
+        selected.state = WorkspaceContextState::Frozen;
+        if native {
+            let (value, allocation) = native_records::clone_native_record_value(
+                &RecordValue::Context(selected.clone()),
+                &work,
+                &cancellation,
+            )
+            .unwrap();
+            let RecordValue::Context(value) = value else {
+                panic!("context packet")
+            };
+            assert!(
+                store
+                    .compare_context(child, 1, (value, allocation), &work, &cancellation)
+                    .await
+                    .unwrap()
+            );
+        } else {
+            assert!(
+                WorkspaceContextStore::compare_and_swap_many(
+                    &store,
+                    BTreeMap::from([(parent, 1), (child, 1)]),
+                    vec![selected.clone()],
+                    false,
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let touched = store
+            .transaction(|root| {
+                root.with_log(|log| {
+                    Ok(log
+                        .resident_keys(|key| {
+                            matches!(
+                                key,
+                                RecordKey::Children(_)
+                                    | RecordKey::ChildCount(_)
+                                    | RecordKey::ChildIndex
+                            )
+                            .then_some(key)
+                        })
+                        .len())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            touched, 0,
+            "unchanged membership must select zero index records"
+        );
+        assert_eq!(std::fs::read(&index).unwrap(), b"not-json");
+        assert_eq!(std::fs::read(&bucket).unwrap(), b"not-json");
+        assert_eq!(
+            WorkspaceContextStore::load(&store, child).await.unwrap(),
+            Some(selected.clone())
+        );
+        // An actual edge change still consults the same index and refuses its
+        // malformed state instead of silently publishing partial membership.
+        selected.revision += 1;
+        selected.parent_context_id = None;
+        assert!(matches!(
+            WorkspaceContextStore::compare_and_swap(&store, child, 2, selected).await,
+            Err(LocalCoreStateStoreError::Json(_))
+        ));
+        assert_eq!(
+            WorkspaceContextStore::load(&store, child)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2
+        );
+    }
+}
+
+#[tokio::test]
 async fn context_discard_reads_only_the_bounded_subtree() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());

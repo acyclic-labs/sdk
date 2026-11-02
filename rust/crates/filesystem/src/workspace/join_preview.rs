@@ -39,7 +39,17 @@ pub struct JoinPreview<A: 'static, O: 'static> {
     owner: ReadOwner<State<A, O>>,
 }
 
+/// One selected regular file borrowing its original immutable preview hold.
+/// Selection happens once; byte pages do not repeat the namespace lookup.
+pub struct JoinContent<'p, A: 'static, O: 'static> {
+    preview: &'p mut JoinPreview<A, O>,
+    record: crate::kernel::FileRecord,
+    side: ConflictSide,
+}
+
 struct State<A: 'static, O: 'static> {
+    // One borrowed body page retires before its pins and original read frame.
+    content: Option<crate::kernel::FileRangeRead>,
     changes: super::changed_paths::State<A, O>,
     conflicts: Option<Retained<std::vec::IntoIter<MergeConflict>>>,
     excluded: FixedIndex<()>,
@@ -55,6 +65,7 @@ struct State<A: 'static, O: 'static> {
 impl<A, O> State<A, O> {
     fn new(plan: JoinPlan<A, O>) -> Self {
         Self {
+            content: None,
             changes: Default::default(),
             conflicts: None,
             excluded: Default::default(),
@@ -195,11 +206,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     ) -> crate::MeasuredResult<OperationReceipt<Option<JoinPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            accounting.check()?;
+            state.begin(&mut accounting)?;
             let plan = &state.plan;
             let (workspace, generation) = plan.side_workspace(side);
             let file_id = match conflict {
@@ -248,11 +255,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     {
         let (state, mut accounting) = self.owner.borrow();
         let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            accounting.check()?;
+            state.begin(&mut accounting)?;
             let plan = &state.plan;
             let (workspace, generation) = plan.side_workspace(side);
             let cancellation = accounting.cancellation();
@@ -275,6 +278,38 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         result
             .map(|value| OperationReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
+    }
+
+    /// Selects one regular file under the preview's original work and hold.
+    /// An absent file or binding returns `None`. Selection loads no body and
+    /// advances neither row cursor. The borrowed reader reuses this exact
+    /// record and pinned side for every subsequent range.
+    pub async fn open_conflict_content(
+        &mut self,
+        conflict: &MergeConflict,
+        side: ConflictSide,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<JoinContent<'_, A, O>>>, WorkspaceError>
+    {
+        let selected = self.conflict_record(conflict, side).await?;
+        let work = selected.work;
+        let Some(record) = selected.value else {
+            return Ok(OperationReceipt { value: None, work });
+        };
+        if record.kind != FileKind::Regular {
+            self.owner.borrow().0.failed = true;
+            return Err(OperationFailure::new(
+                FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular).into(),
+                work,
+            ));
+        }
+        Ok(OperationReceipt {
+            value: Some(JoinContent {
+                preview: self,
+                record,
+                side,
+            }),
+            work,
+        })
     }
 
     /// Advances the original changed-path frontier, excluding unresolved files.
@@ -382,18 +417,72 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     }
 }
 
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O> {
-    fn prepare_conflict(
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinContent<'_, A, O> {
+    /// The authenticated record selected when this reader opened. Its length,
+    /// metadata and object references share the reader's original pinned hold;
+    /// inspecting them performs no second namespace lookup or body read.
+    pub fn record(&self) -> &crate::kernel::FileRecord {
+        &self.record
+    }
+
+    /// Borrows one exact range; an empty range returns an empty slice. The
+    /// next range replaces this single page after its borrow ends. No earlier
+    /// page is accumulated, and no namespace lookup or new allowance occurs.
+    /// Refusal or withdrawal terminates the original preview.
+    pub async fn read_range(
         &mut self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), WorkspaceError> {
+        range: crate::ByteRange,
+    ) -> crate::MeasuredResult<OperationReceipt<&[u8]>, WorkspaceError> {
+        let (state, mut accounting) = self.preview.owner.borrow();
+        let result = async {
+            state.begin(&mut accounting)?;
+            let (workspace, _) = state.plan.side_workspace(self.side);
+            let cancellation = accounting.cancellation();
+            let read = workspace
+                .volume
+                .fs
+                .workspace_merge_range_with_accounting(
+                    &workspace.volume,
+                    self.record,
+                    range,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let content = state.content.insert(read);
+            state.failed = false;
+            Ok::<_, WorkspaceError>(content.bytes.as_slice())
+        }
+        .await;
+        let work = accounting.spent();
+        result
+            .map(|value| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O> {
+    // A content slice's borrow ends before another preview operation can
+    // start. Retire that physical page before admitting any new selection,
+    // traversal or range, preserving typed cleanup errors on this same frame.
+    fn begin(&mut self, accounting: &mut KernelAccounting<'_>) -> Result<(), WorkspaceError> {
         if self.failed {
             return Err(FsError::InvalidDiff.into());
         }
         self.failed = true;
-        if self.conflict_ready {
-            accounting.check()?;
-        } else {
+        if let Some(previous) = self.content.take() {
+            previous.retire(accounting)?;
+        }
+        accounting.check()?;
+        Ok(())
+    }
+
+    fn prepare_conflict(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceError> {
+        self.begin(accounting)?;
+        if !self.conflict_ready {
             accounting.charge_items(1)?;
             self.conflict_ready = true;
         }
@@ -405,12 +494,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
         &mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
-        if self.failed {
-            return Err(FsError::InvalidDiff.into());
-        }
-        self.failed = true;
+        self.begin(accounting)?;
         if self.clean_ready {
-            accounting.check()?;
             self.failed = false;
             return Ok(());
         }
