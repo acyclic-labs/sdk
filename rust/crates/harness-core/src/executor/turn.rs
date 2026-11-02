@@ -272,14 +272,34 @@ impl StockExecution<'_> {
         messages: &mut Vec<ModelMessage>,
         part: ModelContentPart,
     ) -> Result<()> {
+        let content = ModelContent::Part(part);
+        #[cfg(feature = "filesystem")]
+        let retained = self
+            .io
+            .map(|_| content.retained_payload_bytes())
+            .transpose()?
+            .unwrap_or(0);
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::with_input(self.io, retained)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        // The incoming message dies before its custody if validation or storage
+        // admission fails; existing history never moves into this scope.
         let message = ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Part(part),
+            content,
         };
-        with_history_io(self.io, |work| {
+        with_history_io(io, |work| {
             message.content.validate_limits(self.stock.limits, work)
         })?;
-        stock_vec_push(messages, message, self.io)
+        stock_vec_prepare_push(messages, self.io)?;
+        #[cfg(feature = "filesystem")]
+        scope.finish(retained)?;
+        // Storage and custody are admitted; insertion cannot fail or allocate.
+        messages.push(message);
+        Ok(())
     }
 }
 
