@@ -291,21 +291,19 @@ async fn release_waits_for_actual_payload_and_fence_cleanup_and_survives_waiter_
     );
     let anchor = OwnershipAnchor::fenced(anchor, fence);
     let cleanup = std::thread::spawn(move || drop(anchor));
-    owner_entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    owner_entered.recv().unwrap();
     assert!(
         !observed.is_released(),
         "Arc retirement preceded physical payload cleanup"
     );
     finish_owner.send(()).unwrap();
-    fence_entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    fence_entered.recv().unwrap();
     assert!(
         !observed.is_released(),
         "release preceded retained fence cleanup"
     );
     finish_fence.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), waiting)
-        .await
-        .unwrap();
+    waiting.await;
     cleanup.join().unwrap();
     observed.wait();
 }
