@@ -74,7 +74,8 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
         env[binding.name] = Object.freeze({ open: port.open.bind(port) });
         break;
       }
-      case "machinesWorkspace": case "streams": env[binding.name] = producers[selection]!.call(authority, binding); break;
+      case "machinesWorkspace": env[binding.name] = producers.machinesWorkspace!.call(authority, binding); break;
+      case "streams": env[binding.name] = producers.streams!.call(authority, binding); break;
     }
   }
   return Object.freeze(env);
