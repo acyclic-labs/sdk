@@ -7,7 +7,7 @@
 // more rights than you. Each settings write is confirmed in live/agents/self/admissions/<version>.json (`Admission`).
 // Records on disk use these types' field names (generated from the harness's types). `At<P>` is the record at a path.
 
-import type { AgentConfig, Config, Policy } from './config';
+import type { Admission, AgentConfig, Config, Policy } from './config';
 
 /* Files -------------------------------------------------------------- */
 
@@ -277,19 +277,10 @@ export function call<T extends Action | ToolRef>(
 export type { AgentConfig, Config } from './config';
 
 /**
- * `live/agents/self/admissions/<version>.json`, for each write of a settings file, context.ts or a schedule. Confirm with
- * `export default until(`live/agents/self/admissions/${v}.json`, { exists: true })`. "invalid" and "rejected" keep the
- * previous good settings; "stale": a context plan named parts that changed.
+ * `live/agents/self/admissions/<version>.json`, for each admitted settings write. "invalid" and "rejected" keep the
+ * previous good settings. This is the generated record emitted by settings admission.
  */
-export interface Admission {
-  readonly path: Path;
-  readonly version: Version;
-  readonly status: "applied" | "invalid" | "rejected" | "stale";
-  readonly error: string | null;
-  /** context.ts: the context revision it produced. */
-  readonly revision: number | null;
-  readonly at: string;
-}
+export type { Admission } from './config';
 
 /** To change a plugin's code, copy its folder into .volumes/home/plugins/ under a new name. */
 export interface PluginEntry<C = Record<string, unknown>> {
