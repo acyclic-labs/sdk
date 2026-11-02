@@ -15,6 +15,14 @@ pub(super) type DurabilityQuery = Option<Arc<acyclic_native_runtime::obs::Query>
 
 pub(super) type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Stream the original observations without a second JSON array allocation.
+#[derive(Serialize)]
+pub(super) struct RawSamples<'a> {
+    #[serde(flatten)]
+    pub(super) fields: serde_json::Value,
+    pub(super) raw_ns: &'a [f64],
+}
+
 #[derive(Clone, Copy, Serialize)]
 pub(super) struct Quantiles {
     pub(super) samples: usize,
@@ -99,6 +107,25 @@ pub(super) fn check_observations() -> Result {
     record(1024)?;
     if cohort.rows[&Operation::ObjectGet].raw_ns.len() != 2 {
         return Err("refused floor terms changed the original latency cohort".into());
+    }
+    let evidence = RawSamples {
+        fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
+        raw_ns: &[5.0, 1.0, 4.0, 2.0, 3.0],
+    };
+    let mut encoded = Ok(());
+    let borrowed = acyclic_test_support::measure(|| {
+        encoded = serde_json::to_writer(std::io::sink(), &evidence);
+    });
+    encoded?;
+    // Restore the former full JSON materialization around the same evidence.
+    let mut encoded = Ok(());
+    let copied = acyclic_test_support::measure(|| {
+        encoded = serde_json::to_value(&evidence)
+            .and_then(|value| serde_json::to_writer(std::io::sink(), &value));
+    });
+    encoded?;
+    if borrowed.count_total >= copied.count_total || borrowed.bytes_total >= copied.bytes_total {
+        return Err("raw sample array materialization was not removed".into());
     }
     emit(
         serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
@@ -443,48 +470,50 @@ impl Measurements {
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
             let timer = floors.timer();
-            emit(serde_json::json!({
-                "schema": 1, "kind": "operation", "operation": operation.name(),
-                "measurement_label": match operation {
-                    Operation::ActorWake => "event-drain-to-handler-entry",
-                    Operation::ActorWarmRead => "borrowed-resident-read",
-                    _ => operation.name(),
-                },
-                "agents": self.agents, "active": 1, "quantiles": quantiles,
-                "floor": terms, "floor_ns": floor_ns,
-                "guarantee": guarantee(operation),
-                "floor_units": floor_units(terms),
-                "ratio_qualified": false,
-                "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
-                "p50_ratio": quantiles.p50_ns / floor_ns,
-                "p99_ratio": quantiles.p99_ns / floor_ns,
-                "timer_only_quantiles": timer,
-                "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
-                "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
-                "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
-                "raw_ns": raw_ns,
-                "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {
-                    serde_json::json!({
-                        "sample": sample, "identity": identity, "work": work.0,
-                        "physical_admission_binding": null,
-                        "progress": "original operation returned; operation-specific result oracle checked before the report",
-                    })
-                }).collect::<Vec<_>>(),
-                "work_columns": acyclic_test_support::scale::METRICS,
-                "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
-                "work_observations": work.observations,
-                "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
-                    (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))
-                }).collect::<BTreeMap<_, _>>(),
-                "coordinator_allocations_scope": "current thread only; excluded from qualification",
-                "coordinator_allocations_count_and_bytes": coordinator_allocations,
-                "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
-                "provider_request_counts": provider_requests,
-                "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
-                "native_attempt_columns": ["ok", "err", "incomplete"],
-                "native_attempt_counts": native_attempts,
-                "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
-            }))?;
+            emit(RawSamples {
+                fields: serde_json::json!({
+                    "schema": 1, "kind": "operation", "operation": operation.name(),
+                    "measurement_label": match operation {
+                        Operation::ActorWake => "event-drain-to-handler-entry",
+                        Operation::ActorWarmRead => "borrowed-resident-read",
+                        _ => operation.name(),
+                    },
+                    "agents": self.agents, "active": 1, "quantiles": quantiles,
+                    "floor": terms, "floor_ns": floor_ns,
+                    "guarantee": guarantee(operation),
+                    "floor_units": floor_units(terms),
+                    "ratio_qualified": false,
+                    "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
+                    "p50_ratio": quantiles.p50_ns / floor_ns,
+                    "p99_ratio": quantiles.p99_ns / floor_ns,
+                    "timer_only_quantiles": timer,
+                    "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
+                    "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
+                    "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
+                    "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {
+                        serde_json::json!({
+                            "sample": sample, "identity": identity, "work": work.0,
+                            "physical_admission_binding": null,
+                            "progress": "original operation returned; operation-specific result oracle checked before the report",
+                        })
+                    }).collect::<Vec<_>>(),
+                    "work_columns": acyclic_test_support::scale::METRICS,
+                    "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
+                    "work_observations": work.observations,
+                    "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
+                        (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))
+                    }).collect::<BTreeMap<_, _>>(),
+                    "coordinator_allocations_scope": "current thread only; excluded from qualification",
+                    "coordinator_allocations_count_and_bytes": coordinator_allocations,
+                    "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
+                    "provider_request_counts": provider_requests,
+                    "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
+                    "native_attempt_columns": ["ok", "err", "incomplete"],
+                    "native_attempt_counts": native_attempts,
+                    "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
+                }),
+                raw_ns: &raw_ns,
+            })?;
             point.samples.push(work);
         }
         if !self.rows.is_empty() {

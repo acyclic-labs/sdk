@@ -1,4 +1,4 @@
-use super::report::{Quantiles, Result, Terms, emit, ns};
+use super::report::{Quantiles, RawSamples, Result, Terms, emit, ns};
 use acyclic_native_runtime::{Durability, read_at, sync_data, sync_parent};
 use divan::black_box;
 use std::{
@@ -56,17 +56,20 @@ fn measured(
         )
         .into());
     }
-    emit(serde_json::json!({
-        "schema": 1, "kind": "calibration", "primitive": name,
-        "quantiles": quantiles, "bytes": bytes, "raw_ns": values,
-        "operations_per_observation": operations_per_observation,
-        "quantile_scope": if operations_per_observation == 1 {
-            "single primitive events"
-        } else {
-            "per-operation batch averages; p99 is not an individual-operation tail"
-        },
-        "bytes_per_ns": bytes.map(|bytes| f64::from(bytes) / quantiles.p50_ns),
-    }))?;
+    emit(RawSamples {
+        fields: serde_json::json!({
+            "schema": 1, "kind": "calibration", "primitive": name,
+            "quantiles": quantiles, "bytes": bytes,
+            "operations_per_observation": operations_per_observation,
+            "quantile_scope": if operations_per_observation == 1 {
+                "single primitive events"
+            } else {
+                "per-operation batch averages; p99 is not an individual-operation tail"
+            },
+            "bytes_per_ns": bytes.map(|bytes| f64::from(bytes) / quantiles.p50_ns),
+        }),
+        raw_ns: &values,
+    })?;
     Ok(quantiles)
 }
 
