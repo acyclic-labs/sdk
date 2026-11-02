@@ -55,15 +55,17 @@ fn native_name_layout(
 }
 
 fn copy_name(
-    encoding: NameEncoding,
-    bytes: &[u8],
+    name: &LogicalName,
     limits: VolumeLimits,
     inputs: &mut InputBuffers<'_, '_>,
 ) -> Result<LogicalName, MountSourceError> {
-    let owned = inputs.copy_bytes(bytes)?;
-    LogicalName::new(encoding, owned, limits.maximum_component_bytes).map_err(|error| {
-        MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
-    })
+    let owned = inputs.copy_bytes(name.as_bytes())?;
+    if name.as_bytes().len() as u64 > u64::from(limits.maximum_component_bytes) {
+        return Err(MountSourceError::NamespacePath(
+            crate::kernel::NamespacePathError::Name(crate::kernel::TreePageError::NameTooLarge),
+        ));
+    }
+    Ok(LogicalName::from_validated_bytes(name.encoding(), owned))
 }
 
 fn native_name(
@@ -73,27 +75,29 @@ fn native_name(
     inputs: &mut InputBuffers<'_, '_>,
 ) -> Result<LogicalName, MountSourceError> {
     let (encoding, length) = native_name_layout(bytes, profile, limits, inputs)?;
-    if !cfg!(windows) || encoding != NameEncoding::Utf8 {
-        return copy_name(encoding, bytes, limits, inputs);
-    }
-    inputs.admit(crate::WorkCounters {
-        bytes_encoded: length as u64,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    let mut owned = inputs.vec(length)?;
-    for scalar in char::decode_utf16(
-        crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::Stale)?,
-    ) {
-        inputs.items(1)?;
-        let scalar = scalar.map_err(|_| MountSourceError::Stale)?;
-        let mut buffer = [0_u8; 4];
-        let encoded = scalar.encode_utf8(&mut buffer);
-        owned.extend_from_slice(encoded.as_bytes());
-        inputs.record(crate::WorkCounters {
-            bytes_encoded: encoded.len() as u64,
+    let owned = if !cfg!(windows) || encoding != NameEncoding::Utf8 {
+        inputs.copy_bytes(bytes)?
+    } else {
+        inputs.admit(crate::WorkCounters {
+            bytes_encoded: length as u64,
             ..crate::WorkCounters::UNCHARGED
         })?;
-    }
+        let mut owned = inputs.vec(length)?;
+        for scalar in char::decode_utf16(
+            crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::Stale)?,
+        ) {
+            inputs.items(1)?;
+            let scalar = scalar.map_err(|_| MountSourceError::Stale)?;
+            let mut buffer = [0_u8; 4];
+            let encoded = scalar.encode_utf8(&mut buffer);
+            owned.extend_from_slice(encoded.as_bytes());
+            inputs.record(crate::WorkCounters {
+                bytes_encoded: encoded.len() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+        }
+        owned
+    };
     LogicalName::new(encoding, owned, limits.maximum_component_bytes).map_err(|error| {
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
     })
@@ -138,12 +142,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let mut names = inputs.vec::<LogicalName>(count)?;
         for name in self.root.components() {
-            names.push(copy_name(
-                name.encoding(),
-                name.as_bytes(),
-                self.config.limits,
-                inputs,
-            )?);
+            names.push(copy_name(name, self.config.limits, inputs)?);
         }
         for component in path.components() {
             names.push(native_name(
