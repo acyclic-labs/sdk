@@ -51,21 +51,21 @@ pub fn is_command(command: &str) -> bool {
 
 #[derive(Debug)]
 struct Error {
-    code: String,
+    code: &'static str,
     message: String,
     status: Option<StatusCode>,
 }
 
 impl Error {
-    fn new(code: &str, message: impl Into<String>) -> Self {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
-            code: code.to_owned(),
+            code,
             message: message.into(),
             status: None,
         }
     }
 
-    fn http(code: &str, message: impl Into<String>, status: StatusCode) -> Self {
+    fn http(code: &'static str, message: impl Into<String>, status: StatusCode) -> Self {
         Self {
             status: Some(status),
             ..Self::new(code, message)
@@ -512,11 +512,27 @@ impl Identity {
             )
         })?;
         if !status.is_success() {
-            // Server descriptions can contain submitted credentials; only expose the error code.
-            let code = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("identity_error");
+            // Both descriptions and arbitrary error codes can echo credentials.
+            // Retain only the protocol's fixed control vocabulary.
+            let code = match value.get("error").and_then(Value::as_str) {
+                Some("authorization_pending") => "authorization_pending",
+                Some("slow_down") => "slow_down",
+                Some("access_denied") => "access_denied",
+                Some("expired_token") => "expired_token",
+                Some("invalid_grant") => "invalid_grant",
+                Some("invalid_request") => "invalid_request",
+                Some("invalid_client") => "invalid_client",
+                Some("unauthorized_client") => "unauthorized_client",
+                Some("unsupported_grant_type") => "unsupported_grant_type",
+                Some("invalid_scope") => "invalid_scope",
+                Some("server_error") => "server_error",
+                Some("request_cancelled") => "request_cancelled",
+                Some("temporarily_unavailable") => "temporarily_unavailable",
+                Some("upstream_unavailable") => "upstream_unavailable",
+                Some("unavailable") => "unavailable",
+                Some("invalid agent upgrade proof") => "invalid agent upgrade proof",
+                _ => "identity_error",
+            };
             return Err(Error::http(
                 code,
                 format!("identity request refused (HTTP {status})"),
