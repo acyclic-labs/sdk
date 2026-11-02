@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 description = "One operation span, latency distribution and outcome ledger for Acyclic primitives"
 
+[features]
+research = []
+
 [dependencies]
 serde.workspace = true
 

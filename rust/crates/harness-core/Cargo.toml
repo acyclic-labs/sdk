@@ -23,7 +23,7 @@ name = "main"
 path = "tests/main.rs"
 
 [features]
-research = []
+research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]

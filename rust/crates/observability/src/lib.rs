@@ -37,6 +37,11 @@ mod binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub use binding::{Binding, BindingError};
 
+#[cfg(all(feature = "research", not(target_arch = "wasm32")))]
+mod interval;
+#[cfg(all(feature = "research", not(target_arch = "wasm32")))]
+pub use interval::{IntervalCoordinates, IntervalError, IntervalOrigin, OperationInterval};
+
 #[cfg(not(target_arch = "wasm32"))]
 mod operations;
 #[cfg(not(target_arch = "wasm32"))]

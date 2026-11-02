@@ -84,12 +84,21 @@ impl Export {
             sample.native_task = None;
             sample.capture_retirement = None;
             sample.binding = None;
+            #[cfg(feature = "research")]
+            {
+                sample.interval = None;
+            }
         }
         let _ = self.delivery.publish(admission, sample);
     }
 }
 
 impl Sink for Export {
+    #[cfg(feature = "research")]
+    fn interval_details(&self) -> bool {
+        self.details
+    }
+
     fn error_details(&self) -> bool {
         self.details
     }
@@ -112,6 +121,8 @@ impl Sink for Export {
                 None
             },
             elapsed: sample.elapsed,
+            #[cfg(feature = "research")]
+            interval: self.details.then_some(sample.interval).flatten(),
             outcome: sample.outcome,
         });
     }
