@@ -144,11 +144,12 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
             reads + 1,
             "warm continuation read more than its current projection"
         );
+        let cold_reads = journal.4.load(Ordering::SeqCst);
         session.load_working_cut(&journal, reference).await?;
-        assert_ne!(
-            journal.4.load(Ordering::SeqCst),
-            reads + 1,
-            "forced working-payload reload did not break the read bound"
+        assert_eq!(
+            journal.4.load(Ordering::SeqCst) - cold_reads,
+            if signed { 2 } else { 4 },
+            "authenticated reopening must read only the cut and retained context"
         );
         let mut wrong = input.clone();
         wrong
@@ -185,6 +186,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
                 .await
                 .is_err()
         );
+        working_cut_admission_controls(session, &journal, &input, reference, signed).await?;
     }
     assert!(provider.requests().is_empty());
     let address = std::ptr::from_ref(&journal) as usize;
@@ -196,5 +198,97 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         "replacing the journal retained an authenticated working cut"
     );
     assert!(crate::contract::canonical_json_bytes(&original)?.len() > 50_000);
+    Ok(())
+}
+
+async fn working_cut_admission_controls(
+    execution: &StockExecution<'_>,
+    journal: &Journal,
+    input: &TurnInput,
+    reference: &FileRef,
+    signed: bool,
+) -> Result<()> {
+    let cut = load_json::<Value>(journal, reference, None).await?.0;
+    let source_ref: FileRef = serde_json::from_value(cut["source"].clone()).unwrap();
+    let retained_ref: FileRef = serde_json::from_value(cut["retained"].clone()).unwrap();
+    let proof_ref: FileRef = serde_json::from_value(cut["compaction"].clone()).unwrap();
+    let source = load_json::<crate::context::Context>(journal, &source_ref, None)
+        .await?
+        .0;
+    let retained = load_json::<crate::context::Context>(journal, &retained_ref, None)
+        .await?
+        .0;
+    let proof = load_json::<crate::context::CompactionReference>(journal, &proof_ref, None)
+        .await?
+        .0;
+    let mut fresh = input.clone();
+    fresh.operation_id = OperationId::new();
+    let staged = journal.1.lock().unwrap().len();
+    for invalid in 0..3 {
+        let mut proof = proof.clone();
+        proof.summary.as_mut().unwrap().operation_id = fresh.operation_id;
+        let mut retained = retained.clone();
+        match invalid {
+            0 => proof.source_digest[0] ^= 1,
+            1 => retained.current_input_index = Some(u32::MAX),
+            _ => proof.summary.as_mut().unwrap().step += 1,
+        }
+        assert!(
+            execution
+                .stage_working_cut(
+                    journal,
+                    working_tail::WorkingCompaction {
+                        input: &fresh,
+                        step: 0,
+                        prior: 0,
+                        source: &source,
+                        retained: &retained,
+                        proof: &proof,
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            journal.1.lock().unwrap().len(),
+            staged,
+            "invalid semantic admission staged content before refusal"
+        );
+    }
+    for mutation in 0..3 {
+        let mut changed = cut.clone();
+        match mutation {
+            0 => changed["version"] = serde_json::json!(2),
+            1 => {
+                changed.as_object_mut().unwrap().remove("version");
+            }
+            _ => changed["retained"] = changed["source"].clone(),
+        }
+        let changed =
+            stage_json(journal, OperationId::new(), "changed-cut", &changed, None).await?;
+        assert!(
+            execution.load_working_cut(journal, &changed).await.is_err(),
+            "changed format or retained reference inherited an admitted cut"
+        );
+    }
+    // Original source loss cannot turn a signed retained read into hydration.
+    // An unsigned adapter still needs that source to validate its claim.
+    let key = journal
+        .1
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, (file, _))| file == &source_ref)
+        .unwrap()
+        .0
+        .clone();
+    let removed = journal.1.lock().unwrap().remove(&key).unwrap();
+    let reopened = execution.load_working_cut(journal, reference).await;
+    journal.1.lock().unwrap().insert(key, removed);
+    assert_eq!(
+        reopened.is_ok(),
+        signed,
+        "source loss must distinguish authenticated cuts from unsigned claims"
+    );
     Ok(())
 }
