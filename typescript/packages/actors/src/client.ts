@@ -361,7 +361,7 @@ export async function validateDeploymentBinding(input: DeploymentDeclaration): P
 
 /** Capture declarations before initialization, then admit them through one loaded
  * Rust module. The returned snapshots retain exactly the fields Rust checked. */
-export async function admitDeploymentBindings(input: readonly DeploymentDeclaration[]): Promise<readonly CapturedDeploymentBinding[]> {
+export async function admitDeploymentBindings(input: readonly DeploymentDeclaration[]): Promise<readonly ReturnType<typeof captureDeploymentBinding>[]> {
   const selected = input.map(captureDeploymentBinding);
   if (selected.length !== 0) {
     const wasm = await loadWasmModule();
