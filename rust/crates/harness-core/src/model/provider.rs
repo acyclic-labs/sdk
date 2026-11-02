@@ -218,7 +218,9 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// # Errors
     /// A selection mismatch or an unsupported metadata query.
     fn provider_settings(&self, _: &Model) -> Result<Option<&crate::config::ProviderEntry>> {
-        Err(unsupported())
+        Err(Error::Unsupported(
+            "selected model provider settings are unavailable".into(),
+        ))
     }
     /// The tool family the exact model selection was trained on. Stock turns
     /// offer the tools it maps under that family's declarations.
