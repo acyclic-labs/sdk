@@ -36,15 +36,11 @@ impl Executor for CustomExecutor {
                     }
                 }
             }
-            Ok(TurnOutput {
-                #[cfg(feature = "research")]
-                journal_cut: None,
+            Ok(TurnOutput::new(
                 text,
-                attachments: Vec::new(),
-                metadata: metadata.ok_or(Error::Indeterminate(input.operation_id))?,
-                steps: 1,
-                transcript: Vec::new(),
-            })
+                metadata.ok_or(Error::Indeterminate(input.operation_id))?,
+                1,
+            ))
         })
     }
 }

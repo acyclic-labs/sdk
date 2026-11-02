@@ -371,15 +371,11 @@ impl Executor for EditorTurn {
                 );
                 self.observed.store(true, Ordering::SeqCst);
             }
-            Ok(crate::executor::TurnOutput {
-                #[cfg(feature = "research")]
-                journal_cut: None,
-                text: "settled".into(),
-                attachments: Vec::new(),
-                metadata: serde_json::Value::Null,
-                steps: 0,
-                transcript: Vec::new(),
-            })
+            Ok(crate::executor::TurnOutput::new(
+                "settled".into(),
+                serde_json::Value::Null,
+                0,
+            ))
         })
     }
 }
