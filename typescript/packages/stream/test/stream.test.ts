@@ -5,7 +5,7 @@ import { SessionClosedSchema } from "../generated/proto/stream/v1/session_pb.js"
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, WasmOpened, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
 import { openWasmCursor } from "../src/wasm-records.js";
 import { DefaultStreamProvider } from "../src/default.js";
@@ -598,6 +598,32 @@ describe("website Stream contract", () => {
     const next = pending.next();
     await pending.close();
     expect(await next).toBeNull();
+  });
+
+  test("Rust cursor ownership refusal preserves the original pending follow", async () => {
+    await ensureStreamWasm();
+    const wasm = new WasmStream();
+    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "owner", records: [new Uint8Array([1])] })));
+    const request = wasm.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "owner", from: 1n })));
+    let cursor: WasmOpened | undefined;
+    let pulling: Promise<Uint8Array | null> | undefined;
+    try {
+      const opened = await request.next();
+      if (!(opened instanceof WasmOpened)) throw new Error("original follow omitted its selected cursor");
+      cursor = opened;
+      pulling = cursor.next();
+      await expect(cursor.next()).rejects.toMatchObject({ code: "unavailable" });
+      await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "owner", records: [new Uint8Array([2])] })));
+      expect(await pulling).toBeInstanceOf(Uint8Array);
+      cursor.close();
+      expect(await cursor.next()).toBeNull();
+    } finally {
+      cursor?.close();
+      await pulling?.catch(() => {});
+      cursor?.free();
+      request.close(); request.free();
+      wasm.free();
+    }
   });
 
   test("rejects a failed multi-stream commit atomically", async () => {
