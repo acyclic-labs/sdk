@@ -4,10 +4,9 @@ import { checkpoint } from "./session-node.js";
 import { SessionClosedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
-import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
-import { openWasmCursor } from "../src/wasm-records.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
@@ -555,20 +554,6 @@ describe("website Stream contract", () => {
     expect(removed).toBe(1);
   });
 
-  test("closed Rust follow handles end before or during a pending read", async () => {
-    await ensureStreamWasm();
-    const wasm = new WasmStream();
-    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
-    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
-    const closed = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
-    await closed.close();
-    expect(await closed.next()).toBeNull();
-    const pending = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
-    const next = pending.next();
-    await pending.close();
-    expect(await next).toBeNull();
-  });
-
   test("rejects a failed multi-stream commit atomically", async () => {
     const client = new StreamClient(new MemoryStreamProvider());
     const source = client.bytes("source");
@@ -874,11 +859,11 @@ describe("website Stream contract", () => {
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true })) });
-    await expect(malformed.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(malformed.append("events", [new Uint8Array([1])], { idempotencyKey: key("malformed-append") })).rejects.toMatchObject({ code: "invalid_response" });
     const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId })) });
-    await expect(impossible.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(impossible.append("events", [new Uint8Array([1])], { idempotencyKey: key("impossible-append") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId })) });
-    await expect(invalidPath.fork("events", "copy")).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(invalidPath.fork("events", "copy", { idempotencyKey: key("invalid-path-fork") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
@@ -988,9 +973,35 @@ describe("website Stream contract", () => {
           expect(error).toMatchObject({ code: failure.code });
           if (phase === "opened") await expect(opened.opened).rejects.toBe(error);
           expect(await opened.next()).toEqual({ done: true, value: undefined });
+          if (phase === "opened") await expect(opened.close()).rejects.toBe(error);
           expect(socket.sockets.length).toBe(1);
         } finally { socket.close(); }
       }
+    }
+  });
+
+  test("pending hosted openings close successfully through provider and typed facades", async () => {
+    for (const operation of ["read", "follow"] as const) for (const typed of [false, true]) {
+      const socket = new SessionSocket();
+      let release!: () => void;
+      let connected!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const connecting = new Promise<void>(resolve => { connected = resolve; });
+      socket.node.beforeConnect = async () => { connected(); await held; };
+      try {
+        const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+          fetcher: async () => { throw new Error("session cursor must not fetch"); } });
+        const stream = new StreamClient(provider).bytes("events");
+        const opened = operation === "read"
+          ? typed ? stream.read({ from: 0n, limit: 1 }) : provider.read("events", { from: 0n, limit: 1 })
+          : typed ? stream.follow({ from: 0n }) : provider.follow("events", { from: 0n });
+        const pulling = opened.next();
+        await connecting;
+        await expect(opened.close()).resolves.toBeUndefined();
+        await expect(pulling).resolves.toEqual({ done: true, value: undefined });
+        expect(await opened.next()).toEqual({ done: true, value: undefined });
+        await expect(opened[Symbol.asyncDispose]()).resolves.toBeUndefined();
+      } finally { release(); socket.close(); }
     }
   });
 
