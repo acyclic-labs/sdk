@@ -448,6 +448,7 @@ async fn physical_loss() -> TestResult {
 }
 
 async fn resident_work() -> TestResult {
+    let mut debit_work = None;
     for population in [1_usize, 100_000] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(provider.clone(), state_root()?);
@@ -458,7 +459,7 @@ async fn resident_work() -> TestResult {
             for index in 0..population {
                 state.put(format!("key-{index:06}"), Bytes::from_static(b"untouched"));
             }
-            Ok(())
+            state.fund_escrow(crate::escrow::Escrow::new(Some(2)))
         })?;
         // This oracle measures resident transactions, including pending work.
         // Publication and recovery are checked separately on persisted state;
@@ -491,6 +492,7 @@ async fn resident_work() -> TestResult {
                             state.get("key-000000").map(Bytes::as_ref),
                             Some(b"untouched".as_slice())
                         );
+                        assert_eq!(state.escrow()?.remaining(), Some(2));
                         Ok(())
                     })
                     .unwrap();
@@ -515,14 +517,27 @@ async fn resident_work() -> TestResult {
                     .unwrap();
             });
             assert_eq!(
-                put.count_total, 2,
-                "only the touched key and undo storage allocate"
+                put.count_total, 1,
+                "an existing key needs only undo storage, never a key clone"
+            );
+            let debit = acyclic_test_support::measure(|| {
+                binding.transaction(|state| state.debit_escrow(1)).unwrap();
+            });
+            let work = (debit.count_total, debit.bytes_total);
+            if let Some(expected) = debit_work {
+                assert_eq!(work, expected, "debit work grew with unrelated metadata");
+            } else {
+                debit_work = Some(work);
+            }
+            println!(
+                "escrow_metadata={population} debit_allocations={} debit_bytes={}",
+                debit.count_total, debit.bytes_total
             );
         }
         rollback(&mut binding, staged_tail)?;
         binding.transaction(|state| {
             assert_eq!(state.journal_tail(), staged_tail);
-            assert_eq!(state.entries().len(), population);
+            assert_eq!(state.entries().len(), population + 1);
             Ok(())
         })?;
         assert_eq!(provider.requests().since(before).data(), 0);

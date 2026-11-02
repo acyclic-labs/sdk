@@ -59,7 +59,13 @@ impl ActorStateTransaction<'_> {
     }
     /// Stage metadata; only a successful publication confirms durability.
     pub fn put(&mut self, key: String, value: Bytes) {
-        let previous = self.state.metadata.insert(key.clone(), value);
+        let previous = match self.state.metadata.get_mut(&key) {
+            Some(previous) => Some(std::mem::replace(previous, value)),
+            None => {
+                self.state.metadata.insert(key.clone(), value);
+                None
+            }
+        };
         self.undo.push((key, previous));
     }
     /// Enumerate this actor's metadata in canonical key order.
@@ -194,7 +200,8 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     }
 
     /// Apply the public JavaScript projection's values through the SAME native
-    /// transaction path. The packet supplies no actor, epoch, stream or key.
+    /// transaction path. The packet supplies no actor, epoch, stream or
+    /// publication identity; its metadata keys remain actor-local.
     /// The host then calls flush once under its retained invocation identity.
     pub fn apply(&mut self, commit: crate::guest::ActorStateCommit) -> Result<(), Error> {
         let from = decimal(&commit.journal_from)?;
