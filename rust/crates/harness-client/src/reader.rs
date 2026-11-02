@@ -2602,7 +2602,7 @@ mod reader_tests {
                 1,
             );
             assert_eq!(
-                refused.cache.record(&denied, 0).unwrap().as_slice(),
+                refused.cache.record(&denied, 0).unwrap().as_ref(),
                 b"original committed body"
             );
             assert!(refused.poll(1).is_empty());
