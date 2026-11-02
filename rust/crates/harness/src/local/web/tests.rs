@@ -68,6 +68,86 @@ fn assert_published_web_contract(name: &str, value: &Value) -> Result<()> {
 }
 
 #[tokio::test]
+async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
+    use crate::{
+        hooks::{
+            HookEvent, HookFailure, HookInput, HookRule, HookRun, HookSpec, Hooks, RequestMatch,
+        },
+        tool::{ToolInvocation, ToolRegistry},
+    };
+    let search = Arc::new(ScriptedSearchProvider::new([])?);
+    let mut registry = ToolRegistry::default();
+    super::WebExecutor::bind(&mut registry, Some(search.clone()))?;
+    for (name, action, arguments) in [
+        (
+            "web_search",
+            "search",
+            json!({"query": "query", "max_results": 1}),
+        ),
+        (
+            "url_fetch",
+            "web",
+            json!({"url": "https://example.test/source"}),
+        ),
+    ] {
+        let invocation = ToolInvocation {
+            operation_id: crate::OperationId::from_bytes([17; 16]),
+            call_id: name.into(),
+            name: name.into(),
+            arguments,
+        };
+        // The production web registry, capability selection and matcher must
+        // reach only the matching guard, even before argument validation.
+        for selected in ["search", "web", "other"] {
+            let mut hooks = Hooks::default();
+            hooks.add_rules([HookRule {
+                on: HookEvent::PreToolUse,
+                matcher: String::new(),
+                hooks: vec![HookSpec {
+                    run: HookRun::Plugin {
+                        instance: "root:plugins.ts#guard:hooks/before-tool".into(),
+                        sh: Some("exit 2".into()),
+                        ps1: Some("exit 2".into()),
+                        config: "{}".into(),
+                        matcher: Some(RequestMatch {
+                            action: vec![selected.into()],
+                            ..RequestMatch::default()
+                        }),
+                    },
+                    timeout_ms: u64::MAX,
+                    failure: HookFailure::Block,
+                }],
+            }])?;
+            let reached = std::cell::Cell::new(false);
+            let outcome = hooks
+                .run_commands(
+                    HookEvent::PreToolUse,
+                    HookInput::Tool {
+                        invocation: &invocation,
+                        response: None,
+                        session_id: None,
+                    },
+                    &registry,
+                    65_536,
+                    |_, _, _| {
+                        reached.set(true);
+                        std::future::ready(Err(Error::Invalid("guard execution refused".into())))
+                    },
+                )
+                .await?;
+            assert_eq!(reached.get(), selected == action, "{name}: {selected}");
+            assert_eq!(outcome.blocks(), selected == action, "{name}: {selected}");
+        }
+    }
+    assert_eq!(
+        search.remaining(),
+        0,
+        "matching must not dispatch a web request"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() -> Result<()> {
     let directory =
         tempfile::tempdir().map_err(|_| Error::Storage("fixture directory failed".into()))?;

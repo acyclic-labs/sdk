@@ -53,6 +53,8 @@ pub(super) fn request(tool: &str, capability: &str, input: &Value) -> Value {
                 .and_then(Value::as_str)
                 .map(|path| ("path", path.to_owned())),
         ),
+        "web_search" => ("search", None),
+        "url_fetch" => ("web", None),
         name if name.starts_with("mcp.") => ("mcp", None),
         _ => ("other", None),
     };
@@ -65,7 +67,7 @@ pub(super) fn request(tool: &str, capability: &str, input: &Value) -> Value {
             request["action"] = action.into();
             request[field] = value.into();
         }
-        None if action == "mcp" => request["action"] = action.into(),
+        None if matches!(action, "search" | "web" | "mcp") => request["action"] = action.into(),
         None => {}
     }
     request
