@@ -1,6 +1,6 @@
 //! Credential-free, bounded retrieval of one HTTP(S) source, distinct from search.
 
-use crate::{Error, Result};
+use crate::{Error, Result, rejection};
 use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -122,13 +122,5 @@ pub trait FetchProvider: acyclic_stream::ProviderPlatform {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "fetch provider has no native producer",
         })
-    }
-}
-
-pub(crate) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
-    let _ = work;
-    Error::ToolRejected {
-        code: crate::wire::ErrorCode::Invalid,
-        reason,
     }
 }

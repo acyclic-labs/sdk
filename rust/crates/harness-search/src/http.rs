@@ -73,7 +73,7 @@ impl HttpSearch {
             work,
             &mut failure,
         );
-        let result = await_io(exchange, work).await?;
+        let result = transport::await_io(exchange, work).await?;
         if let Some(error) = failure {
             return Err(error);
         }
@@ -198,23 +198,6 @@ fn request_body(
     serde_json::to_vec(value)
         .map(bytes::Bytes::from)
         .map_err(|_| super::error(work, "cannot encode search request"))
-}
-
-async fn await_io<F: std::future::Future>(
-    future: F,
-    work: crate::NativeWork<'_>,
-) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work {
-        work.remaining()?;
-        return tokio::select! {
-            biased;
-            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
-            result = future => Ok(result),
-        };
-    }
-    let _ = work;
-    Ok(future.await)
 }
 
 pub(crate) fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {

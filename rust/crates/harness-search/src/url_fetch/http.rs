@@ -1,7 +1,7 @@
 use super::{
     FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
 };
-use crate::http::transport_error;
+use crate::http::{transport::await_io, transport_error};
 use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
@@ -249,20 +249,6 @@ fn public_address(ip: std::net::IpAddr) -> bool {
                 && !(segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
         }
     }
-}
-
-async fn await_io<F: Future>(future: F, work: NativeWork<'_>) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work {
-        work.remaining()?;
-        return tokio::select! {
-            biased;
-            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
-            result = future => Ok(result),
-        };
-    }
-    let _ = work;
-    Ok(future.await)
 }
 
 impl FetchProvider for HttpFetch {

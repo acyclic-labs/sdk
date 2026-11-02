@@ -137,7 +137,7 @@ fn decode<T: crate::filesystem::UploadRecord>(
 ) -> Result<(T, NativeCustody)> {
     crate::tool::decode(value, work).map_err(|error| match error {
         Error::NativeJsonAdmission { .. } | Error::NativeJson { .. } | Error::Invalid(_) => {
-            crate::url_fetch::rejection(work, "invalid web request")
+            crate::rejection(work, "invalid web request")
         }
         error => error,
     })

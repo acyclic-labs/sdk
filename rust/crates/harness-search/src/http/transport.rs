@@ -132,27 +132,16 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
                 "search response exceeds byte limit",
             ));
         }
-        let mut body = response.into_body();
         let mut held = crate::tool::edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
-        let mut bytes = Vec::new();
-        while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|_| transport_error(work, "cannot read search response"))?;
-            let Ok(chunk) = frame.into_data() else {
-                continue;
-            };
-            // Every byte in this complete frame was already admitted and
-            // recorded at the socket, including headers and TLS records.
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::super::rejection(
-                    work,
-                    "search response exceeds byte limit",
-                ));
-            }
-            let length = bytes.len() + chunk.len();
-            crate::tool::edit::reserve_vec(&mut held, &mut bytes, length)?;
-            crate::tool::edit::charge(&held, chunk.len() as u64, 1)?;
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = read_body(
+            response.into_body(),
+            MAXIMUM_RESPONSE_BYTES,
+            &mut held,
+            work,
+            "cannot read search response",
+            "search response exceeds byte limit",
+        )
+        .await?;
         Ok((bytes, held))
     };
     tokio::pin!(exchange, connection);
@@ -163,4 +152,49 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             exchange.await
         }
     }
+}
+
+/// Races the original native cancellation against its admitted exchange.
+pub(crate) async fn await_io<F: std::future::Future>(
+    future: F,
+    work: NativeWork<'_>,
+) -> Result<F::Output> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        work.remaining()?;
+        return tokio::select! {
+            biased;
+            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
+            result = future => Ok(result),
+        };
+    }
+    let _ = work;
+    Ok(future.await)
+}
+
+/// Retains response bytes under the same custody that admitted the socket.
+pub(crate) async fn read_body(
+    mut body: hyper::body::Incoming,
+    maximum: usize,
+    held: &mut NativeCustody,
+    work: NativeWork<'_>,
+    read_failure: &'static str,
+    oversized: &'static str,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| transport_error(work, read_failure))?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        // Socket admission already accounts for the full frame, headers and TLS.
+        if chunk.len() > maximum - bytes.len() {
+            return Err(crate::rejection(work, oversized));
+        }
+        let length = bytes.len() + chunk.len();
+        crate::tool::edit::reserve_vec(held, &mut bytes, length)?;
+        crate::tool::edit::charge(held, chunk.len() as u64, 1)?;
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }

@@ -1,6 +1,6 @@
 use super::{MAXIMUM_RESPONSE_BYTES, copy_text, transport_error};
 use crate::{NativeCustody, NativeWork, Result};
-use http_body_util::{BodyExt as _, Empty};
+use http_body_util::Empty;
 use hyper_util::rt::TokioIo;
 use reqwest::Url;
 use std::sync::Arc;
@@ -177,21 +177,15 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
                 copy_text(value, &mut held)
             })
             .transpose()?;
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|_| transport_error(work, "cannot read fetch response"))?;
-            let Ok(chunk) = frame.into_data() else {
-                continue;
-            };
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::rejection(work, "fetch response exceeds byte limit"));
-            }
-            let length = bytes.len() + chunk.len();
-            crate::tool::edit::reserve_vec(&mut held, &mut bytes, length)?;
-            crate::tool::edit::charge(&held, chunk.len() as u64, 1)?;
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = crate::http::transport::read_body(
+            response.into_body(),
+            MAXIMUM_RESPONSE_BYTES,
+            &mut held,
+            work,
+            "cannot read fetch response",
+            "fetch response exceeds byte limit",
+        )
+        .await?;
         Ok(Response::Content {
             bytes,
             held,
