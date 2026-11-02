@@ -589,7 +589,7 @@ async fn stage_text(
         attachments: Vec::new(),
         metadata: serde_json::Value::Null,
         steps: 0,
-        parts: Vec::new(),
+        transcript: Vec::new(),
     };
     let bytes =
         crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;

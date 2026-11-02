@@ -41,7 +41,7 @@ impl Executor for CustomExecutor {
                 attachments: Vec::new(),
                 metadata: metadata.ok_or(Error::Indeterminate(input.operation_id))?,
                 steps: 1,
-                parts: Vec::new(),
+                transcript: Vec::new(),
             })
         })
     }

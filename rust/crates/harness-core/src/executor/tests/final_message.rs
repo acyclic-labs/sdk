@@ -341,7 +341,7 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
         text: "done".into(),
         native: answer,
     }));
-    assert_eq!(output.parts, transcript);
+    assert_eq!(output.transcript, transcript);
     // The tool step's interim text reaches the next request ahead of its call.
     let followup = &provider.requests()[1].messages;
     let interim = followup

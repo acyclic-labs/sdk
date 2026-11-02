@@ -75,13 +75,13 @@ impl StockExecution<'_> {
                     stop_active = true;
                     continue;
                 }
-                let parts = self.settled_parts(prior_messages, parts, &text)?;
+                let transcript = self.settled_transcript(prior_messages, parts, &text)?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
                     metadata,
                     steps: step + 1,
-                    parts,
+                    transcript,
                 }));
             }
             self.retire_step_text(text)?;
@@ -230,7 +230,7 @@ impl StockExecution<'_> {
     /// The turn's transcript after its input, exactly as its requests sent
     /// it, closed by the final reply. Tool notices lead it, as every request
     /// placed them directly after the input.
-    fn settled_parts(
+    fn settled_transcript(
         &self,
         messages: Vec<ModelMessage>,
         parts: bool,

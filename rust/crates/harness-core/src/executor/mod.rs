@@ -496,7 +496,7 @@ pub struct TurnOutput {
     /// turn replays as its text. Staged with the output itself, so keeping
     /// them costs no extra write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub parts: Vec<ModelMessage>,
+    pub transcript: Vec<ModelMessage>,
 }
 
 /// Execution progress with its settled value or pending approval operation.

@@ -97,7 +97,7 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
         attachments: Vec::new(),
         metadata: Value::Null,
         steps: 1,
-        parts,
+        transcript: parts,
     };
     let staged: TurnOutput = serde_json::from_slice(&serde_json::to_vec(&output).unwrap()).unwrap();
     assert_eq!(staged, output, "{adapter:?} staged output changed");
@@ -108,7 +108,7 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
 fn next_turn(provider: &ResolvedModel, reply: &TurnOutput) -> ModelRequest {
     let (prepared, _) = request(provider).unwrap();
     let mut next = prepared.request().clone();
-    next.messages.extend(reply.parts.iter().cloned());
+    next.messages.extend(reply.transcript.iter().cloned());
     next.messages.push(ModelMessage {
         role: ModelRole::User,
         content: ModelContent::Text("next".into()),
@@ -160,7 +160,7 @@ fn settled_native_parts_replay_exactly_in_the_next_turn() {
             .unwrap(),
         )
         .unwrap();
-        for message in &reply.parts {
+        for message in &reply.transcript {
             let ModelContent::Part(part) = &message.content else {
                 continue;
             };

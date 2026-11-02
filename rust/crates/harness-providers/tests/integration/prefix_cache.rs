@@ -1,6 +1,7 @@
 //! Golden prompt-cache prefixes: every family's serialized request is a
 //! byte-exact extension of the request before it, across a tool call, a
-//! tools.changed delta, a waking notice and a fork whose child continues.
+//! tools.changed delta, a waking notice and a fork whose child continues and
+//! forks a grandchild of its own.
 //!
 //! The run is the shared hosting composition (one [`Bound`] over in-memory
 //! streams and objects, the stock preset's executors) with each provider
@@ -288,7 +289,11 @@ fn user() -> Sender {
 
 /// Where `later` first departs from `earlier`'s open message array, if it does.
 fn departure(earlier: &[u8], later: &[u8]) -> Option<usize> {
-    let open = earlier.strip_suffix(b"]}")?;
+    // A body that does not close on its message array departs at its end, so
+    // a changed body shape fails instead of skipping the check.
+    let Some(open) = earlier.strip_suffix(b"]}") else {
+        return Some(earlier.len());
+    };
     let shared = open.iter().zip(later).take_while(|(a, b)| a == b).count();
     if shared == open.len() && later.get(open.len()) == Some(&b',') {
         None
@@ -335,6 +340,12 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
                 // The child continues from the fork with its own tool call.
                 program("call-3", "2 + 2"),
                 text("kid done"),
+                // Asked again, the child forks a grandchild.
+                program(
+                    "call-4",
+                    "await tools.spawn({task: 'Count to three', name: 'grandkid', role: 'worker'})",
+                ),
+                text("spawned again"),
             ]),
             Vec::new(),
         )),
@@ -409,12 +420,12 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     };
     let agents = bound.agents();
     agents.drain(&root).await?;
-    let message = |name: &'static str, prompt: &'static str| {
+    let message = |to: &AgentPath, name: &'static str, prompt: &'static str| {
         let bound = &bound;
-        let root = &root;
+        let to = to.clone();
         async move {
             let body = bound
-                .stage_text(root, "message", &user(), &intent(name), (prompt, prompt))
+                .stage_text(&to, "message", &user(), &intent(name), (prompt, prompt))
                 .await?;
             Ok::<_, acyclic_harness::agent::Error>(InboxRecord::Message(Message {
                 from: user(),
@@ -428,7 +439,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
         .send(
             &root,
             &user(),
-            &message("m1", "Compute one plus one").await?,
+            &message(&root, "m1", "Compute one plus one").await?,
         )
         .await?;
     agents.drain(&root).await?;
@@ -446,10 +457,27 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     agents.drain(&root).await?;
     changing.changed.store(true, Ordering::SeqCst);
     agents
-        .send(&root, &user(), &message("m3", "Delegate counting").await?)
+        .send(
+            &root,
+            &user(),
+            &message(&root, "m3", "Delegate counting").await?,
+        )
         .await?;
     agents.drain(&root).await?;
     let child: AgentPath = acyclic_harness::tools::spawned_child(&root, "kid")?;
+    transport.label("child");
+    agents.drain(&child).await?;
+    agents
+        .send(
+            &child,
+            &user(),
+            &message(&child, "m4", "Delegate further").await?,
+        )
+        .await?;
+    agents.drain(&child).await?;
+    let grandchild = acyclic_harness::tools::spawned_child(&child, "grandkid")?;
+    transport.label("grandchild");
+    agents.drain(&grandchild).await?;
     transport.label("child");
     agents.drain(&child).await?;
     transport.label("parent");
@@ -462,9 +490,10 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
             .map(|sent| &sent.body)
             .collect()
     };
-    let (parent, child) = (bodies("parent"), bodies("child"));
+    let (parent, child, grandchild) = (bodies("parent"), bodies("child"), bodies("grandchild"));
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
-    assert_eq!(child.len(), 2, "{family}: child requests");
+    assert!(child.len() >= 4, "{family}: child sent {}", child.len());
+    assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
     for (index, pair) in parent.windows(2).enumerate() {
         extends(
             family,
@@ -476,11 +505,26 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
     // The child forks the parent's settled conversation: the turn before the
     // spawning one, whose last request was the parent's third.
     extends(family, "child request 0", parent[2], child[0])?;
-    extends(family, "child request 1", child[0], child[1])?;
+    for (index, pair) in child.windows(2).enumerate() {
+        extends(
+            family,
+            &format!("child request {}", index + 1),
+            pair[0],
+            pair[1],
+        )?;
+    }
+    // The grandchild forks the child's settled first turn, whose last request
+    // was the child's second, and keeps the child's directive where it was.
+    extends(family, "grandchild request 0", child[1], grandchild[0])?;
     // The oracle rejects one changed byte inside the shared prefix.
     let mut rewritten = parent[1].to_vec();
     rewritten[parent[0].len() / 2] ^= 1;
     assert!(departure(parent[0], &rewritten).is_some());
+    // And a body whose messages are not its last field.
+    let mut reshaped = parent[0].to_vec();
+    reshaped.truncate(reshaped.len() - 1);
+    reshaped.extend_from_slice(b",\"after\":0}");
+    assert!(departure(&reshaped, parent[1]).is_some());
     Ok(())
 }
 

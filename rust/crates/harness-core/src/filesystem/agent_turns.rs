@@ -1173,14 +1173,15 @@ fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
 struct TurnContext<'a> {
     /// The latest checkpoint: its turn and its staged summary.
     checkpoint: Option<(OperationId, FileRef)>,
-    /// Each settled turn: its id, the roster it announced, its input and
-    /// its staged output.
+    /// Each settled turn: its id, the roster it announced, its input, its
+    /// staged output and, once decoded, the transcript that output keeps.
     settled: Vec<(
         OperationId,
         Option<FileRef>,
         ModelContent,
         FileRef,
         Option<crate::agent::NoticeSelection>,
+        Vec<ModelMessage>,
     )>,
     /// Latest roster message in `settled`, indexed while selecting history.
     roster_at: Option<usize>,
@@ -1189,6 +1190,10 @@ struct TurnContext<'a> {
     /// summary when its own checkpoint replaced them. Its role directive sits
     /// exactly there, so its context extends the parent's at the fork.
     fork: Option<usize>,
+    /// Each inherited settled turn that opens an ancestor's own turns, and
+    /// that ancestor: the ancestor's directive sits before it, exactly where
+    /// the ancestor's own requests placed it at its fork point.
+    ancestors: Vec<(usize, AgentPath)>,
     turn: OperationId,
     input: ModelContent,
     policy: Option<&'a FileRef>,
@@ -1227,13 +1232,32 @@ impl<'a> TurnContext<'a> {
         };
         // A cancelled checkpoint selects nothing and is no turn.
         let mut roster_at = None;
-        let settled = history
+        // Every turn stages its output on its own agent's private volume, so
+        // the owner of an inherited output names the ancestor that ran it.
+        let lineage: Vec<_> = std::iter::successors(agent.path.parent(), AgentPath::parent)
+            .map(|path| {
+                let owner = VolumeOwner::Agent(crate::AgentId::from_bytes(path.id().to_bytes()));
+                (owner, path)
+            })
+            .collect();
+        let mut ancestors = Vec::new();
+        let mut previous = None;
+        let settled: Vec<_> = history
             .into_iter()
             .filter(|(_, entry)| entry.input.context().is_none())
             .enumerate()
             .map(|(at, (sequence, entry))| {
                 if let Some(fork) = fork.as_mut().filter(|_| inherited(sequence)) {
                     *fork = at + 1;
+                }
+                if inherited(sequence) {
+                    let owner = entry.output.volume().owner();
+                    if previous != Some(owner.clone()) {
+                        if let Some((_, path)) = lineage.iter().find(|(id, _)| id == owner) {
+                            ancestors.push((at, path.clone()));
+                        }
+                        previous = Some(owner.clone());
+                    }
                 }
                 if entry.targets.is_some() {
                     roster_at = Some(at);
@@ -1244,6 +1268,7 @@ impl<'a> TurnContext<'a> {
                     crate::agent::model_input(&entry.input).map_err(agent_error)?,
                     entry.output,
                     entry.notices,
+                    Vec::new(),
                 ))
             })
             .collect::<Result<_>>()?;
@@ -1252,6 +1277,7 @@ impl<'a> TurnContext<'a> {
             settled,
             roster_at,
             fork,
+            ancestors,
             turn,
             input: input.clone(),
             // A spawned agent runs under the approval policy it inherited,
@@ -1261,12 +1287,14 @@ impl<'a> TurnContext<'a> {
         })
     }
 
-    /// Decode each selected input once, retaining its ordered exact references
-    /// for both grant derivation and the eventual model selection.
+    /// Decode each selected input and settled transcript once, retaining
+    /// their ordered exact references for both grant derivation and the
+    /// eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for (_, _, input, _, _) in &mut self.settled {
+        for (_, _, input, output, _, transcript) in &mut self.settled {
             let original = std::mem::replace(input, ModelContent::Text(String::new()));
             *input = crate::agent::expand_attachments(original, reader).await?;
+            *transcript = staged_transcript(reader, output).await?;
         }
         let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
         self.input = crate::agent::expand_attachments(original, reader).await?;
@@ -1283,9 +1311,9 @@ impl<'a> TurnContext<'a> {
     }
 
     /// Every file the turn can reach, each by its exact version: the files
-    /// each message names, each settled output (an inherited turn's is staged
-    /// on an ancestor's private volume, a child's result on the child's), and
-    /// the approval policy.
+    /// each message names, each settled output and the files its transcript
+    /// names (an inherited turn's are staged on an ancestor's private volume,
+    /// a child's result on the child's), and the approval policy.
     fn files(&self) -> impl Iterator<Item = &FileRef> {
         self.checkpoint
             .iter()
@@ -1293,11 +1321,16 @@ impl<'a> TurnContext<'a> {
             .chain(
                 self.settled
                     .iter()
-                    .flat_map(|(_, roster, input, output, _)| {
+                    .flat_map(|(_, roster, input, output, _, transcript)| {
                         roster
                             .iter()
                             .chain(input.file_refs())
                             .chain(std::iter::once(output))
+                            .chain(
+                                transcript
+                                    .iter()
+                                    .flat_map(|message| message.content.file_refs()),
+                            )
                     }),
             )
             .chain(self.input.file_refs())
@@ -1325,6 +1358,7 @@ impl<'a> TurnContext<'a> {
             checkpoint,
             settled,
             fork,
+            ancestors,
             turn,
             notices: current_notices,
             ..
@@ -1349,13 +1383,17 @@ impl<'a> TurnContext<'a> {
             "acyclic.harness.agent.prompt.v1",
             crate::preset::AGENT_PROMPT,
         ));
-        let directive = |messages: &mut Vec<ModelMessage>, message_ids: &mut Vec<uuid::Uuid>| {
-            let Some(parent) = &agent.parent else {
+        // A spawned agent's role at its fork point. Only the agent's path
+        // and its parent's decide the text, so a descendant re-renders an
+        // ancestor's directive byte for byte.
+        let place = |messages: &mut Vec<ModelMessage>,
+                     message_ids: &mut Vec<uuid::Uuid>,
+                     child: &AgentPath| {
+            let Some(parent) = child.parent() else {
                 return;
             };
             let directive = format!(
-                "You are child agent {}, working for parent {parent} in your own fork. Your task is the brief appended to this fork. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions.",
-                agent.path
+                "You are child agent {child}, working for parent {parent} in your own fork. Your task is the brief appended to this fork. Your edits stay in this fork until your parent merges your branch. Your final message is your report to your parent. Use send with agent {parent} to send updates or questions."
             );
             message_ids.push(directive_id(
                 "acyclic.harness.agent.child-role.v1",
@@ -1365,6 +1403,11 @@ impl<'a> TurnContext<'a> {
                 role: ModelRole::User,
                 content: ModelContent::Text(directive),
             });
+        };
+        let directive = |messages: &mut Vec<ModelMessage>, message_ids: &mut Vec<uuid::Uuid>| {
+            if agent.parent.is_some() {
+                place(messages, message_ids, &agent.path);
+            }
         };
         if fork.is_none() {
             directive(&mut messages, &mut message_ids);
@@ -1387,15 +1430,18 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(roster_id(turn));
         };
-        for (at, (settled, announced, content, output, notices)) in settled.into_iter().enumerate()
+        for (at, (settled, announced, content, _, notices, transcript)) in
+            settled.into_iter().enumerate()
         {
             if fork == Some(at) {
                 directive(&mut messages, &mut message_ids);
             }
+            if let Some((_, ancestor)) = ancestors.iter().find(|(opened, _)| *opened == at) {
+                place(&mut messages, &mut message_ids, ancestor);
+            }
             if let Some(announced) = &announced {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
-            let reply = staged_reply(reader, &output).await?;
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
                     .await?;
@@ -1413,7 +1459,10 @@ impl<'a> TurnContext<'a> {
                 });
                 message_ids.push(message_id(settled, ModelRole::User));
             }
-            for (part, message) in reply.into_iter().enumerate() {
+            if transcript.is_empty() {
+                return Err(Error::Invalid("settled transcript is not decoded".into()));
+            }
+            for (part, message) in transcript.into_iter().enumerate() {
                 messages.push(message);
                 message_ids.push(match part {
                     0 => message_id(settled, ModelRole::Assistant),
@@ -1475,7 +1524,7 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
 /// every message its last request sent plus its final reply, verbatim, or its
 /// text when the output kept none. Replaying the transcript rather than a
 /// summary of it keeps each turn's request a byte extension of the last.
-async fn staged_reply(
+async fn staged_transcript(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,
 ) -> Result<Vec<ModelMessage>> {
@@ -1484,13 +1533,13 @@ async fn staged_reply(
         .await?;
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-    Ok(if output.parts.is_empty() {
+    Ok(if output.transcript.is_empty() {
         vec![ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Text(output.text),
         }]
     } else {
-        output.parts
+        output.transcript
     })
 }
 
