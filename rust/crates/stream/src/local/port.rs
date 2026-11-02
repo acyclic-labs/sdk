@@ -125,14 +125,17 @@ impl CommandJournal for LocalPort {
         expected: u64,
         frames: &[Frame<'_>],
     ) -> Result<AppendIf, StreamError> {
-        // LocalStream retains its visibility fence for this whole proposal.
-        let head = self
-            .stream
-            .inner
-            .journal
-            .lock()
-            .map_err(|_| self.stream.inner.poison())?
-            .bytes;
+        // Visibility and publication retain this epoch's cut through preparation
+        // and physical completion. Concurrent flushes change neither counter.
+        let (head, operations) = {
+            let journal = self
+                .stream
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| self.stream.inner.poison())?;
+            (journal.bytes, journal.operations)
+        };
         if head != expected {
             return Ok(AppendIf::Stale { head });
         }
@@ -190,26 +193,17 @@ impl CommandJournal for LocalPort {
             Ok(prepared) => prepared,
             Err(error) => return Ok(AppendIf::Refused(error)),
         };
-        // Validate physical journal counter overflow before any proposal frame.
-        {
-            let journal = self
-                .stream
-                .inner
-                .journal
-                .lock()
-                .map_err(|_| self.stream.inner.poison())?;
-            prepared
-                .as_slice()
-                .iter()
-                .try_fold(journal.bytes, |bytes, frame| {
-                    bytes.checked_add(frame.encoded.len() as u64)
-                })
-                .ok_or(StreamError::Capacity)?;
-            journal
-                .operations
-                .checked_add(prepared.as_slice().len() as u64)
-                .ok_or(StreamError::Capacity)?;
-        }
+        // Validate against the original cut before writing any proposal frame.
+        prepared
+            .as_slice()
+            .iter()
+            .try_fold(head, |bytes, frame| {
+                bytes.checked_add(frame.encoded.len() as u64)
+            })
+            .ok_or(StreamError::Capacity)?;
+        operations
+            .checked_add(prepared.as_slice().len() as u64)
+            .ok_or(StreamError::Capacity)?;
         let sequence = self.stream.persist_frames(prepared).await?;
         Ok(AppendIf::Accepted {
             sequence,
