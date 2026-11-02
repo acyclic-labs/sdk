@@ -53,6 +53,17 @@ impl NativeCompletion<Vec<Bytes>> {
 }
 
 impl<T> NativeCompletion<T> {
+    /// Awaits this operation on its shared workers even when the caller admits
+    /// inline blocking I/O. Deferral is scoped to each poll, so a suspended or
+    /// moved future never changes another task's thread-local permission.
+    pub async fn offloaded(mut self) -> io::Result<T> {
+        std::future::poll_fn(|context| {
+            let _defer = InlineBlocking::defer();
+            Pin::new(&mut self).poll(context)
+        })
+        .await
+    }
+
     pub(crate) fn pending(
         job: NativeJob,
         state: Arc<CompletionMutex<CompletionState<T>>>,

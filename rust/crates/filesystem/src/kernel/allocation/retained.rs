@@ -557,8 +557,9 @@ mod tests {
             Err(crate::FsError::AccountingHandoffActive)
         ));
         assert!(matches!(
-            crate::async_storage::AuthorityFrame::borrow(&mut caller),
-            Err(crate::FsError::AccountingHandoffActive)
+            crate::async_storage::AuthorityFrame::borrow(&mut caller)
+                .map_err(crate::async_storage::object_error),
+            Err(crate::ObjectStoreError::AccountingHandoffActive)
         ));
         assert!(matches!(
             caller.allocation_scope(),

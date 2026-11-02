@@ -1,7 +1,7 @@
 use acyclic_stream::testing::{RequestClass, RequestLedger, Requests};
 use acyclic_test_support::{
     AllocationInfo,
-    scale::{Idle, Operation, Point, Sample, Work},
+    scale::{Counter, Idle, METRICS, Operation, Point, Sample, Work},
 };
 use serde::Serialize;
 use std::{
@@ -32,6 +32,39 @@ struct OperationEvidence<'a> {
     coordinator_allocations_count_and_bytes: &'a [Option<[u64; 2]>],
     provider_request_counts: &'a [Option<[u64; 7]>],
     native_attempt_counts: &'a [Option<[u64; 3]>],
+    #[serde(serialize_with = "serialize_work_summary")]
+    work: &'a [Counter; METRICS.len()],
+}
+
+fn serialize_work_summary<S: serde::Serializer>(
+    counters: &[Counter; METRICS.len()],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Summary<'a> {
+        #[serde(serialize_with = "serialize_total")]
+        total: &'a u128,
+        maximum: u64,
+        missing: u64,
+    }
+
+    fn serialize_total<S: serde::Serializer>(
+        total: &u128,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(total)
+    }
+
+    serializer.collect_map(METRICS.iter().zip(counters).map(|(metric, counter)| {
+        (
+            metric,
+            Summary {
+                total: &counter.total,
+                maximum: counter.maximum,
+                missing: counter.missing,
+            },
+        )
+    }))
 }
 
 fn serialize_work_receipts<S: serde::Serializer>(
@@ -141,16 +174,22 @@ pub(super) fn check_observations() -> Result {
     record(
         1024,
         Observation {
+            work: Work([Some(u64::MAX), Some(0), None, None, None, None, None, None]),
             coordinator_allocations: Some([2, 1024]),
             provider_requests: Some([1, 0, 0, 0, 0, 0, 0]),
             native_attempts: Some([1, 0, 0]),
-            ..Observation::default()
         },
     )?;
     if record(2048, Observation::default()).is_ok() {
         return Err("different required work was admitted into one latency cohort".into());
     }
-    record(1024, Observation::default())?;
+    record(
+        1024,
+        Observation {
+            work: Work([Some(u64::MAX), None, None, None, None, None, None, None]),
+            ..Observation::default()
+        },
+    )?;
     if cohort.rows[&Operation::ObjectGet].raw_ns.len() != 2 {
         return Err("refused floor terms changed the original latency cohort".into());
     }
@@ -193,9 +232,33 @@ pub(super) fn check_observations() -> Result {
         coordinator_allocations_count_and_bytes: &row.coordinator_allocations,
         provider_request_counts: &row.provider_requests,
         native_attempt_counts: &row.native_attempts,
+        work: &row.work.work,
     };
     check_borrowed_serialization(&evidence, "operation evidence")?;
     let encoded = serde_json::to_value(&evidence)?;
+    // Compare against the former independent map builder, outside measurement.
+    let original_summary: BTreeMap<_, _> = METRICS
+        .iter()
+        .zip(&row.work.work)
+        .map(|(metric, counter)| {
+            (
+                *metric,
+                serde_json::json!({
+                    "total": counter.total.to_string(),
+                    "maximum": counter.maximum,
+                    "missing": counter.missing,
+                }),
+            )
+        })
+        .collect();
+    if encoded["work"] != serde_json::to_value(original_summary)?
+        || encoded["work"]["syscalls"]["total"] != "36893488147419103230"
+        || encoded["work"]["allocations"]["maximum"] != 0
+        || encoded["work"]["allocations"]["missing"] != 1
+        || encoded["work"]["locks"]["missing"] != 2
+    {
+        return Err("operation encoding changed exact work totals or missing coverage".into());
+    }
     if encoded["coordinator_allocations_count_and_bytes"] != serde_json::json!([[2, 1024], null])
         || encoded["provider_request_counts"] != serde_json::json!([[1, 0, 0, 0, 0, 0, 0], null])
         || encoded["native_attempt_counts"] != serde_json::json!([[1, 0, 0], null])
@@ -593,12 +656,9 @@ impl Measurements {
                     "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
                     "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
                     "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
-                    "work_columns": acyclic_test_support::scale::METRICS,
+                    "work_columns": METRICS,
                     "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
                     "work_observations": work.observations,
-                    "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
-                        (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))
-                    }).collect::<BTreeMap<_, _>>(),
                     "coordinator_allocations_scope": "current thread only; excluded from qualification",
                     "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
                     "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
@@ -609,6 +669,7 @@ impl Measurements {
                     coordinator_allocations_count_and_bytes: &coordinator_allocations,
                     provider_request_counts: &provider_requests,
                     native_attempt_counts: &native_attempts,
+                    work: &work.work,
                 },
                 raw_ns: &raw_ns,
             })?;

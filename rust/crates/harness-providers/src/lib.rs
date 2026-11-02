@@ -12,13 +12,11 @@ mod catalog_document;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
-mod codex_count;
-#[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
 mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
 mod refresh;
-#[cfg(not(target_arch = "wasm32"))]
+mod usage_count;
 mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;

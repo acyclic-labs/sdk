@@ -649,6 +649,97 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
 }
 
 #[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Result<()> {
+    use std::sync::{Mutex, atomic::Ordering, mpsc};
+    crate::initialize_native_io_services()?;
+    let _inline = crate::InlineBlocking::enter();
+    let root = tempfile::tempdir()?;
+    let grant = ExecutionGrant::new(
+        root.path(),
+        ExecutionAccess::ReadOnly,
+        [],
+        ExecutionNetwork::Off,
+    )?;
+    for release_producer in [true, false] {
+        let coordinator = std::thread::current().id();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = mpsc::channel();
+        let step = Mutex::new(Some((entered, released)));
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.operation_recorded = Some(Box::new(move || {
+            if let Some((entered, released)) = step.lock().unwrap().take() {
+                // The inline negative control fails before waiting, rather
+                // than hanging the executor that produces the release.
+                assert_ne!(std::thread::current().id(), coordinator);
+                entered.send(()).map_err(|_| io::ErrorKind::BrokenPipe)?;
+                released.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
+            }
+            Ok(())
+        }));
+        let meter = Arc::new(meter);
+        let proof_meter = meter.clone();
+        let ceiling = grant.clone();
+        let requested = grant.clone();
+        let mut proof = tokio::spawn(async move {
+            ceiling
+                .check_attenuation_async(&requested, Some(proof_meter))
+                .await
+        });
+        // The very executor waiting for native I/O must produce this event.
+        tokio::select! {
+            entered = started => entered.map_err(|_| io::ErrorKind::BrokenPipe)?,
+            result = &mut proof => {
+                result.map_err(io::Error::other)??;
+                return Err(io::Error::other("proof completed before entering its root operation"));
+            }
+        }
+        if release_producer {
+            release.send(()).map_err(|_| io::ErrorKind::BrokenPipe)?;
+        }
+        drop(release);
+        let result = proof.await.map_err(io::Error::other)?;
+        if release_producer {
+            result?;
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        }
+        assert_eq!(
+            meter.read_attempts.load(Ordering::Acquire),
+            if release_producer { 2 } else { 1 }
+        );
+        println!(
+            "deferred proof: native reads={}, task allocation reservations={}",
+            meter.read_attempts.load(Ordering::Acquire),
+            meter.used_allocations.load(Ordering::Acquire)
+        );
+    }
+    // Refused task storage and cancelled requests never reach a native root
+    // operation. The successful identical real-object proof above is control.
+    for cancelled in [false, true] {
+        let meter = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
+        meter.cancelled.store(cancelled, Ordering::Release);
+        meter.deny_allocations.store(!cancelled, Ordering::Release);
+        let error = grant
+            .check_attenuation_async(&grant, Some(meter.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            if cancelled {
+                io::ErrorKind::Interrupted
+            } else {
+                io::ErrorKind::Other
+            }
+        );
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 0);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn replaced_grant_root_refuses_before_guest_execution() {
     let root = tempfile::tempdir().unwrap();

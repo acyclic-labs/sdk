@@ -5,6 +5,7 @@ struct Opened {
     source: Source,
     terminal: Option<Source>,
     socket: Option<Box<dyn SocketInbound>>,
+    input: Option<calls::InputProducer>,
 }
 enum Admission {
     Open(Box<Opened>),
@@ -79,8 +80,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 source,
                 terminal,
                 socket,
+                input,
             } = *opened;
             channel.socket = socket;
+            channel.input = input;
             self.remove(identity.channel_id)?;
             let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
@@ -112,6 +115,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let binding;
         let mut terminal = None;
         let mut socket = None;
+        let mut input = None;
         // Records of a stream follow spell only an origin other than its path.
         let mut followed = None;
         let (latest, source, revalidate) = match subscription.kind {
@@ -197,8 +201,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }
             }
             Some(Kind::ActorCall(invocation)) => {
-                if invocation.is_empty()
-                    || invocation.len() > crate::MAX_COMMAND_BYTES
+                if invocation.invocation.is_empty()
+                    || invocation.invocation.len() > crate::MAX_COMMAND_BYTES
                     || resume.next != 0
                     || !resume.opaque.is_empty()
                     || subscription.filter.is_some()
@@ -208,7 +212,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 let Some(provider) = self.calls.as_ref() else {
                     return Ok(Admission::Failed(identity, StreamError::Unsupported));
                 };
-                let resource = match provider.resource(&invocation) {
+                let resource = match provider.resource(&invocation.invocation) {
                     Ok(resource) => resource,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };
@@ -223,9 +227,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 };
                 binding = Some(authorization);
                 opaque_cursor = true;
+                let body = invocation.input.then(|| {
+                    let (producer, body) =
+                        calls::InputProducer::new(identity, sync::Arc::clone(&self.input_released));
+                    input = Some(producer);
+                    body
+                });
                 (
                     false,
-                    calls::source(Arc::clone(provider), invocation, context, identity),
+                    calls::source(Arc::clone(provider), invocation, context, identity, body),
                     None,
                 )
             }
@@ -320,6 +330,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             source,
             terminal,
             socket,
+            input,
         })))
     }
 
@@ -401,6 +412,7 @@ impl Channel {
             applied: resume,
             ending: None,
             socket: None,
+            input: None,
         }
     }
 }

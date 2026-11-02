@@ -177,23 +177,21 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = None;
             }
-            let attempt = if started {
-                self.resume_model_attempt(input.operation_id, dispatch, replayed.is_empty(), phase)
-                    .await?
-            } else {
-                super::phase::claim(super::phase::Publication::ModelDispatch.observe(
-                    input.operation_id,
-                    step,
-                    self.claim_model_dispatch(
-                        journal,
-                        input,
-                        (step, scope, purpose_key),
-                        &request,
-                        phase,
-                    ),
-                ))
-                .await?
-            };
+            if started {
+                return Err(self.unreconciled_attempt(input.operation_id));
+            }
+            let attempt = super::phase::claim(super::phase::Publication::ModelDispatch.observe(
+                input.operation_id,
+                step,
+                self.claim_model_dispatch(
+                    journal,
+                    input,
+                    (step, scope, purpose_key),
+                    &request,
+                    phase,
+                ),
+            ))
+            .await?;
             clock.start();
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
@@ -314,30 +312,19 @@ impl StockExecution<'_> {
         )
     }
 
-    async fn resume_model_attempt(
-        &self,
-        operation: OperationId,
-        dispatch: crate::model::ModelDispatch,
-        replayed_empty: bool,
-        phase: &mut DispatchPhase,
-    ) -> Result<phase::ProviderAttempt> {
-        if replayed_empty && !self.stock.reconciliation_only && !super::unsettled_resume::enabled()
-        {
-            // Only the deleted task owner could reissue a retained request;
-            // an agent turn has no such recovery authority.
-            let _ = (dispatch, phase);
-            Err(Error::Indeterminate(operation))
-        } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
-            // An incomplete response has not dispatched any of its tool calls.
-            // When the provider cannot recover its prefix, fail definitively
-            // instead of retaining a reservation that can never make progress.
-            // Keep the recorded prefix and never generate a different suffix.
-            Err(Error::ModelUnavailable {
+    /// A started attempt whose provider cannot reconcile it, with or without
+    /// an observed prefix. Its response dispatched no tool call, and no
+    /// recovery authority may generate the uncertain request again, so the
+    /// step fails definitively instead of retaining a reservation that can
+    /// never make progress. The recorded prefix is kept unchanged.
+    fn unreconciled_attempt(&self, operation: OperationId) -> Error {
+        if self.stock.reconciliation_only || super::unsettled_resume::enabled() {
+            Error::Indeterminate(operation)
+        } else {
+            Error::ModelUnavailable {
                 failure: crate::ModelTransportFailure::Interrupted,
                 excerpt: String::new(),
-            })
-        } else {
-            Err(Error::Indeterminate(operation))
+            }
         }
     }
 

@@ -42,6 +42,7 @@ pub fn verify_cancel_before_open(broken: bool) {
                     records,
                     ready,
                     observation: cursor.observation.operation.clone(),
+                    input: None,
                 })))
                 .unwrap();
             cursor

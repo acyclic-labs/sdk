@@ -1,5 +1,6 @@
 //! Provider reads and children pages are finite subscriptions on the session.
 use super::*;
+use futures::FutureExt as _;
 
 fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
     let client = Client::in_process(
@@ -266,6 +267,106 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
 async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let client = local(&provider)?;
+    for length in [1, crate::MAX_RECORD_KEY_BYTES] {
+        for native in [false, true] {
+            let observed = Arc::new(crate::test_meter::Meter::default());
+            let meter = observed.original();
+            let data = vec![b'a'; length + 2];
+            let key = if native {
+                let allocation =
+                    acyclic_native_runtime::ReadAllocation::new(&meter, data.capacity())?;
+                OwnedBytes::from_vec_with_guard(data, allocation, meter.clone())
+                    .map_err(|failure| format!("{:?}", failure.into_error()))?
+            } else {
+                data.into()
+            };
+            let key = key.slice(1..length + 1);
+            let pointer = key.as_ptr();
+            let held = observed.held.load(Ordering::SeqCst);
+            let mut copied = None;
+            // Original projection is the independently allocating copy control.
+            let old = acyclic_test_support::measure(|| {
+                copied = Some(wire::ReadKeySeek {
+                    key: Bytes::copy_from_slice(&key),
+                    before: 4,
+                });
+            });
+            let mut transferred = None;
+            let direct = acyclic_test_support::measure(|| {
+                transferred = Some(wire_codec::read_key_to_wire(Some(crate::ReadKeySeek {
+                    key,
+                    before: 4,
+                })));
+            });
+            let transferred = transferred
+                .ok_or("missing key transfer")??
+                .ok_or("missing key")?;
+            let copied = copied.ok_or("missing copy control")?;
+            assert_eq!(transferred, copied);
+            assert_eq!(transferred.key.as_ptr(), pointer);
+            assert_ne!(copied.key.as_ptr(), pointer);
+            assert_eq!(old.count_total, 1);
+            assert_eq!(direct.count_total, u64::from(native));
+            assert_eq!(
+                observed.held.load(Ordering::SeqCst),
+                held + direct.bytes_total,
+            );
+            let retained = transferred.key.clone();
+            drop(transferred);
+            assert_eq!(
+                observed.held.load(Ordering::SeqCst),
+                held + direct.bytes_total
+            );
+            drop(retained);
+            observed.assert_refunded();
+            eprintln!(
+                "read key length={length} native={native} allocations: copy={} transfer={}",
+                old.count_total, direct.count_total,
+            );
+        }
+    }
+    for cancelled in [false, true] {
+        let observed = Arc::new(crate::test_meter::Meter::default());
+        let meter = observed.original();
+        let data = vec![b'a'];
+        let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, data.capacity())?;
+        let key = OwnedBytes::from_vec_with_guard(data, allocation, meter)
+            .map_err(|failure| format!("{:?}", failure.into_error()))?;
+        let retained = key.clone();
+        let held = observed.held.load(Ordering::SeqCst);
+        let admissions = observed.allocations.load(Ordering::SeqCst);
+        if cancelled {
+            observed.cancelled.store(true, Ordering::SeqCst);
+        } else {
+            observed.limit.store(admissions, Ordering::SeqCst);
+        }
+        let mut request = read("events", 0, 1)?;
+        request.key = Some(crate::ReadKeySeek { key, before: 4 });
+        assert_eq!(
+            client.read(request).await.err(),
+            Some(if cancelled {
+                StreamError::Unavailable
+            } else {
+                StreamError::Capacity
+            }),
+        );
+        assert_eq!(observed.allocations.load(Ordering::SeqCst), admissions);
+        assert_eq!(observed.held.load(Ordering::SeqCst), held);
+        assert_eq!(retained.as_slice(), b"a");
+        drop(retained);
+        observed.assert_refunded();
+    }
+    let mut oversized = read("events", 0, 1)?;
+    oversized.key = Some(crate::ReadKeySeek {
+        key: vec![b'a'; crate::MAX_RECORD_KEY_BYTES + 1].into(),
+        before: 4,
+    });
+    let rejected = client.read(oversized);
+    let mut outcome = None;
+    let refused = acyclic_test_support::measure(|| outcome = rejected.now_or_never());
+    assert!(matches!(outcome, Some(Err(StreamError::LimitExceeded))));
+    assert_eq!(refused.count_total, 0);
+    assert_eq!(refused.bytes_total, 0);
     crate::conformance::key_seek::verify_with(&*provider, async |request| {
         client.read(request).await
     })
@@ -483,7 +584,16 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     let original = direct.children.as_ref().ok_or("missing page")?;
     assert_eq!(original.children[0].tail, Some(2));
     assert_eq!(original.children[3].tail, Some(0));
-    for (follow, predicate) in [(false, false), (true, true), (true, false)] {
+    let tails = original
+        .children
+        .iter()
+        .filter(|child| child.tail_record.is_some())
+        .count();
+    assert!(tails > 1, "repeated filter construction must be observable");
+    let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
+    let mut construction = acyclic_test_support::AllocationInfo::default();
+    let mut saved_owners = acyclic_test_support::AllocationInfo::default();
+    for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
         let credential = acyclic_auth::testing::root(|block| {
             let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
             key.grants = GrantSet {
@@ -510,6 +620,53 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                 });
             }
         });
+        let authority = crate::session::testing::authority();
+        let mut slots = crate::session::testing::slots();
+        authority.register(
+            &mut slots,
+            1,
+            &credential,
+            crate::session::Limits::default().channels,
+        )?;
+        let parent = request
+            .children
+            .as_ref()
+            .and_then(|page| page.parent.as_ref());
+        let mut admitted = None;
+        let list_cost = acyclic_test_support::measure(|| {
+            admitted = Some(authority.bind_list(&slots, 1, parent, 1));
+        });
+        let (_, visibility) = admitted
+            .ok_or("missing measured list admission")?
+            .map_err(|_| "page admission failed")?;
+        let mut admitted = None;
+        let heads_cost = acyclic_test_support::measure(|| {
+            admitted = Some(authority.bind_heads(&slots, 1, &request, 1));
+        });
+        admitted
+            .ok_or("missing measured heads admission")?
+            .map_err(|_| "heads admission failed")?;
+        // Heads still reauthorizes its complete binding. With no named reads,
+        // it must pay only the list admission's one filter derivation.
+        assert_eq!(heads_cost.count_total, list_cost.count_total);
+        assert_eq!(heads_cost.bytes_total, list_cost.bytes_total);
+        if predicate {
+            eprintln!(
+                "pinned admission follow={follow}: list={} heads={} allocated bytes={}",
+                list_cost.count_total, heads_cost.count_total, heads_cost.bytes_total,
+            );
+        }
+        if follow && predicate {
+            let capability = visibility.authorization.current()?;
+            let mut built = None;
+            construction = acyclic_test_support::measure(|| {
+                built = Some(crate::FollowFilter::authorized(
+                    Default::default(),
+                    &capability,
+                ));
+            });
+            built.ok_or("missing measured filter")??;
+        }
         client.register_credential(1, credential.into())?;
         let mut expected = original.clone();
         for child in &mut expected.children {
@@ -518,11 +675,132 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                 child.tail_record = None;
             }
         }
+        let selected = original.clone();
+        let tail_stream = request
+            .children
+            .as_ref()
+            .and_then(|page| page.tail_stream.as_ref());
+        let mut original_owned_cost = None;
+        if !follow && !predicate {
+            let capability = visibility.authorization.current()?;
+            let relative = tail_stream.ok_or("missing tail path")?;
+            // Independent original owned-path flow on the actual provider page.
+            // Follow is denied, so neither flow projects a record or builds a filter.
+            let mut owned = original.clone();
+            let mut baseline = None;
+            let owned_cost = acyclic_test_support::measure(|| {
+                baseline = Some((|| -> Result<_, StreamError> {
+                    let mut children = Vec::with_capacity(owned.children.len());
+                    for mut child in owned.children {
+                        visibility
+                            .authority
+                            .permits(
+                                &capability,
+                                "streams/list",
+                                &crate::session::authority::stream_resource(Some(&child.path)),
+                                visibility.channels,
+                            )
+                            .map_err(|_| StreamError::AccessDenied)?;
+                        if child.tail.is_some() {
+                            let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
+                            assert!(matches!(
+                                visibility.authority.permits(
+                                    &capability,
+                                    "streams/follow",
+                                    &crate::session::authority::stream_resource(Some(&target)),
+                                    visibility.channels,
+                                ),
+                                Err(crate::session::authority::Rejection::Forbidden)
+                            ));
+                            child.tail = None;
+                            child.tail_record = None;
+                        }
+                        children.push(child);
+                    }
+                    owned.children = children;
+                    Ok(owned)
+                })());
+            });
+            assert_eq!(baseline.ok_or("missing owned page")??, expected);
+            // Measure only the removed owners, with join storage prepared first.
+            for child in original
+                .children
+                .iter()
+                .filter(|child| child.tail.is_some())
+            {
+                let target = format!("{}/{}", child.path, relative);
+                let mut owner = None;
+                let cost = acyclic_test_support::measure(|| {
+                    owner = Some(StreamPath::new(&target));
+                });
+                owner.ok_or("missing measured path")??;
+                saved_owners.count_total += cost.count_total;
+                saved_owners.bytes_total += cost.bytes_total;
+            }
+            assert!(saved_owners.count_total > 0);
+            original_owned_cost = Some(owned_cost);
+            // Each input is valid alone; the joined length still fails before a
+            // denied follow could hide it. Mutate only the captured request path.
+            let oversized = StreamPath::new("x".repeat(crate::MAX_PATH_BYTES))?;
+            assert_eq!(
+                visibility.page(original.clone(), Some(&oversized)),
+                Err(StreamError::InvalidPath)
+            );
+        }
+        let mut projected = None;
+        costs[usize::from(follow)][usize::from(predicate)] = acyclic_test_support::measure(|| {
+            projected = Some(visibility.page(selected, tail_stream));
+        });
+        assert_eq!(projected.ok_or("missing measured page")??, expected);
+        if let Some(owned_cost) = original_owned_cost {
+            assert_eq!(
+                costs[0][0].count_total + saved_owners.count_total,
+                owned_cost.count_total
+            );
+            assert_eq!(
+                costs[0][0].bytes_total + saved_owners.bytes_total,
+                owned_cost.bytes_total
+            );
+        }
         assert_eq!(client.children_page(page("tree", 10)?, 1).await?, expected);
         let view = client.heads(request.clone(), 1).await?;
         assert_eq!(view.snapshot, direct.snapshot);
         assert_eq!(view.children, Some(expected));
+        // Reusing the list digest never grants an additional named read.
+        let mut named = request.clone();
+        named.paths.push(StreamPath::new(format!(
+            "{}/{}",
+            original.children[0].path,
+            tail_stream.ok_or("missing tail path")?,
+        ))?);
+        assert_eq!(
+            client.heads(named, 1).await.err(),
+            Some(StreamError::AccessDenied)
+        );
     }
+    assert!(construction.count_total > 0);
+    // The unfiltered real page accounts for all path and reply work. The pin
+    // adds exactly one independently measured construction, even with two tails.
+    assert_eq!(
+        costs[1][1].count_total,
+        costs[1][0].count_total + construction.count_total
+    );
+    assert_eq!(
+        costs[1][1].bytes_total,
+        costs[1][0].bytes_total + construction.bytes_total
+    );
+    // A pin with no permitted follow must never construct a record filter.
+    assert_eq!(costs[0][1].count_total, costs[0][0].count_total);
+    assert_eq!(costs[0][1].bytes_total, costs[0][0].bytes_total);
+    eprintln!(
+        "page tails={tails} filter allocations: per-tail={} shared={}; denied-follow extra=0",
+        tails as u64 * construction.count_total,
+        costs[1][1].count_total - costs[1][0].count_total,
+    );
+    eprintln!(
+        "tail path owners removed: allocations={} bytes={}",
+        saved_owners.count_total, saved_owners.bytes_total,
+    );
     // The same Session still returns the unfiltered original cut and records.
     assert_eq!(client.heads(request, 0).await?, direct);
     Ok(())
@@ -532,6 +810,22 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
 async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("tree/a/status")?,
+            records: vec![crate::AppendRecord::changes(
+                b"snapshot",
+                &["b", "z"].map(|key| wire::ChangeEntry {
+                    key: key.into(),
+                    operation: "write".into(),
+                    metadata: Default::default(),
+                }),
+                vec![],
+            )?],
+            if_tail: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
+        })
+        .await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
         retained: Default::default(),
@@ -566,6 +860,127 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             .len(),
         2
     );
+    let change = actual.heads[0]
+        .as_ref()
+        .and_then(|head| head.last.clone())
+        .ok_or("missing change head")?;
+    let opaque = next(&mut provider.read(read("tree/a/status", 0, 1)?).await?).await?;
+    let mut malformed = change.clone();
+    malformed.value = OwnedBytes::default();
+    let mut unknown = change.clone();
+    unknown.headers = crate::RecordHeaders::new(
+        change.headers.keys().to_vec(),
+        vec![crate::Attribute {
+            name: "acyclic.record".into(),
+            value: OwnedBytes::from_static(b"changes/unknown"),
+        }],
+    )?;
+    let mut forged = change.clone();
+    forged.headers = crate::RecordHeaders::new(
+        vec![
+            OwnedBytes::from_static(b"b"),
+            OwnedBytes::from_static(b"zz"),
+        ],
+        change
+            .headers
+            .attributes()
+            .iter()
+            .map(crate::RecordAttribute::to_owned)
+            .collect(),
+    )?;
+    let records = [change.clone(), opaque, malformed, unknown, forged];
+    for (start, end, complete) in [("a", "zz", true), ("b", "c", false), ("x", "y", false)] {
+        use acyclic_auth::{contract::*, testing as signed};
+        let credential = signed::root(|block| {
+            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: "streams:/tree".into(),
+                            prefix: true,
+                        },
+                        actions: vec!["streams/read".into()],
+                    }),
+                }],
+            };
+            block.caveats.push(Caveat {
+                kind: CaveatKind::Filter(Filter {
+                    keys: vec![KeyRange {
+                        start: start.as_bytes().to_vec(),
+                        end: end.as_bytes().to_vec(),
+                    }],
+                    attributes: vec![],
+                }),
+            });
+        });
+        let capability =
+            acyclic_auth::verify::verify(&credential, &signed::Snapshot::default(), signed::NOW)?;
+        let filter = crate::FollowFilter::authorized(Default::default(), &capability)?;
+        if start == "b" {
+            assert!(filter.matches(&change.headers));
+        }
+        for (index, record) in records.iter().enumerate() {
+            let mut projected = None;
+            crate::changes::take_parsed_bytes();
+            // Original decision remains an independent allocating control.
+            let old = acyclic_test_support::measure(|| {
+                projected = Some(
+                    filter
+                        .project(record.clone())
+                        .map(|projected| projected == Some(record.clone())),
+                );
+            });
+            let old_parsed = crate::changes::take_parsed_bytes();
+            let mut preserved = None;
+            let direct = acyclic_test_support::measure(|| {
+                preserved = Some(filter.preserves(record));
+            });
+            let direct_parsed = crate::changes::take_parsed_bytes();
+            assert_eq!(preserved, projected);
+            if matches!(preserved, Some(Ok(_))) {
+                assert_eq!(direct.count_total, 0);
+                assert_eq!(direct.bytes_total, 0);
+            } else {
+                // Invalid encodings retain the original decoder's error cost.
+                assert!(direct.count_total <= old.count_total);
+                assert!(direct.bytes_total <= old.bytes_total);
+            }
+            if index == 0 {
+                assert_eq!(preserved, Some(Ok(complete)));
+                assert_eq!(direct_parsed, record.value.len());
+                if complete {
+                    assert!(old.count_total > 0);
+                    assert_eq!(old_parsed, 3 * record.value.len());
+                }
+                eprintln!(
+                    "complete record range={start}..{end} allocations: project={} borrow={}; parsed bytes: project={old_parsed} borrow={direct_parsed}",
+                    old.count_total, direct.count_total,
+                );
+            } else if index >= 2 {
+                assert_eq!(preserved, Some(Err(StreamError::InvalidArgument)));
+            }
+        }
+        client.register_credential(2, credential.into())?;
+        for retained_only in [false, true] {
+            let mut selected = request.clone();
+            selected.children = None;
+            selected.paths.truncate(1);
+            if retained_only {
+                selected.paths.clear();
+                selected.retained.push(crate::RetainedRecord {
+                    path: change.origin.clone(),
+                    sequence: change.sequence,
+                    commit_id: change.commit_id,
+                });
+            }
+            // Exact read admission still requires record facts, even when
+            // the complete record would pass its independently checked filter.
+            assert_eq!(
+                client.heads(selected, 2).await,
+                Err(StreamError::AccessDenied)
+            );
+        }
+    }
     // Even one named denial refuses the whole view; absence cannot hide it.
     use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
     client.register_credential(

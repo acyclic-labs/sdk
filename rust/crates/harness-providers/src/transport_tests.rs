@@ -227,7 +227,7 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
     // The token count shares the class and the budget.
     let (prepared, _) = super::request(&provider)?;
     let error = provider
-        .count_tokens(&prepared)
+        .count_tokens(&prepared, 0)
         .await
         .expect_err("impossible destination port");
     assert_eq!(
@@ -396,11 +396,11 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
                 let baseline = work.live_allocation_bytes();
                 let result = if native {
                     provider
-                        .count_tokens_with_native_work(&prepared, &work)?
+                        .count_tokens_with_native_work(&prepared, 0, &work)?
                         .await
                         .map(drop)
                 } else {
-                    provider.count_tokens(&prepared).await.map(drop)
+                    provider.count_tokens(&prepared, 0).await.map(drop)
                 };
                 let error = result.expect_err("final count refusal was redelivered");
                 assert_eq!(

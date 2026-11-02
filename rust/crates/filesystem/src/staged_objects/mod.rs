@@ -158,15 +158,20 @@ fn byte_length(bytes: &OwnedBytes) -> u64 {
     bytes.len() as u64
 }
 
-fn frame_allocation<F>(
+async fn in_frame<T>(
     native: Option<&NativeMaterializationWork>,
-    future: &F,
-) -> Result<Option<NativeAllocation>, ObjectStoreError> {
-    let bytes = std::mem::size_of_val(future) as u64;
-    native
+    future: impl std::future::Future<Output = Result<T, ObjectStoreError>>,
+) -> Result<T, ObjectStoreError> {
+    let bytes = std::mem::size_of_val(&future) as u64;
+    let allocation = native
         .map(|native| native.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED))
-        .transpose()
-        .map_err(Into::into)
+        .transpose()?;
+    let mut future = Box::pin(future);
+    let result = future.as_mut().await;
+    // The suspended frame and its captures retire before their original claim.
+    drop(future);
+    drop(allocation);
+    result
 }
 
 #[cfg(test)]

@@ -170,12 +170,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                     high: upper,
                 } if bit.byte < prefix.len() => {
                     parent = Some(*bit);
-                    cursor = if prefix_high(prefix, *bit) {
-                        upper
-                    } else {
-                        low
-                    }
-                    .as_ref();
+                    cursor = if high(prefix, *bit) { upper } else { low }.as_ref();
                 }
                 _ => break,
             }
@@ -199,7 +194,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             return Ok(empty());
         }
 
-        Ok(self.extract_at(parent, |bit| prefix_high(prefix, bit), visit))
+        Ok(self.extract_at(parent, |bit| high(prefix, bit), visit))
     }
 
     // Exact-leaf removal and prefix removal unlink through the same original
@@ -256,8 +251,4 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             }
         }
     }
-}
-
-fn prefix_high(prefix: &[u8], bit: Bit) -> bool {
-    prefix[bit.byte] & (0x80 >> bit.offset) != 0
 }

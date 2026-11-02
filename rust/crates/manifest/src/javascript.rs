@@ -223,8 +223,16 @@ pub fn verify_artifact_json(
             Ok((path, bytes))
         })
         .collect::<Result<_, wasm_bindgen::JsValue>>()?;
-    verify_artifact(&manifest, environment, entry, &artifact, &files)
-        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
+    verify_artifact(
+        &manifest,
+        environment,
+        entry,
+        &artifact,
+        files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+    )
+    .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
 
 /// Node/browser admission export; executes the same parser and validator as Rust.

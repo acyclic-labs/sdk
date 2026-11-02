@@ -368,8 +368,9 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
+/// A process lost before the provider's first event leaves a started attempt
+/// with nothing observed. Unreconcilable, it settles like a lost prefix.
+async fn unreconciled_empty_attempt(unsettled: bool) -> Result<Vec<ModelEvent>> {
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
             .with_token_counter(fixture_token_count)
@@ -399,14 +400,44 @@ async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
         assert_eq!(provider.dispatches().len(), 1);
     }
     let records = journal.0.lock().unwrap().clone();
-    assert!(matches!(
-        executor.model_step(&journal, &input, 0, &[]).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    assert_eq!(provider.dispatches().len(), 1);
+    let original = super::super::unsettled_resume::enabled();
+    super::super::unsettled_resume::set(unsettled);
+    let result = executor.model_step(&journal, &input, 0, &[]).await;
+    super::super::unsettled_resume::set(original);
+    assert_eq!(
+        provider.dispatches().len(),
+        1,
+        "uncertain request was reissued"
+    );
     assert_eq!(*journal.0.lock().unwrap(), records);
     assert_eq!(provider.reconciliations(), provider.dispatches());
-    Ok(())
+    result
+}
+
+#[tokio::test]
+async fn an_unreconciled_empty_model_attempt_fails_without_redispatch() -> Result<()> {
+    match unreconciled_empty_attempt(false).await {
+        Err(
+            _error @ Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Interrupted,
+                ..
+            },
+        ) => {
+            #[cfg(feature = "filesystem")]
+            assert!(!_error.leaves_outcome_uncertain());
+            Ok(())
+        }
+        Err(error) => Err(error),
+        Ok(_) => panic!("an empty attempt was treated as completed"),
+    }
+}
+
+#[tokio::test]
+async fn negative_control_retaining_an_unreconciled_empty_attempt_strands_it() {
+    assert!(matches!(
+        unreconciled_empty_attempt(true).await,
+        Err(Error::Indeterminate(_))
+    ));
 }
 
 /// A stream cut and process loss leave the same retained incomplete prefix.

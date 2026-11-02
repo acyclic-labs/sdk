@@ -19,7 +19,15 @@ impl FollowFilter {
         self.0.as_deref().map_or(&[], Vec::as_slice)
     }
     /// Validates and canonicalizes a requested subscription filter.
-    pub fn new(mut requested: wire::SessionFilter) -> Result<Self, StreamError> {
+    pub fn new(requested: wire::SessionFilter) -> Result<Self, StreamError> {
+        Ok(Self::from_clauses(Self::requested_clauses(requested)?))
+    }
+
+    fn from_clauses(clauses: Vec<Clause>) -> Self {
+        Self((!clauses.is_empty()).then(|| Arc::new(clauses)))
+    }
+
+    fn requested_clauses(mut requested: wire::SessionFilter) -> Result<Vec<Clause>, StreamError> {
         if requested.encoded_len() > crate::MAX_COMMAND_BYTES
             || requested.all_of.len() > crate::MAX_ITEMS
         {
@@ -47,7 +55,7 @@ impl FollowFilter {
                 });
             }
         }
-        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
+        Ok(clauses)
     }
 
     /// Intersects a request with authenticated capability clauses. Subject
@@ -57,7 +65,7 @@ impl FollowFilter {
         capability: &acyclic_auth::verify::VerifiedCapability,
     ) -> Result<Self, StreamError> {
         use acyclic_auth::contract::SubjectReferenceKind;
-        let mut clauses = Self::new(requested)?.clauses().to_vec();
+        let mut clauses = Self::requested_clauses(requested)?;
         for scoped in capability.effective().filters() {
             let source = scoped.filter();
             let attributes = source
@@ -121,21 +129,23 @@ impl FollowFilter {
                 })?,
             });
         }
-        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
+        Ok(Self::from_clauses(clauses))
     }
 
     /// Returns whether opaque record headers satisfy the full intersection.
     pub fn matches(&self, headers: &RecordHeaders) -> bool {
-        if crate::changes::unknown(headers) {
-            return false;
-        }
-        if crate::changes::marked(headers) {
-            return headers
+        crate::changes::reader_format(headers)
+            .is_ok_and(|format| self.matches_format(headers, format))
+    }
+
+    fn matches_format(&self, headers: &RecordHeaders, format: Option<&[u8]>) -> bool {
+        match format {
+            Some(_) => headers
                 .keys()
                 .iter()
-                .any(|key| self.matches_entry(key, headers));
+                .any(|key| self.matches_entry(key, headers)),
+            None => self.clauses().iter().all(|clause| clause.matches(headers)),
         }
-        self.clauses().iter().all(|clause| clause.matches(headers))
     }
 
     fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
@@ -145,20 +155,39 @@ impl FollowFilter {
         })
     }
 
+    /// Validates a record and checks whether projection would preserve it whole.
+    /// Typed changes require every entry to pass, while [`Self::matches`] only
+    /// requires an entry that can survive projection. No record owner is cloned
+    /// and no projected value is constructed.
+    pub fn preserves(&self, record: &crate::Record) -> Result<bool, StreamError> {
+        let format = crate::changes::validated_format(&record.value, &record.headers)?;
+        Ok(if format.is_some() {
+            record
+                .headers
+                .keys()
+                .iter()
+                .all(|key| self.matches_entry(key, &record.headers))
+        } else {
+            self.matches_format(&record.headers, format)
+        })
+    }
+
     /// Projects typed provider changes before delivery. Opaque values retain
     /// the stronger rule that every key must satisfy every authority ceiling.
     pub fn project(&self, mut record: crate::Record) -> Result<Option<crate::Record>, StreamError> {
-        crate::changes::validate(&record.value, &record.headers)?;
-        if !self.matches(&record.headers) {
+        let format = crate::changes::validated_format(&record.value, &record.headers)?;
+        if self.clauses().is_empty() {
+            return Ok(Some(record));
+        }
+        if !self.matches_format(&record.headers, format) {
             return Ok(None);
         }
-        if crate::changes::marked(&record.headers) {
-            let headers = record.headers.clone();
+        if format.is_some() {
             let body = crate::AppendRecord {
                 value: record.value,
                 headers: record.headers,
             }
-            .retain_changes(|key| self.matches_entry(key, &headers))?
+            .retain_changes(|key, headers| self.matches_entry(key, headers))?
             .ok_or(StreamError::InvalidArgument)?;
             record.value = body.value;
             record.headers = body.headers;
@@ -196,11 +225,19 @@ impl FollowFilter {
         let mut hash = Sha256::new();
         hash.update(b"acyclic.stream.follow-filter.v1\0");
         hash.update((self.clauses().len() as u64).to_le_bytes());
+        let mut bytes = Vec::new();
         for clause in self.clauses().iter() {
             hash.update([u8::from(clause.all_keys)]);
-            let bytes = clause.filter.encode_to_vec();
+            let length = clause.filter.encoded_len();
+            bytes.clear();
+            if bytes.capacity() < length {
+                // Release before reserving: no old bytes need copying or overlap.
+                bytes = Vec::new();
+                bytes.reserve_exact(length);
+            }
+            clause.filter.encode_raw(&mut bytes);
             hash.update((bytes.len() as u64).to_le_bytes());
-            hash.update(bytes);
+            hash.update(&bytes);
         }
         hash.finalize().into()
     }
@@ -328,6 +365,237 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn projection_reuses_validation_and_skips_unrestricted_decoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::changes::{take_marker_probes, take_parsed_bytes, validate};
+
+        // Original methods before carrying the admitted marker into matching.
+        fn matches(filter: &FollowFilter, headers: &RecordHeaders) -> bool {
+            match crate::changes::reader_format(headers) {
+                Err(_) => false,
+                Ok(Some(_)) => headers
+                    .keys()
+                    .iter()
+                    .any(|key| filter.matches_entry(key, headers)),
+                Ok(None) => filter
+                    .clauses()
+                    .iter()
+                    .all(|clause| clause.matches(headers)),
+            }
+        }
+        fn preserves(filter: &FollowFilter, record: &crate::Record) -> Result<bool, StreamError> {
+            validate(&record.value, &record.headers)?;
+            Ok(
+                if crate::changes::reader_format(&record.headers)?.is_some() {
+                    record
+                        .headers
+                        .keys()
+                        .iter()
+                        .all(|key| filter.matches_entry(key, &record.headers))
+                } else {
+                    matches(filter, &record.headers)
+                },
+            )
+        }
+        fn project(
+            filter: &FollowFilter,
+            mut record: crate::Record,
+        ) -> Result<Option<crate::Record>, StreamError> {
+            validate(&record.value, &record.headers)?;
+            if !matches(filter, &record.headers) {
+                return Ok(None);
+            }
+            if crate::changes::reader_format(&record.headers)?.is_some() {
+                let headers = record.headers.clone();
+                let body = crate::AppendRecord {
+                    value: record.value,
+                    headers: record.headers,
+                }
+                .retain_changes(|key, _| filter.matches_entry(key, &headers))?
+                .ok_or(StreamError::InvalidArgument)?;
+                record.value = body.value;
+                record.headers = body.headers;
+            }
+            Ok(Some(record))
+        }
+        fn compare<T: PartialEq + std::fmt::Debug>(
+            baseline: impl FnOnce() -> T,
+            candidate: impl FnOnce() -> T,
+            saved: usize,
+            skipped_decode_bytes: Option<usize>,
+        ) -> (usize, usize) {
+            let before = std::cell::Cell::new((0, 0));
+            let after = std::cell::Cell::new((0, 0));
+            let (_, [old, new]) = acyclic_test_support::differential(
+                || {
+                    take_marker_probes();
+                    take_parsed_bytes();
+                    let result = baseline();
+                    before.set((take_marker_probes(), take_parsed_bytes()));
+                    result
+                },
+                || {
+                    take_marker_probes();
+                    take_parsed_bytes();
+                    let result = candidate();
+                    after.set((take_marker_probes(), take_parsed_bytes()));
+                    result
+                },
+            );
+            if let Some(bytes) = skipped_decode_bytes {
+                assert_eq!(new, acyclic_test_support::AllocationInfo::default());
+                assert!(
+                    old.count_total > 0,
+                    "decoded ownership is the negative control"
+                );
+                assert_eq!(after.get().1, bytes, "validate the original body once");
+                assert_eq!(before.get().1, 3 * bytes, "original decode reparses twice");
+            } else {
+                assert_eq!(old, new, "all allocation statistics must remain identical");
+                assert_eq!(before.get().1, after.get().1, "no extra body pass");
+            }
+            assert_eq!(before.get().0, after.get().0 + saved);
+            if saved != 0 {
+                assert!(
+                    before.get().0 > after.get().0,
+                    "repeated marker reads exceed the bound"
+                );
+            }
+            (before.get().0, after.get().0)
+        }
+
+        let followed = crate::StreamPath::new("followed")?;
+        let golden = acyclic_proto_build::golden::frame("stream.changes-v1")?;
+        let retained =
+            crate::wire_codec::record(wire::Record::decode(golden.as_slice())?, Some(&followed))?;
+        let current = crate::AppendRecord::changes(
+            b"publication",
+            &["b", "z"].map(|key| wire::ChangeEntry {
+                key: key.into(),
+                operation: "write".into(),
+                metadata: key.into(),
+            }),
+            vec![],
+        )?;
+        let filters = [
+            FollowFilter::default(),
+            FollowFilter::new(wire::SessionFilter {
+                keys: vec![range(b"b", b"c")],
+                ..Default::default()
+            })?,
+            FollowFilter::new(wire::SessionFilter {
+                all_of: vec![wire::SessionFilterClause {
+                    all_keys: true,
+                    keys: vec![range(b"b", b"c")],
+                    attributes: vec![],
+                }],
+                ..Default::default()
+            })?,
+            FollowFilter::new(wire::SessionFilter {
+                keys: vec![range(b"a", b"b")],
+                ..Default::default()
+            })?,
+        ];
+        for marker in [
+            None,
+            Some(b"changes/v1".as_slice()),
+            Some(crate::changes::WRITER_FORMAT),
+            Some(b"changes/v3".as_slice()),
+        ] {
+            for (padding, prefix) in [(0, "z"), (15, "z"), (15, "a")] {
+                let mut attributes = (0..padding)
+                    .map(|index| crate::Attribute {
+                        name: format!("{prefix}{index:02}"),
+                        value: "other".into(),
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(value) = marker {
+                    attributes.push(crate::Attribute {
+                        name: "acyclic.record".into(),
+                        value: value.into(),
+                    });
+                }
+                attributes.sort_by(|left, right| left.name.cmp(&right.name));
+                for fault in 0..3 {
+                    let mut record = retained.clone();
+                    if marker == Some(crate::changes::WRITER_FORMAT) {
+                        record.value = current.value.clone();
+                    }
+                    if fault == 1 {
+                        record.value = bytes::Bytes::new().into();
+                    }
+                    record.headers = RecordHeaders::new(
+                        if fault == 2 {
+                            vec!["a".into(), "z".into()]
+                        } else {
+                            retained.headers.keys().to_vec()
+                        },
+                        attributes.clone(),
+                    )?;
+                    take_marker_probes();
+                    let format = crate::changes::reader_format(&record.headers);
+                    let probes = take_marker_probes();
+                    let valid = validate(&record.value, &record.headers).is_ok();
+                    for (index, filter) in filters.iter().enumerate() {
+                        let matches = filter.matches(&record.headers);
+                        let preservation = compare(
+                            || preserves(filter, &record),
+                            || filter.preserves(&record),
+                            if valid {
+                                if format == Ok(None) {
+                                    2 * probes
+                                } else {
+                                    probes
+                                }
+                            } else {
+                                0
+                            },
+                            None,
+                        );
+                        let unrestricted_changes = valid
+                            && format.as_ref().is_ok_and(|format| format.is_some())
+                            && index == 0;
+                        let projection = compare(
+                            || project(filter, record.clone()),
+                            || filter.project(record.clone()),
+                            if valid {
+                                if unrestricted_changes {
+                                    3 * probes
+                                } else if matches {
+                                    2 * probes
+                                } else {
+                                    probes
+                                }
+                            } else {
+                                0
+                            },
+                            unrestricted_changes.then_some(record.value.len()),
+                        );
+                        if fault == 0 && padding == 15 && prefix == "a" {
+                            eprintln!(
+                                "marker {marker:?}, filter {index}: preserves {preservation:?}, project {projection:?} probes"
+                            );
+                        }
+                        if !valid {
+                            assert_eq!(
+                                filter.preserves(&record),
+                                Err(StreamError::InvalidArgument)
+                            );
+                            assert_eq!(
+                                filter.project(record.clone()),
+                                Err(StreamError::InvalidArgument)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn range(start: &'static [u8], end: &'static [u8]) -> wire::KeyRange {
         wire::KeyRange {
             start: start.into(),
@@ -382,32 +650,266 @@ mod tests {
             FollowFilter(Some(Arc::new(vec![requested]))).matches(&headers(&["b", "z"], "alice"))
         );
     }
-    #[test]
-    fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
-        let make = |all_keys, start, end| Clause {
+    #[tokio::test]
+    async fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
+        use acyclic_auth::{contract as auth, testing as signed};
+        use futures::StreamExt as _;
+
+        let make = |all_keys, start: &[u8], end: &[u8]| Clause {
             all_keys,
             filter: canonical(wire::SessionFilter {
-                keys: vec![range(start, end)],
+                keys: vec![wire::KeyRange {
+                    start: start.to_vec().into(),
+                    end: end.to_vec().into(),
+                }],
                 attributes: vec![],
                 all_of: vec![],
             })
             .unwrap(),
         };
-        let original = FollowFilter(Some(Arc::new(vec![
-            make(false, b"a", b"c"),
-            make(true, b"a", b"m"),
-            make(true, b"b", b"z"),
-        ])));
+        let token = signed::root(|block| {
+            for (start, end) in [(b"a", b"m"), (b"b", b"z")] {
+                block.caveats.push(auth::Caveat {
+                    kind: auth::CaveatKind::Filter(auth::Filter {
+                        keys: vec![auth::KeyRange {
+                            start: start.to_vec(),
+                            end: end.to_vec(),
+                        }],
+                        attributes: vec![],
+                    }),
+                });
+            }
+            block.caveats.push(auth::Caveat {
+                kind: auth::CaveatKind::Pin(auth::Pin {
+                    name: "owner".into(),
+                    value: auth::PinValue::Literal(b"alice".to_vec()),
+                }),
+            });
+        });
+        let capability =
+            acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
+                .unwrap();
+        let requested = wire::SessionFilter {
+            keys: vec![range(b"a", b"c")],
+            attributes: vec![wire::AttributeMatch {
+                name: "owner".into(),
+                any_of: vec![b"bob".as_slice().into(), b"alice".as_slice().into()],
+            }],
+            all_of: vec![wire::SessionFilterClause {
+                keys: vec![range(b"a", b"z")],
+                attributes: vec![],
+                all_keys: false,
+            }],
+        };
+        let old_request = requested.clone();
+        let mut original = None;
+        let mut transferred = None;
+        let build_original = || {
+            // Original ownership boundary, with independently specified authority clauses.
+            let mut clauses = FollowFilter::new(old_request).unwrap().clauses().to_vec();
+            clauses.push(make(true, b"a", b"m"));
+            clauses.push(make(true, b"b", b"z"));
+            clauses.push(Clause {
+                all_keys: true,
+                filter: canonical(wire::SessionFilter {
+                    keys: vec![],
+                    attributes: vec![wire::AttributeMatch {
+                        name: "owner".into(),
+                        any_of: vec![bytes::Bytes::copy_from_slice(b"alice")],
+                    }],
+                    all_of: vec![],
+                })
+                .unwrap(),
+            });
+            original = Some(FollowFilter(Some(Arc::new(clauses))));
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = acyclic_test_support::measure(build_original);
+        #[cfg(target_arch = "wasm32")]
+        build_original();
+        let authorize = || {
+            transferred = Some(FollowFilter::authorized(requested, &capability).unwrap());
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let after = acyclic_test_support::measure(authorize);
+        #[cfg(target_arch = "wasm32")]
+        authorize();
+        let original = original.unwrap();
+        let transferred = transferred.unwrap();
+        assert_eq!(original, transferred);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            assert!(after.count_total < before.count_total);
+            assert!(after.bytes_total < before.bytes_total);
+            eprintln!(
+                "authorized clauses: {} -> {} allocations, {} -> {} bytes",
+                before.count_total, after.count_total, before.bytes_total, after.bytes_total
+            );
+        }
+        let reversed = FollowFilter(Some(Arc::new(
+            original.clauses().iter().rev().cloned().collect(),
+        )));
+        let single = FollowFilter(Some(Arc::new(vec![original.clauses()[0].clone()])));
+        for filter in [&original, &reversed, &single, &FollowFilter::default()] {
+            let (mut expected, mut actual) = (None, None);
+            let mut original_digest = || {
+                // Original digest framing and protobuf encoding, one owner per clause.
+                let mut hash = Sha256::new();
+                hash.update(b"acyclic.stream.follow-filter.v1\0");
+                hash.update((filter.clauses().len() as u64).to_le_bytes());
+                for clause in filter.clauses() {
+                    hash.update([u8::from(clause.all_keys)]);
+                    let bytes = clause.filter.encode_to_vec();
+                    hash.update((bytes.len() as u64).to_le_bytes());
+                    hash.update(bytes);
+                }
+                expected = Some(<[u8; 32]>::from(hash.finalize()));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let before = acyclic_test_support::measure(&mut original_digest);
+            #[cfg(target_arch = "wasm32")]
+            original_digest();
+            let mut digest = || actual = Some(filter.digest());
+            #[cfg(not(target_arch = "wasm32"))]
+            let after = acyclic_test_support::measure(&mut digest);
+            #[cfg(target_arch = "wasm32")]
+            digest();
+            assert_eq!(actual, expected);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                assert!(after.count_total <= before.count_total);
+                assert!(after.bytes_total <= before.bytes_total);
+                assert!(after.bytes_max <= before.bytes_max);
+                if filter.clauses().len() > 1 {
+                    assert!(after.count_total < before.count_total);
+                    assert!(after.bytes_total < before.bytes_total);
+                }
+                eprintln!(
+                    "digest {} clauses: {} -> {} allocations, {} -> {} bytes, peak {} -> {}",
+                    filter.clauses().len(),
+                    before.count_total,
+                    after.count_total,
+                    before.bytes_total,
+                    after.bytes_total,
+                    before.bytes_max,
+                    after.bytes_max
+                );
+            }
+        }
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
         assert!(!forwarded.matches(&headers(&["b", "z"], "alice")));
         assert!(!forwarded.matches(&headers(&["a", "b"], "alice")));
         assert!(!forwarded.matches(&headers(&["j"], "alice")));
+        assert!(!forwarded.matches(&headers(&["b"], "bob")));
         let dropped_ceiling = FollowFilter(Some(Arc::new(vec![make(false, b"a", b"c")])));
         assert!(
             dropped_ceiling.matches(&headers(&["b", "z"], "alice")),
             "negative control needs the authority ceiling"
+        );
+
+        // Capture opaque and typed records from the real provider, then compare
+        // projection and refusal across the ownership boundary and transport hop.
+        let provider = crate::MemoryStream::default();
+        let path = crate::StreamPath::new("filter-projection").unwrap();
+        crate::StreamProviderExt::append(
+            &provider,
+            crate::AppendRequest {
+                path: path.clone(),
+                records: vec![
+                    crate::AppendRecord {
+                        value: "opaque".into(),
+                        headers: headers(&["b", "j"], "alice"),
+                    },
+                    crate::AppendRecord {
+                        value: "denied".into(),
+                        headers: headers(&["b"], "bob"),
+                    },
+                    crate::AppendRecord::changes(
+                        b"filter-control",
+                        &["b", "z"].map(|key| wire::ChangeEntry {
+                            key: key.into(),
+                            operation: "write".into(),
+                            metadata: bytes::Bytes::new(),
+                        }),
+                        vec![crate::Attribute {
+                            name: "owner".into(),
+                            value: "alice".into(),
+                        }],
+                    )
+                    .unwrap(),
+                ],
+                if_tail: Some(0),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut records = crate::StreamProvider::read(
+            &provider,
+            crate::ReadRequest {
+                key: None,
+                path,
+                from: 0,
+                limit: 3,
+                at_least: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut seen = 0;
+        while let Some(record) = records.next().await {
+            let record = record.unwrap();
+            let expected = original.project(record.clone()).unwrap();
+            assert_eq!(transferred.project(record.clone()).unwrap(), expected);
+            assert_eq!(forwarded.project(record.clone()).unwrap(), expected);
+            if crate::changes::reader_format(&record.headers)
+                .unwrap()
+                .is_some()
+            {
+                let projected = expected.unwrap();
+                assert_eq!(projected.headers.keys().len(), 1);
+                assert_eq!(projected.headers.keys()[0].as_ref(), b"b");
+                let mut malformed = record;
+                malformed.value = bytes::Bytes::new().into();
+                assert_eq!(
+                    original.project(malformed.clone()),
+                    Err(StreamError::InvalidArgument)
+                );
+                assert_eq!(
+                    transferred.project(malformed.clone()),
+                    original.project(malformed)
+                );
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 3);
+        let malformed = wire::SessionFilter {
+            keys: vec![range(b"c", b"a")],
+            ..Default::default()
+        };
+        assert_eq!(
+            FollowFilter::authorized(malformed.clone(), &capability),
+            FollowFilter::new(malformed)
+        );
+        let token = signed::root(|_| {});
+        let unrestricted =
+            acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
+                .unwrap();
+        let mut empty = None;
+        let mut authorize = || {
+            empty = Some(FollowFilter::authorized(Default::default(), &unrestricted).unwrap());
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = acyclic_test_support::measure(&mut authorize);
+        #[cfg(target_arch = "wasm32")]
+        authorize();
+        assert!(empty.unwrap().matches(&headers(&["z"], "bob")));
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(
+            work.count_total, 0,
+            "unrestricted filters must stay allocation-free"
         );
     }
 

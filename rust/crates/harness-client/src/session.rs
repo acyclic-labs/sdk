@@ -13,7 +13,7 @@ use std::{
     task::{Context, Poll},
 };
 
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 mod viewport_tests;
 mod views;
 use views::Views;
@@ -211,14 +211,17 @@ impl WireSession {
                 return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
             }
             let (resource, _) = validate_resource_subscription(&subscription)?;
-            if let Some(existing) = self.resource_views.get(&resource)
+            if let Some(existing) = self.resource_views.get(resource)
                 && (existing.request.credential != subscription.credential
                     || existing.request.kind != subscription.kind
                     || existing.request.filter != subscription.filter)
             {
                 return Err(WireSessionError::InvalidSubscription);
             }
-            if requested.insert(resource, subscription).is_some() {
+            if requested
+                .insert(resource.to_owned(), subscription)
+                .is_some()
+            {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
@@ -470,14 +473,15 @@ impl WireSession {
         subscription: wire::SessionSubscription,
     ) -> Result<(), WireSessionError> {
         let (resource, from) = validate_resource_subscription(&subscription)?;
-        if self.resources.contains_key(&resource) {
+        if self.resources.contains_key(resource) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        self.admit_one(self.resource_views.contains_key(&resource))?;
+        self.admit_one(self.resource_views.contains_key(resource))?;
         let revision = self
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        let resource = resource.to_owned();
         let (view, subscription) = self.stage_stream(subscription, from, revision, None);
         self.resource_views.insert(resource.clone(), view);
         self.resources.insert(resource, subscription);
@@ -716,7 +720,7 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
 /// a stream follow it may carry a key filter selecting a subtree.
 fn validate_resource_subscription(
     subscription: &wire::SessionSubscription,
-) -> Result<(String, u64), WireSessionError> {
+) -> Result<(&str, u64), WireSessionError> {
     validate_subscription_bytes(subscription)?;
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
@@ -732,7 +736,7 @@ fn validate_resource_subscription(
         .as_ref()
         .ok_or(WireSessionError::InvalidSubscription)?;
     wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
-    Ok((follow.resource.clone(), resume.next))
+    Ok((&follow.resource, resume.next))
 }
 
 fn validate_subscription_bytes(

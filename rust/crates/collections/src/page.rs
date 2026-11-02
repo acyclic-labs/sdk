@@ -136,6 +136,9 @@ pub struct PageChunks<'a, T, L, H, const HEADER_BYTES: usize, const TARGET_BYTES
     leaf: bool,
 }
 
+/// One borrowed page, its examined-item count and whether a boundary closed it.
+pub type PackedPage<'a, T> = (&'a [T], u64, bool);
+
 impl<'a, T, L, H, E, const HEADER_BYTES: usize, const TARGET_BYTES: usize>
     PageChunks<'a, T, L, H, HEADER_BYTES, TARGET_BYTES>
 where
@@ -191,7 +194,7 @@ where
     pub fn next_page(
         &mut self,
         mut admit: impl FnMut() -> Result<(), E>,
-    ) -> Result<Option<(&'a [T], u64, bool)>, PackingError<E>> {
+    ) -> Result<Option<PackedPage<'a, T>>, PackingError<E>> {
         let items = self.items;
         let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
             return Ok(None);
@@ -232,7 +235,9 @@ where
                 break;
             }
         }
-        let page = &rest[..count];
+        let page = rest
+            .get(..count)
+            .unwrap_or_else(|| unreachable!("only examined original items enter a page"));
         self.start += count;
         Ok(Some((page, examined, closed)))
     }

@@ -15,6 +15,7 @@
 //! custodian watch a process that is already a member of the tree's Job.
 
 use super::custodian_admission_transport::{self as transport, Request};
+use std::fmt::Write as _;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
 use tokio::sync::mpsc;
@@ -34,19 +35,16 @@ pub(super) fn secret() -> io::Result<Secret> {
     Ok(secret)
 }
 
-pub(super) fn encode(secret: &Secret) -> String {
-    secret.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-pub(super) fn decode(text: &str) -> Option<Secret> {
-    let mut secret = [0; 16];
-    if text.len() != 32 {
-        return None;
-    }
-    for (byte, pair) in secret.iter_mut().zip(text.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(secret)
+pub(super) fn endpoint(address: &str, tree: usize, secret: &Secret) -> String {
+    let digits = tree.checked_ilog10().unwrap_or(0) as usize + 1;
+    let mut endpoint = String::with_capacity(address.len() + 2 + digits + 2 * secret.len());
+    write!(
+        endpoint,
+        "{address}/{tree}/{:032x}",
+        u128::from_be_bytes(*secret)
+    )
+    .expect("formatting into a String cannot fail");
+    endpoint
 }
 
 /// Compares secrets in time independent of where they first differ.

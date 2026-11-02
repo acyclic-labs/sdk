@@ -127,13 +127,16 @@ impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
         // Physical retirement needs no allocator or fallible admission, even
         // for wide adversarial keys or concurrently released shared roots.
         let mut pending = [const { [const { None }; 8] }; N];
+        let pending = pending.as_flattened_mut();
         let mut depth = 0;
         let mut current = Some(body);
         loop {
             if let Some(mut body) = current.take() {
                 if let Kind::Branch { low, high, .. } = &mut body.kind {
                     if let Some(upper) = high.root.take() {
-                        pending[depth / 8][depth % 8] = Some(upper);
+                        *pending.get_mut(depth).unwrap_or_else(|| {
+                            unreachable!("strictly increasing branch coordinates fit the key width")
+                        }) = Some(upper);
                         depth += 1;
                     }
                     current = low
@@ -149,7 +152,9 @@ impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
                     break;
                 }
                 depth -= 1;
-                current = pending[depth / 8][depth % 8]
+                current = pending
+                    .get_mut(depth)
+                    .unwrap_or_else(|| unreachable!("the original pending branch is retained"))
                     .take()
                     .and_then(|mut node: Node<V, A, N, C>| node.0.take())
                     .and_then(Arc::into_inner);
@@ -463,6 +468,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         let mut destination = &mut result;
         // One original sibling depth per possible branch, with no allocation.
         let mut depths = [[0_usize; 8]; N];
+        let depths = depths.as_flattened_mut();
         let mut depth = 0;
         loop {
             let Some(body) = view.visible_body(work)? else {
@@ -490,7 +496,9 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                         view = selected;
                         continue;
                     }
-                    depths[depth / 8][depth % 8] = sibling.depth();
+                    *depths.get_mut(depth).unwrap_or_else(|| {
+                        unreachable!("strictly increasing branch coordinates fit the key width")
+                    }) = sibling.depth();
                     depth += 1;
                     let (low, high) = if selected_high {
                         (sibling, Self::default())
@@ -513,16 +521,19 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             }
         }
         let mut height = destination.depth();
-        for position in (0..depth).rev() {
+        let depths = depths
+            .get_mut(..depth)
+            .unwrap_or_else(|| unreachable!("the original copied branch depths are retained"));
+        for sibling_depth in depths.iter_mut().rev() {
             work.charge_items(1)?;
-            height = 1 + height.max(depths[position / 8][position % 8]);
-            depths[position / 8][position % 8] = height;
+            height = 1 + height.max(*sibling_depth);
+            *sibling_depth = height;
         }
         let mut cursor = &mut result;
-        for position in 0..depth {
+        for &branch_height in depths.iter() {
             work.charge_items(1)?;
             let (height, bit, low, upper) = cursor.unpublished_branch();
-            *height = depths[position / 8][position % 8];
+            *height = branch_height;
             cursor = if high(&key, *bit) { upper } else { low };
         }
         Ok(result)

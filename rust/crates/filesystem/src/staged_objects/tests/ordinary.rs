@@ -436,6 +436,28 @@ async fn spill_relief_retains_original_work_cancellation_and_refusal()
     // Stand in for a spill file that has grown past its bound.
     advance_spill_past_bound(&store).await?;
 
+    let private = store.index().spilled_objects;
+    for counter in ["items_examined", "allocation_operations"] {
+        let mut budget = crate::performance::BOUNDARY_BUDGET;
+        if counter == "items_examined" {
+            budget.items_examined = 0;
+        } else {
+            budget.allocation_operations = 0;
+        }
+        let mut refused = AuthorityWork::new(budget, &token);
+        assert!(matches!(
+            store.relieve_window(&mut refused).await,
+            Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                counter: refused_counter,
+                ..
+            })) if refused_counter == counter
+        ));
+        assert_eq!(refused.spent().backend_read_operations, 0);
+        assert_eq!(refused.spent().backend_write_operations, 0);
+        assert_eq!(store.index().spilled_objects, private);
+        assert_eq!(store.inner().stored.load(Ordering::Relaxed), 0);
+    }
+
     let mut denied = AuthorityWork::new(
         WorkBudget {
             backend_read_operations: 0,
@@ -563,6 +585,16 @@ async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
                     &mut std::task::Context::from_waker(std::task::Waker::noop()),
                 ),
                 std::task::Poll::Pending
+            ));
+            let mut independent = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
+            let read = store.read(first, 3 * 1_048_576, &mut independent);
+            tokio::pin!(read);
+            assert!(matches!(
+                std::future::Future::poll(
+                    read.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                ),
+                std::task::Poll::Ready(Ok(value)) if value.bytes.len() == 3 * 1_048_576
             ));
             let index = store.index();
             assert!(index.order.is_empty(), "the spill selected both residents");
@@ -783,6 +815,18 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     let directory = tempfile::tempdir()?;
     let (store, _provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
+    let mut empty = AuthorityWork::new(WorkBudget::default(), &token);
+    assert!(matches!(
+        store.put_many(&[], &mut empty).await,
+        Err(ObjectStoreError::EmptyWriteBatch)
+    ));
+    assert!(matches!(
+        store.put_many_hashed(&[], &mut empty).await,
+        Err(ObjectStoreError::EmptyWriteBatch)
+    ));
+    assert_eq!(empty.spent(), WorkCounters::UNCHARGED);
+    assert!(store.index().objects.is_empty());
+    assert!(store.spill_io.try_read()?.is_none());
     let object = HashedObject::new(
         ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"proven body"),

@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 /// Session admission version. Checked before credentials or the first request.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
@@ -33,7 +33,7 @@ mod calls;
 mod pages;
 mod resources;
 mod sockets;
-pub use calls::{CallAuthorization, CallProvider};
+pub use calls::{CallAuthorization, CallInput, CallProvider};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
@@ -59,7 +59,8 @@ use crate::runtime::{signal, sync};
 pub(crate) use client::Cache;
 pub use client::transport;
 pub use client::{
-    ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, Client,
+    ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, CallInputSender,
+    Client,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
@@ -73,6 +74,7 @@ pub use client::{verify_admission_binding, verify_admission_cancellation};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
+const RECEIVE_FRAMES: usize = 2;
 #[cfg(loom)]
 pub use client::verify_latest_progress;
 #[cfg(test)]
@@ -117,6 +119,7 @@ struct Channel {
     ending: Option<&'static str>,
     /// Peer frames of an actor socket; dropping it ends that socket.
     socket: Option<Box<dyn SocketInbound>>,
+    input: Option<calls::InputProducer>,
 }
 struct Pending {
     frame: Frame,
@@ -169,6 +172,8 @@ struct Session<P: ?Sized> {
     terminals: sources::Sources,
     incoming: transport::WireResponses,
     credit: wire::SessionWindow,
+    input_credit: wire::SessionWindow,
+    input_released: sync::Arc<signal::Signal<calls::InputReleased>>,
     controls: VecDeque<wire::SessionFrame>,
     pending_frames: usize,
     pending_bytes: usize,
@@ -331,6 +336,11 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         terminals: sources::Sources::new(),
         incoming,
         credit: wire::SessionWindow::default(),
+        input_credit: wire::SessionWindow {
+            bytes: crate::MAX_COMMAND_BYTES as u64,
+            frames: crate::MAX_ITEMS as u32,
+        },
+        input_released: sync::Arc::new(signal::Signal::new()),
         controls: VecDeque::new(),
         pending_frames: 0,
         pending_bytes: 0,
@@ -364,6 +374,9 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
                         // reading before the queued terminal responses drain.
                         for channel in session.channels.values_mut() {
                             channel.socket.take();
+                            if let Some(input) = &mut channel.input {
+                                let _ = input.finish(Err(StreamError::Unavailable));
+                            }
                         }
                         // Preserve terminal responses for channels already removed.
                         // Reuse both collections without allocating a shutdown queue.
@@ -395,18 +408,22 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(Some(frame.into()));
             }
             if self.sources.is_empty() && self.terminals.is_empty() {
-                let changed = self
-                    .authority
-                    .changed(&mut self.trust_changed, self.deadline);
-                let input = match future::select(self.incoming.next(), Box::pin(changed)).await {
-                    future::Either::Left((input, _)) => Ok(input),
-                    future::Either::Right((event, pending)) => {
-                        drop(pending);
-                        Err(event)
+                let input = {
+                    let changed = self
+                        .authority
+                        .changed(&mut self.trust_changed, self.deadline);
+                    let input = next_input(&mut self.incoming, &self.input_released);
+                    futures::pin_mut!(input);
+                    match future::select(input, Box::pin(changed)).await {
+                        future::Either::Left((input, _)) => Ok(input),
+                        future::Either::Right((event, pending)) => {
+                            drop(pending);
+                            Err(event)
+                        }
                     }
                 };
                 match input {
-                    Ok(Some(frame)) => self.receive(frame?)?,
+                    Ok(Some(input)) => self.receive_input(input)?,
                     Ok(None) => return Ok(None),
                     Err(event) => self.trust_event(event)?,
                 }
@@ -414,39 +431,42 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             // Alternate deterministic priority. This bounds ready-side work
             // and lets the model explore the actual wakeup path without RNG.
-            let input = self.incoming.next();
-            let room = policy::room(
-                self.limits.pending_frames,
-                self.limits.pending_bytes,
-                self.pending_frames,
-                self.pending_bytes,
-                DATA_FRAME_BYTES,
-                self.credit.frames > 0 && self.credit.bytes > 0,
-            );
-            let source = self.sources.next_with_control(&mut self.terminals, room);
-            let changed = Box::pin(
-                self.authority
-                    .changed(&mut self.trust_changed, self.deadline),
-            );
-            let prefer_control = self.prefer_control;
-            let event = async move {
-                if prefer_control {
-                    match future::select(input, source).await {
-                        future::Either::Left((input, _)) => future::Either::Left(input),
-                        future::Either::Right((source, _)) => future::Either::Right(source),
+            let event = {
+                let input = next_input(&mut self.incoming, &self.input_released);
+                futures::pin_mut!(input);
+                let room = policy::room(
+                    self.limits.pending_frames,
+                    self.limits.pending_bytes,
+                    self.pending_frames,
+                    self.pending_bytes,
+                    DATA_FRAME_BYTES,
+                    self.credit.frames > 0 && self.credit.bytes > 0,
+                );
+                let source = self.sources.next_with_control(&mut self.terminals, room);
+                let changed = Box::pin(
+                    self.authority
+                        .changed(&mut self.trust_changed, self.deadline),
+                );
+                let prefer_control = self.prefer_control;
+                let event = async move {
+                    if prefer_control {
+                        match future::select(input, source).await {
+                            future::Either::Left((input, _)) => future::Either::Left(input),
+                            future::Either::Right((source, _)) => future::Either::Right(source),
+                        }
+                    } else {
+                        match future::select(source, input).await {
+                            future::Either::Left((source, _)) => future::Either::Right(source),
+                            future::Either::Right((input, _)) => future::Either::Left(input),
+                        }
                     }
-                } else {
-                    match future::select(source, input).await {
-                        future::Either::Left((source, _)) => future::Either::Right(source),
-                        future::Either::Right((input, _)) => future::Either::Left(input),
+                };
+                match future::select(Box::pin(event), changed).await {
+                    future::Either::Left((event, _)) => Ok(event),
+                    future::Either::Right((changed, pending)) => {
+                        drop(pending);
+                        Err(changed)
                     }
-                }
-            };
-            let event = match future::select(Box::pin(event), changed).await {
-                future::Either::Left((event, _)) => Ok(event),
-                future::Either::Right((changed, pending)) => {
-                    drop(pending);
-                    Err(changed)
                 }
             };
             let event = match event {
@@ -458,7 +478,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             };
             self.prefer_control = !self.prefer_control;
             match event {
-                future::Either::Left(Some(frame)) => self.receive(frame?)?,
+                future::Either::Left(Some(input)) => self.receive_input(input)?,
                 future::Either::Left(None) => return Ok(None),
                 future::Either::Right(source) => {
                     if let Some((channel, event)) = source? {
@@ -467,6 +487,23 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }
             }
         }
+    }
+}
+
+enum InputEvent {
+    Frame(Result<wire::SessionFrame, StreamError>),
+    Released(Result<calls::InputReleased, StreamError>),
+}
+
+async fn next_input(
+    incoming: &mut transport::WireResponses,
+    released: &signal::Signal<calls::InputReleased>,
+) -> Option<InputEvent> {
+    let released = released.next();
+    futures::pin_mut!(released);
+    match future::select(released, incoming.next()).await {
+        future::Either::Left((released, _)) => Some(InputEvent::Released(released)),
+        future::Either::Right((input, _)) => input.map(InputEvent::Frame),
     }
 }
 
@@ -485,9 +522,58 @@ fn cursor(next: u64) -> wire::SessionCursor {
 }
 
 impl<P: StreamProvider + ?Sized> Session<P> {
+    fn receive_input(&mut self, input: InputEvent) -> Result<(), StreamError> {
+        match input {
+            InputEvent::Frame(input) => self.receive(input?),
+            InputEvent::Released(released) => {
+                let (identity, bytes) = match released? {
+                    calls::InputReleased::Credit { identity, bytes } => (identity, bytes),
+                    calls::InputReleased::Stopped(identity) => {
+                        if self
+                            .channels
+                            .get(&identity.channel_id)
+                            .is_some_and(|channel| channel.generation == identity.generation)
+                        {
+                            self.end(identity.channel_id, StreamError::Unavailable.code())?;
+                        }
+                        return Ok(());
+                    }
+                };
+                let grant = wire::SessionWindow { bytes, frames: 1 };
+                wire_codec::session::grant_credit(&mut self.input_credit, &grant)?;
+                self.controls.push_back(frame(0, 0, Body::Window(grant)));
+                if let Some(channel) = self.channels.get_mut(&identity.channel_id)
+                    && channel.generation == identity.generation
+                    && channel.ending.is_none()
+                    && let Some(input) = &mut channel.input
+                    && input.is_open()
+                {
+                    wire_codec::session::grant_credit(&mut input.credit, &grant)?;
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        identity.generation,
+                        Body::Window(grant),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
         if input.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
+        }
+        let length = input.encoded_len() as u64;
+        let upload = matches!(
+            &input.body,
+            Some(Body::Data(wire::SessionData {
+                item: Some(Item::ActorCall(_)),
+                ..
+            }))
+        );
+        if self.hello && upload {
+            wire_codec::session::consume_credit(&mut self.input_credit, &input)?;
         }
         let body = input.body.ok_or(StreamError::InvalidArgument)?;
         if !self.hello {
@@ -537,10 +623,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 None => Ok(()),
             };
         }
-        if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_) | Body::Data(_)) {
+        if input.channel_id != 0
+            && matches!(
+                body,
+                Body::Window(_) | Body::Ack(_) | Body::Data(_) | Body::InputEnd(_)
+            )
+        {
             match self.channels.get(&input.channel_id) {
-                None => return Ok(()),
-                Some(channel) if input.generation < channel.generation => return Ok(()),
+                None => return self.discard_input(upload, length),
+                Some(channel) if input.generation < channel.generation => {
+                    return self.discard_input(upload, length);
+                }
                 Some(channel) if input.generation != channel.generation => {
                     return Err(StreamError::InvalidArgument);
                 }
@@ -585,6 +678,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             Body::Data(data) if input.channel_id != 0 => {
                 if let Err(reason) = self.validate_authority(input.channel_id) {
+                    self.discard_input(upload, length)?;
                     return self.close_authority(
                         wire::SessionChannel {
                             channel_id: input.channel_id,
@@ -593,8 +687,28 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         reason,
                     );
                 }
+                let released = sync::Arc::clone(&self.input_released);
                 let channel = self.channel(input.channel_id, input.generation)?;
                 if channel.ending.is_some() {
+                    return self.discard_input(upload, length);
+                }
+                if upload {
+                    let producer = channel.input.as_mut().ok_or(StreamError::InvalidArgument)?;
+                    // Validate both balances before committing either channel debit.
+                    let mut credit = producer.credit;
+                    credit.bytes = credit
+                        .bytes
+                        .checked_sub(length)
+                        .ok_or(StreamError::Capacity)?;
+                    credit.frames = credit.frames.checked_sub(1).ok_or(StreamError::Capacity)?;
+                    producer.credit = credit;
+                    let identity = wire::SessionChannel {
+                        channel_id: input.channel_id,
+                        generation: input.generation,
+                    };
+                    if let Err(error) = producer.receive(identity, data, length, released) {
+                        self.end(input.channel_id, error.code())?;
+                    }
                     return Ok(());
                 }
                 let (Some(socket), Some(Item::ActorSocket(bytes))) = (&channel.socket, data.item)
@@ -611,8 +725,46 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }
                 Ok(())
             }
+            Body::InputEnd(end) if input.channel_id != 0 => {
+                if let Err(reason) = self.validate_authority(input.channel_id) {
+                    return self.close_authority(
+                        wire::SessionChannel {
+                            channel_id: input.channel_id,
+                            generation: input.generation,
+                        },
+                        reason,
+                    );
+                }
+                self.channel(input.channel_id, input.generation)?
+                    .input
+                    .as_mut()
+                    .ok_or(StreamError::InvalidArgument)?
+                    .finish(Ok(end))?;
+                // Echo only the terminal, without copying trailers or consuming
+                // data credit. The caller retains its original route until this
+                // proves all preceding input crossed the physical transport.
+                self.controls.push_back(frame(
+                    input.channel_id,
+                    input.generation,
+                    Body::InputEnd(wire::SessionInputEnd {
+                        trailers: Vec::new(),
+                    }),
+                ));
+                Ok(())
+            }
             _ => Err(StreamError::InvalidArgument),
         }
+    }
+    fn discard_input(&mut self, upload: bool, length: u64) -> Result<(), StreamError> {
+        if upload {
+            let grant = wire::SessionWindow {
+                bytes: length,
+                frames: 1,
+            };
+            wire_codec::session::grant_credit(&mut self.input_credit, &grant)?;
+            self.controls.push_back(frame(0, 0, Body::Window(grant)));
+        }
+        Ok(())
     }
     fn channel(&mut self, id: u64, generation: u64) -> Result<&mut Channel, StreamError> {
         self.channels

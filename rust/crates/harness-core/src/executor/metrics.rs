@@ -21,8 +21,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 /// Arrow/Parquet layout identity, independent of usage/cache producer versions.
-/// Version 3 retains final HTTP body identity alongside nullable scope ownership.
-pub const VERSION: u32 = 3;
+/// Version 4 adds final HTTP body identity to version 3's original creation context.
+pub const VERSION: u32 = 4;
 
 /// Streaming W3C PROV-O projection over these same original observations.
 #[cfg(feature = "provenance-export")]
@@ -70,7 +70,7 @@ pub mod calls;
 /// The six tables in the current metrics schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
-    /// Adoption and role provenance.
+    /// Adoption context and immutable template provenance.
     Agents,
     /// Started and settled turns.
     Turns,
@@ -134,8 +134,8 @@ impl Table {
         let columns = match self {
             Self::Agents => vec![
                 ("parent", Utf8),
-                ("role", Utf8),
-                ("profile_digest", Utf8),
+                ("creation_context", Utf8),
+                ("artifact", Utf8),
                 ("binding_version", UInt32),
                 ("target", Utf8),
                 ("machine", Utf8),
@@ -279,6 +279,7 @@ macro_rules! columns {
             sequence: u64,
             kind: String,
             purpose: Option<&'static str>,
+            creation_context: Option<&'static str>,
             source_type: Option<&'static str>,
             target_type: Option<&'static str>,
             cache_savings_nano_units: Option<i128>,
@@ -297,6 +298,7 @@ macro_rules! columns {
                     "sequence" => Arc::new(UInt64Array::from_iter_values(rows.iter().map(|row| row.sequence))),
                     "kind" => Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.kind.as_str()))),
                     "purpose" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.purpose))),
+                    "creation_context" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.creation_context))),
                     "source_type" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.source_type))),
                     "target_type" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.target_type))),
                     "cache_savings_nano_units" => Arc::new(Decimal128Array::from_iter(rows.iter().map(|row| row.cache_savings_nano_units)).with_precision_and_scale(38, 0).map_err(export_error)?),
@@ -320,7 +322,7 @@ columns! {
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
     }
-    strings => [parent, role, profile_digest, artifact, request_digest, replay_key, provider, model, provider_request_id,
+    strings => [parent, artifact, request_digest, replay_key, provider, model, provider_request_id,
         system_fingerprint, price_revision, currency, call_id, source, target, credential_scope,
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
         source_account, source_origin, source_commit_id, coverage,
@@ -735,11 +737,14 @@ pub fn inbox(agent_path: &str, sequence: u64, record: &agent::InboxRecord) -> Re
         agent::InboxRecord::ForkAdopted(adopted) => {
             row.kind = "adopted".into();
             row.parent = adopted.parent.as_ref().map(|path| path.as_str().into());
-            row.role = adopted.profile.as_ref().map(|profile| profile.role.clone());
-            row.profile_digest = adopted
-                .profile
-                .as_ref()
-                .map(|profile| digest(profile.digest));
+            if let Some(creation) = &adopted.profile {
+                row.creation_context = Some(match creation.context {
+                    agent::SpawnContext::TopLevel => "top_level",
+                    agent::SpawnContext::Fresh => "fresh",
+                    agent::SpawnContext::Fork => "fork",
+                });
+                row.artifact = creation.template.as_ref().map(artifact).transpose()?;
+            }
             batches.push(batch(Table::Agents, std::slice::from_ref(&row))?);
             if let Some(parent) = &adopted.parent {
                 row.kind = "fork".into();
@@ -972,7 +977,7 @@ mod tests {
                 }
                 // A saved earlier layout cannot acquire the new ownership
                 // contract by copying its columns or erasing its version.
-                for saved_version in [None, Some("1"), Some("2")] {
+                for saved_version in [None, Some("1"), Some("2"), Some("3")] {
                     let mut metadata = original.data.schema().metadata().clone();
                     match saved_version {
                         Some(version) => {

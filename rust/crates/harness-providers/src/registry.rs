@@ -193,8 +193,7 @@ impl Registry {
             key,
             credential_scope,
             transport,
-            #[cfg(not(target_arch = "wasm32"))]
-            codex_count: std::sync::Arc::default(),
+            usage: std::sync::Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })

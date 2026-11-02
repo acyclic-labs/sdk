@@ -1,6 +1,79 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn ranking_borrows_catalog_entries_and_only_retains_matches() {
+    let mut editor = Editor::new("@absent");
+    let mut empty = CompletionMenu::default();
+    let baseline = acyclic_test_support::measure(|| empty.refresh(&editor));
+    for count in [8, 1024] {
+        let mut menu = CompletionMenu::default();
+        for index in 0..count {
+            menu.set_file(&format!("workspace/file{index}.rs"), Some(b""))
+                .unwrap();
+        }
+        // Other completion namespaces must not be ranked or retained.
+        menu.set_file("commands/absent.md", Some(b"command"))
+            .unwrap();
+        let measured = acyclic_test_support::measure(|| menu.refresh(&editor));
+        assert!(menu.items().next().is_none());
+        assert_eq!(menu.work.candidates, count);
+        assert_eq!(measured.bytes_total, baseline.bytes_total);
+        assert_eq!(measured.count_total, baseline.count_total);
+
+        let old_copy = acyclic_test_support::measure(|| {
+            let copied: Vec<_> = menu
+                .files
+                .values()
+                .flat_map(|(_, entries)| entries.iter().cloned())
+                .collect();
+            std::hint::black_box(copied);
+        });
+        assert!(
+            old_copy.bytes_total > measured.bytes_total,
+            "the removed catalog copy must exceed the same temporary storage bound"
+        );
+
+        // The original file fold updates the active query without reparsing it.
+        let before = menu.work;
+        menu.set_file("workspace/absent.rs", Some(b"first"))
+            .unwrap();
+        assert_eq!(menu.items().next().unwrap().value, "absent.rs");
+        assert_eq!(menu.work.candidates - before.candidates, 1);
+        assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
+        let original = Rc::clone(&menu.files["workspace/absent.rs"].1[0].item);
+        assert!(std::ptr::eq(
+            menu.items().next().unwrap(),
+            original.as_ref()
+        ));
+        menu.set_file("workspace/absent.rs", Some(b"replacement"))
+            .unwrap();
+        assert_eq!(Rc::strong_count(&original), 1);
+        assert_eq!(menu.items().len(), 1);
+        menu.set_file("workspace/absent.rs", None).unwrap();
+        assert!(menu.items().next().is_none());
+
+        // A fresh query and a narrowing query both borrow the retained entries.
+        editor.set_text("@file", 0);
+        menu.refresh(&editor);
+        assert_eq!(menu.items().len(), count);
+        let before = menu.work.candidates;
+        editor.insert("1", 1);
+        menu.refresh(&editor);
+        assert_eq!(menu.work.candidates - before, count);
+        assert!(menu.items().all(|item| item.value.contains('1')));
+        assert!(menu.items().next().is_some());
+        for (_, entries) in menu.files.values() {
+            for entry in entries {
+                let retained =
+                    entry.kind == CompletionKind::Mention && entry.item.value.contains('1');
+                assert_eq!(Rc::strong_count(&entry.item), 1 + usize::from(retained));
+            }
+        }
+        editor.set_text("@absent", 2);
+    }
+}
+
 fn unchanged_work(count: usize, repeats: usize, broken: bool) {
     let editor = Editor::new("@file");
     let mut menu = CompletionMenu::default();

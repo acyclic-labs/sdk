@@ -75,7 +75,7 @@ async fn admission_golden_frame_opens_without_another_request() -> TestResult {
 
 #[tokio::test]
 async fn admission_refuses_versions_before_credentials_and_interests() -> TestResult {
-    for version in [0, 1, 3, u32::MAX] {
+    for version in [0, 1, 2, VERSION + 1, u32::MAX] {
         let mut input = hello(0, 0);
         let Some(Body::Hello(hello)) = &mut input.body else {
             return Err("missing admission".into());

@@ -140,7 +140,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
         {
             assert!(provider.supports_native_model(&work)?);
             let (count, custody) = provider
-                .count_tokens_with_native_work(&request, &work)?
+                .count_tokens_with_native_work(&request, 0, &work)?
                 .await?;
             assert!(custody.work().shares_allocation_context(&work));
             assert_eq!(count.request_digest, request.request_digest());
@@ -437,7 +437,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(
         provider
-            .count_tokens_with_native_work(&request, &exhausted)
+            .count_tokens_with_native_work(&request, 0, &exhausted)
             .is_err()
     );
     let result = async {
@@ -473,7 +473,7 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
     let (request, _) = request(&provider)?;
     let baseline = work.live_allocation_bytes();
     let result = provider
-        .count_tokens_with_native_work(&request, &work)?
+        .count_tokens_with_native_work(&request, 0, &work)?
         .await;
     assert!(matches!(
         result,

@@ -1,6 +1,7 @@
 //! Keyed admission and settled results on the canonical Streams commit boundary.
-use super::journal_codec::{Operation, decode as decode_bytes, encode};
+use super::journal_codec::{Completed, Intent, decode as decode_bytes, encode};
 use super::*;
+use acyclic_actors::call::{self, CallPath};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
     CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -31,6 +32,69 @@ pub(crate) struct Publication {
     producer: tokio::sync::watch::Sender<bool>,
 }
 
+// Machine lifecycle calls have one acceptance and one terminal, with their
+// request delivered inline. The shared call fold alone owns protocol state.
+#[derive(Default)]
+struct CallSnapshot {
+    journal: call::Journal,
+    digest: Option<[u8; 32]>,
+    completed: Option<MutationOutcome>,
+    preceding: Option<CommitId>,
+}
+
+impl CallSnapshot {
+    fn apply(&mut self, record: &acyclic_stream::Record) -> Result<(), ProviderError> {
+        let digest = match self.journal.apply(record).map_err(call_error)? {
+            call::Entry::Accepted(accepted) if accepted.fence.is_none() => {
+                Some(decode_bytes::<Intent>(accepted.executor.as_ref())?.digest)
+            }
+            call::Entry::Terminal(call::Outcome::Ok(body)) => {
+                let completed = decode_bytes::<Completed>(body.as_ref())?;
+                self.completed = Some(completed.outcome);
+                Some(completed.digest)
+            }
+            call::Entry::Terminal(_) => None,
+            _ => {
+                return Err(ProviderError::Rejected(
+                    "native Machine call requires its original inline acceptance and terminal"
+                        .into(),
+                ));
+            }
+        };
+        if let Some(digest) = digest {
+            if self.digest.is_some_and(|original| original != digest) {
+                return Err(ProviderError::Rejected(
+                    "Machine call intent changed at completion".into(),
+                ));
+            }
+            self.digest = Some(digest);
+        }
+        self.preceding = Some(record.commit_id);
+        Ok(())
+    }
+
+    fn phase(&self) -> OperationPhase {
+        match self.journal.outcome() {
+            None => OperationPhase::Pending,
+            Some(call::Outcome::Ok(_)) => OperationPhase::Succeeded,
+            Some(call::Outcome::Error(_)) => OperationPhase::Failed,
+            Some(call::Outcome::Cancelled(_)) => OperationPhase::Cancelled,
+            Some(call::Outcome::Indeterminate(_)) => OperationPhase::Indeterminate,
+        }
+    }
+
+    fn outcome(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
+        match self.journal.outcome() {
+            Some(call::Outcome::Ok(_)) => self.completed.clone().ok_or_else(|| {
+                ProviderError::Rejected("Machine call terminal has no decoded completion".into())
+            }),
+            Some(call::Outcome::Cancelled(_)) => Err(ProviderError::Cancelled),
+            Some(call::Outcome::Error(_)) => Err(ProviderError::Failed),
+            Some(call::Outcome::Indeterminate(_)) | None => Err(ProviderError::Indeterminate(key)),
+        }
+    }
+}
+
 impl Journal {
     pub(crate) fn new(
         streams: Arc<dyn StreamProvider>,
@@ -50,8 +114,39 @@ impl Journal {
         StreamPath::new(format!("{}/{suffix}", self.root)).map_err(storage)
     }
 
-    fn operation(&self, key: IdempotencyKey) -> Result<StreamPath, ProviderError> {
-        self.path(format_args!("operations/{key}"))
+    fn call(&self, key: IdempotencyKey) -> Result<CallPath, ProviderError> {
+        CallPath::new(&self.root, &key.to_string()).map_err(call_error)
+    }
+
+    async fn read_call(&self, path: &CallPath) -> Result<CallSnapshot, ProviderError> {
+        let mut snapshot = CallSnapshot::default();
+        let mut records = match self
+            .streams
+            .read(ReadRequest {
+                path: path.log().clone(),
+                from: 0,
+                // Two lifecycle records plus one malformed-extra-record control.
+                limit: 3,
+                at_least: Default::default(),
+                key: None,
+            })
+            .await
+        {
+            Err(StreamError::NotFound) => return Ok(snapshot),
+            result => result.map_err(storage)?.take(3),
+        };
+        while let Some(record) = records.next().await {
+            snapshot.apply(&record.map_err(storage)?)?;
+        }
+        Ok(snapshot)
+    }
+
+    async fn existing_call(&self, path: &CallPath) -> Result<CallSnapshot, ProviderError> {
+        let snapshot = self.read_call(path).await?;
+        if snapshot.journal.next() == 0 {
+            return Err(ProviderError::NotFound("Machine call has no original record; recovery: retain its original supplied journal and key".into()));
+        }
+        Ok(snapshot)
     }
 
     async fn head(&self, path: StreamPath) -> Result<PathHead, ProviderError> {
@@ -127,17 +222,13 @@ impl Journal {
         physical: Option<&MachineObservation>,
         validate: impl FnOnce() -> Result<C, ProviderError>,
     ) -> Result<Admission, ProviderError> {
-        let path = self.operation(key)?;
-        let head = self.head(path.clone()).await?;
-        if head.last.is_some() {
-            let original: Operation = decode(head)?;
-            if original.digest != digest {
+        let path = self.call(key)?;
+        let original = self.read_call(&path).await?;
+        if original.journal.next() != 0 {
+            if original.digest.is_some_and(|original| original != digest) {
                 return Err(ProviderError::Conflict("mutation key names another intent; recovery: retain the original arguments or use a new key".into()));
             }
-            return original
-                .outcome
-                .map(Admission::Replay)
-                .ok_or(ProviderError::Indeterminate(key));
+            return original.outcome(key).map(Admission::Replay);
         }
         let close_admission = validate()?;
         let Some(machine) = physical else {
@@ -145,11 +236,19 @@ impl Journal {
         };
         let machine_path = self.path(format_args!("machines/{}", self.machine))?;
         let current = self.head(machine_path.clone()).await?;
-        let value = Operation {
-            digest,
-            phase: OperationPhase::Pending,
-            outcome: None,
-        };
+        let mut accepted = path
+            .accept(
+                &call::Accepted {
+                    executor: encode(&Intent { digest })?.into(),
+                    fence: None,
+                },
+                false,
+            )
+            .map_err(call_error)?;
+        accepted
+            .conditions
+            .push(condition(machine_path.clone(), &current)?);
+        accepted.mutations.push(append(machine_path, machine)?);
         // Only original physical admission needs a live completion owner.
         // Replay and already-settled logical changes allocate no producer.
         let (producer, receiver) = tokio::sync::watch::channel(false);
@@ -158,11 +257,8 @@ impl Journal {
             .commit(
                 key,
                 b"admit",
-                vec![
-                    condition(machine_path.clone(), &current)?,
-                    CommitCondition::Absent { path: path.clone() },
-                ],
-                vec![append(machine_path, machine)?, append(path, &value)?],
+                accepted.conditions,
+                accepted.mutations,
                 close_admission,
             )
             .await?;
@@ -181,7 +277,7 @@ impl Journal {
         machine: &MachineObservation,
         outcome: MutationOutcome,
     ) -> Result<MutationOutcome, ProviderError> {
-        let operation = self.operation(key)?;
+        let path = self.call(key)?;
         let machine_path = self.path(format_args!("machines/{}", self.machine))?;
         let (machine_condition, operation_condition) = match &admitted {
             Some(publication) => (
@@ -191,7 +287,7 @@ impl Journal {
                     commit_id: publication.commit,
                 },
                 CommitCondition::Head {
-                    path: operation.clone(),
+                    path: path.log().clone(),
                     expected: 1,
                     commit_id: publication.commit,
                 },
@@ -204,22 +300,33 @@ impl Journal {
                         .await
                         .map_err(|_| ProviderError::Indeterminate(key))?,
                 )?,
-                CommitCondition::Absent {
-                    path: operation.clone(),
+                CommitCondition::Tail {
+                    path: path.log().clone(),
+                    expected: 0,
                 },
             ),
         };
-        let conditions = vec![machine_condition, operation_condition];
-        let value = Operation {
-            digest,
-            phase: OperationPhase::Succeeded,
-            outcome: Some(outcome.clone()),
-        };
+        let mut terminal = path
+            .settle(
+                None,
+                &call::Outcome::Ok(
+                    encode(&Completed {
+                        digest,
+                        outcome: &outcome,
+                    })?
+                    .into(),
+                ),
+            )
+            .map_err(call_error)?;
+        terminal
+            .conditions
+            .extend([machine_condition, operation_condition]);
+        terminal.mutations.push(append(machine_path, machine)?);
         self.commit(
             key,
             b"settle",
-            conditions,
-            vec![append(machine_path, machine)?, append(operation, &value)?],
+            terminal.conditions,
+            terminal.mutations,
             || {},
         )
         .await
@@ -238,14 +345,15 @@ impl Journal {
         mutations: Vec<CommitMutation>,
         on_submit: impl FnOnce(),
     ) -> Result<CommitReceipt, ProviderError> {
-        let mut identity = self.root.as_str().as_bytes().to_vec();
-        identity.extend_from_slice(&key.as_bytes());
-        identity.extend_from_slice(phase);
+        let mut identity = Sha256::new();
+        identity.update(self.root.as_str().as_bytes());
+        identity.update(key.as_bytes());
+        identity.update(phase);
         let request = CommitRequest {
             deadline_unix_millis: None,
             conditions,
             mutations,
-            idempotency_key: acyclic_stream::IdempotencyKey::new(Sha256::digest(identity).to_vec())
+            idempotency_key: acyclic_stream::IdempotencyKey::new(identity.finalize().to_vec())
                 .map_err(storage)?,
         };
         // All reads, serialization, key admission and lock waits precede this
@@ -269,8 +377,7 @@ impl Journal {
         &self,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let operation: Operation = decode(self.head(self.operation(key)?).await?)?;
-        operation.outcome.ok_or(ProviderError::Indeterminate(key))
+        self.existing_call(&self.call(key)?).await?.outcome(key)
     }
 
     pub(crate) async fn inspect(
@@ -278,11 +385,47 @@ impl Journal {
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
         let key = IdempotencyKey(operation.0);
-        let value: Operation = decode(self.head(self.operation(key)?).await?)?;
+        let value = self.existing_call(&self.call(key)?).await?;
         Ok(OperationObservation {
             id: operation,
-            phase: value.phase,
+            phase: value.phase(),
         })
+    }
+
+    pub(crate) async fn cancel(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationObservation, ProviderError> {
+        let key = IdempotencyKey(operation.0);
+        let path = self.call(key)?;
+        let original = self.existing_call(&path).await?;
+        if original.journal.outcome().is_some() {
+            return Ok(OperationObservation {
+                id: operation,
+                phase: original.phase(),
+            });
+        }
+        let cancelled = path
+            .cancel("original Machine caller cancelled")
+            .map_err(call_error)?;
+        match self
+            .commit(
+                key,
+                b"cancel",
+                cancelled.conditions,
+                cancelled.mutations,
+                || {},
+            )
+            .await
+        {
+            Ok(_) => Ok(OperationObservation {
+                id: operation,
+                phase: OperationPhase::Indeterminate,
+            }),
+            // Only a real terminal race justifies reading the winning outcome.
+            Err(ProviderError::Conflict(_)) => self.inspect(operation).await,
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) async fn watch(
@@ -290,7 +433,7 @@ impl Journal {
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
         let key = IdempotencyKey(operation.0);
-        let path = self.operation(key)?;
+        let path = self.call(key)?;
         // Retain the original producer before reading its publication. A later
         // transition can replace the slot, but cannot replace this handle.
         // Storage observation must never hold up lifecycle admission.
@@ -301,13 +444,13 @@ impl Journal {
                 .filter(|(id, _)| *id == operation)
                 .map(|(_, receiver)| receiver.clone())
         };
-        let head = self.head(path.clone()).await?;
-        let mut request = acyclic_stream::FollowRequest::new(path, head.tail);
-        request.preceding = head.last.as_ref().map(|record| record.commit_id);
-        let value: Operation = decode(head)?;
+        let value = self.existing_call(&path).await?;
+        let mut request =
+            acyclic_stream::FollowRequest::new(path.log().clone(), value.journal.next());
+        request.preceding = value.preceding;
         let initial = OperationObservation {
             id: operation,
-            phase: value.phase,
+            phase: value.phase(),
         };
         if initial.phase != OperationPhase::Pending {
             return Ok(stream::once(async move { Ok(initial) }).boxed());
@@ -322,8 +465,13 @@ impl Journal {
             () = producer_lost(&mut producer) => return Err(ProviderError::Indeterminate(key)),
         };
         let updates = stream::try_unfold(
-            (acyclic_stream::records_only(records), producer, false),
-            move |(mut records, mut producer, done)| async move {
+            (
+                acyclic_stream::records_only(records),
+                producer,
+                value,
+                false,
+            ),
+            move |(mut records, mut producer, mut value, done)| async move {
                 if done {
                     return Ok(None);
                 }
@@ -333,14 +481,14 @@ impl Journal {
                         .ok_or(ProviderError::Indeterminate(key))?,
                     () = producer_lost(&mut producer) => return Err(ProviderError::Indeterminate(key)),
                 };
-                let value: Operation = decode_bytes(record.value.as_ref())?;
-                let phase = value.phase;
+                value.apply(&record)?;
+                let phase = value.phase();
                 Ok(Some((
                     OperationObservation {
                         id: operation,
                         phase,
                     },
-                    (records, producer, phase != OperationPhase::Pending),
+                    (records, producer, value, phase != OperationPhase::Pending),
                 )))
             },
         );
@@ -505,7 +653,19 @@ fn decode<T: serde::de::DeserializeOwned>(head: PathHead) -> Result<T, ProviderE
 }
 
 fn storage(error: StreamError) -> ProviderError {
-    ProviderError::Rejected(format!(
-        "Machine journal access failed: {error}; recovery: restore the original Streams authority and publication"
-    ))
+    match error {
+        StreamError::Unavailable => ProviderError::Unavailable,
+        error => ProviderError::Rejected(format!(
+            "Machine journal access failed: {error}; recovery: restore the original Streams authority and publication"
+        )),
+    }
+}
+
+fn call_error(error: call::Error) -> ProviderError {
+    match error {
+        call::Error::Stream(error) => storage(error),
+        error => ProviderError::Rejected(format!(
+            "Machine call refused: {error}; recovery: retain its original caller journal"
+        )),
+    }
 }

@@ -27,6 +27,7 @@ grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tow
 javascript = ["grpc", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

@@ -1,5 +1,5 @@
 import { isExpectedNativeAbsence } from "./generated/native-absence.js";
-import { snapshotBytes } from "@acyclic-labs/auth";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";

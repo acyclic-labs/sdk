@@ -80,8 +80,11 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             Err(AuthorityStoreError::AccountingHandoffActive)
         ));
         assert!(matches!(
-            borrowed.remaining(),
-            Err(AuthorityStoreError::AccountingHandoffActive)
+            borrowed
+                .remaining()
+                .map_err(FsError::from)
+                .map_err(crate::async_storage::object_error),
+            Err(ObjectStoreError::AccountingHandoffActive)
         ));
         assert!(matches!(
             borrowed.operation(),

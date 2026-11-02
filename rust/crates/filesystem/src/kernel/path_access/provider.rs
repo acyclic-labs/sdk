@@ -1,15 +1,5 @@
 use super::*;
-
-pub(super) fn object_error(error: crate::FsError) -> ObjectStoreError {
-    match error {
-        crate::FsError::Object(error) => error,
-        crate::FsError::Work(error) => ObjectStoreError::Work(error),
-        crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled,
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => ObjectStoreError::Native(error),
-        _ => ObjectStoreError::Io(std::io::ErrorKind::OutOfMemory.into()),
-    }
-}
+use crate::async_storage::object_error;
 
 pub(super) fn provider_remaining(
     accounting: &KernelAccounting<'_>,

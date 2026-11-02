@@ -41,9 +41,10 @@ where
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
     ) -> BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
         self.record(RequestClass::Token);
-        self.inner().count_tokens(request)
+        self.inner().count_tokens(request, ceiling)
     }
     fn generate<'a>(
         &'a self,
@@ -78,11 +79,13 @@ where
     fn count_tokens_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        ceiling: u64,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
     {
         self.record(RequestClass::Token);
-        self.inner().count_tokens_with_native_work(request, work)
+        self.inner()
+            .count_tokens_with_native_work(request, ceiling, work)
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn generate_with_native_work<'a>(

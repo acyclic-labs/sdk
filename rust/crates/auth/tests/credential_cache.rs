@@ -423,19 +423,78 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
         vec![None, Some("bearer0".into())]
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let reused = CredentialCache::new(
-        |_| future::ready(Ok(snapshot("rejected", 1, 100))),
+    for replacement in [
+        "rejected",
+        "Rejected",
+        "rejecteD",
+        "rejecte",
+        "rejected-more",
+    ] {
+        let (send, receive) = oneshot::channel::<()>();
+        let gate = receive.shared();
+        let reused = CredentialCache::new(
+            move |previous| {
+                let gate = gate.clone();
+                async move {
+                    if let Some(previous) = previous {
+                        assert_eq!(previous.token(), "rejected");
+                        gate.await.unwrap();
+                        Ok(snapshot(replacement, 1, 100))
+                    } else {
+                        Ok(snapshot("rejected", 1, 100))
+                    }
+                }
+            },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some(revision(1)),
+            },
+        );
+        let old = block_on(reused.resolve()).unwrap();
+        reused.reject(&old).unwrap();
+        let mut cohort = Box::pin(join_all((0..8).map(|_| reused.resolve())));
+        pending(cohort.as_mut());
+        send.send(()).unwrap();
+        for result in block_on(cohort) {
+            if replacement == "rejected" {
+                assert!(matches!(result, Err(CredentialCacheError::Rejected)));
+            } else {
+                let lease = result.unwrap();
+                assert_eq!(lease.token(), replacement);
+                assert!(Arc::ptr_eq(&lease, &block_on(reused.resolve()).unwrap()));
+            }
+        }
+        assert!(reused.check(&old).is_err());
+        assert!(!reused.reject(&old).unwrap());
+    }
+
+    let (send, receive) = oneshot::channel::<()>();
+    let gate = receive.shared();
+    let cache = CredentialCache::new(
+        move |_| {
+            let gate = gate.clone();
+            async move {
+                gate.await.unwrap();
+                Ok(snapshot("published", 1, 100))
+            }
+        },
         || CredentialValidity {
             now_unix_seconds: 1,
             revision: Some(revision(1)),
         },
     );
-    let old = block_on(reused.resolve()).unwrap();
-    reused.reject(&old).unwrap();
+    let mut first = Box::pin(cache.resolve());
+    let mut second = Box::pin(cache.resolve());
+    pending(first.as_mut());
+    pending(second.as_mut());
+    send.send(()).unwrap();
+    let published = first.now_or_never().unwrap().unwrap();
+    assert!(cache.reject(&published).unwrap());
     assert!(matches!(
-        block_on(reused.resolve()),
-        Err(CredentialCacheError::Rejected)
+        second.now_or_never(),
+        Some(Err(CredentialCacheError::Stale))
     ));
+    assert!(cache.check(&published).is_err());
 }
 
 #[test]

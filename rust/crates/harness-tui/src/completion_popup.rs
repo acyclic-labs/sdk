@@ -93,18 +93,8 @@ impl Widget for CompletionPopup<'_> {
             .style(self.style);
         let inner = block.inner(area);
         block.render(area, buffer);
-        let first = self
-            .menu
-            .selected
-            .saturating_sub(usize::from(inner.height) - 1);
-        for (index, item) in self
-            .menu
-            .items()
-            .enumerate()
-            .skip(first)
-            .take(usize::from(inner.height))
-        {
-            let style = if index == self.menu.selected {
+        for (row, (item, selected)) in self.menu.window(usize::from(inner.height)).enumerate() {
+            let style = if selected {
                 self.style.patch(self.selected_style)
             } else {
                 self.style
@@ -120,7 +110,7 @@ impl Widget for CompletionPopup<'_> {
                     part,
                     &mut x,
                     inner.right(),
-                    inner.y + cells(index - first),
+                    inner.y + cells(row),
                     style,
                     buffer,
                 );

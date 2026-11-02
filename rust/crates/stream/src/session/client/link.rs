@@ -485,6 +485,7 @@ async fn handshake(
         served: crate::RevisionCut::default(),
         epoch: 0,
         credit,
+        input: Arc::new(input::Window::new()),
     };
     let input: transport::Requests = Box::pin(stream::unfold(
         Arc::clone(&link.sender),
@@ -508,5 +509,9 @@ async fn handshake(
     if welcome.node_id.is_empty() || (!destination.is_empty() && welcome.node_id != destination) {
         return Err(StreamError::InvalidResponse);
     }
+    link.input.grant(&wire::SessionWindow {
+        bytes: welcome.receive_bytes,
+        frames: welcome.receive_frames,
+    })?;
     Ok((welcome.node_id, link, response))
 }

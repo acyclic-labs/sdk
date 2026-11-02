@@ -50,13 +50,20 @@ fn unreserved(b: u8) -> bool {
 /// are escaped; no Unicode normalization or case folding occurs here.
 pub fn encode_component(value: &[u8]) -> String {
     let mut result = String::new();
+    append_component(value, &mut result);
+    result
+}
+
+/// Append the canonical byte encoding to an existing resource name.
+/// Retains the prefix and writes directly into the caller's buffer.
+pub fn append_component(value: &[u8], output: &mut String) {
     for &b in value {
         if unreserved(b) {
-            result.push(char::from(b));
+            output.push(char::from(b));
         } else {
-            result.push('%');
+            output.push('%');
             for digit in [b >> 4, b & 15] {
-                result.push(char::from(if digit < 10 {
+                output.push(char::from(if digit < 10 {
                     b'0' + digit
                 } else {
                     b'A' + digit - 10
@@ -64,7 +71,6 @@ pub fn encode_component(value: &[u8]) -> String {
             }
         }
     }
-    result
 }
 
 /// Decode only the unique canonical spelling; reject alternate escapes.
@@ -78,9 +84,10 @@ pub fn component_matches(encoded: &str, value: &[u8]) -> bool {
     component_bytes(encoded).eq(value.iter().copied().map(Ok))
 }
 
-// Validation consumes this iterator without collecting; decoding collects the
-// same canonical bytes. No syntax-only caller allocates a component buffer.
-fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {
+/// Iterate canonical decoded bytes without allocating a component buffer.
+/// Malformed input and alternate spellings yield an error during iteration.
+/// Callers must consume the entire component before accepting its spelling.
+pub fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {
     let mut bytes = value.bytes();
     std::iter::from_fn(move || {
         bytes.next().map(|b| {
@@ -108,11 +115,11 @@ fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>
 /// Bucket and opaque key are separate components; slashes IN a key are %2F.
 /// Encoding preserves byte prefixes; grant matching still requires whole components.
 pub fn objects_resource(bucket: &[u8], key: &[u8]) -> String {
-    format!(
-        "objects:/{}/{}",
-        encode_component(bucket),
-        encode_component(key)
-    )
+    let mut resource = String::from("objects:/");
+    append_component(bucket, &mut resource);
+    resource.push('/');
+    append_component(key, &mut resource);
+    resource
 }
 
 /// Product catalogs in descriptors define actions; new products need no verifier

@@ -30,6 +30,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         selection,
                     }),
                 ));
+                if let Some(input) = &channel.input {
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        identity.generation,
+                        Body::Window(input.credit),
+                    ));
+                }
                 return Ok(());
             }
             Ok(Event::Progress(mark)) => {
@@ -157,6 +164,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
         channel.ending = Some(code);
         channel.socket.take();
+        if let Some(input) = &mut channel.input {
+            let _ = input.finish(Err(StreamError::from_session_close(code)));
+        }
         self.sources.remove(id);
         self.finish_if_drained(id)
     }

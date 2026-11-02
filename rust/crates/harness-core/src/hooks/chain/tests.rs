@@ -1,63 +1,7 @@
 //! The shared conformance cases for several before-hooks on one request.
+use super::model::{judge, plugin};
 use super::*;
 use serde_json::json;
-use std::cell::RefCell;
-
-/// A plugin before-tool hook named `instance`, optionally selecting requests.
-fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
-    HookSpec {
-        run: HookRun::Plugin {
-            instance: instance.into(),
-            sh: Some("exit 0".into()),
-            ps1: None,
-            config: "{}".into(),
-            matcher,
-        },
-        timeout_ms: u64::MAX,
-        failure: HookFailure::Block,
-    }
-}
-
-fn instance(hook: &HookSpec) -> &str {
-    match &hook.run {
-        HookRun::Plugin { instance, .. } => instance,
-        _ => unreachable!("only plugin hooks here"),
-    }
-}
-
-/// Runs `hooks` (highest authority first) on `command`; `decide` answers for
-/// a hook about the command it sees. Returns the outcome and every run.
-async fn judge(
-    hooks: Vec<HookSpec>,
-    command: &str,
-    decide: impl Fn(&str, &str) -> Value,
-) -> Result<(HookOutput, Vec<(String, String)>)> {
-    let mut configured = Hooks::default();
-    configured.add_rules([HookRule {
-        on: HookEvent::PreToolUse,
-        matcher: String::new(),
-        hooks,
-    }])?;
-    let original = json!({"tool_name":"shell","tool_input":{"command":command}});
-    let runs = RefCell::new(Vec::new());
-    let output = configured
-        .run_commands(
-            HookEvent::PreToolUse,
-            &original,
-            &crate::tool::ToolRegistry::default(),
-            65_536,
-            |hook, _, rewritten| {
-                let input = rewritten.unwrap_or(&original["tool_input"]);
-                let command = input["command"].as_str().unwrap_or_default().to_owned();
-                let name = instance(hook).to_owned();
-                let decision = decide(&name, &command);
-                runs.borrow_mut().push((name, command));
-                std::future::ready(Ok((Some(0), decision.to_string().into_bytes(), vec![])))
-            },
-        )
-        .await?;
-    Ok((output, runs.into_inner()))
-}
 
 fn allow() -> Value {
     json!({"allow": true})

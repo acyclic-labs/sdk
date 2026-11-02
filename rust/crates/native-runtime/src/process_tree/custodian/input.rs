@@ -52,19 +52,27 @@ impl Input {
 }
 
 fn read_trees(
-    mut input: impl io::BufRead,
+    mut input: impl io::Read,
     send: mpsc::SyncSender<Opened>,
     port: usize,
 ) -> io::Result<()> {
-    let mut line = String::new();
+    let mut frame = [0; Opened::FRAME_BYTES];
     loop {
-        line.clear();
-        if input.read_line(&mut line)? == 0 {
-            return Ok(());
+        let mut filled = 0;
+        while filled < frame.len() {
+            let count = input.read(&mut frame[filled..])?;
+            if count == 0 {
+                return if filled == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::from_raw_os_error(
+                        ERROR_INVALID_DATA.cast_signed(),
+                    ))
+                };
+            }
+            filled += count;
         }
-        let tree = line
-            .strip_suffix('\n')
-            .and_then(Opened::parse)
+        let tree = Opened::decode(&frame)
             .ok_or_else(|| io::Error::from_raw_os_error(ERROR_INVALID_DATA.cast_signed()))?;
         send.send(tree).map_err(|_| io::ErrorKind::BrokenPipe)?;
         // SAFETY: the original custodian retains the port. Failure returns
@@ -156,21 +164,29 @@ mod tests {
             handoff.duplicate(source.as_raw_handle(), 0, DUPLICATE_SAME_ACCESS)?;
         }
         let handles = handoff.handles;
-        let mut bytes = Vec::new();
-        handoff.publish(&mut bytes, 7, &[3; 16])?;
+        let mut bytes = Vec::with_capacity(Opened::FRAME_BYTES);
+        let mut published = Ok(());
+        let allocations = acyclic_test_support::measure(|| {
+            published = handoff.publish(&mut bytes, 7, &[3; 16]);
+        });
+        published?;
         // SAFETY: the original publication transferred these distinct handles
         // into this process; no State owns or closes them in this control.
         let retained = handles
             .into_iter()
             .map(|handle| unsafe { OwnedHandle::from_raw_handle(handle) })
-            .collect();
+            .collect::<Vec<_>>();
+        assert_eq!(
+            allocations.count_total, 0,
+            "restored decimal/hex formatting allocates"
+        );
         Ok((bytes, retained))
     }
 
     #[test]
     fn input_terminal_survives_full_credit_read_and_completion_post_failure() -> io::Result<()> {
         let port = port()?;
-        let (bytes, _handles) = frame()?;
+        let (bytes, handles) = frame()?;
 
         // Ordinary EOF remains distinct from malformed input. Both original
         // packets can arrive before observation; the record stays available.
@@ -181,7 +197,14 @@ mod tests {
         assert_eq!(packet(&port)?, OPENED);
         assert_eq!(packet(&port)?, INPUT_EXITED);
         input.finish()?;
-        assert_eq!(input.receive.try_recv().unwrap().tree, 7);
+        let opened = input.receive.try_recv().unwrap();
+        assert_eq!((opened.tree, opened.secret), (7, [3; 16]));
+        for (actual, expected) in [opened.job, opened.process, opened.ready, opened.done]
+            .into_iter()
+            .zip(&handles)
+        {
+            assert_eq!(actual, expected.as_raw_handle());
+        }
 
         // The first original post proves the one queue slot is occupied.
         // Withdraw its receiver while the next actual record waits for credit:
@@ -209,7 +232,18 @@ mod tests {
         // retaining the SAME kernel thread-exit observer on its original port.
         let (read, mut write) = pipe()?;
         let (send, receive) = mpsc::sync_channel(1);
-        let thread = std::thread::spawn(move || read_trees(io::BufReader::new(read), send, 0));
+        let thread = std::thread::spawn(move || {
+            let input = io::BufReader::new(read);
+            let mut result = Ok(());
+            let allocations = acyclic_test_support::measure(|| {
+                result = read_trees(input, send, 0);
+            });
+            assert_eq!(
+                allocations.count_total, 0,
+                "a growing input buffer allocates"
+            );
+            result
+        });
         let mut input = Input::watch(receive, thread, port.as_raw_handle())?;
         write.write_all(&bytes)?;
         drop(write);
@@ -220,22 +254,22 @@ mod tests {
         );
         assert_eq!(input.receive.try_recv().unwrap().tree, 7);
 
-        // Mutate only the selected handle of the original native handover
-        // frame. No invalid owner may reach the credited receiver, including
-        // the readiness handle that State::open adopts as OwnedHandle.
-        let fields = std::str::from_utf8(&bytes)
-            .unwrap()
-            .strip_suffix('\n')
-            .unwrap()
-            .split(' ')
+        // Truncate the original native frame at each byte or mutate its version
+        // or selected handle. No invalid owner may reach the credited receiver,
+        // including the readiness handle that State::open adopts as OwnedHandle.
+        let mut malformed = (1..bytes.len())
+            .map(|cut| bytes[..cut].to_vec())
             .collect::<Vec<_>>();
-        let invalid_handle = usize::MAX.to_string();
-        let mut malformed = vec![bytes[..bytes.len() - 1].to_vec()];
+        for version in [0, 2] {
+            let mut frame = bytes.clone();
+            frame[0] = version;
+            malformed.push(frame);
+        }
         for index in 1..=4 {
-            for sentinel in ["0", invalid_handle.as_str()] {
-                let mut fields = fields.clone();
-                fields[index] = sentinel;
-                malformed.push(format!("{}\n", fields.join(" ")).into_bytes());
+            for sentinel in [0, usize::MAX as u64] {
+                let mut frame = bytes.clone();
+                frame[1 + index * 8..1 + (index + 1) * 8].copy_from_slice(&sentinel.to_le_bytes());
+                malformed.push(frame);
             }
         }
         for bytes in malformed {

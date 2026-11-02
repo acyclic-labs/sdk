@@ -23,10 +23,11 @@ message SessionFrame {
     SessionMoved moved = 19;
     SessionWatermark watermark = 20;
     SessionCredential credential = 21;
+    SessionInputEnd input_end = 22;
   }
 }
 message SessionHello {
-  uint32 version = 1; // exactly 2; all other versions are refused
+  uint32 version = 1; // exactly 3; all other versions are refused
   bytes client_id = 2; // stable logical client identity, not authorization
   string destination_node = 3;
   uint64 receive_bytes = 4; // finite aggregate payload credit
@@ -74,7 +75,7 @@ message SessionSubscription {
     // actor_socket on this channel; removing the channel, credential loss or
     // the end of the session ends the socket.
     bytes actor_socket = 13;
-    bytes actor_call = 14; // canonical encoded Actors invocation; never auto-replayed
+    SessionCall actor_call = 14; // one invocation; never auto-replayed
     // One finite page of direct children, answered on the session exactly as
     // StreamService.ChildrenPage answers it. resume is {0, empty} and filter is
     // absent. A pure read: a client may retry it before any reply fragment
@@ -83,6 +84,25 @@ message SessionSubscription {
     // One coherent snapshot, under the same finite-fragment rules.
     HeadsRequest heads = 16;
   }
+}
+// The canonical product invocation is admitted before any streamed input is sent.
+// With input=false it already contains the complete request. With input=true it
+// is only the product's request header; data uses this SAME channel's actor_call
+// item, ordered from after.next=1 with an empty opaque cursor. Input has its own
+// receive window, independent of the response window.
+message SessionCall {
+  bytes invocation = 1;
+  bool input = 2;
+}
+// Ordered terminal metadata for a streamed input. This control needs no data
+// credit. It ends ONLY the input half, after all earlier input data. Removing the
+// interest, credential loss and connection loss terminate the original call.
+message SessionInputEnd {
+  repeated SessionHeader trailers = 1;
+}
+message SessionHeader {
+  bytes name = 1;
+  bytes value = 2;
 }
 enum SessionDelivery {
   SESSION_DELIVERY_UNSPECIFIED = 0; // rejected
