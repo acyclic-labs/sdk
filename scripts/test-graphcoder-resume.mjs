@@ -21,7 +21,7 @@ const start = (first, resume = true) => {
   const env = { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
     USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
     APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
-    OPENAI_API_KEY: "", GRAPHCODER_MODEL: "", TERM: "xterm-256color" };
+    OPENAI_API_KEY: "", ACYCLIC_MODEL: "", TERM: "xterm-256color" };
   const running = interactive ? processes.startTerminal(binary, launchArgs, { env }) : processes.start(binary, launchArgs, { env });
   if (!interactive) return { running, exit: running.closed };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });

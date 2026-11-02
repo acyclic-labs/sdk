@@ -48,7 +48,7 @@ fn notification_failure(error: &notify::Error) -> String {
 }
 
 fn owner_failure(step: &str, error: &std::io::Error) -> String {
-    format!("step={step}: {error}; recovery=graphcoder --host-workspace")
+    format!("step={step}: {error}; recovery=acyclic run --host-workspace")
 }
 
 /// The leaves under `directory` a notification names, or `None` when it
@@ -106,7 +106,7 @@ pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
 }
 
-const NO_OWNER: &str = "no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox";
+const NO_OWNER: &str = "no running Acyclic workspace owner; start acyclic run --host-workspace outside the host sandbox";
 
 /// What a waiter receives: its reply, observation failure or its owner's exit.
 enum Delivery {
@@ -679,7 +679,7 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
                 let endpoint: Endpoint = serde_json::from_slice(&bytes).map_err(storage)?;
                 if endpoint.version != 3 {
                     return Err(Error::Unsupported(format!(
-                        "step=admit native workspace protocol: version {}; requires 3; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                        "step=admit native workspace protocol: version {}; requires 3; recovery=acyclic run --host-workspace in a fresh workspace with its matching plugin",
                         endpoint.version
                     )));
                 }
@@ -934,7 +934,7 @@ impl Served {
                         // No withdrawal event can be produced. End the
                         // original owner instead of abandoning its waiter.
                         return Err(Error::Storage(format!(
-                            "step=withdraw rejected native request {operation}: {error}; recovery=graphcoder --host-workspace"
+                            "step=withdraw rejected native request {operation}: {error}; recovery=acyclic run --host-workspace"
                         )));
                     }
                 }

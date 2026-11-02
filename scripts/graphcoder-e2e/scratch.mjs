@@ -42,7 +42,7 @@ export function environment(settings, inherited = process.env) {
     XDG_RUNTIME_DIR: join(settings, "runtime"),
     ACYCLIC_SIGNING_CUSTODY: "private-file", ACYCLIC_SIGNING_CUSTODY_DIRECTORY: settings,
     TEMP: temporary, TMP: temporary, TMPDIR: temporary };
-  for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^ACYCLIC_MODEL$/.test(key)) delete env[key];
   for (const path of [settings, env.LOCALAPPDATA, env.APPDATA, env.CODEX_HOME,
     env.CLAUDE_CONFIG_DIR, env.PI_CODING_AGENT_DIR, env.XDG_RUNTIME_DIR, temporary])
     mkdirSync(path, { recursive: true, mode: 0o700 });

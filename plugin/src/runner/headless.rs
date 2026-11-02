@@ -150,7 +150,7 @@ impl Prepared {
             .transpose()?;
         let projection = if args.output_format == super::args::OutputFormat::Jsonl {
             Some(Projection::open(
-                args.operation.as_deref().ok_or("event output: operation absent; recovery: graphcoder --output-format jsonl --operation OPERATION exec")?,
+                args.operation.as_deref().ok_or("event output: operation absent; recovery: acyclic exec --output-format jsonl --operation OPERATION")?,
                 args.event_cursor.as_deref(),
             )?)
         } else {
@@ -606,7 +606,7 @@ async fn prompt_approval(
 ) -> Result<(IntentId, ApprovalBinding), Failure> {
     let binding = binding.ok_or_else(|| {
         acyclic_harness::Error::Invalid(
-            "approval prompt: status has no action binding; recovery: graphcoder exec --input-format jsonl"
+            "approval prompt: status has no action binding; recovery: acyclic exec --input-format jsonl"
                 .into(),
         )
     })?;
@@ -1105,7 +1105,7 @@ pub(super) async fn jsonl(
             line = lines.next_line(), if open && (input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
                 let line = line?;
                 if input_format == super::args::InputFormat::Text {
-                    let (id, binding) = approval.take().ok_or("approval input: no pending request; recovery: graphcoder exec --input-format jsonl")?;
+                    let (id, binding) = approval.take().ok_or("approval input: no pending request; recovery: acyclic exec --input-format jsonl")?;
                     let answer = line.as_deref().unwrap_or_default();
                     conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
                     continue;

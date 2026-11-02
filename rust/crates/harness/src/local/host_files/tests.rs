@@ -965,7 +965,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .expect("owner observation failure remains available");
     assert_eq!(first, format!("operation={}; {failure}", waiting.operation));
     assert!(failure.contains("step=observe native workspace owner exit:"));
-    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(failure.ends_with("recovery=acyclic run --host-workspace"));
     assert!(!lock(&observed.shared.waiters).gone);
     drop(waiting);
     observed
@@ -1012,7 +1012,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )),
         "the original rejection cause must survive retirement: {failure}"
     );
-    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(failure.ends_with("recovery=acyclic run --host-workspace"));
     assert!(matches!(
         response
             .recv_timeout(Duration::from_secs(2))

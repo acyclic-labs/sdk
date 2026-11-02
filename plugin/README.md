@@ -4,6 +4,10 @@ The `acyclic` executable runs the GraphCoder preset with `acyclic run`, serves t
 shared harness with `acyclic serve ADDRESS`, and reopens an existing agent with
 `acyclic attach AGENT`. All three use the same frontend library and SDK client.
 `acyclic run --help` lists execution, provider and output options.
+`ACYCLIC_MODEL` selects the model when `--model` is absent. `ACYCLIC_LOG` enables
+diagnostics with explicit `--diagnostic-records` and `--diagnostic-record-bytes`
+storage; use `off` to disable text diagnostics. `--default-config` ignores the
+environment model selection.
 
 ## Native host workspace coordination
 
@@ -116,7 +120,7 @@ The no-model command contract uses fixture profiles and the real native tool:
 
 ```sh
 python3 plugin/tests/hosts/sandbox-commands.py --host codex \
-  --binary /path/to/package/plugin/bin/acyclic --graphcoder /path/to/graphcoder \
+  --binary /path/to/package/plugin/bin/acyclic \
   --native /path/to/codex --package /path/to/package/plugin --scratch /path/to/scratch
 ```
 

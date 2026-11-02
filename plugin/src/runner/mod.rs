@@ -37,7 +37,7 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
     build().boxed_local()
 }
 
-/// `GraphCoder` on argv, its server (`graphcoder serve`) through the seams
+/// `GraphCoder` on argv, its server (`acyclic serve`) through the seams
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
 /// Enabled diagnostics require caller-owned text buffers or an explicit paired
@@ -131,7 +131,7 @@ where
         let shutdown = lifecycle::shutdown();
         let setup = (|| {
             let (subscriber, receiver) =
-                lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok(), || {
+                lifecycle::subscriber(&report, std::env::var("ACYCLIC_LOG").ok(), || {
                     lifecycle::storage(
                         diagnostic_storage,
                         args.diagnostic_records,

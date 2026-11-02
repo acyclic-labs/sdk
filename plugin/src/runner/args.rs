@@ -43,7 +43,7 @@ pub struct Args {
     /// Instruction scope relative to the workspace root.
     #[arg(global = true, long)]
     pub directory: Option<String>,
-    #[arg(global = true, long, env = "GRAPHCODER_MODEL")]
+    #[arg(global = true, long, env = "ACYCLIC_MODEL")]
     pub model: Option<String>,
     #[arg(global = true, long)]
     pub catalog: Option<PathBuf>,
