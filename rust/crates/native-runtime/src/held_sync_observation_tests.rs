@@ -284,11 +284,13 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
         worker.parent_id.map(tracing::Id::into_u64),
         original.parent_id
     );
-    let parent = &evidence.spans[original.parent.expect("original worker parent")];
+    let task = &evidence.spans[original.parent.expect("original native task")];
+    assert_eq!(task.name, "acyclic.runtime.persistence");
+    let parent = &evidence.spans[task.parent.expect("original worker wait")];
     assert_eq!(parent.name, "waiting");
     let owner = &evidence.spans[parent.parent.expect("original worker owner")];
     assert_eq!(owner.name, "original-durability-owner");
-    assert!(original.closed && parent.closed && owner.closed);
+    assert!(original.closed && task.closed && parent.closed && owner.closed);
     drop(attempts);
     assert_eq!(credit.available_permits() + records.len(), 64);
     drop(records);
