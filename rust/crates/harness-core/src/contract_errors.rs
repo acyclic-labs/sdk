@@ -495,6 +495,8 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
         FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
         FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
         FsError::Cancelled(_) => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        FsError::NativeKernel(cause) => native_work_error_code(cause),
         _ => ErrorCode::Storage,
     }
 }

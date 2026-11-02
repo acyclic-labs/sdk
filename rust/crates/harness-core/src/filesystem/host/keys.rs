@@ -93,19 +93,20 @@ fn content_identity_path_io(
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {
     use crate::wire::ErrorCode;
-    match Error::workspace_error_code(&error) {
-        ErrorCode::Unauthorized => Error::Unauthorized(error.to_string()),
-        ErrorCode::Unsupported => {
+    match error {
+        WorkspaceError::Cancelled(error) => Error::from(error),
+        WorkspaceError::Engine(value) => Error::Storage(value),
+        WorkspaceError::Filesystem(acyclic_fs::FsError::UnauthenticatedAccessFacts) => {
             Error::FilesystemAccessConfiguration("unauthenticated principal facts")
         }
-        ErrorCode::NotFound => Error::NotFound("workspace path".into()),
-        ErrorCode::Conflict => Error::Conflict(error.to_string()),
-        ErrorCode::Invalid => Error::Invalid(error.to_string()),
-        ErrorCode::Cancelled => Error::Cancelled,
-        _ => match error {
-            WorkspaceError::Engine(value) => Error::Storage(value),
-            WorkspaceError::Filesystem(error) => Error::Storage(error.to_string()),
-            error => Error::Storage(error.to_string()),
+        error => match Error::workspace_error_code(&error) {
+            ErrorCode::Unauthorized => Error::Unauthorized(error.to_string()),
+            ErrorCode::Unsupported => Error::Unsupported(error.to_string()),
+            ErrorCode::NotFound => Error::NotFound("workspace path".into()),
+            ErrorCode::Conflict => Error::Conflict(error.to_string()),
+            ErrorCode::Invalid => Error::Invalid(error.to_string()),
+            ErrorCode::Cancelled => Error::Cancelled,
+            _ => Error::Storage(error.to_string()),
         },
     }
 }
