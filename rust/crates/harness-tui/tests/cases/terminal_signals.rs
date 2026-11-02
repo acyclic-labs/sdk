@@ -4,7 +4,7 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -143,12 +143,7 @@ fn oversized_paste_rejection_preserves_following_numbered_keys()
         }
         Ok(offset == bytes.len())
     })?;
-    let mut status = None;
-    process.until(|process| {
-        status = process.child.try_wait()?;
-        Ok(status.is_some())
-    })?;
-    assert!(status.is_some_and(|status| status.success()));
+    assert!(process.wait()?.success());
     assert!(process.bytes.windows(8).any(|bytes| bytes == b"REJECTED"));
     process.restored()?;
     Ok(())
@@ -165,15 +160,7 @@ fn dropping_and_reopening_tty_preserves_signal_dispositions()
     ] {
         let mut process = Process::start(mode)?;
         kill_process(process.pid()?, signal)?;
-        let mut status = None;
-        process.until(|process| {
-            status = process.child.try_wait()?;
-            Ok(status.is_some())
-        })?;
-        assert_eq!(
-            status.and_then(|status| status.signal()),
-            Some(signal.as_raw())
-        );
+        assert_eq!(process.wait()?.signal(), Some(signal.as_raw()));
         process.restored()?;
     }
     Ok(())
@@ -185,12 +172,7 @@ fn isolated_escape_resolves_before_the_next_key() -> Result<(), Box<dyn std::err
     process.master.write_all(b"\x1b")?;
     process.until(|process| Ok(process.bytes.windows(4).any(|bytes| bytes == b"ESC\n")))?;
     process.master.write_all(b"xq")?;
-    let mut status = None;
-    process.until(|process| {
-        status = process.child.try_wait()?;
-        Ok(status.is_some())
-    })?;
-    assert!(status.is_some_and(|status| status.success()));
+    assert!(process.wait()?.success());
     process.restored()?;
     Ok(())
 }
@@ -208,12 +190,7 @@ fn startup_handoff_filters_delayed_partial_and_multiplexer_replies()
         .write_all(&Multiplexer::Tmux.wrap(b"\x1b]11;rgb:0000/ffff/0000\x07"))?;
     process.master.write_all(b"b\x1b[13;6u")?;
     process.master.write_all(b"q")?;
-    let mut status = None;
-    process.until(|process| {
-        status = process.child.try_wait()?;
-        Ok(status.is_some())
-    })?;
-    assert!(status.is_some_and(|status| status.success()));
+    assert!(process.wait()?.success());
     process.restored()?;
     Ok(())
 }
@@ -268,6 +245,12 @@ impl Process {
     fn pid(&self) -> io::Result<Pid> {
         Pid::from_raw(i32::try_from(self.child.id()).map_err(|_| io::ErrorKind::InvalidData)?)
             .ok_or(io::ErrorKind::InvalidData.into())
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        let status = self.child.wait()?;
+        self.drain()?;
+        Ok(status)
     }
 
     fn drain(&mut self) -> io::Result<()> {
@@ -355,15 +338,7 @@ fn terminate_restores_even_when_the_application_is_blocked()
     ] {
         let mut process = Process::start(mode)?;
         kill_process(process.pid()?, signal)?;
-        let mut status = None;
-        process.until(|process| {
-            status = process.child.try_wait()?;
-            Ok(status.is_some())
-        })?;
-        assert_eq!(
-            status.and_then(|status| status.signal()),
-            Some(signal.as_raw())
-        );
+        assert_eq!(process.wait()?.signal(), Some(signal.as_raw()));
         process.restored()?;
     }
     Ok(())
@@ -380,12 +355,9 @@ fn suspend_and_raw_ctrl_z_restore_then_resume_reapplies() -> Result<(), Box<dyn 
             kill_process(process.pid()?, Signal::TSTP)?;
         }
         let pid = process.pid()?;
-        process.until(|_| {
-            Ok(
-                waitpid(Some(pid), WaitOptions::UNTRACED | WaitOptions::NOHANG)?
-                    .is_some_and(|(_, status)| status.stopped()),
-            )
-        })?;
+        let (_, status) = waitpid(Some(pid), WaitOptions::UNTRACED)?
+            .ok_or("terminal child produced no stop status")?;
+        assert!(status.stopped(), "terminal child exited before suspension");
         process.restored()?;
         kill_process(pid, Signal::CONT)?;
         process.until(|process| {
@@ -395,10 +367,10 @@ fn suspend_and_raw_ctrl_z_restore_then_resume_reapplies() -> Result<(), Box<dyn 
         })?;
         if raw_key {
             process.master.write_all(b"q")?;
-            process.until(|process| Ok(process.child.try_wait()?.is_some()))?;
+            process.wait()?;
         } else {
             kill_process(pid, Signal::TERM)?;
-            process.until(|process| Ok(process.child.try_wait()?.is_some()))?;
+            process.wait()?;
         }
         process.restored()?;
     }

@@ -1,5 +1,25 @@
 # Polling and timed-wait inventory
 
+Terminal signal child-exit successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-tui/tests/cases/terminal_signals.rs` | Seven child-exit recheck sites routed through a one-millisecond sleep and a 900-millisecond readiness deadline | The original `Child::wait`, followed by the original PTY drain; an OS wait failure returns its I/O error. | Source complete; runtime qualification pending |
+| Same source, suspension control | Repeated nonblocking `waitpid` calls until a stopped child appears | The same child's blocking `waitpid` with `UNTRACED`; an early exit fails the original stopped-status assertion. | Source complete; runtime qualification pending |
+
+Area cleanup centralizes child exit and final output collection in one fixture
+method and removes seven duplicate status-check closures. Each exit observation
+now performs one blocking child wait and one final output drain instead of a
+number of probes and sleeps determined by scheduling. Suspension performs one
+blocking OS wait instead of repeated `NOHANG` calls. The original child produces
+both statuses; already-exited or already-stopped children retain their status
+until the observer waits. Actual process exit, signal identity, paste refusal,
+escape input and terminal restoration assertions remain. Output and wait errors
+still propagate. No channel, worker, timer, allocation or product operation is
+added. Final output collection remains proportional to actual terminal bytes;
+this is not a whole-operation constant-time claim. Existing terminal readiness
+and handoff timing sites remain open for their own producer-event conversion.
+
 Identity cancellation retention successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
