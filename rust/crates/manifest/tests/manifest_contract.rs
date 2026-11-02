@@ -661,15 +661,19 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     /// Every opaque bundle object is covered; an encoded directory is insufficient.
     #[test]
-    fn asset_grants_cover_actual_opaque_keys(key in prop::collection::vec(any::<u8>(), 0..64), directory_only in any::<bool>()) {
+    fn asset_grants_cover_actual_opaque_keys(
+        bucket in prop::collection::vec(any::<u8>(), 1..64),
+        key in prop::collection::vec(any::<u8>(), 0..64),
+        directory_only in any::<bool>()
+    ) {
         let mut manifest = fixture()?;
         let env = manifest.environments.first_mut().ok_or_else(missing)?;
         env.crons.clear();
         if let EntryRuntime::ActorNamespace { timer_inbox, .. } = &mut env.entries.first_mut().ok_or_else(missing)?.runtime { *timer_inbox = None; }
         let digest = "ab".repeat(32);
         let name = if directory_only {
-            acyclic_auth::objects_resource(b"static", format!("assets/{digest}/").as_bytes())
-        } else { "objects:/static/".into() };
+            acyclic_auth::objects_resource(&bucket, format!("assets/{digest}/").as_bytes())
+        } else { acyclic_auth::objects_resource(&bucket, b"") };
         *env.bindings.first_mut().ok_or_else(missing)? = Binding::new("INBOX".into(), "inboxGrant".into(), name.clone())?.into();
         env.grants.first_mut().ok_or_else(missing)?.grant.0 = ResourceGrant { resource:ResourcePattern { name, prefix:true }, actions:vec!["objects/get".into()] };
         env.assets.push(AssetSpec { entry:"agent".into(), binding:"INBOX".into(), bundle_sha256:digest.clone(), spa_fallback:true, cache:AssetCache::Immutable });
@@ -677,7 +681,7 @@ proptest! {
         if !directory_only {
             let mut object = format!("assets/{digest}/").into_bytes();
             object.extend_from_slice(&key);
-            let resource = acyclic_auth::objects_resource(b"static", &object);
+            let resource = acyclic_auth::objects_resource(&bucket, &object);
             prop_assert!(acyclic_auth::authority::resource_matches(&manifest.environments.first().ok_or_else(missing)?.grants.first().ok_or_else(missing)?.grant.resource, &resource));
             prop_assert_eq!(admission::check(&manifest), Ok(()));
         }
