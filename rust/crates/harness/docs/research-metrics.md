@@ -111,7 +111,15 @@ completion; adapters without this index refuse instead of rescanning history.
 Each page visits up to 32 journal records and retains only that page's receipts.
 
 Supply `cut` from the original settled execution journal sequence, distinct
-from an agent inbox cursor. Use one
+from an agent inbox cursor. In research mode, the stock executor supplies
+`TurnOutput.journal_cut`: version 1, original execution operation and the
+accepted terminal model observation's sequence. The original journal append
+returns this sequence on fresh publication and exact retry; replay retains the
+same original record. It performs no tail lookup, extra append or durability
+barrier. A custom journal without receipt support leaves the cut unknown.
+Pending, failed or cancelled execution without a successful output cannot
+certify closure. Settlement must bind the cut's operation to its original turn.
+Use one
 `read_set::Writer` across the pages, then call `finish` and publish its bytes once
 as the turn's immutable read-set `FileRef`. Its version-1 JSONL header declares
 `committed_read_tool_results_only` coverage, agent, original operation and cut;
@@ -137,6 +145,19 @@ in its original transaction. It never buffers the complete artifact, starts a
 worker, or flushes per chunk. Source retirement or cancellation prevents a
 successful publication. Original native allocation custody is required for
 native publication; an ordinary stream cannot assert that custody and refuses.
+
+Model and tool tables carry the existing canonical `model::replay_key` of the
+step's admitted request. `ExecutionPayloadField::AdmittedRequest` reconstructs
+request segments and verifies the original admission digest in one shared
+reader. Hashing the stored segment manifest would give a different identity.
+The key permits content comparisons across fresh executions and forks; the
+dispatch `request_digest`, operation and step still identify the original call.
+PROV annotates the call with this key without merging distinct activities.
+Each admission reconstructs one request. Dependent rows select one original
+admission through the authenticated step index; unsupported custom indexes
+leave those keys null for an offline join to the original admission. Export
+adds no provider request or execution-side capture work, retains one request
+at a time, and performs work proportional to that request's canonical bytes.
 
 The research-only `conversation::read_set::TurnReadSet` carrier is available
 without Arrow or RDF dependencies. It records version 1, the fixed original

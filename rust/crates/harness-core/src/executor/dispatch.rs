@@ -16,6 +16,8 @@ struct ObservedCall<'a> {
 }
 
 struct PreparedDispatchStep {
+    #[cfg(feature = "research")]
+    journal_cut: Option<ExecutionJournalCut>,
     request: crate::model::PreparedModelRequest,
     admission: ModelEventAdmission,
     events: Vec<ModelEvent>,
@@ -65,6 +67,8 @@ impl StockExecution<'_> {
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
         let PreparedDispatchStep {
+            #[cfg(feature = "research")]
+            journal_cut,
             request,
             mut admission,
             events: replayed,
@@ -77,6 +81,10 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
+            #[cfg(feature = "research")]
+            if purpose == ModelPurpose::Response {
+                phase.1 = journal_cut;
+            }
             crate::obs::obs_record!("items" = replayed.len());
             if purpose == ModelPurpose::Response {
                 self.retain_response_request(journal, input, step, prior_messages.len(), request)
@@ -160,6 +168,8 @@ impl StockExecution<'_> {
                 replayed,
                 &mut admission,
                 (stream, live),
+                #[cfg(feature = "research")]
+                phase,
             )
             .await?;
         if purpose == ModelPurpose::Response && admission.completed {
@@ -181,6 +191,8 @@ impl StockExecution<'_> {
     ) -> Result<PreparedDispatchStep> {
         self.require_model_producer().await?;
         let RetainedModelStep {
+            #[cfg(feature = "research")]
+            journal_cut,
             request,
             admission,
             events,
@@ -202,6 +214,8 @@ impl StockExecution<'_> {
             super::phase::run(journal, self.io, preparation).await?
         };
         Ok(PreparedDispatchStep {
+            #[cfg(feature = "research")]
+            journal_cut,
             request,
             admission,
             events,
@@ -419,6 +433,7 @@ impl StockExecution<'_> {
             impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
             bool,
         ),
+        #[cfg(feature = "research")] phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let ObservedCall {
             operation_id,
@@ -514,7 +529,7 @@ impl StockExecution<'_> {
                     }
                     _ => None,
                 };
-                crate::obs::waiting(
+                let receipt = crate::obs::waiting(
                     "journal-commit",
                     operation_id,
                     super::model_observation::append(
@@ -528,6 +543,16 @@ impl StockExecution<'_> {
                     ),
                 )
                 .await?;
+                #[cfg(feature = "research")]
+                if admission.completed && purpose == ModelPurpose::Response {
+                    phase.1 = receipt.sequence.map(|sequence| ExecutionJournalCut {
+                        version: 1,
+                        operation: operation_id,
+                        sequence,
+                    });
+                }
+                #[cfg(not(feature = "research"))]
+                let _ = receipt;
                 // The committed terminal event settles this step. Transport
                 // closure is independent and may never follow it.
                 if admission.completed {

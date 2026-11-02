@@ -37,6 +37,8 @@ impl Executor for CustomExecutor {
                 }
             }
             Ok(TurnOutput {
+                #[cfg(feature = "research")]
+                journal_cut: None,
                 text,
                 attachments: Vec::new(),
                 metadata: metadata.ok_or(Error::Indeterminate(input.operation_id))?,

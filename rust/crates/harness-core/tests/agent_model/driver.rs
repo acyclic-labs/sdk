@@ -629,6 +629,8 @@ impl TurnGoal for Goal {
 
 fn ready() -> ExecutionProgress<TurnOutput> {
     ExecutionProgress::Ready(TurnOutput {
+        #[cfg(feature = "research")]
+        journal_cut: None,
         text: "worked".into(),
         attachments: Vec::new(),
         metadata: Default::default(),

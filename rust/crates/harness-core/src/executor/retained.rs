@@ -93,6 +93,8 @@ pub(crate) async fn retained_model_step<'a>(
     let mut events = Vec::new();
     let mut admission = ModelEventAdmission::default();
     let mut started = None;
+    #[cfg(feature = "research")]
+    let mut journal_cut = None;
     for record in records {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
@@ -139,6 +141,14 @@ pub(crate) async fn retained_model_step<'a>(
                 )
             })?;
             admission.observe(event, limits, io)?;
+            #[cfg(feature = "research")]
+            if matches!(event, ModelEvent::Completed { .. }) {
+                journal_cut = Some(ExecutionJournalCut {
+                    version: 1,
+                    operation: record.operation_id,
+                    sequence: record.sequence,
+                });
+            }
         }
     }
     if started.is_none() && !events.is_empty() {
@@ -162,6 +172,8 @@ pub(crate) async fn retained_model_step<'a>(
         None
     };
     let retained = RetainedModelStep {
+        #[cfg(feature = "research")]
+        journal_cut,
         request,
         admission,
         events,

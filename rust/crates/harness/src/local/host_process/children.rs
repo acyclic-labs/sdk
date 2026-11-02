@@ -496,6 +496,8 @@ impl NativeChildren {
             Err(message) => Outcome::Failed { message },
             Ok(Some(status)) if status.success() => match &running.answer {
                 Outcome::Succeeded(text) => Outcome::Succeeded(TurnOutput {
+                    #[cfg(feature = "research")]
+                    journal_cut: None,
                     text: text.clone(),
                     metadata: Value::Null,
                     steps: 1,

@@ -91,6 +91,65 @@ fn events() -> Vec<ModelEvent> {
     ]
 }
 
+#[cfg(feature = "research")]
+#[tokio::test]
+async fn append_receipts_preserve_original_sequence_after_later_publication() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    initialize(&journal, operation).await?;
+    let event = ModelEvent::Completed {
+        metadata: serde_json::Value::Null,
+    };
+    let terminal = crate::executor::append_model_event(
+        &journal,
+        operation,
+        "terminal",
+        (0, ModelPurpose::Response),
+        &event,
+        None,
+        None,
+    )
+    .await?;
+    assert_eq!(terminal.sequence, Some(3));
+    let started = ExecutionEvent::Started {
+        request_digest: [1; 32],
+    };
+    let original = journal
+        .append_with_sequence(operation, "started", &started, None)?
+        .expect("original receipt capability")
+        .await?;
+    assert_eq!(original, Some(1));
+    assert_ne!(
+        original, terminal.sequence,
+        "current tail would certify a different observation"
+    );
+    let foreign = ExecutionEvent::Started {
+        request_digest: [2; 32],
+    };
+    assert!(
+        journal
+            .append_with_sequence(operation, "started", &foreign, None)?
+            .expect("original receipt capability")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "terminal",
+            (0, ModelPurpose::Response),
+            &event,
+            None,
+            None,
+        )
+        .await?
+        .sequence,
+        terminal.sequence
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn private_payload_ranges_preserve_original_authority_and_bounded_residency() -> Result<()> {

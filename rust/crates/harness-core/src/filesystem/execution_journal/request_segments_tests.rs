@@ -81,6 +81,67 @@ async fn admitted_request_append_reads_only_the_manifest_at_every_history_length
             );
             eprintln!("request_admission steps={step} payload_bytes={loaded}");
             if step == 100 {
+                let admitted =
+                    crate::executor::ExecutionPayloadField::admitted_request(&journal, &event)
+                        .await?;
+                assert_eq!(admitted.bytes(), prepared.bytes());
+                let expected = crate::model::replay_key(prepared.bytes())?;
+                assert_eq!(crate::model::replay_key(admitted.bytes())?, expected);
+                let stored = journal.load(&request, None)?.await?;
+                assert_ne!(
+                    stored.as_ref(),
+                    admitted.bytes(),
+                    "stored manifest is not the admitted request"
+                );
+                let mut foreign = event.clone();
+                if let ExecutionEvent::ModelStarted { request_digest, .. } = &mut foreign {
+                    request_digest[0] ^= 1;
+                }
+                assert!(
+                    crate::executor::ExecutionPayloadField::admitted_request(&journal, &foreign)
+                        .await
+                        .is_err()
+                );
+                #[cfg(feature = "metrics-export")]
+                {
+                    use arrow_array::{Array, StringArray};
+                    let mut after = 0;
+                    let mut found = false;
+                    loop {
+                        let page = crate::executor::metrics::journal_page(
+                            &journal,
+                            operation,
+                            "agents/generated",
+                            after,
+                            |_| None,
+                        )
+                        .await?;
+                        for batch in page.batches {
+                            if batch.table == crate::executor::metrics::Table::ModelCalls {
+                                let keys = batch
+                                    .data
+                                    .column_by_name("replay_key")
+                                    .unwrap()
+                                    .as_any()
+                                    .downcast_ref::<StringArray>()
+                                    .unwrap();
+                                found |= (0..keys.len()).any(|row| {
+                                    !keys.is_null(row)
+                                        && keys.value(row)
+                                            == blake3::Hash::from(expected).to_hex().as_str()
+                                });
+                            }
+                        }
+                        if let Some(next) = page.next {
+                            after = next
+                        } else {
+                            break;
+                        }
+                    }
+                    assert!(found, "export must identify reconstructed request content");
+                }
+            }
+            if step == 100 {
                 check_unattested_and_forged(
                     &journal,
                     operation,

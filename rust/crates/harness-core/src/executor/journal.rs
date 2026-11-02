@@ -165,6 +165,21 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
+    /// Returns the sequence accepted by the original append, including an
+    /// exact retry. `None` declines before allocation or publication; the caller
+    /// uses ordinary append and retains unknown coverage. Never discover a
+    /// receipt by reading the current tail.
+    #[cfg(feature = "research")]
+    fn append_with_sequence<'a>(
+        &'a self,
+        _operation: OperationId,
+        _key: &'a str,
+        _event: &'a ExecutionEvent,
+        _io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, Option<u64>>>> {
+        Ok(None)
+    }
+
     /// Appends at the exact operation-scoped journal tail.
     fn append_if_tail<'a>(
         &'a self,

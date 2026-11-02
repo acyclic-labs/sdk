@@ -754,6 +754,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             session(SessionAction::Complete {
                 claim,
                 outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
+                    #[cfg(feature = "research")]
+                    journal_cut: None,
                     text: "done".into(),
                     metadata: Value::Null,
                     steps: 1,

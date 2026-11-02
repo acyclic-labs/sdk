@@ -543,6 +543,8 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
         outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
+            #[cfg(feature = "research")]
+            journal_cut: None,
             text: "done".into(),
             metadata: Value::Null,
             steps: 1,

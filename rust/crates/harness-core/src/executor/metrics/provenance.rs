@@ -209,6 +209,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 ],
             );
             out.class(&call, "http://www.w3.org/ns/prov#Activity")?;
+            if let Some(key) = text(batch, "replay_key", row)? {
+                out.text(&call, "urn:acyclic:research:replayKey", key)?;
+            }
             out.relation(&call, "http://www.w3.org/ns/prov#wasAssociatedWith", &agent)?;
             out.relation(
                 &call,

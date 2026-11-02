@@ -486,9 +486,27 @@ pub struct ExecutionReplay {
     keys: Vec<[u8; 32]>,
 }
 
+/// Original accepted execution-journal cut, independent of the current tail.
+#[cfg(feature = "research")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionJournalCut {
+    /// Original cut format, currently one.
+    pub version: u32,
+    /// Original execution operation, distinct from an actor inbox cursor.
+    pub operation: OperationId,
+    /// Accepted one-based terminal model observation, including exact replay.
+    pub sequence: u64,
+}
+
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct TurnOutput {
+    /// Original accepted terminal observation. Missing means the executor or
+    /// journal supplied no cut; it never certifies an empty complete read set.
+    #[cfg(feature = "research")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal_cut: Option<ExecutionJournalCut>,
     /// User-visible assistant text.
     pub text: String,
     /// Ordered, already staged assistant attachments or published artifacts.
@@ -631,6 +649,8 @@ pub(crate) struct ContextAccounting {
 
 /// Validated retained model artifacts without provider dispatch.
 pub(crate) struct RetainedModelStep {
+    #[cfg(feature = "research")]
+    pub(crate) journal_cut: Option<ExecutionJournalCut>,
     pub(crate) request: Option<crate::model::PreparedModelRequest>,
     pub(crate) admission: ModelEventAdmission,
     pub(crate) events: Vec<ModelEvent>,

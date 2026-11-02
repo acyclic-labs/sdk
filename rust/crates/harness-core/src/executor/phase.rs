@@ -49,7 +49,10 @@ impl ProviderAttempt {
 }
 
 /// One capability shared by the response loop and every nested summary.
-pub(crate) struct DispatchPhase(Option<BeforeDispatch>);
+pub(crate) struct DispatchPhase(
+    Option<BeforeDispatch>,
+    #[cfg(feature = "research")] pub(super) Option<ExecutionJournalCut>,
+);
 
 impl DispatchPhase {
     pub(crate) fn can_fail(&self, error: &Error) -> bool {
@@ -69,7 +72,11 @@ impl DispatchPhase {
     }
 
     pub(crate) fn new() -> Self {
-        Self(Some(BeforeDispatch))
+        Self(
+            Some(BeforeDispatch),
+            #[cfg(feature = "research")]
+            None,
+        )
     }
 
     // Called before claiming an attempt, including a claim whose acknowledgement
