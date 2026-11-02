@@ -33,8 +33,11 @@ no periodic resource sampling or readiness checks are added.
 Primary outcomes: objective correctness and actual USD per assigned trial.
 Also report failures, priced-call coverage, total provider tokens and measured
 critical-path duration. Pair graph/size contrasts within independent problems,
-then cluster over problems. A few modest sizes do not establish an asymptotic
-law; any curve is exploratory and shows its measured range and uncertainty.
+then cluster over problems. Paired cost differences include fully priced trials
+with unscored outputs; report matched-pair cost coverage and retain unknown costs
+separately. Use the shared [analysis module](../analysis.md). A few modest sizes
+do not establish an asymptotic law; any curve is exploratory and shows its
+measured range and uncertainty.
 
 Negative controls: sizes 1 and 2 have equivalent graph structure; a missing join
 producer terminates with its original cause; changing the requested count must

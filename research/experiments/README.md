@@ -1,11 +1,17 @@
 # Organism-probe recipes
 
 These files are authored research inputs, not captured provider or tool output.
-They form the passive contents of an experiments plugin. Plugin installation,
-configuration evaluation and execution are not implemented by this directory;
-no hooks, graph schema, runner or provider adapter are added.
+They form the passive contents of an operator-only experiments plugin.
+`plugin.ts` uses the shared plugin manifest. Admit a pinned source directory
+through the shared loader in the operator's volume; keep it outside measured
+workers' grants and inherited history. Use separate worker volumes: granting
+the source checkout would expose these inputs too. These files are excluded
+from the universal seed: its read grant would reveal the hidden markers, scorers and
+conditions even when the plugin is disabled. Research is off by default.
+Installation and execution are not claimed here. This directory adds no hook,
+graph schema, runner or provider adapter.
 
-Use the shared [offline analysis](../../../../harness-core/docs/experiments.md)
+Use the shared [offline analysis](analysis.md)
 for scoring. The five recipes are:
 
 | Recipe | Changed factor | Primary outcome |
@@ -46,6 +52,21 @@ quantity task here is a single-cut smoke example; it cannot estimate clustered
 uncertainty. Start with 20 total assigned trials per arm across independent
 cuts, within the authorized 20–50 range. For example, ten independent problems
 with two paired replicates each give twenty trials per arm.
+
+These five probes hold the actual provider, model and admitted sampling
+configuration constant within each paired comparison. A label naming an
+allowed model does not establish that equality. Retain the actual configuration
+and fork-origin evidence with the assignments, including the recorded shared
+source cut. A changed provider or cut is a comparability failure; keep that
+assignment and its incurred cost in the descriptive table. Do not silently
+turn unmatched observations into a paired difference.
+
+Predeclare execution order independently of results. With two replicates per
+cut, run baseline then treatment in replicate 0, and treatment then baseline in
+replicate 1. Each arm still forks the same saved source cut; never fork the
+second arm from the first arm's result. Retain the assigned order even when the
+first arm fails. This counterbalances order within a cut without a history
+scan or an adaptive stopping rule; it does not make the replicates independent.
 
 Every arm/replicate forks the same saved cut within its source cluster. Use the
 shared scope-fork entrance, admit configuration and grants while dormant, bind
@@ -113,3 +134,9 @@ Recipe-specific negative controls are listed alongside each contrast. Validate
 those separately and keep their assignments and costs out of the primary
 two-arm estimate. The existing objective-scoring controls and proof source are
 described in the analysis guide. No execution or proof result is claimed here.
+
+Comparability controls must reject a different inherited cut or actual provider,
+and a parent-only completion must never stand in for the selected worker's
+original output. An omitted failed assignment or its incurred cost must fail
+table reconciliation. No retained sample payload collection is needed for the
+constant-space summaries; keep original artifact references with the trial rows.

@@ -155,4 +155,4 @@ shared hosting path still checks the current caller and owner policy on use.
 
 For offline paired differences, clustered uncertainty, power planning and
 objective organism-probe scoring, use `experiments`. See the
-[analysis guide](../harness-core/docs/experiments.md).
+[analysis guide](../../../research/experiments/analysis.md).
