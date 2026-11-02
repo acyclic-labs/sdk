@@ -128,13 +128,7 @@ impl Identity {
 
     pub(super) async fn signup(&self, store: &Arc<Store>) -> Result<Value, Error> {
         let existing = store
-            .at_endpoint(&self.endpoint, |store, endpoint| {
-                if store.path.exists() {
-                    store.credentials(endpoint).map(Some)
-                } else {
-                    Ok(None)
-                }
-            })
+            .at_endpoint(&self.endpoint, Store::optional_credentials)
             .await?;
         let (private_key, session) = if let Some(credentials) = existing {
             match credentials.agent {

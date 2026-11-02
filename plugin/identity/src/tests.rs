@@ -660,8 +660,8 @@ async fn refused_refresh_clears_family_and_redacts_server_description() {
     fake.done();
 }
 
-#[test]
-fn credentials_are_exclusive_origin_bound_and_private() {
+#[tokio::test]
+async fn credentials_are_exclusive_origin_bound_and_private() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("identity.json");
     let store = Store::open(&path).expect("store");
@@ -669,6 +669,12 @@ fn credentials_are_exclusive_origin_bound_and_private() {
         store
             .login_agent("https://example.test")
             .expect("missing agent")
+            .is_none()
+    );
+    assert!(
+        store
+            .optional_credentials("https://example.test")
+            .expect("missing store")
             .is_none()
     );
     assert_eq!(
@@ -679,6 +685,9 @@ fn credentials_are_exclusive_origin_bound_and_private() {
             .code,
         "login_required"
     );
+    store
+        .clear()
+        .expect("clearing an absent credential is harmless");
     assert_eq!(
         Store::open(&path).err().expect("busy").code,
         "credentials_busy"
@@ -709,12 +718,30 @@ fn credentials_are_exclusive_origin_bound_and_private() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let fake = Fake::start(vec![]).await;
         let original = fs::read(&path).expect("original credentials");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("public replacement");
         // Unchecked reads still accept these bytes after the store opened.
         assert_eq!(fs::read(&path).expect("unchecked read"), original);
         assert!(store.read("https://example.test").is_err());
         assert!(store.login_agent("https://example.test").is_err());
+        assert!(store.optional_credentials("https://example.test").is_err());
+        assert!(
+            store
+                .write(
+                    "https://example.test",
+                    session("replacement", "replacement", 900)
+                )
+                .is_err()
+        );
+        assert!(store.clear().is_err());
+        assert!(fake.identity.signup(&store).await.is_err());
+        assert_eq!(
+            fake.requests.load(Ordering::Relaxed),
+            0,
+            "private-file refusal dispatched signup"
+        );
+        assert_eq!(fs::read(&path).expect("retained public contents"), original);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
             .expect("restore private file");
 
@@ -729,6 +756,28 @@ fn credentials_are_exclusive_origin_bound_and_private() {
         // An existence probe hides a dangling alias as an absent credential.
         assert!(!path.exists());
         assert!(store.login_agent("https://example.test").is_err());
+        assert!(store.optional_credentials("https://example.test").is_err());
+        assert!(
+            store
+                .write(
+                    "https://example.test",
+                    session("replacement", "replacement", 900)
+                )
+                .is_err()
+        );
+        assert!(store.clear().is_err());
+        assert!(fake.identity.signup(&store).await.is_err());
+        assert_eq!(
+            fake.requests.load(Ordering::Relaxed),
+            0,
+            "dangling alias dispatched signup"
+        );
+        assert!(
+            fs::symlink_metadata(&path)
+                .expect("retained alias")
+                .file_type()
+                .is_symlink()
+        );
         fs::remove_file(&path).expect("remove dangling alias");
         fs::rename(&held, &path).expect("restore original");
         assert_eq!(

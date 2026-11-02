@@ -228,14 +228,24 @@ impl Store {
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
-        let bytes = private_file::read(&self.path, u64::MAX - 1).map_err(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                Error::new("login_required", "run acyclic-plugin login first")
-            } else {
-                error.into()
-            }
-        })?;
-        Self::decode_credentials(&bytes.0, endpoint)
+        self.optional_credentials(endpoint)?
+            .ok_or_else(|| Error::new("login_required", "run acyclic-plugin login first"))
+    }
+
+    fn optional_credentials(&self, endpoint: &str) -> Result<Option<Credentials>, Error> {
+        self.credential_bytes()?
+            .map(|bytes| Self::decode_credentials(&bytes.0, endpoint))
+            .transpose()
+    }
+
+    fn credential_bytes(
+        &self,
+    ) -> Result<Option<acyclic_native_runtime::owner_record::SecretBytes>, Error> {
+        match private_file::read(&self.path, u64::MAX - 1) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn decode_credentials(bytes: &[u8], endpoint: &str) -> Result<Credentials, Error> {
@@ -251,10 +261,8 @@ impl Store {
     }
 
     fn login_agent(&self, endpoint: &str) -> Result<Option<agent::Agent>, Error> {
-        let bytes = match private_file::read(&self.path, u64::MAX - 1) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let Some(bytes) = self.credential_bytes()? else {
+            return Ok(None);
         };
         let value: Value = serde_json::from_slice(&bytes.0).map_err(|_| {
             Error::new(
@@ -302,11 +310,9 @@ impl Store {
     }
 
     fn write(&self, endpoint: &str, session: Session) -> Result<Session, Error> {
-        let agent = if self.path.exists() {
-            self.credentials(endpoint)?.agent
-        } else {
-            None
-        };
+        let agent = self
+            .optional_credentials(endpoint)?
+            .and_then(|credentials| credentials.agent);
         let credentials = Credentials {
             endpoint: endpoint.to_owned(),
             session: Some(session),
@@ -370,16 +376,16 @@ impl Store {
     }
 
     fn clear(&self) -> Result<(), Error> {
-        private_file::validate_destination(&self.path)?;
-        if self.path.exists() {
-            let mut credentials: Credentials =
-                serde_json::from_slice(&private_file::read(&self.path, u64::MAX - 1)?.0)
-                    .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
+        if let Some(bytes) = self.credential_bytes()? {
+            let mut credentials: Credentials = serde_json::from_slice(&bytes.0)
+                .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
+            drop(bytes);
             if credentials.agent.is_some() {
                 credentials.session = None;
                 return self.save(&credentials);
             }
         }
+        private_file::validate_destination(&self.path)?;
         match fs::remove_file(&self.path) {
             Ok(()) => acyclic_native_runtime::sync_parent(
                 self.path
