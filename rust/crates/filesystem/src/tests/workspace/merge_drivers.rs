@@ -102,12 +102,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             MergeDirectorySection::Conflicts
         };
         directory
-            .write_page(
-                section,
-                step,
-                crate::PublicationPermit::Unrestricted,
-                &cancellation,
-            )
+            .write_page(section, step, crate::PublicationPermit::Unrestricted)
             .await?;
         if pages == 0 {
             assert_eq!(
@@ -209,7 +204,6 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 MergeDirectorySection::Clean,
                 step,
                 crate::PublicationPermit::Unrestricted,
-                &cancellation,
             )
             .await?;
         let plan_path = format!("{}/plan.json", directory.path());
@@ -220,8 +214,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .write_page(
                     MergeDirectorySection::Clean,
                     step,
-                    crate::PublicationPermit::Unrestricted,
-                    &cancellation
+                    crate::PublicationPermit::Unrestricted
                 )
                 .await,
             Err(WorkspaceError::StaleIdentity)
@@ -232,8 +225,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .write_page(
                     MergeDirectorySection::Clean,
                     step,
-                    crate::PublicationPermit::Unrestricted,
-                    &cancellation
+                    crate::PublicationPermit::Unrestricted
                 )
                 .await,
             Err(WorkspaceError::InvalidMergeResolution)
@@ -282,7 +274,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .key;
     let staged = unbounded!(staging, head())?;
     assert!(matches!(
-        directory.resolution(&staged, text_key, &cancellation).await,
+        directory.resolution(&staged, text_key).await,
         Err(DrivenJoinError::Workspace(
             WorkspaceError::InvalidMergeResolution
         ))
@@ -300,12 +292,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         )
         .await?;
     let staged = unbounded!(staging, head())?;
-    assert!(
-        directory
-            .resolution(&staged, binary_key, &cancellation)
-            .await
-            .is_err()
-    );
+    assert!(directory.resolution(&staged, binary_key).await.is_err());
     assert_eq!(unbounded!(main, head())?.id(), pins.1);
 
     // Read each proposal from one immutable staging head, then use the same
@@ -346,18 +333,14 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     for view in &typed.conflicts {
         resolutions.insert(
             view.key.clone(),
-            directory
-                .resolution(&staged, &view.key, &cancellation)
-                .await?,
+            directory.resolution(&staged, &view.key).await?,
         );
     }
     // The retained preview owns admission even after its last page. A fresh
-    // per-call token cannot revive it while reading a valid pinned proposal.
+    // token cannot revive it while reading a valid pinned proposal.
     cancellation.cancel();
     assert!(matches!(
-        directory
-            .resolution(&staged, binary_key, &CancellationToken::new())
-            .await,
+        directory.resolution(&staged, binary_key).await,
         Err(DrivenJoinError::Workspace(WorkspaceError::Cancelled(_)))
     ));
     let candidate = crate::UnpublishedMergeCandidate {

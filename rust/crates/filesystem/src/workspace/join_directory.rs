@@ -256,12 +256,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// caller supplies an original conflict key; filenames and edited JSON
     /// cannot substitute a different key or generation. The existing publisher
     /// still validates the complete candidate and all publication preconditions.
+    /// The preview's original cancellation remains authoritative after EOF.
     pub async fn resolution(
         &mut self,
         generation: &Generation<A, O>,
         key: &ConflictKey,
-        cancellation: &CancellationToken,
     ) -> Result<MergeResolution, DrivenJoinError> {
+        let cancellation = self.preview.cancellation();
+        cancellation.check().map_err(WorkspaceError::from)?;
         if self.failed || !self.plan.complete || generation.workspace.id() != self.staging.id() {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -275,7 +277,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .limits
                 .maximum_component_bytes,
         )?;
-        let view = self.preview.plan().describe_conflict_file(conflict).await?;
+        let view = self
+            .preview
+            .plan()
+            .describe_conflict_file(conflict, &cancellation)
+            .await?;
         if &view.key != key {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -291,11 +297,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 &path,
                 self.staging.volume.config.limits.maximum_read_bytes,
                 WorkBudget::UNBOUNDED,
-                cancellation,
+                &cancellation,
             )
             .await
             .map_err(|failure| failure.error)?
             .value;
+        cancellation.check().map_err(WorkspaceError::from)?;
         if text {
             ResolutionFile::Content {
                 content: std::str::from_utf8(&bytes)
@@ -343,13 +350,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// selected text bytes, with one commit per page and no per-file barriers.
     /// A false `complete` result always permits another page, including an empty
     /// page whose entire allowance was consumed by excluded conflicts.
+    /// Rendering and the staging commit use the preview's original cancellation.
     pub async fn write_page(
         &mut self,
         section: MergeDirectorySection,
         steps: NonZeroU32,
         permit: crate::PublicationPermit,
-        cancellation: &CancellationToken,
     ) -> Result<&MergeDirectoryPlan, WorkspaceError> {
+        let cancellation = self.preview.cancellation();
+        cancellation.check()?;
         if self.failed {
             return Err(WorkspaceError::InvalidMergeResolution);
         }
@@ -361,7 +370,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         }
         self.failed = true;
         let result = self
-            .write_page_inner(section, steps, permit, cancellation)
+            .write_page_inner(section, steps, permit, &cancellation)
             .await;
         if result.is_ok() {
             self.failed = false;
@@ -414,7 +423,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     JoinCleanStep::Entry(entry) => {
                         let row = entry.value();
                         let file = MergeCleanFile {
-                            path: namespace_path_text(&row.path)?,
+                            path: super::join_helpers::namespace_path_text_with_cancellation(
+                                &row.path,
+                                cancellation,
+                            )?,
                             before: row.before.map(|record| record.file_id),
                             after: row.after.map(|record| record.file_id),
                         };
@@ -449,7 +461,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             let view = self
                 .preview
                 .plan()
-                .describe_conflict_file(row.value().clone())
+                .describe_conflict_file(row.value().clone(), cancellation)
                 .await?;
             let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {

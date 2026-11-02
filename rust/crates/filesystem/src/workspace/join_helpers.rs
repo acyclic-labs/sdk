@@ -74,14 +74,16 @@ fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     key
 }
 
-pub(super) fn logical_name_text(name: &LogicalName) -> Result<String, WorkspaceError> {
-    name.unicode_text(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .ok()
-    .map(|receipt| receipt.value)
-    .ok_or_else(|| {
+pub(super) fn logical_name_text(
+    name: &LogicalName,
+    cancellation: &CancellationToken,
+) -> Result<String, WorkspaceError> {
+    let text = name
+        .unicode_text(crate::WorkBudget::UNBOUNDED, cancellation)
+        .ok()
+        .map(|receipt| receipt.value);
+    cancellation.check()?;
+    text.ok_or_else(|| {
         WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
     })
 }
@@ -91,11 +93,22 @@ pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, Worksp
         return Ok("/".to_owned());
     }
     let cancellation = crate::CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    path.unicode_text_with_accounting(&mut accounting, &cancellation)
+    namespace_path_text_with_cancellation(path, &cancellation)
+}
+
+pub(super) fn namespace_path_text_with_cancellation(
+    path: &NamespacePath,
+    cancellation: &CancellationToken,
+) -> Result<String, WorkspaceError> {
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+    path.unicode_text_with_accounting(&mut accounting, cancellation)
         .map(|(text, _)| text)
         .map_err(|_| {
-            WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+            if cancellation.is_cancelled() {
+                WorkspaceError::Cancelled(crate::CancellationError)
+            } else {
+                WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+            }
         })
 }
 

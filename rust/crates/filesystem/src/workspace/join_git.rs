@@ -44,9 +44,9 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     view: &Generation<A, O>,
     directory: FileId,
     name: &LogicalName,
+    cancellation: &CancellationToken,
 ) -> Result<Option<FileRecord>, WorkspaceError> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
     view.workspace
         .volume
         .fs
@@ -58,7 +58,7 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
                 name: name.clone(),
             },
             &mut accounting,
-            &cancellation,
+            cancellation,
         )
         .await
 }
@@ -67,11 +67,9 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
 async fn bound_record<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     view: &Generation<A, O>,
     path: &str,
+    cancellation: &CancellationToken,
 ) -> Result<Option<WorkspaceStat>, WorkspaceError> {
-    match view
-        .stat(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-    {
+    match view.stat(path, WorkBudget::UNBOUNDED, cancellation).await {
         Ok(receipt) => Ok(Some(receipt.value)),
         Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
         Err(failure) => Err(failure.error),
@@ -94,6 +92,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
         path: &str,
         records: [Option<FileRecord>; 3],
+        cancellation: &CancellationToken,
     ) -> Result<Option<ReplacedFile>, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let fs = &volume.fs;
@@ -111,34 +110,44 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let Some((parent, _)) = path.rsplit_once('/') else {
             return Ok(None);
         };
-        let namespace = customer_path(path, volume.config)?;
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
+        let parsed =
+            customer_path_with_accounting(path, volume.config, &mut accounting, cancellation)?;
+        let (_allocation, namespace) = (parsed.1, parsed.0);
         let (_, name) = namespace
             .split_last()
             .ok_or(WorkspaceError::InvalidMergeResolution)?;
         let parent = if parent.is_empty() { "/" } else { parent };
-        if bound_record(editing, path)
+        if bound_record(editing, path, cancellation)
             .await?
             .is_none_or(|record| record.file_id != file_id)
         {
             return Ok(None);
         }
-        let Some(directory) = bound_record(editing, parent).await? else {
+        let Some(directory) = bound_record(editing, parent, cancellation).await? else {
             return Ok(None);
         };
         if directory.kind != FileKind::Directory
-            || bound_in_directory(&base, directory.file_id, name)
+            || bound_in_directory(&base, directory.file_id, name, cancellation)
                 .await?
                 .is_none_or(|record| record.file_id != file_id)
         {
             return Ok(None);
         }
-        let Some(replacement) = bound_in_directory(side, directory.file_id, name).await? else {
+        let Some(replacement) =
+            bound_in_directory(side, directory.file_id, name, cancellation).await?
+        else {
             return Ok(None);
         };
         if replacement.kind != FileKind::Regular
             || replacement.file_id == file_id
             || fs
-                .workspace_conflict_record(volume, self.base.id, replacement.file_id)
+                .workspace_conflict_record_with_cancellation(
+                    volume,
+                    self.base.id,
+                    replacement.file_id,
+                    cancellation,
+                )
                 .await?
                 .is_some()
         {
@@ -175,8 +184,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let Some(path) = path else {
             return Ok(None);
         };
-        let records = self.conflict_records(file_id).await?;
-        let Some(replaced) = self.replaced_file(file_id, path, records).await? else {
+        let cancellation = CancellationToken::new();
+        let records = self.conflict_records(file_id, &cancellation).await?;
+        let Some(replaced) = self
+            .replaced_file(file_id, path, records, &cancellation)
+            .await?
+        else {
             return Ok(None);
         };
         self.replaced_file_resolution(file_id, replaced, resolution)

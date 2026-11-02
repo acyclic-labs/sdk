@@ -11,7 +11,7 @@ fn original_text(path: &NamespacePath) -> Result<String, String> {
     let components = path
         .components()
         .iter()
-        .map(logical_name_text)
+        .map(|name| logical_name_text(name, &CancellationToken::new()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(format!("/{}", components.join("/")))

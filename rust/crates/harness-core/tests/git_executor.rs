@@ -455,6 +455,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     // Use the configured native planner's retained join, then reopen completed
     // proposals after retiring its preview and the original filesystem handles.
     // This checks durable files, not recovery of an interrupted page cursor.
+    let projection_cancel = CancellationToken::new();
     let preview = join
         .preview_pages(
             acyclic_fs::ApplyOptions {
@@ -462,7 +463,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 idempotency_key: IdempotencyKey::new(),
             },
             WorkBudget::UNBOUNDED,
-            &stop,
+            &projection_cancel,
         )
         .await?
         .value;
@@ -520,7 +521,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             acyclic_fs::workspace::MergeDirectorySection::Conflicts
         };
         directory
-            .write_page(section, step, PublicationPermit::Unrestricted, &stop)
+            .write_page(section, step, PublicationPermit::Unrestricted)
             .await?;
         let after = directory.plan().examined_clean + directory.plan().exposed_conflicts;
         assert!(
@@ -547,6 +548,41 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         "proposal staging published the target"
     );
     let plan_path = format!("{}/plan.json", directory.path());
+    let binary_key = acyclic_fs::ConflictKey::File(non_text[0].0);
+    let resolution_path = format!(
+        "{}.resolve.json",
+        directory.conflict_file_path(&binary_key)?
+    );
+    staging
+        .write_text(&resolution_path, r#"{"take":"theirs"}"#)
+        .await?;
+    let selected = staging.head(WorkBudget::UNBOUNDED, &stop).await?.value;
+    assert!(matches!(
+        directory.resolution(&selected, &binary_key).await?,
+        acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Theirs)
+    ));
+    projection_cancel.cancel();
+    assert!(matches!(
+        directory.resolution(&selected, &binary_key).await,
+        Err(acyclic_fs::DrivenJoinError::Workspace(
+            acyclic_fs::WorkspaceError::Cancelled(_)
+        ))
+    ));
+    assert!(matches!(
+        directory
+            .write_page(
+                acyclic_fs::workspace::MergeDirectorySection::Conflicts,
+                step,
+                PublicationPermit::Unrestricted,
+            )
+            .await,
+        Err(acyclic_fs::WorkspaceError::Cancelled(_))
+    ));
+    assert_eq!(
+        staging.head(WorkBudget::UNBOUNDED, &stop).await?.value.id(),
+        selected.id(),
+        "cancelled projection wrote another staging generation"
+    );
     drop(directory);
     drop(staging);
     drop(child);

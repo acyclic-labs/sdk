@@ -61,28 +61,38 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         conflict: MergeConflict,
     ) -> Result<crate::ConflictView, WorkspaceError> {
-        self.describe_conflict_contents(conflict, ConflictContents::Driver)
-            .await
+        self.describe_conflict_contents(
+            conflict,
+            ConflictContents::Driver,
+            &CancellationToken::new(),
+        )
+        .await
     }
 
     pub(super) async fn describe_conflict_file(
         &self,
         conflict: MergeConflict,
+        cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
-        self.describe_conflict_contents(conflict, ConflictContents::Files)
-            .await
+        let view = self
+            .describe_conflict_contents(conflict, ConflictContents::Files, cancellation)
+            .await?;
+        cancellation.check()?;
+        Ok(view)
     }
 
     async fn describe_conflict_contents(
         &self,
         conflict: MergeConflict,
         contents: ConflictContents,
+        cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
+        cancellation.check()?;
         let MergeConflict::File(file_id) = conflict else {
             let mut view = binding_conflict_view(self, conflict.clone());
             if let MergeConflict::Binding { directory_id, name } = conflict
-                && let Some(directory) = self.conflict_path(directory_id).await?
-                && let Ok(name) = logical_name_text(&name)
+                && let Some(directory) = self.conflict_path(directory_id, cancellation).await?
+                && let Ok(name) = logical_name_text(&name, cancellation)
             {
                 view.path = Some(if directory == "/" {
                     format!("/{name}")
@@ -90,9 +100,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     format!("{directory}/{name}")
                 });
             }
+            cancellation.check()?;
             return Ok(view);
         };
-        self.file_conflict_view(file_id, contents).await
+        self.file_conflict_view(file_id, contents, cancellation)
+            .await
     }
 
     /// The driver-ready view of a conflict on one file identity's record.
@@ -100,9 +112,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         file_id: FileId,
         contents: ConflictContents,
+        cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
-        let path = self.conflict_path(file_id).await?;
-        let records = self.conflict_records(file_id).await?;
+        let path = self.conflict_path(file_id, cancellation).await?;
+        let records = self.conflict_records(file_id, cancellation).await?;
         let [base, ours, theirs] = records;
         let fallback = |generation, record: Option<crate::kernel::FileRecord>| match record {
             Some(_) => ConflictValue::Record {
@@ -117,9 +130,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .map(|((base, ours), theirs)| (base, ours, theirs))
         else {
             if let Some(text) = path.as_deref()
-                && let Some(replaced) = self.replaced_file(file_id, text, records).await?
+                && let Some(replaced) = self
+                    .replaced_file(file_id, text, records, cancellation)
+                    .await?
                 && let Some(view) = self
-                    .regular_conflict_view(file_id, path.clone(), replaced.records, contents)
+                    .regular_conflict_view(
+                        file_id,
+                        path.clone(),
+                        replaced.records,
+                        contents,
+                        cancellation,
+                    )
                     .await?
             {
                 return Ok(view);
@@ -150,6 +171,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     path.clone(),
                     [base_record, ours_record, theirs_record],
                     contents,
+                    cancellation,
                 )
                 .await?
         {
@@ -164,7 +186,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 return Ok(view);
             }
             return self
-                .metadata_conflict_view(file_id, path, [base_record, ours_record, theirs_record])
+                .metadata_conflict_view(
+                    file_id,
+                    path,
+                    [base_record, ours_record, theirs_record],
+                    cancellation,
+                )
                 .await;
         }
         if let Some(view) = self
@@ -173,6 +200,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 path.clone(),
                 [base_record, ours_record, theirs_record],
                 contents,
+                cancellation,
             )
             .await?
         {
@@ -190,6 +218,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn conflict_records(
         &self,
         file_id: FileId,
+        cancellation: &CancellationToken,
     ) -> Result<[Option<crate::kernel::FileRecord>; 3], WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let mut records = [None; 3];
@@ -200,7 +229,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         {
             *slot = volume
                 .fs
-                .workspace_conflict_record(volume, generation, file_id)
+                .workspace_conflict_record_with_cancellation(
+                    volume,
+                    generation,
+                    file_id,
+                    cancellation,
+                )
                 .await?;
         }
         Ok(records)
@@ -212,6 +246,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
         path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
+        cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let [base, ours, theirs] = records;
@@ -220,15 +255,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             path,
             kind: ConflictKind::Metadata,
             base: ConflictValue::Metadata(
-                volume.fs.workspace_conflict_metadata(volume, base).await?,
+                volume
+                    .fs
+                    .workspace_conflict_metadata(volume, base, cancellation)
+                    .await?,
             ),
             ours: ConflictValue::Metadata(
-                volume.fs.workspace_conflict_metadata(volume, ours).await?,
+                volume
+                    .fs
+                    .workspace_conflict_metadata(volume, ours, cancellation)
+                    .await?,
             ),
             theirs: ConflictValue::Metadata(
                 volume
                     .fs
-                    .workspace_conflict_metadata(volume, theirs)
+                    .workspace_conflict_metadata(volume, theirs, cancellation)
                     .await?,
             ),
         })
@@ -237,9 +278,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn conflict_path(
         &self,
         file_id: FileId,
+        cancellation: &CancellationToken,
     ) -> Result<Option<String>, WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
         let mut path = self
             .target_head
             .workspace
@@ -247,7 +288,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 self.target_head.id,
                 file_id,
                 &mut accounting,
-                &cancellation,
+                cancellation,
             )
             .await?;
         if path.is_none() {
@@ -258,7 +299,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     self.source_head.id,
                     file_id,
                     &mut accounting,
-                    &cancellation,
+                    cancellation,
                 )
                 .await?;
         }
@@ -267,7 +308,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         };
         let text = path
             .value
-            .unicode_text_with_accounting(&mut accounting, &cancellation);
+            .unicode_text_with_accounting(&mut accounting, cancellation);
         path.retire(&mut accounting)?;
         text.map(|(text, _allocation)| Some(text))
             .map_err(Into::into)
@@ -279,6 +320,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
         contents: ConflictContents,
+        cancellation: &CancellationToken,
     ) -> Result<Option<crate::ConflictView>, WorkspaceError> {
         if records
             .iter()
@@ -312,7 +354,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .workspace
                 .volume
                 .fs
-                .workspace_conflict_bytes(&self.target_head.workspace.volume, record)
+                .workspace_conflict_bytes(&self.target_head.workspace.volume, record, cancellation)
                 .await?
             else {
                 return Ok(Some(reference()));

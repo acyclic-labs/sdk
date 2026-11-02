@@ -440,6 +440,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     pub fn work(&mut self) -> WorkCounters {
         self.owner.borrow().1.spent()
     }
+
+    pub(super) fn cancellation(&mut self) -> CancellationToken {
+        self.owner.borrow().1.cancellation().clone()
+    }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinContent<'_, A, O> {

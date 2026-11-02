@@ -8,13 +8,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         file_id: FileId,
     ) -> Result<Option<FileRecord>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        self.workspace_conflict_record_with_cancellation(
+            workspace,
+            generation,
+            file_id,
+            &cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn workspace_conflict_record_with_cancellation(
+        &self,
+        workspace: &Volume<A, O>,
+        generation: GenerationId,
+        file_id: FileId,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileRecord>, WorkspaceError> {
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
         self.workspace_merge_record_with_accounting(
             workspace,
             generation,
             &MergeConflict::File(file_id),
             &mut accounting,
-            &cancellation,
+            cancellation,
         )
         .await
     }
@@ -89,6 +105,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         workspace: &Volume<A, O>,
         record: FileRecord,
+        cancellation: &CancellationToken,
     ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
         let logical_bytes = match record.payload {
             FilePayload::InlineRegular(data) => {
@@ -101,8 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if logical_bytes > workspace.config.limits.maximum_read_bytes {
             return Ok(None);
         }
-        let cancellation = CancellationToken::new();
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
         self.workspace_merge_range_with_accounting(
             workspace,
             record,
@@ -111,7 +127,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 length: logical_bytes,
             },
             &mut accounting,
-            &cancellation,
+            cancellation,
         )
         .await
         .map(|read| Some(read.bytes))
