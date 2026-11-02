@@ -150,7 +150,10 @@ impl ModelUsageRecord {
     pub const VERSION: u32 = 2;
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(any(
+    feature = "filesystem",
+    all(feature = "metrics-export", feature = "research")
+))]
 pub(crate) fn validate(
     record: &ModelUsageRecord,
     operation: OperationId,

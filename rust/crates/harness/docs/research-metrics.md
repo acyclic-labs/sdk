@@ -163,11 +163,10 @@ leave those keys null for an offline join to the original admission. Export
 adds no provider request or execution-side capture work, retains one request
 at a time, and performs work proportional to that request's canonical bytes.
 
-Capture orchestration belongs in the non-enforcing `plugins/capture/` directory,
-using committed records and immutable artifact files. These library functions
-provide its bounded projections and shared publication primitive; they do not
-install a plugin, actor or background subscription. A scope is the grouping root;
-independent root agents do not acquire a fabricated parent.
+Research capture is controlled by operator-only `sys/capture`. These offline
+library functions consume original committed records and immutable artifacts;
+they do not install an actor, plugin or background subscription. A scope is
+the grouping root; independent root agents do not acquire a fabricated parent.
 
 Future call integration uses the original caller-owned `calls/<id>` reply path
 and its terminal record, rather than a separate capture settlement carrier.
@@ -183,7 +182,6 @@ the same six tables. Their producers remain separate from this offline codec:
 
 | Table / kind | Original authority and coverage |
 | --- | --- |
-| `turns` / `resources` | Cumulative resource snapshot at its original resource stream, sequence and commit ID. Select latest; never sum snapshots. Original inbox cursor is distinct from the source sequence. Semantic step commits and newly encoded conversation bytes do not measure physical work. |
 | `agents` / `placement` | Original immutable placement fact on initial observation or change, joined by its original digest. Unknown location stays unknown. |
 | `edges` / `stream_record_shared` | Original record origin, sequence and commit ID, selected destination stream and bound provider/account. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
@@ -191,7 +189,8 @@ the same six tables. Their producers remain separate from this offline codec:
 These reservations do not claim that the outstanding producer integrations
 already emit rows. Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added
-into a critical path.
+into a critical path. Phase counts come from the primitive's `counts(range)`;
+no checkpoint resource accumulator or separate snapshot writer is used.
 With both features enabled, `metrics::inspect::Call` projects one original
 model admission into an Inspect JSON log, also accepted by Docent's Inspect
 JSON loader. Read `ExecutionPayloadField::AdmittedRequest` to reconstruct the
@@ -201,6 +200,18 @@ the shared `model::replay_key`. Supply the original settled assistant content
 and optional committed `ModelUsageRecord` to `Call::write`. Foreign usage is
 refused. Scope, agent, stream, operation and sequence remain the observation
 identity; the replay key groups equal content across observations.
+
+Prefer `Call::settlement(journal, terminal_record)` when the original terminal
+record is available. It checks the original operation, step, purpose and source
+order before reading that event and its optional usage artifact. The shared
+usage validator binds accounting to the terminal's original metadata. Its
+`Settlement::write` also preserves `terminal_sequence` and raw
+`terminal_metadata`. Nonterminal or foreign observations refuse; missing usage
+stays unknown. This adds at most two original artifact loads, independent of
+history, without replay or a tail lookup. The terminal model event contains
+metadata rather than the complete assistant message: canonical response content
+must still come from its original settlement owner. This codec does not attest
+arbitrary caller-supplied response content or add a call-settlement writer.
 
 Each shard contains one sample, with its original context and settled response.
 The request context is written once, in `messages`; evaluation dataset input is

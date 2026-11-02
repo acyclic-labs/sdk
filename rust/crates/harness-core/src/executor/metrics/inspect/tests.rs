@@ -174,15 +174,15 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
 
     let mut foreign = usage.clone();
     foreign.dispatch.step += 1;
-    assert!(
+    assert!(matches!(
         call.write(
             std::io::sink(),
             "2026-11-02T00:00:00Z",
             &ModelContent::Text(String::new()),
             Some(&foreign)
-        )
-        .is_err()
-    );
+        ),
+        Err(Error::Invalid(_))
+    ));
     let mut foreign = source();
     foreign.operation = OperationId::from_bytes([8; 16]);
     assert!(Call::new(foreign, &admission, &bytes).is_err());
@@ -232,15 +232,15 @@ fn output_failure_stops_without_flush_or_success() -> Result<()> {
         remaining: 0,
         writes: 0,
     };
-    assert!(
+    assert!(matches!(
         call.write(
             &mut refused,
             "2026-11-02T00:00:00Z",
             &ModelContent::Text(String::new()),
             None
-        )
-        .is_err()
-    );
+        ),
+        Err(Error::Storage(_))
+    ));
     assert_eq!(refused.writes, 1, "no retry after original output refusal");
     call.write(
         std::io::sink(),
@@ -273,5 +273,161 @@ fn borrowed_encoding_has_no_history_sized_allocations() -> Result<()> {
         });
         assert!(buffered.count_total > 0);
     }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[tokio::test]
+async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_calls() -> Result<()> {
+    use crate::{
+        executor::{model_observation, model_usage::ModelCallUsage, stage_json},
+        filesystem::MemoryHarnessStorage,
+        model::ModelEvent,
+    };
+
+    let storage = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let journal = storage.journal();
+    let operation = source().operation;
+    journal
+        .append(
+            operation,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let request = request("generated committed request".into());
+    let bytes = crate::contract::canonical_json_bytes(&request)?;
+    let request_file = stage_json(journal.as_ref(), operation, "request", &request, None).await?;
+    journal
+        .append(
+            operation,
+            "admission",
+            &ExecutionEvent::ModelStarted {
+                step: 2,
+                purpose: ModelPurpose::Response,
+                request_digest: *blake3::hash(&bytes).as_bytes(),
+                request: request_file,
+            },
+            None,
+        )?
+        .await?;
+    let metadata = json!({"usage":{"input_tokens":0,"output_tokens":17},"provider_request_id":"generated-request","finish_reason":"stop"});
+    let completed = ModelEvent::Completed {
+        metadata: metadata.clone(),
+    };
+    let usage = ModelCallUsage {
+        version: ModelUsageRecord::VERSION,
+        completed: true,
+        dispatch: ModelDispatch {
+            operation_id: operation,
+            step: 2,
+            request_digest: *blake3::hash(&bytes).as_bytes(),
+        },
+        purpose: ModelPurpose::Response,
+        provider: &request.model.provider,
+        model: &request.model.name,
+        agent_path: Some("agents/generated-agent"),
+        sampling: request.sampling,
+        max_output_tokens: None,
+        tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+        latency_ns: None,
+        provider_request_id: Some("generated-request"),
+        system_fingerprint: None,
+        ttft_ns: None,
+        cache: None,
+    };
+    model_observation::append(
+        journal.as_ref(),
+        operation,
+        "content",
+        (2, ModelPurpose::Response),
+        &ModelEvent::Content {
+            delta: "generated response".into(),
+        },
+        None,
+        None,
+    )
+    .await?;
+    model_observation::append(
+        journal.as_ref(),
+        operation,
+        "terminal",
+        (2, ModelPurpose::Response),
+        &completed,
+        Some(&usage),
+        None,
+    )
+    .await?;
+    let records = journal.replay(operation, 0, 8, None)?.await?;
+    let call = Call::new(source(), &records[1], &bytes)?;
+    assert!(
+        call.settlement(journal.as_ref(), &records[2])
+            .await
+            .is_err()
+    );
+    let terminal = &records[3];
+    let settlement = call.settlement(journal.as_ref(), terminal).await?;
+    let mut output = Vec::new();
+    settlement.write(
+        &mut output,
+        "2026-11-02T00:00:00Z",
+        &ModelContent::Text("generated response".into()),
+    )?;
+    let exported: Value = serde_json::from_slice(&output).map_err(invalid)?;
+    let exported = &exported["samples"][0]["metadata"];
+    assert_eq!(exported["terminal_sequence"], terminal.sequence);
+    assert_eq!(exported["terminal_metadata"], metadata);
+    assert_eq!(exported["usage"]["tokens"]["input"], 0);
+    assert!(exported["usage"]["tokens"]["cached"].is_null());
+    let borrowed = acyclic_test_support::measure(|| {
+        settlement
+            .write(
+                std::io::sink(),
+                "2026-11-02T00:00:00Z",
+                &request.messages[0].content,
+            )
+            .expect("borrow original terminal metadata");
+    });
+    assert_eq!(
+        borrowed.count_total, 0,
+        "original terminal graph is not copied"
+    );
+
+    let mut foreign = terminal.clone();
+    foreign.operation_id = OperationId::new();
+    assert!(call.settlement(journal.as_ref(), &foreign).await.is_err());
+    let mut early = terminal.clone();
+    early.sequence = records[1].sequence;
+    assert!(call.settlement(journal.as_ref(), &early).await.is_err());
+    let mut unmeasured = terminal.clone();
+    match &mut unmeasured.event {
+        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+            *usage = None
+        }
+        _ => unreachable!("original model terminal"),
+    }
+    let unmeasured = call.settlement(journal.as_ref(), &unmeasured).await?;
+    assert!(unmeasured.usage.is_none(), "unknown accounting is not zero");
+    let mut mismatched = usage;
+    mismatched.tokens.output = Some(18);
+    let wrong = stage_json(
+        journal.as_ref(),
+        operation,
+        "wrong-usage",
+        &mismatched,
+        None,
+    )
+    .await?;
+    let mut changed = terminal.clone();
+    match &mut changed.event {
+        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+            *usage = Some(wrong)
+        }
+        _ => unreachable!("original model terminal"),
+    }
+    assert!(call.settlement(journal.as_ref(), &changed).await.is_err());
     Ok(())
 }

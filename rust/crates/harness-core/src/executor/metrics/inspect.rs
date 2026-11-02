@@ -5,7 +5,9 @@
 //! a display projection; original structured content remains in message metadata.
 //! Docent can consume the same file through its Inspect JSON loader.
 
-use super::super::{ExecutionEvent, ExecutionRecord, ModelPurpose, ModelUsageRecord, OperationId};
+use super::super::{
+    ExecutionEvent, ExecutionJournal, ExecutionRecord, ModelPurpose, ModelUsageRecord, OperationId,
+};
 use crate::{
     Error, Result,
     model::{
@@ -40,6 +42,16 @@ pub struct Call<'a> {
     request_digest: [u8; 32],
     replay_key: [u8; 32],
     request: ModelRequest,
+}
+
+/// The original committed terminal observation of a verified admission.
+/// Response content still comes from the original canonical settlement: a
+/// terminal model event contains metadata, not the complete assistant message.
+pub struct Settlement<'a, 'source> {
+    call: &'a Call<'source>,
+    sequence: u64,
+    metadata: serde_json::Value,
+    usage: Option<ModelUsageRecord>,
 }
 
 impl<'a> Call<'a> {
@@ -90,6 +102,66 @@ impl<'a> Call<'a> {
         response: &ModelContent,
         usage: Option<&ModelUsageRecord>,
     ) -> Result<()> {
+        self.validate_usage(usage)?;
+        self.write_log(writer, created, response, usage, None)
+    }
+
+    /// Selects exactly one original terminal record. This reads only its model
+    /// event and optional usage artifact, never prior events or a current tail.
+    /// Foreign operations/steps and nonterminal observations refuse. Missing
+    /// usage stays unknown. Each load finishes through the journal's original
+    /// result or typed refusal; no readiness loop or producer is added.
+    pub async fn settlement<'call>(
+        &'call self,
+        journal: &dyn ExecutionJournal,
+        terminal: &ExecutionRecord,
+    ) -> Result<Settlement<'call, 'a>> {
+        if terminal.operation_id != self.source.operation
+            || terminal.sequence <= self.sequence
+            || !super::super::model_observation::matches_turn(
+                &terminal.event,
+                self.step,
+                self.purpose,
+            )
+        {
+            return Err(invalid("terminal differs from its original admission"));
+        }
+        let event = super::super::model_observation::load(journal, &terminal.event, None)
+            .await?
+            .ok_or_else(|| invalid("terminal has no original model observation"))?;
+        if !matches!(event, crate::model::ModelEvent::Completed { .. }) {
+            return Err(invalid("source model observation is not terminal"));
+        }
+        let usage = super::super::model_usage::project_record(
+            journal,
+            self.source.operation,
+            self.source.agent_path,
+            terminal,
+        )
+        .await?;
+        if let Some(usage) = &usage {
+            super::super::model_usage::validate(
+                usage,
+                self.source.operation,
+                self.step,
+                self.purpose,
+                &event,
+                None,
+            )?;
+        }
+        self.validate_usage(usage.as_ref())?;
+        let crate::model::ModelEvent::Completed { metadata } = event else {
+            return Err(invalid("source model observation is not terminal"));
+        };
+        Ok(Settlement {
+            call: self,
+            sequence: terminal.sequence,
+            metadata,
+            usage,
+        })
+    }
+
+    fn validate_usage(&self, usage: Option<&ModelUsageRecord>) -> Result<()> {
         if let Some(usage) = usage
             && (usage.version != ModelUsageRecord::VERSION
                 || !usage.completed
@@ -109,6 +181,17 @@ impl<'a> Call<'a> {
         {
             return Err(invalid("usage differs from its original admission"));
         }
+        Ok(())
+    }
+
+    fn write_log(
+        &self,
+        writer: impl Write,
+        created: &str,
+        response: &ModelContent,
+        usage: Option<&ModelUsageRecord>,
+        settlement: Option<(u64, &serde_json::Value)>,
+    ) -> Result<()> {
         #[derive(Serialize)]
         struct Metadata<'a, 'b> {
             version: u32,
@@ -122,6 +205,8 @@ impl<'a> Call<'a> {
             sampling: crate::model::ModelSampling,
             max_output_tokens: Option<u32>,
             usage: Option<&'a ModelUsageRecord>,
+            terminal_sequence: Option<u64>,
+            terminal_metadata: Option<&'a serde_json::Value>,
         }
         #[derive(Serialize)]
         struct Eval<'a> {
@@ -194,10 +279,36 @@ impl<'a> Call<'a> {
                     sampling: self.request.sampling,
                     max_output_tokens: self.request.max_output_tokens,
                     usage,
+                    terminal_sequence: settlement.map(|(sequence, _)| sequence),
+                    terminal_metadata: settlement.map(|(_, metadata)| metadata),
                 },
             }],
         };
-        serde_json::to_writer(writer, &log).map_err(invalid)
+        serde_json::to_writer(writer, &log).map_err(|error| {
+            if error.is_io() {
+                Error::Storage(format!(
+                    "Inspect output failed: {error}; recovery: discard the unpublished shard and export the same original call to a writable destination"
+                ))
+            } else {
+                invalid(error)
+            }
+        })
+    }
+}
+
+impl Settlement<'_, '_> {
+    /// Writes the shared Inspect projection with the original terminal sequence,
+    /// raw provider metadata and validated optional usage. The canonical
+    /// assistant content must be supplied by its original settlement owner;
+    /// this metadata-only terminal never certifies arbitrary response content.
+    pub fn write(&self, writer: impl Write, created: &str, response: &ModelContent) -> Result<()> {
+        self.call.write_log(
+            writer,
+            created,
+            response,
+            self.usage.as_ref(),
+            Some((self.sequence, &self.metadata)),
+        )
     }
 }
 
