@@ -221,6 +221,32 @@ proptest! {
 
 #[test]
 fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error::Error>> {
+    // Native declarations bypass JSON's wire admission and must retain the
+    // same original resource/action boundary before any selection or lowering.
+    let invalid_grants: &[(&str, &[&str])] = &[
+        ("streams:/agents/a/*", &["streams/append"]),
+        ("streams:/agents/a/inbox", &[]),
+        ("streams:/agents/a/inbox", &["objects/get"]),
+        ("streams:/agents/a/inbox", &["streams/"]),
+    ];
+    for &(resource, actions) in invalid_grants {
+        let mut candidate = fixture()?;
+        let grant = &mut candidate
+            .environments
+            .first_mut()
+            .ok_or_else(missing)?
+            .grants
+            .first_mut()
+            .ok_or_else(missing)?
+            .grant
+            .0;
+        grant.resource.name = resource.into();
+        grant.actions = actions.iter().map(|action| (*action).into()).collect();
+        assert_eq!(
+            validate(&candidate),
+            Err(ManifestError::invalid("$.environments[0]", "auth-grant")),
+        );
+    }
     let base: Value =
         serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
     let cases = [

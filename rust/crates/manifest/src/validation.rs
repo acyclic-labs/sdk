@@ -296,16 +296,10 @@ fn grant_actions<'a>(
             p,
             "unsupported-binding-product",
         )?;
-        // Conversion invokes S1's resource/action validation, including product equality.
-        <ResourceGrant as wire::ContractType>::from_proto(
-            acyclic_auth::contract::ResourceGrantProto::from(grant.grant.0.clone()),
-        )
-        .map_err(|_| ManifestError::invalid(p, "auth-grant"))?;
-        require(
-            acyclic_auth::valid_resource(&grant.grant.resource.name),
-            p,
-            "auth-resource",
-        )?;
+        grant
+            .grant
+            .validate()
+            .map_err(|_| ManifestError::invalid(p, "auth-grant"))?;
         actions.insert(
             grant.name.as_str(),
             grant
