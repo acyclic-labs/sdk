@@ -27,7 +27,7 @@ const ACTIVE: usize = 2;
 const PARENTS: u8 = 4;
 
 /// Each root spawns child `c`, then waits for it; `hold` waits inside the
-/// delivery, following the child's status until it ran its turn.
+/// delivery, following the child's conversation until it ran its turn.
 struct Waiter {
     provider: Arc<MemoryStream>,
     hold: bool,
@@ -54,21 +54,23 @@ fn step(checkpoint: &[u8], outs: Vec<Out>, wait: Wait) -> TurnStep {
 }
 
 impl Waiter {
-    /// Follows `child`'s status until a step of it appended its turn.
+    /// Follows the original child answer, including creation of its stream.
     async fn ran(&self, child: &AgentPath) -> std::result::Result<(), Error> {
-        let mut statuses = records_only(
+        let mut turns = records_only(
             self.provider
-                .follow(FollowRequest::new(child.status()?, 0))
+                .follow(FollowRequest {
+                    when_absent: acyclic_stream::WhenAbsent::Wait,
+                    ..FollowRequest::new(child.conversation()?, 0)
+                })
                 .await
                 .map_err(Error::Stream)?,
         );
-        while let Some(record) = statuses.next().await {
-            let status = StatusRecord::decode(&record.map_err(Error::Stream)?.value)?;
-            if status.conversation > 0 {
-                return Ok(());
-            }
-        }
-        Err(Error::Record("child status ended"))
+        turns
+            .next()
+            .await
+            .ok_or(Error::Record("child conversation ended"))?
+            .map_err(Error::Stream)?;
+        Ok(())
     }
 }
 

@@ -26,7 +26,9 @@ pub trait TurnGoal: acyclic_stream::ProviderPlatform {
     /// The continuation allowance of one goal loop.
     fn policy(&self) -> GoalContinuationPolicy;
 
-    /// GOAL.md as observed now, read once; `None` when absent.
+    /// GOAL.md as observed now, read once; `None` when absent. Malformed
+    /// contents return `crate::Error::Invalid`: settlement disables the goal
+    /// and commits a quiet notice. Storage and access failures remain errors.
     fn read(&self) -> BoxProviderFuture<'_, crate::Result<Option<GoalView>>>;
 
     /// Replaces the observed `goal` with `contents`, at most once per `key`.
@@ -101,29 +103,54 @@ fn next_intent(run: &str, count: &str) -> Result<IntentId, Error> {
     IntentId::try_from(id)
 }
 
-/// What `agent`'s turn `turn`, started by `input`, does about its goal once it
-/// settles: the continuation to send, or nothing. An exhausted allowance
-/// rewrites GOAL.md as `blocked` and sends nothing. A concurrent edit continues
-/// the original turn through its committed actor checkpoint.
+#[derive(Default)]
+pub(super) struct Settlement {
+    pub continuation: Option<Out>,
+    pub notice: Option<Out>,
+}
+
+/// Settles a goal with its continuation or quiet refusal notice. An exhausted
+/// allowance rewrites GOAL.md as `blocked`. A concurrent edit continues the
+/// original turn through its committed actor checkpoint.
 pub(super) async fn settle(
     agent: &AgentState,
     input: &TurnInput,
     turn: OperationId,
     goal: &dyn TurnGoal,
-) -> Result<ControlFlow<Option<Out>>, Error> {
+) -> Result<ControlFlow<Settlement>, Error> {
     let failed = |error| Error::Turn(Box::new(error));
     // Goals continue root agents; a child reports to its parent when its
     // brief is done, whatever its forked scratch holds.
     if agent.parent.is_some() {
-        return Ok(ControlFlow::Break(None));
+        return Ok(ControlFlow::Break(Settlement::default()));
     }
     let policy = goal.policy();
     let (run, count) = continuation(&agent.path, input).unwrap_or((turn, "0"));
-    let Some(view) = goal.read().await.map_err(failed)? else {
-        return Ok(ControlFlow::Break(None));
+    let view = match goal.read().await {
+        Ok(Some(view)) => view,
+        Ok(None) => return Ok(ControlFlow::Break(Settlement::default())),
+        Err(crate::Error::Invalid(reason)) => {
+            return Ok(ControlFlow::Break(Settlement {
+                continuation: None,
+                notice: Some(Out::Send {
+                    to: agent.path.clone(),
+                    record: InboxRecord::Notice {
+                        id: IntentId::try_from(format!("invalid-goal:{turn}"))?,
+                        notice: super::NoticePayload::Quiet(crate::conversation::wire::Notice {
+                            source: "harness".into(),
+                            kind: "harness.invalid".into(),
+                            body: serde_json::json!({"version": 1, "path": "GOAL.md", "reason": reason}),
+                            wake: false,
+                            coalesce_key: Some("harness.invalid:GOAL.md".into()),
+                        }),
+                    },
+                }),
+            }));
+        }
+        Err(error) => return Err(failed(error)),
     };
     if view.status != GoalStatus::Active {
-        return Ok(ControlFlow::Break(None));
+        return Ok(ControlFlow::Break(Settlement::default()));
     }
     if !policy
         .max_continuations
@@ -137,21 +164,24 @@ pub(super) async fn settle(
             )
             .await
         {
-            Ok(()) => Ok(ControlFlow::Break(None)),
+            Ok(()) => Ok(ControlFlow::Break(Settlement::default())),
             Err(crate::Error::Conflict(_)) => Ok(ControlFlow::Continue(())),
             Err(error) => Err(failed(error)),
         };
     }
     let id = next_intent(&run.to_string(), count)?;
-    Ok(ControlFlow::Break(Some(Out::Send {
-        to: agent.path.clone(),
-        record: InboxRecord::Message(Message {
-            from: Sender::Agent {
-                path: agent.path.clone(),
-            },
-            id,
-            body: Box::new(view.source),
-            attachments: None,
+    Ok(ControlFlow::Break(Settlement {
+        continuation: Some(Out::Send {
+            to: agent.path.clone(),
+            record: InboxRecord::Message(Message {
+                from: Sender::Agent {
+                    path: agent.path.clone(),
+                },
+                id,
+                body: Box::new(view.source),
+                attachments: None,
+            }),
         }),
-    })))
+        notice: None,
+    }))
 }

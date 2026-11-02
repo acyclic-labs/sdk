@@ -1,42 +1,34 @@
-//! Whether an agent has settled its input, read once from its own streams.
-//!
-//! An agent has settled the input committed to it before some point once its
-//! status says so: it is done, or idle having consumed every one of those inbox
-//! records. An idle agent still holding input publishes `Running`, and every
-//! idle step publishes its cursor, so the one status record a step commits
-//! decides this alone, with no read of the agent's checkpoint. Nothing here
-//! waits: a turn waiting for a child commits [`super::Phase::Waiting`] and the
-//! child's [`super::ChildSettled`] counts toward its condition (see
-//! [`super::Until`]).
+//! Settlement from the original actor checkpoint and consumed inbox cursor.
+//! Status records announce phase changes; conversation entries announce replies.
 
 use super::{
     AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProviderExt as _};
 use futures::TryStreamExt as _;
+use std::sync::Arc;
 
 /// `agent`'s phase if it has settled every inbox record committed before this
 /// call ([`Phase::Idle`] or [`Phase::Done`]), else `None`: one read of its
-/// inbox tail and one of its last status, never a wait.
+/// inbox tail and its original actor state, never a wait. `within` selects
+/// the original account and namespace; no actor discovery or history scan.
 ///
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
 /// malformed records as themselves.
-pub async fn settled<P: crate::store::JournalProvider + ?Sized>(
-    provider: &P,
+pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
+    provider: &Arc<P>,
+    within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<Option<Phase>, Error> {
-    let inbox = inbox_tail(provider, agent).await?;
-    let status = agent.status()?;
-    let tail = match provider.tail(status.clone()).await {
-        Ok(0) | Err(StreamError::NotFound) => return Err(Error::NoSuchAgent),
-        Ok(tail) => tail,
-        Err(error) => return Err(Error::Stream(error)),
-    };
-    let last = record(provider, &status, tail - 1).await?;
-    Ok(match last.phase {
-        Phase::Done { .. } => Some(last.phase),
-        Phase::Idle if last.cursor >= inbox => Some(last.phase),
+    let inbox = inbox_tail(&**provider, agent).await?;
+    let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
+    let (state, cursor) = super::handler::Agents::new(super::actor_store(provider)?)
+        .state(&actor, agent)
+        .await?;
+    Ok(match &state.phase {
+        Phase::Done { .. } => Some(state.phase),
+        Phase::Idle if state.settled_before(cursor) >= inbox => Some(state.phase),
         _ => None,
     })
 }

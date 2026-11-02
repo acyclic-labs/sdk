@@ -40,6 +40,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     provider.extend(turns);
     let outcome = prompt_settled(&harness, "scenario", &case.prompt).await?;
     let entry = verify_outcome(&case.expect, outcome)?;
+    if entry.is_none() {
+        // Replay after failure is committed: the first reply is already Dropped,
+        // but the original failure must remain visible without model redispatch.
+        let replay = prompt_settled(&harness, "scenario", &case.prompt).await?;
+        verify_outcome(&case.expect, replay)?;
+    }
     if provider.remaining() != 0 {
         return Err("local model script was not consumed".into());
     }

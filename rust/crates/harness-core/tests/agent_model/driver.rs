@@ -753,11 +753,17 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             wrong_completion.commit(wrong).await?,
             CommitOutcome::Committed(_)
         ));
+        let run = OperationId::parse(
+            sent[0]
+                .strip_prefix(GOAL_INTENT)
+                .and_then(|rest| rest.strip_suffix(":1"))
+                .expect("first continuation of the original goal"),
+        )?;
         let answer = reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?;
         if sequence < 3 {
             assert_eq!(
                 answer,
-                Reply::Pending,
+                Reply::Continuing { run },
                 "first settlement is not the goal's result"
             );
             let mut cancelled = settled.state.clone();
@@ -779,7 +785,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             assert_eq!(entry.goal, origin.goal);
             assert_eq!(
                 reply(&missing_completion, &settled.state, 4, &intent("m1"), 1).await?,
-                Reply::Pending
+                Reply::Continuing { run }
             );
             assert!(matches!(
                 reply(&wrong_completion, &settled.state, 4, &intent("m1"), 1).await,
@@ -788,7 +794,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             // A stale checkpoint cannot expose the future terminal record.
             assert_eq!(
                 reply(&provider, &state, 3, &intent("m1"), 1).await?,
-                Reply::Pending
+                Reply::Continuing { run }
             );
         }
         state = settled.state;

@@ -149,7 +149,7 @@ async fn answered(
 
 async fn pending(host: &AgentHost<Observed>, root: &AgentPath, prompt: &(IntentId, u64)) -> Result {
     match host.reply(root, &prompt.0, prompt.1).await? {
-        Reply::Pending => Ok(()),
+        Reply::Pending | Reply::Continuing { .. } => Ok(()),
         other => Err(format!("an unsettled prompt replied {other:?}").into()),
     }
 }

@@ -428,6 +428,7 @@ pub struct TurnLimits {
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
+    within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -488,9 +489,12 @@ where
     /// once: the agent's own policy file, chosen explicitly when it was
     /// adopted, or else `policy`, the host's preset. No policy is ever
     /// absent, so accepting every action is only ever an explicit choice.
+    /// A malformed pinned policy denies actions. `within` is the original actor
+    /// account and namespace used to observe child settlement.
     #[must_use]
     pub fn new(
         stream: Arc<P>,
+        within: acyclic_actors::addressing::ActorReference,
         host: Arc<FilesystemHost<A, O>>,
         issuer: impl Into<RuntimeAuthority>,
         admission: TurnAdmission,
@@ -500,6 +504,7 @@ where
     ) -> Self {
         Self {
             stream,
+            within,
             host,
             issuer: issuer.into(),
             admission,
@@ -533,27 +538,27 @@ where
         agent: &AgentState,
         content: &ContentBindings,
     ) -> Result<(AgentApprovalPolicy, ApprovalPolicy)> {
-        let policy = match &agent.policy {
+        let limits = crate::conversation::Limits {
+            file_bytes: self.limits.maximum_bytes,
+            ..crate::conversation::Limits::default()
+        };
+        let parent = agent.parent.as_ref().map(crate::agent::AgentPath::id);
+        let bound = match &agent.policy {
             Some(file) => {
                 let bytes = content
                     .reader
                     .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;
-                crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+                AgentApprovalPolicy::from_file(&bytes, parent, self.approvers.clone(), limits)?
             }
-            None => self.policy.clone(),
+            None => AgentApprovalPolicy::new(
+                self.policy.clone(),
+                parent,
+                self.approvers.clone(),
+                limits,
+            )?,
         };
-        let limits = crate::conversation::Limits {
-            file_bytes: self.limits.maximum_bytes,
-            ..crate::conversation::Limits::default()
-        };
-        let bound = AgentApprovalPolicy::new(
-            policy.clone(),
-            agent.parent.as_ref().map(crate::agent::AgentPath::id),
-            self.approvers.clone(),
-            limits,
-        )?;
+        let policy = bound.policy().clone();
         Ok((bound, policy))
     }
 
@@ -1711,6 +1716,7 @@ where
             )) as Arc<dyn crate::agent::TurnEffects>;
             let children = Arc::new(FilesystemTurnChildren {
                 stream: Arc::clone(&self.stream),
+                within: self.within.clone(),
                 host: Arc::clone(&self.host),
                 issuer: self.issuer.clone(),
                 admission: self.admission.clone(),
@@ -1804,6 +1810,7 @@ where
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
+    within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -1827,7 +1834,7 @@ where
         child: &'a AgentPath,
     ) -> BoxFuture<'a, Result<Option<crate::agent::Phase>>> {
         Box::pin(async move {
-            match crate::agent::settled(&*self.stream, child).await {
+            match crate::agent::settled(&self.stream, &self.within, child).await {
                 Ok(settled) => Ok(settled),
                 Err(crate::agent::Error::NoSuchAgent) => {
                     Err(Error::NotFound(child.as_str().to_owned()))

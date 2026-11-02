@@ -146,6 +146,121 @@ fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
 }
 
 #[tokio::test]
+async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Result {
+    use acyclic_harness_core::{
+        approvals::ApprovalPolicy,
+        conversation::{ContentAccess, ContentGrant},
+        interaction::{ApprovalRoute, ApprovalSubject, Interaction, InteractionOutcome},
+    };
+    let valid = serde_json::to_vec(&ApprovalPolicy::accept_all("configured"))?;
+    for bytes in [
+        b"{".as_slice(),
+        b"{\"approvers\":[]}".as_slice(),
+        valid.as_slice(),
+    ] {
+        let path = AgentPath::root(&id(219));
+        let (filesystem, binding) = private(&path).await?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        );
+        let authority = acyclic_harness_core::filesystem::agent_authority(
+            &issuer.clone().into(),
+            &TurnAdmission::LocalRoot,
+            &path,
+            std::slice::from_ref(&binding),
+            &[],
+        )
+        .await?;
+        let write = ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &binding.volume,
+            VolumeOperation::Write,
+            LIMITS.maximum_bytes,
+            &mut None,
+        )?;
+        let file = filesystem
+            .put_content(
+                &binding.volume,
+                &write,
+                "policy.json",
+                bytes,
+                "application/json",
+                "policy.json",
+                LIMITS.maximum_bytes,
+                &acyclic_harness_core::IdempotencyKey::new("policy")?,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        let model = Arc::new(ScriptedModelProvider::new([]));
+        let host = FilesystemTurnHost::new(
+            Arc::new(MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
+            filesystem,
+            issuer,
+            TurnAdmission::LocalRoot,
+            executors(model.clone())?,
+            LIMITS,
+            ApprovalPolicy::accept_all("preset"),
+        );
+        let mut adoption = adopted(id(219));
+        adoption.volumes = vec![binding];
+        adoption.policy = Some(file);
+        let state = AgentState::adopted(path, &adoption)?;
+        let open = host
+            .open(
+                &state,
+                OperationId::from_bytes([220; 16]),
+                &ModelContent::Text("test".into()),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        let approvals = open.approvals.as_ref().ok_or("approval owner absent")?;
+        for (n, route) in [ApprovalRoute::Policy, ApprovalRoute::Human]
+            .into_iter()
+            .enumerate()
+        {
+            let id = acyclic_harness_core::InteractionId::from_bytes([n as u8 + 1; 16]);
+            let request = Interaction::approval(
+                "review".into(),
+                OperationId::from_bytes([221; 16]),
+                [222; 32],
+                ApprovalSubject::Tool {
+                    route,
+                    tool: "write".into(),
+                    call_id: "call".into(),
+                    arguments: serde_json::json!({"path":"approved"}),
+                    target: None,
+                },
+            )?;
+            approvals.open(id, &request).await?;
+            let outcome = approvals.outcome(id, &*open.journal, None).await?;
+            if bytes != valid.as_slice() {
+                assert!(
+                    matches!(outcome, Some(InteractionOutcome::Denied {})),
+                    "malformed policy must neither accept the preset nor wait on a human"
+                );
+            } else if n == 0 {
+                assert!(matches!(outcome, Some(InteractionOutcome::Approved {})));
+            } else {
+                assert!(
+                    outcome.is_none(),
+                    "valid policy preserves the explicit human route"
+                );
+            }
+        }
+        assert!(model.requests().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     for matching_limits in [false, true] {
         let parent = AgentPath::root(&id(1));
@@ -156,6 +271,8 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                .expect("actor binding"),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -309,6 +426,8 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                .expect("actor binding"),
             filesystem.clone(),
             AuthorityRoot::new(
                 "agents",
@@ -562,6 +681,8 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
+        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+            .expect("actor binding"),
         host,
         AuthorityRoot::new(
             "agents",
@@ -686,6 +807,8 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                .expect("actor binding"),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -816,6 +939,8 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     host.create_volume(&own).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
+        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+            .expect("actor binding"),
         host,
         AuthorityRoot::new(
             "agents",
@@ -967,6 +1092,8 @@ async fn admitted_root_after_its_child(
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
                 host.clone(),
                 issuer.clone(),
                 TurnAdmission::Admitted {
@@ -1197,6 +1324,8 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 Arc::new(MemoryStream::default()),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
                 host,
                 root,
                 TurnAdmission::Admitted { audience, scope },
@@ -1374,6 +1503,8 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let stream = Arc::new(Refusing::default());
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
                 host,
                 root,
                 TurnAdmission::Admitted {
@@ -1737,6 +1868,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
     for replacement in [
         b"---\nstatus: done\n---\nconcurrent body\n".as_slice(),
         b"concurrent body\n".as_slice(),
+        b"---\nstatus: invalid\n---\nconcurrent body\n".as_slice(),
     ] {
         let stream = Arc::new(MemoryStream::default());
         let path = super::create(&stream, id(3)).await?;
@@ -1794,6 +1926,8 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         let driver = ExecutorDriver::new(EditingHost {
             original: FilesystemTurnHost::new(
                 stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
                 host.clone(),
                 issuer,
                 TurnAdmission::LocalRoot,
@@ -1810,7 +1944,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         adoption.volumes = vec![
             private,
             VolumeBinding {
-                name: "scratch".into(),
+                name: acyclic_harness_core::filesystem::HOME_VOLUME.into(),
                 volume: volume.clone(),
             },
         ];
@@ -1888,11 +2022,22 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         let text = std::str::from_utf8(&bytes)?;
         assert!(text.ends_with("concurrent body\n"));
         assert!(!text.contains("original body"));
-        assert!(text.contains(if replacement.starts_with(b"---") {
-            "status: done"
+        if replacement
+            .windows(b"status: invalid".len())
+            .any(|part| part == b"status: invalid")
+        {
+            assert_eq!(bytes.as_ref(), replacement);
+            assert!(second.outs.iter().any(|out| matches!(out,
+                Out::Send { record: InboxRecord::Notice { notice: NoticePayload::Quiet(notice), .. }, .. }
+                if notice.kind == "harness.invalid" && !notice.wake && notice.body["path"] == "GOAL.md"
+            )));
         } else {
-            "status: blocked"
-        }));
+            assert!(text.contains(if replacement.starts_with(b"---") {
+                "status: done"
+            } else {
+                "status: blocked"
+            }));
+        }
     }
     Ok(())
 }

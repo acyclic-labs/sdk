@@ -48,7 +48,7 @@ impl acyclic_harness::hosting::Platform for Owner {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>> {
         let kind = match command {
-            AgentCommand::Bind {} => "bind",
+            AgentCommand::Bind { .. } => "bind",
             AgentCommand::Root {} => "root",
             AgentCommand::Children { .. } => "children",
             AgentCommand::Approvals { .. } => "approvals",

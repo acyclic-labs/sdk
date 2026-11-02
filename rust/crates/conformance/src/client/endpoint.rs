@@ -1,11 +1,11 @@
 //! Live agent vectors using only the public endpoint, credential and commands.
 use super::{Cause, Failure, Report, failure, stream_failure};
 use acyclic_harness_client::{
-    AgentBinding, AgentCommand, AgentControls, AgentExchangeError, AgentReply, ConnectionOptions,
-    Delivered, IntentId, ModelContent, PreparedCommand, ReadTarget, Reply,
+    AgentBinding, AgentClient, AgentClientError, AgentCommand, AgentControls, AgentEvent,
+    AgentExchangeError, AgentReply, ConnectionOptions, Delivered, IntentId, ModelContent,
+    PreparedCommand, ReadTarget, Reply, WireSessionError,
 };
-use acyclic_stream::{StreamError, session::Client, wire};
-use futures::StreamExt as _;
+use acyclic_stream::{StreamError, session::Client};
 use serde::{Deserialize, Serialize};
 
 /// A disposable endpoint's model task and its independent answer oracle.
@@ -33,6 +33,16 @@ async fn execute(
 fn exchange_failure(case: &'static str, error: AgentExchangeError) -> Failure {
     match error {
         AgentExchangeError::Session(error) => stream_failure(case, error),
+        error => failure(case, error),
+    }
+}
+
+fn observation_failure(case: &'static str, error: AgentClientError) -> Failure {
+    match error {
+        AgentClientError::Session(WireSessionError::Stream(error)) => stream_failure(case, error),
+        AgentClientError::Refused { code, .. } => {
+            stream_failure(case, StreamError::from_session_close(&code))
+        }
         error => failure(case, error),
     }
 }
@@ -96,7 +106,7 @@ pub async fn verify_with_reply_wait(
         ));
     }
     let discovery = AgentControls::new(session.clone(), 0, AgentBinding::discovery());
-    let published = execute(&discovery, &AgentCommand::Bind {})
+    let published = execute(&discovery, &AgentCommand::Bind { agent: None })
         .await
         .map_err(|error| exchange_failure("bind", error))?;
     let (binding, _) =
@@ -263,7 +273,9 @@ async fn wait_reply(
     inbox: u64,
     waiting: impl Fn(),
 ) -> Result<Reply, Failure> {
-    let AgentReply::Settlement { statuses, .. } = execute(
+    let AgentReply::Settlement {
+        settled, statuses, ..
+    } = execute(
         controls,
         &AgentCommand::Settlement {
             agent: agent.clone(),
@@ -272,31 +284,10 @@ async fn wait_reply(
     .await
     .map_err(|error| exchange_failure("reply_cut", error))?
     else {
-        return Err(failure("reply_cut", "missing committed status cut"));
+        return Err(failure("reply_cut", "missing committed settlement cut"));
     };
-    let mut follow = session
-        .subscribe(wire::SessionSubscription {
-            credential: 0,
-            resume: Some(wire::SessionCursor {
-                next: statuses,
-                ..Default::default()
-            }),
-            kind: Some(wire::session_subscription::Kind::Follow(
-                wire::SessionFollow {
-                    resource: acyclic_stream::wire_codec::session::stream_resource(
-                        agent
-                            .status()
-                            .map_err(|error| failure("reply_cut", error))?
-                            .as_str(),
-                    ),
-                    delivery: wire::SessionDelivery::All as i32,
-                    ..Default::default()
-                },
-            )),
-            ..Default::default()
-        })
-        .await
-        .map_err(|error| stream_failure("reply_follow", error))?;
+    let mut follow = AgentClient::all(session.clone(), agent.clone(), settled, statuses, 0)
+        .map_err(|error| observation_failure("reply_follow", error))?;
     loop {
         let AgentReply::Reply { reply } = execute(
             controls,
@@ -311,28 +302,21 @@ async fn wait_reply(
         else {
             return Err(failure("reply", "endpoint returned another reply shape"));
         };
-        if !matches!(reply, Reply::Pending) {
+        if !matches!(reply, Reply::Pending | Reply::Continuing { .. }) {
             return Ok(reply);
         }
         loop {
-            let frame = futures::future::poll_fn(|context| {
-                let next = follow.poll_next_unpin(context);
+            let event = futures::future::poll_fn(|context| {
+                let next = follow.poll_next(context);
                 if next.is_pending() {
                     waiting();
                 }
                 next
             })
             .await
-            .ok_or_else(|| stream_failure("reply_liveness", StreamError::Unavailable))?
-            .map_err(|error| stream_failure("reply_liveness", error))?;
-            match frame.into_wire().body {
-                Some(wire::session_frame::Body::Data(_)) => break,
-                Some(wire::session_frame::Body::Closed(closed)) => {
-                    return Err(stream_failure(
-                        "reply_liveness",
-                        StreamError::from_session_close(&closed.code),
-                    ));
-                }
+            .map_err(|error| observation_failure("reply_liveness", error))?;
+            match event {
+                AgentEvent::Conversation { .. } | AgentEvent::Status { .. } => break,
                 _ => {}
             }
         }

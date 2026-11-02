@@ -626,7 +626,6 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
     let previous = state.as_ref().map_or(Phase::Idle, published);
-    let inbox_wake = !alarm_wake;
     let mut state = match (state, wake) {
         (
             None,
@@ -695,7 +694,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         outs.len(),
         state.pending_notices.clone(),
     );
-    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+    let mut step = finalize_step(state, outs, &previous, cursor)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
     // Only a state that must shed its growing input is encoded again.
@@ -713,7 +712,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+        step = finalize_step(state, outs, &previous, cursor)?;
         bytes = checkpoint::encode(&step.state)?;
     }
     Ok(PreparedStep {
@@ -727,7 +726,6 @@ fn finalize_step(
     mut outs: Vec<Out>,
     previous: &Phase,
     cursor: u64,
-    inbox_wake: bool,
 ) -> Result<Step, Error> {
     let alarm = match kernel::alarm(
         control(&state),
@@ -742,11 +740,6 @@ fn finalize_step(
         .iter()
         .filter(|out| matches!(out, Out::Conversation(_)))
         .count() as u64;
-    // A settled Idle -> Idle turn still advances observation: publish its
-    // consumed inbox cursor atomically with every conversation append, so a
-    // client can associate that output with its delivered input. Every inbox
-    // record an idle agent consumes publishes its cursor too, so `Idle` at a
-    // cursor proves every record before it settled (see [`super::settled`]).
     let phase = published(&state);
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.
@@ -785,12 +778,11 @@ fn finalize_step(
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
-        .then_some(StatusRecord {
-            phase,
-            cursor,
-            conversation: state.conversation_tail,
-        });
+    let status = (&phase != previous).then_some(StatusRecord {
+        phase,
+        cursor,
+        conversation: state.conversation_tail,
+    });
     state.status_tail = state
         .status_tail
         .checked_add(u64::from(status.is_some()))

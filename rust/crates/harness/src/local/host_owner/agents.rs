@@ -725,7 +725,9 @@ impl NativeAgents {
                             .map_err(storage)?;
                     json!({"kind": "answered", "sequence": sequence, "outcome": settled.result})
                 }
-                crate::agent::Reply::Pending => json!({ "kind": "pending" }),
+                crate::agent::Reply::Pending | crate::agent::Reply::Continuing { .. } => {
+                    json!({ "kind": "pending" })
+                }
                 crate::agent::Reply::Dropped => json!({ "kind": "dropped" }),
             },
         )

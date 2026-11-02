@@ -61,9 +61,46 @@ pub struct AgentApprovalPolicy {
     parent: Option<AgentId>,
     models: super::ApproverModels,
     limits: Limits,
+    file_refused: bool,
 }
 
 impl AgentApprovalPolicy {
+    /// Admits one immutable enforcement file. An invalid file has no admitted
+    /// policy to retain, so every action is denied. It never selects the host's
+    /// preset or suspends the agent on a configuration error.
+    pub(crate) fn from_file(
+        bytes: &[u8],
+        parent: Option<AgentId>,
+        models: super::ApproverModels,
+        limits: Limits,
+    ) -> Result<Self> {
+        use crate::runtime::ToolPolicy as _;
+        let admitted = crate::contract::json_from_slice::<ApprovalPolicy>(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))
+            .and_then(|policy| policy.bind().map(|gate| (policy, gate.identity().digest)));
+        let (policy, digest, file_refused) = match admitted {
+            Ok((policy, digest)) => (policy, digest, false),
+            Err(Error::Invalid(_)) => {
+                let policy = ApprovalPolicy::deny_all("harness:invalid-policy");
+                let digest = policy.bind()?.identity().digest;
+                (policy, digest, true)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            policy,
+            digest,
+            parent,
+            models,
+            limits,
+            file_refused,
+        })
+    }
+
+    pub(crate) fn policy(&self) -> &ApprovalPolicy {
+        &self.policy
+    }
+
     /// Pins `policy` for an agent spawned by `parent`.
     pub fn new(
         policy: ApprovalPolicy,
@@ -79,6 +116,7 @@ impl AgentApprovalPolicy {
             parent,
             models,
             limits,
+            file_refused: false,
         })
     }
 
@@ -268,6 +306,10 @@ impl AgentApprovals {
             Option<&crate::executor::PreparationIo>,
         )>,
     ) -> Result<Option<InteractionOutcome>> {
+        // An explicit human route cannot bypass a refused enforcement file.
+        if self.policy.file_refused {
+            return Ok(Some(InteractionOutcome::Denied {}));
+        }
         let request = request_id(id);
         let policy = &*self.policy;
         let bytes = policy.request(&*self.files, &request).await?;

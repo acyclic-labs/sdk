@@ -193,6 +193,8 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         .0;
     let turns = FilesystemTurnHost::new(
         stream.clone(),
+        ActorReference::new(b"fixture", b"agents", b"providers")
+            .map_err(|error| invalid(error.to_string()))?,
         host,
         issuer,
         TurnAdmission::LocalRoot,
