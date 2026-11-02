@@ -5,14 +5,27 @@ use acyclic_auth::authority::PolicyDecision;
 use acyclic_auth::contract::{Attribute, RecordAttributes};
 use acyclic_stream::{AppendRecord, Record};
 
+pub(super) struct Projection<'a> {
+    pub volume: VolumeId,
+    pub scope: [u8; 16],
+    pub config: VolumeConfig,
+    pub trie: &'a PathTrie,
+    pub authorization: &'a acyclic_stream::session::ResourceAuthorization,
+    pub selected: Option<&'a super::subtree::Selection>,
+}
+
 pub(super) fn project(
     mut record: Record,
-    volume: VolumeId,
-    scope: [u8; 16],
-    config: VolumeConfig,
-    trie: &PathTrie,
-    authorization: &acyclic_stream::session::ResourceAuthorization,
+    projection: Projection<'_>,
 ) -> Result<FollowUpdate, StreamError> {
+    let Projection {
+        volume,
+        scope,
+        config,
+        trie,
+        authorization,
+        selected,
+    } = projection;
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
     let context = crate::PublicationContext::from_bytes(&changes.context)?;
     if !acyclic_stream::is_changes(&record.headers)
@@ -57,6 +70,9 @@ pub(super) fn project(
             continue;
         }
         let name = canonical_resource(volume, &entry_facts.path, config)?;
+        if selected.is_some_and(|selected| !selected.contains(&name)) {
+            continue;
+        }
         if authorization
             .authorize(
                 &name,
@@ -107,7 +123,7 @@ fn appended_by_context(
         .is_some_and(|path| path == record.origin.as_str())
 }
 
-fn canonical_resource(
+pub(super) fn canonical_resource(
     volume: VolumeId,
     path: &NamespacePath,
     config: VolumeConfig,
@@ -286,18 +302,31 @@ mod tests {
             let mut forged = record.clone();
             forged.origin = origin;
             assert!(matches!(
-                project(forged, volume, [0; 16], config, &trie, &authorization),
+                project(
+                    forged,
+                    Projection {
+                        volume,
+                        scope: [0; 16],
+                        config,
+                        trie: &trie,
+                        authorization: &authorization,
+                        selected: None
+                    }
+                ),
                 Err(StreamError::InvalidArgument)
             ));
         }
         assert!(matches!(
             project(
                 record.clone(),
-                volume,
-                [0; 16],
-                config,
-                &trie,
-                &authorization
+                Projection {
+                    volume,
+                    scope: [0; 16],
+                    config,
+                    trie: &trie,
+                    authorization: &authorization,
+                    selected: None
+                }
             )
             .unwrap(),
             FollowUpdate::Progress { next: 4, .. }
@@ -337,11 +366,14 @@ mod tests {
             record.origin = changes_stream([0; 16], appender);
             let projected = project(
                 record.clone(),
-                volume,
-                [0; 16],
-                config,
-                &allowing,
-                &authorization,
+                Projection {
+                    volume,
+                    scope: [0; 16],
+                    config,
+                    trie: &allowing,
+                    authorization: &authorization,
+                    selected: None,
+                },
             )
             .unwrap();
             let FollowUpdate::Record(projected) = projected else {

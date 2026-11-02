@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 mod metadata;
 mod policy;
+mod subtree;
 
 /// Owning filesystem and its exact backing Streams provider. No policy query
 /// callback or caller-supplied principal can manufacture an allowing decision.
@@ -28,6 +29,26 @@ impl<P: StreamProvider + ?Sized, A: AsyncAuthorityStore + 'static, O: AsyncObjec
             return Err(StreamError::AccessDenied);
         }
         Ok(Self { streams, fs })
+    }
+
+    /// Follows changes at or below one canonical path in the selected volume.
+    ///
+    /// This uses the same authorized publication records as [`ResourceProvider::follow`].
+    /// Each record retains its original origin, sequence, commit and
+    /// [`crate::PublicationContext`] revision. Resume with that sequence plus one
+    /// and commit; skipped entries advance the same cursor through progress.
+    /// Multi-record publications complete at `PublicationContext::exclusive_end`.
+    /// The path does not grant authority or select a mutable head.
+    ///
+    /// Indexed selection is bounded by the encoded key width. Long paths also
+    /// require their lossless metadata check; selected bytes, output and recipient
+    /// fanout remain charged. No history scan, polling or additional append occurs.
+    pub fn follow_subtree(
+        &self,
+        request: ResourceFollowRequest,
+        path: crate::kernel::NamespacePath,
+    ) -> Result<ResourceSubscription, StreamError> {
+        self.follow_selected(request, Some(path))
     }
 }
 
@@ -60,6 +81,21 @@ where
     O: AsyncObjectStore + 'static,
 {
     fn follow(&self, request: ResourceFollowRequest) -> Result<ResourceSubscription, StreamError> {
+        self.follow_selected(request, None)
+    }
+}
+
+impl<P, A, O> ChangeProvider<P, A, O>
+where
+    P: StreamProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn follow_selected(
+        &self,
+        request: ResourceFollowRequest,
+        selected: Option<crate::kernel::NamespacePath>,
+    ) -> Result<ResourceSubscription, StreamError> {
         if !self.fs.has_process_policy_owner() {
             return Err(StreamError::AccessDenied);
         }
@@ -139,9 +175,16 @@ where
                         .ok_or(StreamError::AccessDenied)?
                         .to_owned(),
                 )?;
+                let selected = selected
+                    .map(|path| subtree::Selection::new(volume_id, &path, volume.config))
+                    .transpose()?;
                 let filter = request
                     .authorization
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;
+                let filter = match &selected {
+                    Some(selected) => filter.intersection(selected.filter()),
+                    None => filter,
+                };
                 let records = streams
                     .follow(acyclic_stream::FollowRequest {
                         bootstrap_head: false,
@@ -162,11 +205,14 @@ where
                         match update? {
                             FollowUpdate::Record(record) => metadata::project(
                                 record,
-                                volume_id,
-                                scope,
-                                volume.config,
-                                &trie,
-                                &request.authorization,
+                                metadata::Projection {
+                                    volume: volume_id,
+                                    scope,
+                                    config: volume.config,
+                                    trie: &trie,
+                                    authorization: &request.authorization,
+                                    selected: selected.as_ref(),
+                                },
                             ),
                             progress => Ok(progress),
                         }
