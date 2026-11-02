@@ -73,7 +73,7 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
         };
         assert!(envelope.mutations.iter().any(|mutation| matches!(mutation,
             acyclic_stream::CommittedMutation::Fork(fork)
-                if disposition::is_fork_exclusion(&fork.exclude))));
+                if super::disposition::is_fork_exclusion(&fork.exclude))));
     }
     let accepted = store.load(&child).await?;
     assert_eq!(
