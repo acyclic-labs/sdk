@@ -3,24 +3,6 @@
 use super::*;
 use crate::model::DigestIndex;
 
-fn grow_push<T>(values: &mut Vec<T>, value: T, io: Option<&PreparationIo>) -> Result<()> {
-    if values.len() == values.capacity() {
-        let capacity = values
-            .capacity()
-            .checked_mul(2)
-            .map(|capacity| capacity.max(1))
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "execution index capacity overflows",
-                )
-            })?;
-        stock_vec_reserve(values, capacity, io)?;
-    }
-    stock_vec_push(values, value, io)
-}
-
 #[cfg(feature = "filesystem")]
 fn release_page_scratch(
     records: &[ExecutionRecord],
@@ -304,7 +286,7 @@ impl<'a> RecordIndex<'a> {
                 index
             } else {
                 let index = self.steps.len();
-                grow_push(&mut self.steps, Vec::new(), io)?;
+                stock_vec_push(&mut self.steps, Vec::new(), io)?;
                 self.keys.reserve_key(io)?;
                 self.keys.set(1, step, Some(index), io)?;
                 index
@@ -317,7 +299,7 @@ impl<'a> RecordIndex<'a> {
                     "execution index bucket is missing",
                 )
             })?;
-            grow_push(bucket, record, io)?;
+            stock_vec_push(bucket, record, io)?;
             self.keys.reserve_key(io)?;
             self.keys.set(0, key, Some(0), io)?;
             self.tail = sequence;
@@ -359,7 +341,7 @@ impl<'a> RecordIndex<'a> {
                     idempotency_key: stock_string_copy(&record.idempotency_key, io)?,
                     event: record.event.copy_indexed(io)?,
                 };
-                grow_push(&mut selected, copied, io)?;
+                stock_vec_push(&mut selected, copied, io)?;
             }
         }
         // Preserve wire order even when a malformed journal puts Started after

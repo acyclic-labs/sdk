@@ -97,14 +97,25 @@ pub(in crate::executor) fn stock_vec_prepare_push<T>(
     values: &mut Vec<T>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    with_history_io(io, |work| {
-        if let Some(work) = work.as_deref_mut() {
-            crate::store::history::reserve(values, values.len() + 1, work)?;
-        } else {
-            values.reserve(1);
-        }
-        Ok::<_, Error>(())
-    })
+    if io.is_none() {
+        values.reserve(1);
+        return Ok(());
+    }
+    if values.len() < values.capacity() {
+        return Ok(());
+    }
+    let capacity = values
+        .capacity()
+        .checked_mul(2)
+        .map(|capacity| capacity.max(1))
+        .ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "vector capacity overflows",
+            )
+        })?;
+    stock_vec_reserve(values, capacity, io)
 }
 
 /// Reserves retained index storage, including a relocating allocation's peak.
