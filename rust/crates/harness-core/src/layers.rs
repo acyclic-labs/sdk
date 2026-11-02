@@ -23,10 +23,10 @@ pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
 #[cfg(feature = "filesystem")]
 mod manifest;
+#[cfg(feature = "filesystem")]
+pub use manifest::Manifest;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use manifest::ManifestTree;
-#[cfg(feature = "filesystem")]
-pub use manifest::{Manifest, ManifestFailure};
 
 /// Tool path of the agent's home volume.
 pub const HOME_PATH: &str = ".volumes/home/";

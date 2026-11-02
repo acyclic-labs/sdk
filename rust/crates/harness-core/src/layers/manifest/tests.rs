@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::{OperationReceipt, WorkBudget, WorkCounters};
 use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamPath};
 use std::sync::Arc;
 
@@ -7,202 +8,325 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{config::Tree as _, filesystem::PreparationIo, wire::ErrorCode};
 
-    let fs = Fs::new(
-        StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
-        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
-        acyclic_fs::EmbeddedCapabilities::MEMORY,
-    );
     let cancellation = acyclic_fs::CancellationToken::new();
-    let workspace = fs
-        .create_workspace("configuration", WorkBudget::UNBOUNDED, &cancellation)
-        .await?
-        .value;
-    workspace
-        .write_text("/settings.ts", "export default {model: 'p/m'};")
-        .await?;
-    let generation = workspace
-        .head(WorkBudget::UNBOUNDED, &cancellation)
-        .await?
-        .value;
-    let manifest = Manifest::new([&generation; 6]);
     let native = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
     let baseline = native.live_allocation_bytes();
-    let io = PreparationIo::from_native_work(&native)?;
-    let tree = manifest.tree(&io, u64::MAX);
-    let bytes = tree.read("settings.ts").await?.ok_or("missing settings")?;
-    assert_eq!(bytes.as_ref(), b"export default {model: 'p/m'};");
-    drop(bytes);
-    assert!(tree.read("absent.ts").await?.is_none());
-    assert!(tree.read("settings.ts/child.ts").await?.is_none());
+    {
+        let fs = Fs::new(
+            StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        let workspace = fs
+            .create_workspace("configuration", WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        workspace
+            .write_text("/settings.ts", "export default {model: 'p/m'};")
+            .await?;
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let manifest = Manifest::new([&generation; 6]);
+        let io = PreparationIo::from_native_work(&native)?;
+        let tree = manifest.tree(&io, u64::MAX);
+        let bytes = tree.read("settings.ts").await?.ok_or("missing settings")?;
+        assert_eq!(bytes.as_ref(), b"export default {model: 'p/m'};");
+        drop(bytes);
+        assert!(tree.read("absent.ts").await?.is_none());
+        assert!(tree.read("settings.ts/child.ts").await?.is_none());
 
-    assert!(
-        io.sdk_if_present(
-            generation
-                .read("/absent.ts", u64::MAX, &io, &cancellation)
-                .await,
-        )?
-        .is_none()
-    );
-    // The same original authority store reports a missing workspace source.
-    // Its public NotFound code must never authorize optional-path fallback.
-    let missing_authority = io
-        .sdk_if_present(
-            fs.open_workspace("absent-authority", &io, &cancellation)
-                .await,
-        )
-        .err()
-        .ok_or("missing authority became optional path absence")?;
-    assert_eq!(missing_authority.code(), ErrorCode::NotFound);
-    assert!(matches!(
-        &missing_authority,
-        crate::Error::NativeWorkspace { source, .. }
-            if matches!(source.as_ref(), WorkspaceError::Filesystem(
-                acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::Missing)
-            ))
-    ));
-    drop(missing_authority);
+        assert!(
+            io.sdk_if_present(
+                generation
+                    .read("/absent.ts", u64::MAX, &io, &cancellation)
+                    .await,
+            )?
+            .is_none()
+        );
+        // The same original authority store reports a missing workspace source.
+        // Its public NotFound code must never authorize optional-path fallback.
+        let missing_authority = io
+            .sdk_if_present(
+                fs.open_workspace("absent-authority", &io, &cancellation)
+                    .await,
+            )
+            .err()
+            .ok_or("missing authority became optional path absence")?;
+        assert_eq!(missing_authority.code(), ErrorCode::NotFound);
+        assert!(matches!(
+            &missing_authority,
+            crate::Error::NativeWorkspace { source, .. }
+                if matches!(source.as_ref(), WorkspaceError::Filesystem(
+                    acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::Missing)
+                ))
+        ));
+        drop(missing_authority);
 
-    let bounded = manifest.tree(&io, 0);
-    let refused = bounded
-        .read("settings.ts")
-        .await
-        .err()
-        .ok_or("read limit bypassed")?;
-    assert!(matches!(
-        &refused,
-        crate::Error::NativeWorkspace { source, .. }
-            if matches!(source.as_ref(), WorkspaceError::ReadLimitExceeded)
-    ));
-    let measured = acyclic_test_support::measure(|| {
-        assert_eq!(refused.code(), ErrorCode::Invalid);
-    });
-    assert_eq!(
-        measured.count_total, 0,
-        "classification must borrow its cause"
-    );
-    // Losing the retained typed cause reproduces the old classification.
-    assert_eq!(
-        crate::Error::Storage(refused.to_string()).code(),
-        ErrorCode::Storage
-    );
-    drop(refused);
+        let bounded = manifest.tree(&io, 0);
+        let refused = bounded
+            .read("settings.ts")
+            .await
+            .err()
+            .ok_or("read limit bypassed")?;
+        assert!(matches!(
+            &refused,
+            crate::Error::NativeWorkspace { source, .. }
+                if matches!(source.as_ref(), WorkspaceError::ReadLimitExceeded)
+        ));
+        let measured = acyclic_test_support::measure(|| {
+            assert_eq!(refused.code(), ErrorCode::Invalid);
+        });
+        assert_eq!(
+            measured.count_total, 0,
+            "classification must borrow its cause"
+        );
+        // Losing the retained typed cause reproduces the old classification.
+        assert_eq!(
+            crate::Error::Storage(refused.to_string()).code(),
+            ErrorCode::Storage
+        );
+        drop(refused);
 
-    let mut policy: acyclic_fs::access::Policy =
-        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
-    policy.layers[0][0].effect = acyclic_fs::access::Effect::Deny;
-    let policy = serde_json::to_vec(&policy)?;
-    let denied = fs
-        .create_workspace_with_operation::<_, (), WorkspaceError>(
-            "restricted-configuration",
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
-            acyclic_fs::OperationId::new(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            None,
-        )
-        .await?
-        .value
-        .workspace();
-    denied
-        .write_text("/settings.ts", "export default {};")
-        .await?;
-    // The original adapter binds persisted policy before selecting a generation.
-    // An unbound owner read intentionally does not apply a delegated policy.
-    let reader = denied
-        .clone()
-        .bind_coarse_access(&acyclic_fs::access::Action::ALL, &cancellation)
-        .await?;
-    let selected = io.sdk(reader.head(&io, &cancellation).await)?;
-    let mut checkout = denied
-        .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?
-        .value;
-    checkout
-        .write_access_policy(
-            &policy,
-            acyclic_fs::NamedAttributeWriteMode::Upsert,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    let committed = checkout
-        .commit(
-            acyclic_fs::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                })
-            },
-        )
-        .await?
-        .value;
-    assert!(matches!(
-        committed,
-        acyclic_fs::LivePublicationObservation::Committed { .. }
-    ));
-    let denied = Manifest::new([&selected; 6]);
-    let refused = denied
-        .tree(&io, u64::MAX)
-        .read("settings.ts")
-        .await
-        .err()
-        .ok_or("original policy refusal bypassed")?;
-    assert_eq!(refused.code(), ErrorCode::Unauthorized);
-    drop(refused);
-    drop(selected);
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+        policy.layers[0][0].effect = acyclic_fs::access::Effect::Deny;
+        let policy = serde_json::to_vec(&policy)?;
+        let denied = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "restricted-configuration",
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                    access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+                },
+                acyclic_fs::OperationId::new(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                None,
+            )
+            .await?
+            .value
+            .workspace();
+        denied
+            .write_text("/settings.ts", "export default {};")
+            .await?;
+        // The original adapter binds persisted policy before selecting a generation.
+        // An unbound owner read intentionally does not apply a delegated policy.
+        let reader = denied
+            .clone()
+            .bind_coarse_access(&acyclic_fs::access::Action::ALL, &cancellation)
+            .await?;
+        let selected = io.sdk(reader.head(&io, &cancellation).await)?;
+        let mut checkout = denied
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        checkout
+            .write_access_policy(
+                &policy,
+                acyclic_fs::NamedAttributeWriteMode::Upsert,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        let committed = checkout
+            .commit(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await?
+            .value;
+        assert!(matches!(
+            committed,
+            acyclic_fs::LivePublicationObservation::Committed { .. }
+        ));
+        let denied = Manifest::new([&selected; 6]);
+        let refused = denied
+            .tree(&io, u64::MAX)
+            .read("settings.ts")
+            .await
+            .err()
+            .ok_or("original policy refusal bypassed")?;
+        assert_eq!(refused.code(), ErrorCode::Unauthorized);
+        drop(refused);
+        drop(selected);
 
-    cancellation.cancel();
-    assert!(
-        io.sdk_if_present(
-            generation
-                .read("/absent.ts", u64::MAX, &io, &cancellation)
+        cancellation.cancel();
+        assert!(
+            io.sdk_if_present(
+                generation
+                    .read("/absent.ts", u64::MAX, &io, &cancellation)
+                    .await,
+            )
+            .is_err(),
+            "cancelled lookup became optional absence"
+        );
+        let original = io
+            .sdk(
+                generation
+                    .read("/settings.ts", u64::MAX, &io, &cancellation)
+                    .await,
+            )
+            .err()
+            .ok_or("original cancelled read succeeded")?;
+        assert_eq!(original.code(), ErrorCode::Cancelled);
+        drop(original);
+        let cancelled = tree
+            .read("settings.ts")
+            .await
+            .err()
+            .ok_or("cancellation bypassed")?;
+        assert_eq!(cancelled.code(), ErrorCode::Cancelled);
+        assert_ne!(
+            cancelled.code(),
+            ErrorCode::NotFound,
+            "never fall through to a lower layer"
+        );
+        drop(cancelled);
+        drop(io);
+        // The policy cache and source generations also retain paid native backing.
+        // Retire those original owners before asserting complete release.
+    }
+    assert_eq!(native.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_manifest_conditions_keep_original_commit_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::filesystem::PreparationIo;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let native = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let baseline = native.live_allocation_bytes();
+    {
+        let fs = Fs::new(
+            StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        let mut workspaces = Vec::new();
+        let mut generations = Vec::new();
+        for name in super::super::ORDER {
+            let workspace = fs
+                .create_workspace(name, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            generations.push(
+                workspace
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value,
+            );
+            workspaces.push(workspace);
+        }
+        let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
+        let request = |key: u8| -> Result<_, Box<dyn std::error::Error>> {
+            Ok(FilesystemCommit::new(CommitRequest {
+                conditions: Vec::new(),
+                mutations: vec![CommitMutation::Append {
+                    path: StreamPath::new(format!("config/native/{key}"))?,
+                    records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
+                        b"cut",
+                    ))],
+                }],
+                idempotency_key: acyclic_stream::IdempotencyKey::new(vec![key])?,
+                deadline_unix_millis: None,
+            }))
+        };
+        let io = PreparationIo::from_native_work(&native)?;
+        let mut commit = request(1)?;
+        io.sdk(
+            manifest
+                .condition(&fs, &mut commit, &io, &cancellation)
                 .await,
+        )?;
+        assert_eq!(commit.request().conditions.len(), super::super::ORDER.len());
+        let original = commit.request().clone();
+        let retained = native.live_allocation_bytes();
+        let other = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+            &cancellation,
         )
-        .is_err(),
-        "cancelled lookup became optional absence"
-    );
-    let original = io
-        .sdk(
-            generation
-                .read("/settings.ts", u64::MAX, &io, &cancellation)
-                .await,
-        )
-        .err()
-        .ok_or("original cancelled read succeeded")?;
-    assert_eq!(original.code(), ErrorCode::Cancelled);
-    drop(original);
-    let cancelled = tree
-        .read("settings.ts")
-        .await
-        .err()
-        .ok_or("cancellation bypassed")?;
-    assert_eq!(cancelled.code(), ErrorCode::Cancelled);
-    assert_ne!(
-        cancelled.code(),
-        ErrorCode::NotFound,
-        "never fall through to a lower layer"
-    );
-    drop(cancelled);
-    drop(io);
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let other_io = PreparationIo::from_native_work(&other)?;
+        let refused = other_io
+            .sdk(
+                manifest
+                    .condition(&fs, &mut commit, &other_io, &cancellation)
+                    .await,
+            )
+            .err()
+            .ok_or("foreign work replaced original commit custody")?;
+        assert!(matches!(
+            &refused,
+            crate::Error::NativeWorkspace { source, .. }
+                if matches!(source.as_ref(), WorkspaceError::Filesystem(
+                    acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::NativeOriginal(
+                        acyclic_fs::NativeTreeMaterializationError::InvalidLayout
+                    ))
+                ))
+        ));
+        assert_eq!(commit.request(), &original);
+        assert_eq!(native.live_allocation_bytes(), retained);
+        drop(refused);
+        drop(other_io);
+        drop(other);
+        workspaces[0]
+            .write_text("/changed.ts", "export default {};")
+            .await?;
+        let outcome = io.sdk(fs.submit_commit(commit, &io, &cancellation).await)?;
+        assert!(matches!(
+            outcome,
+            acyclic_fs::FilesystemCommitOutcome::Rejected(_)
+        ));
+        drop(outcome);
+        // Omitting the source conditions permits the same activation after
+        // that source edit, through the same original native submission path.
+        let unchecked = io.sdk(fs.submit_commit(request(2)?, &io, &cancellation).await)?;
+        assert!(matches!(
+            unchecked,
+            acyclic_fs::FilesystemCommitOutcome::Committed(_)
+        ));
+        drop(unchecked);
+        cancellation.cancel();
+        let mut stopped = request(3)?;
+        let refused = io
+            .sdk(
+                manifest
+                    .condition(&fs, &mut stopped, &io, &cancellation)
+                    .await,
+            )
+            .err()
+            .ok_or("cancelled original source condition succeeded")?;
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Cancelled);
+        assert!(stopped.request().conditions.is_empty());
+        assert_eq!(stopped.request().idempotency_key.as_bytes(), &[3]);
+    }
     assert_eq!(native.live_allocation_bytes(), baseline);
     Ok(())
 }
@@ -341,11 +465,10 @@ async fn every_original_layer_fences_the_same_consuming_commit()
             idempotency_key: acyclic_stream::IdempotencyKey::new(vec![key])?,
         }))
     };
-    let original = Manifest::new(std::array::from_fn(|index| &generations[index]))
-        .condition(&fs, request(0)?, budget, &cancellation)
-        .await
-        .map_err(|failure| failure.failure)?
-        .value;
+    let mut original = request(0)?;
+    Manifest::new(std::array::from_fn(|index| &generations[index]))
+        .condition(&fs, &mut original, budget, &cancellation)
+        .await?;
     assert_eq!(
         original.request().conditions.len(),
         super::super::ORDER.len()
@@ -361,11 +484,10 @@ async fn every_original_layer_fences_the_same_consuming_commit()
         let manifest = Manifest::new(references);
         // Capture conditions BEFORE the writer changes the source, so this
         // proves commit-time fencing rather than a defensive head re-read.
-        let commit = manifest
-            .condition(&fs, request(index as u8 + 1)?, budget, &cancellation)
-            .await
-            .map_err(|failure| failure.failure)?
-            .value;
+        let mut commit = request(index as u8 + 1)?;
+        manifest
+            .condition(&fs, &mut commit, budget, &cancellation)
+            .await?;
         workspace
             .write_text("/agent.ts", "export default {};")
             .await?;
@@ -455,19 +577,13 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     }
     cancellation.cancel();
     let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
+    let mut retained = request(32)?;
     let refused = manifest
-        .condition(&fs, request(32)?, budget, &cancellation)
-        .await;
-    let retained = match refused {
-        Err(failure) => {
-            assert!(matches!(
-                failure.failure.error,
-                WorkspaceError::Cancelled(_)
-            ));
-            failure.commit
-        }
-        Ok(_) => panic!("cancelled manifest admission succeeded"),
-    };
+        .condition(&fs, &mut retained, budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled manifest admission succeeded")?;
+    assert!(matches!(refused.error, WorkspaceError::Cancelled(_)));
     assert_eq!(retained.request().idempotency_key.as_bytes(), &[32]);
     Ok(())
 }
