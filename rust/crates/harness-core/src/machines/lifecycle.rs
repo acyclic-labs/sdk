@@ -222,16 +222,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             Err(StreamError::NotFound) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let record = records.try_next().await?;
-        if record
-            .as_ref()
-            .is_some_and(|record| record.sequence != from)
-        {
-            return Err(Error::Storage(format!(
-                "Machine record source position differs from requested {from}; recovery: read the original authorized Machine target '{target}' at from={from}, limit=1"
-            )));
-        }
-        Ok(record)
+        Ok(records.try_next().await?)
     }
 
     async fn original_plan(
@@ -242,6 +233,14 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let Some(record) = self.binding_record(agent, &target.name, 0).await? else {
             return Ok(None);
         };
+        // Settled records are admitted once by MachineBinding::decode. The
+        // plan owns the corresponding position-zero check before decoding.
+        if record.sequence != 0 {
+            return Err(Error::Storage(format!(
+                "Machine plan is not at its original source position; recovery: read the original authorized Machine target '{}' at from=0, limit=1",
+                target.name
+            )));
+        }
         let plan: ProvisionPlan = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
         if plan.version != MACHINE_BINDING_VERSION || plan.target != target.name {
