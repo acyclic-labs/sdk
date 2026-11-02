@@ -10,6 +10,7 @@ pub(super) fn value(bytes: &mut [u8], table: &[u8], scope: &mut Scope<'_>) -> Re
         not(target_arch = "wasm32")
     ))]
     {
+        acyclic_differential::record(super::CodecOperation::DecodeBytes);
         acyclic_differential::record(("decode document", bytes.len() as u64));
         acyclic_differential::record(("decode index", table.len() as u64));
     }

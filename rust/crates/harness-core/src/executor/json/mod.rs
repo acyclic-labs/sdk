@@ -3,6 +3,27 @@ use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+/// Actual codec passes, observed only by an explicit test capture.
+///
+/// Byte decoding and resident-value conversion stay distinct: converting a
+/// Value does not constitute an encoded-document round trip. The observer
+/// uses the shared differential trace and adds no code to ordinary builds.
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodecOperation {
+    /// One serialization pass, including count, hash or comparison sinks.
+    Serialize,
+    /// One actual byte-document decode after admission.
+    DecodeBytes,
+    /// One conversion from an existing Value without a byte document.
+    DecodeValue,
+}
+
 mod admission;
 mod arrays;
 mod identity;

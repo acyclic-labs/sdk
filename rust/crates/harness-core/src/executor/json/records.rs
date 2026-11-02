@@ -49,6 +49,12 @@ where
         value_shape,
     })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
+    acyclic_differential::record(super::CodecOperation::DecodeBytes);
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
     let value = seed
@@ -95,6 +101,12 @@ where
         maximum_owned_bytes: decoded_bytes::<T>(layout)?,
         value_shape,
     })?;
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
+    acyclic_differential::record(super::CodecOperation::DecodeValue);
     match source {
         Cow::Borrowed(value) => T::deserialize(value),
         Cow::Owned(value) => T::deserialize(value),

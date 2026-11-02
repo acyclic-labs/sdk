@@ -335,6 +335,12 @@ impl Formatter for Format<'_, '_, '_> {
             }
         };
         value.sort_all_objects();
+        #[cfg(all(
+            any(test, feature = "test-support"),
+            feature = "filesystem",
+            not(target_arch = "wasm32")
+        ))]
+        acyclic_differential::record(super::CodecOperation::Serialize);
         let result = serde_json::to_writer(writer, &value);
         drop(value);
         let mut scope = self.state.borrow_mut();
@@ -369,6 +375,12 @@ fn write<T: Serialize + ?Sized>(
         digest,
         compare,
     };
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
+    acyclic_differential::record(super::CodecOperation::Serialize);
     let result = value.serialize(&mut serde_json::Serializer::with_formatter(
         &mut writer,
         Format {
