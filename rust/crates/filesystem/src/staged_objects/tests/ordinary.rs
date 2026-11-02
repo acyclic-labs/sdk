@@ -437,6 +437,8 @@ async fn spill_relief_retains_original_work_cancellation_and_refusal()
     advance_spill_past_bound(&store).await?;
 
     let private = store.index().spilled_objects;
+    let collecting = store.collection.begin().await;
+    let (sweep, _) = collecting.sweepable(Vec::new()).await;
     for counter in ["items_examined", "allocation_operations"] {
         let mut budget = crate::performance::BOUNDARY_BUDGET;
         if counter == "items_examined" {
@@ -445,18 +447,24 @@ async fn spill_relief_retains_original_work_cancellation_and_refusal()
             budget.allocation_operations = 0;
         }
         let mut refused = AuthorityWork::new(budget, &token);
+        let mut relief = Box::pin(store.relieve_window(&mut refused));
+        let std::task::Poll::Ready(result) = futures::poll!(relief.as_mut()) else {
+            panic!("exhausted spill selection waited for collection admission");
+        };
         assert!(matches!(
-            store.relieve_window(&mut refused).await,
+            result,
             Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
                 counter: refused_counter,
                 ..
             })) if refused_counter == counter
         ));
+        drop(relief);
         assert_eq!(refused.spent().backend_read_operations, 0);
         assert_eq!(refused.spent().backend_write_operations, 0);
         assert_eq!(store.index().spilled_objects, private);
         assert_eq!(store.inner().stored.load(Ordering::Relaxed), 0);
     }
+    drop(sweep);
 
     let mut denied = AuthorityWork::new(
         WorkBudget {
