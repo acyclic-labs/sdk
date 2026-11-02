@@ -81,14 +81,15 @@ impl NamespacePath {
         Ok(encoded)
     }
 
+    /// Validates borrowed text without allocation and returns its component count.
     pub(crate) fn validate_in_profile_with_accounting(
         path: &str,
         profile: FilesystemProfile,
         limits: VolumeLimits,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(), crate::FsError> {
-        validate(path, profile, limits, accounting, cancellation).map(|_| ())
+    ) -> Result<usize, crate::FsError> {
+        validate(path, profile, limits, accounting, cancellation).map(|(depth, _, _)| depth)
     }
 
     /// Parses a namespace path on the supplied accounting ledger.

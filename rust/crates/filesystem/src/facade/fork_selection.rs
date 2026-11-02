@@ -114,16 +114,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 return Err(WorkspaceError::JoinLimit);
             }
             // Validate the entire input before allocating parsed paths, including root selections.
+            let mut root_selected = false;
             for path in &paths.value {
-                NamespacePath::validate_in_profile_with_accounting(
+                let depth = NamespacePath::validate_in_profile_with_accounting(
                     path,
                     config.profile,
                     config.limits,
                     accounting,
                     cancellation,
                 )?;
+                root_selected |= depth == 0;
             }
-            if paths.value.iter().any(|path| path == "/") {
+            if root_selected {
                 paths.retire(accounting)?;
                 return Ok(root.file_table);
             }
