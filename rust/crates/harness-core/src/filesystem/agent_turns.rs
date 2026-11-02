@@ -411,8 +411,15 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 pub struct TurnLimits {
     /// Optional caller-selected journal file byte policy per turn.
     pub maximum_bytes: Option<u64>,
-    /// Optional caller-selected tail of settled turns; None selects the complete history.
+    /// Page size of the settled history selected into model context. Page cuts
+    /// are aligned to absolute sequences so shared fork history keeps its prefix.
+    /// `None` explicitly selects the complete history.
     pub history_turns: Option<u64>,
+}
+
+impl TurnLimits {
+    /// Shared history page size used by stock native and browser hosts.
+    pub const HISTORY_PAGE_SIZE: u64 = 64;
 }
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
