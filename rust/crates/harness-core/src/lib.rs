@@ -61,6 +61,7 @@ pub mod identity;
 pub mod interaction;
 mod json_literal;
 pub mod layers;
+pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;

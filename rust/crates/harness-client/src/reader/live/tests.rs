@@ -1,0 +1,375 @@
+use super::*;
+use crate::reader::{Failure, Op, Outcome, Priority, ReaderPolicy};
+use acyclic_harness_core::{
+    OperationId,
+    agent::{AgentRecord as _, Phase, StatusRecord},
+    executor::{ModelPriceRecord, ModelPurpose, ModelTokenUsage, ModelUsageRecord, TokenPrice},
+    live::{
+        AgentState, Budget, ContextAdmission, ContextInfo, ContextPartInfo, ContextPartKind,
+        Counters, Error as ProjectionError, StateCounts, Status, StatusBudget, Usage,
+    },
+    model::ModelDispatch,
+};
+use acyclic_stream::{
+    AppendRequest, IdempotencyKey, MemoryStream, StreamProvider as _, StreamProviderExt as _,
+};
+use futures::StreamExt as _;
+
+// Generated arithmetic operands, not captured or fabricated provider output.
+fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
+    let dispatch = ModelDispatch {
+        operation_id: OperationId::from_bytes([31; 16]),
+        step: 0,
+        request_digest: [7; 32],
+    };
+    let admission = ContextAdmission {
+        dispatch,
+        revision: 4,
+        capacity: 1000,
+        notify_at: Some(0.75),
+        auto_trim_at_tokens: 900,
+        total_tokens: 100,
+        parts: "live/agents/self/context/parts".into(),
+    };
+    let usage = ModelUsageRecord {
+        version: ModelUsageRecord::VERSION,
+        completed: true,
+        dispatch,
+        purpose: ModelPurpose::Response,
+        provider: "generated-provider".into(),
+        model: "generated-model".into(),
+        agent_path: None,
+        sampling: None,
+        max_output_tokens: None,
+        tokens: ModelTokenUsage {
+            input: Some(100),
+            cached: Some(30),
+            cache_write: Some(10),
+            output: Some(5),
+            reasoning: None,
+        },
+        latency_ns: None,
+        provider_request_id: None,
+        system_fingerprint: None,
+        ttft_ns: None,
+        cache: None,
+    };
+    let price = ModelPriceRecord {
+        version: 1,
+        revision: "generated-price".into(),
+        provider: usage.provider.clone(),
+        model: usage.model.clone(),
+        effective_at: 1,
+        currency: "USD".into(),
+        input_nano_units_per_million: Some(10_000_000_000),
+        output_nano_units_per_million: Some(20_000_000_000),
+        cached: TokenPrice::Subset {
+            nano_units_per_million: Some(1_000_000_000),
+        },
+        cache_write: TokenPrice::Subset {
+            nano_units_per_million: Some(30_000_000_000),
+        },
+        reasoning: TokenPrice::Included,
+    };
+    (admission, usage, price)
+}
+
+// These are the file values consumed by hooks and typed readers, separate from
+// the original records that supply them. Compare JSON values, not rendered bytes.
+fn public_file_contract(usage: &Usage, context: &ContextInfo) {
+    assert_eq!(
+        serde_json::to_value(usage).unwrap(),
+        serde_json::json!({
+            "revision": 4, "model": "generated-model", "inputTokens": 100,
+            "cachedTokens": 30, "outputTokens": 5, "capacity": 1000,
+            "cost": 0.00103,
+            "compaction": {
+                "summariseNow": null, "perCallIfNot": null, "autoTrimAtTokens": 900
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(context).unwrap(),
+        serde_json::json!({
+            "revision": 5, "capacity": 1000, "notifyAt": null, "autoTrimAtTokens": 900,
+            "current": {"request": "08".repeat(32), "totalTokens": 200},
+            "lastCall": {
+                "request": "07".repeat(32), "totalTokens": 100,
+                "cachedReadTokens": 30, "cacheWriteTokens": 10
+            },
+            "parts": "live/agents/self/context/parts"
+        })
+    );
+    let mut unreported = context.clone();
+    unreported.last_call.cached_read_tokens = None;
+    unreported.last_call.cache_write_tokens = None;
+    assert_eq!(
+        serde_json::to_value(unreported).unwrap()["lastCall"],
+        serde_json::json!({
+            "request": "07".repeat(32), "totalTokens": 100,
+            "cachedReadTokens": null, "cacheWriteTokens": null
+        })
+    );
+    let children = StateCounts {
+        working: 1,
+        waiting: 2,
+        blocked: 0,
+        paused: 0,
+        idle: 0,
+        done: 3,
+        failed: 0,
+        archived: 0,
+    };
+    let states = serde_json::json!({
+        "working": 1, "waiting": 2, "blocked": 0, "paused": 0,
+        "idle": 0, "done": 3, "failed": 0, "archived": 0
+    });
+    assert_eq!(
+        serde_json::to_value(Status {
+            state: AgentState::Working,
+            summary: "generated summary".into(),
+            children: children.clone(),
+            budget: StatusBudget {
+                spent: 1.25,
+                limit: None
+            },
+            updated: "2026-11-02T00:00:00Z".into(),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "state": "working", "summary": "generated summary", "children": states,
+            "budget": {"spent": 1.25, "limit": null}, "updated": "2026-11-02T00:00:00Z"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Counters {
+            state: children,
+            kind: [("worker".into(), 6)].into(),
+        })
+        .unwrap(),
+        serde_json::json!({"state": states, "kind": {"worker": 6}})
+    );
+    assert_eq!(
+        serde_json::to_value(Budget {
+            escrow: None,
+            spent: 1.25,
+            reserved: 0.5
+        })
+        .unwrap(),
+        serde_json::json!({"escrow": null, "spent": 1.25, "reserved": 0.5})
+    );
+    let mut part = ContextPartInfo {
+        id: "c4".into(),
+        kind: ContextPartKind::Pinned,
+        tokens: 9,
+        covers: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&part).unwrap(),
+        serde_json::json!({"id": "c4", "kind": "pinned", "tokens": 9, "covers": null})
+    );
+    part.kind = ContextPartKind::Summary;
+    part.covers = Some(["c0".into(), "c3".into()]);
+    assert_eq!(
+        serde_json::to_value(part).unwrap(),
+        serde_json::json!({"id": "c4", "kind": "summary", "tokens": 9, "covers": ["c0", "c3"]})
+    );
+}
+
+#[test]
+fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
+    futures::executor::block_on(async {
+        let (admission, mut call, mut price) = call();
+        let first = Usage::project(&admission, &call, Some(&price)).unwrap();
+        assert_eq!(first.input_tokens, 100);
+        assert!((first.cost - 0.00103).abs() < f64::EPSILON);
+        assert_eq!(first.compaction.summarise_now, None);
+        assert_eq!(first.compaction.per_call_if_not, None);
+
+        // The same units under an exclusive reporting convention must include
+        // the cache exactly once, while retaining the same billing estimate.
+        price.cached = TokenPrice::Additional {
+            nano_units_per_million: Some(1_000_000_000),
+        };
+        price.cache_write = TokenPrice::Additional {
+            nano_units_per_million: Some(30_000_000_000),
+        };
+        call.tokens.input = Some(60);
+        let exclusive = Usage::project(&admission, &call, Some(&price)).unwrap();
+        assert_eq!(exclusive, first);
+        call.tokens.cached = None;
+        assert_eq!(
+            Usage::project(&admission, &call, Some(&price)),
+            Err(ProjectionError::IncompleteCounters)
+        );
+        call.tokens.cached = Some(30);
+        assert_eq!(
+            Usage::project(&admission, &call, None),
+            Err(ProjectionError::IncompleteCost)
+        );
+        price.currency = "EUR".into();
+        assert_eq!(
+            Usage::project(&admission, &call, Some(&price)),
+            Err(ProjectionError::IncompleteCost)
+        );
+        price.currency = "USD".into();
+        call.completed = false;
+        assert_eq!(
+            Usage::project(&admission, &call, Some(&price)),
+            Err(ProjectionError::IncompleteCall)
+        );
+        call.completed = true;
+        call.dispatch.step += 1;
+        assert_eq!(
+            Usage::project(&admission, &call, Some(&price)),
+            Err(ProjectionError::CallMismatch)
+        );
+        call.dispatch = admission.dispatch;
+        call.tokens.input = Some(u64::MAX);
+        assert_eq!(
+            Usage::project(&admission, &call, Some(&price)),
+            Err(ProjectionError::IncompleteCounters)
+        );
+        call.tokens.input = Some(60);
+
+        let mut current = admission.clone();
+        current.revision += 1;
+        current.dispatch.request_digest = [8; 32];
+        current.total_tokens = 200;
+        current.notify_at = None;
+        let context = ContextInfo::project(&current, &admission, &call).unwrap();
+        assert_eq!(context.current.total_tokens, 200);
+        assert_eq!(context.last_call.total_tokens, 100);
+        assert_ne!(context.current.request, context.last_call.request);
+        assert_eq!(context.last_call.cached_read_tokens, Some(30));
+        assert_eq!(context.revision, 5);
+        public_file_contract(&first, &context);
+
+        let provider = MemoryStream::default();
+        let stream = StreamPath::new("original/usage").unwrap();
+        let source = Source::new(stream.clone());
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        assert_eq!(source.latest(&reader), Err(Error::Pending));
+        // Keep the existing usage format. These generated counters exercise
+        // projection arithmetic, not an actual provider completion.
+        let bytes = serde_json::to_vec(&call).unwrap();
+        let records = vec![bytes.clone().into(), bytes.into()];
+        provider
+            .append(AppendRequest {
+                path: stream.clone(),
+                records,
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"original-usage".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        reader.plan([(source.want(), Priority::Visible)]);
+        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        let Op::Head { id, stream: path } = head else {
+            panic!("snapshot must request its original head")
+        };
+        reader.complete(id, Outcome::Head(provider.head(path).await.unwrap()), 0);
+        let latest = source.latest(&reader).unwrap();
+        assert!(std::ptr::eq(
+            latest,
+            reader.cache().record(&stream, 1).unwrap()
+        ));
+        let original: ModelUsageRecord = serde_json::from_slice(latest).unwrap();
+        assert_eq!(
+            Usage::project(&admission, &original, Some(&price)).unwrap(),
+            first
+        );
+        let issued = reader.issued();
+        let count = NonZeroU32::new(1).unwrap();
+        let mut page = source.page(&reader, 0, count).unwrap();
+        assert_eq!(page.end, 1);
+        assert_eq!(page.next(), Some((0, Err(Error::Pending))));
+        assert!(page.next().is_none());
+        assert_eq!(reader.issued(), issued, "a projection cannot dispatch IO");
+        drop(page);
+
+        reader.plan([(source.want_page(0, count).unwrap(), Priority::Visible)]);
+        let [read]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        let id = read.id();
+        reader.complete(id, super::super::driver::execute(&provider, read).await, 0);
+        let mut page = source.page(&reader, 0, count).unwrap();
+        let (sequence, bytes) = page.next().unwrap();
+        assert_eq!(sequence, 0);
+        let original: ModelUsageRecord = serde_json::from_slice(bytes.unwrap()).unwrap();
+        assert_eq!(
+            Usage::project(&admission, &original, Some(&price)).unwrap(),
+            first
+        );
+        assert!(page.next().is_none());
+        drop(page);
+        assert!(source.page(&reader, 2, count).unwrap().next().is_none());
+        assert!(matches!(source.page(&reader, 3, count), Err(Error::Range)));
+        assert_eq!(source.want_page(u64::MAX, count), Err(Error::Range));
+
+        // An original stream follow publishes a new source record. Its
+        // unsupported layout must fail, rather than serve the previous value.
+        reader.set_follows([stream.clone()]);
+        let mut follow = acyclic_stream::records_only(
+            provider
+                .follow(acyclic_stream::FollowRequest::new(stream.clone(), 2))
+                .await
+                .unwrap(),
+        );
+        call.version = ModelUsageRecord::VERSION + 1;
+        provider
+            .append(AppendRequest {
+                path: stream.clone(),
+                records: vec![serde_json::to_vec(&call).unwrap().into()],
+                if_tail: Some(2),
+                idempotency_key: IdempotencyKey::new(b"unsupported-layout".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let record = follow.next().await.unwrap().unwrap();
+        reader.deliver(&stream, super::super::driver::fetched(record), 3);
+        let original: ModelUsageRecord =
+            serde_json::from_slice(source.latest(&reader).unwrap()).unwrap();
+        assert_eq!(
+            Usage::project(&admission, &original, Some(&price)),
+            Err(ProjectionError::Version)
+        );
+
+        // The same reader also borrows the actual agent status encoding.
+        // A live view must not require the phase owner to publish another row.
+        let status = StatusRecord {
+            phase: Phase::Idle,
+            cursor: 0,
+            conversation: 0,
+        };
+        let status_stream = StreamPath::new("original/status").unwrap();
+        provider
+            .append(AppendRequest {
+                path: status_stream.clone(),
+                records: vec![status.encode().unwrap().into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"original-status".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let status_source = Source::new(status_stream);
+        reader.plan([(status_source.want(), Priority::Visible)]);
+        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        let id = head.id();
+        reader.complete(id, super::super::driver::execute(&provider, head).await, 0);
+        assert_eq!(
+            StatusRecord::decode(status_source.latest(&reader).unwrap()).unwrap(),
+            status
+        );
+
+        // A refusal of the same original head must not leave stale values
+        // readable. It is not an empty successful log or a forged zero.
+        reader.cache_mut().forget(&stream);
+        reader.plan([(source.want(), Priority::Visible)]);
+        let [head]: [Op; 1] = reader.poll(0).try_into().unwrap();
+        reader.complete(head.id(), Outcome::Failed(Failure::Denied), 0);
+        assert_eq!(
+            source.latest(&reader),
+            Err(Error::Source(super::super::ReadIssue::AccessDenied))
+        );
+    });
+}
