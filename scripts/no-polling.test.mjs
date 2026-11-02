@@ -88,6 +88,31 @@ test('YAML plain scalar hashes preserve later flow settings', () => {
  }
 });
 
+test('embedded host loops without timers require exact review', () => {
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-scripts.json', import.meta.url), 'utf8'));
+ for (const {source, program} of captured.records) {
+  assert.ok(pollingSites('scripts/control.sh', program).some(site => site.kind === 'loop'));
+  for (const extension of ['yaml', 'yml']) {
+   const file = `scripts/control.${extension}`;
+   const sites = pollingSites(file, source);
+   assert.ok(sites.some(site => site.kind === 'embedded-loop'), source);
+   const accepted = sites.map(site => disposition(site, 'finite-work', 'original finite input',
+    'input exhausted', 'replace finite input with readiness probe'));
+   assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+   assert.ok(newPollingSites(file, '', source.replace('ready', 'otherReady'), accepted).length);
+  }
+  for (const file of [script, rust, 'scripts/control.py', 'scripts/control.ps1']) {
+   const wrapped = file.endsWith('.rs') ? `fn child() { command.arg(r#"${program}"#); }`
+    : file.endsWith('.py') ? 'compile(' + JSON.stringify(program) + ', "child", "exec")'
+    : file.endsWith('.ps1') ? "Invoke-Expression '" + program + "'"
+    : 'runHost(' + JSON.stringify(program) + ')';
+   assert.ok(pollingSites(file, wrapped).some(site => site.kind === 'embedded-loop'), wrapped);
+  }
+ }
+ assert.deepEqual(pollingSites('scripts/control.yaml', '# while ! ready; do step; done\nvalue: ordinary'), []);
+ assert.deepEqual(pollingSites(script, 'runHost("before meanwhile doable loopback")'), []);
+});
+
 test('new direct and indirect readiness mutations are rejected', () => {
  // These are intentional bad source edits, not external-tool/provider captures.
  for (const source of [
