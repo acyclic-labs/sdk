@@ -16,6 +16,7 @@ fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_t
                 })
                 .collect(),
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(1),
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
@@ -79,7 +80,7 @@ proptest! {
                 content: ModelContent::Text(text.into_iter().collect()),
             }).collect(),
             tools: Vec::new(),
-            max_output_tokens: Some(output),
+            sampling: Default::default(), max_output_tokens: Some(output),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

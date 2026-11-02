@@ -24,6 +24,8 @@ struct Envelope<'a> {
     max_output_tokens: Option<u32>,
     messages: &'a [ModelMessage],
     model: &'a Model,
+    #[serde(skip_serializing_if = "crate::model::ModelSampling::is_default")]
+    sampling: crate::model::ModelSampling,
     tools: &'a [crate::tool::ToolDefinition],
 }
 
@@ -64,6 +66,7 @@ fn envelope(
     let bytes = encode(
         &Envelope {
             compose_tools: request.compose_tools,
+            sampling: request.sampling,
             max_output_tokens: request.max_output_tokens,
             messages: &[],
             model: &request.model,

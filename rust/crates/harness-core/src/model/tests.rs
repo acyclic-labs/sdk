@@ -82,6 +82,7 @@ fn request() -> Result<ModelRequest> {
             projection_schema: json!({"type":"object","properties":{"kind":{"const":"json"},"value":{"type":"string"}},
                 "required":["kind","value"],"additionalProperties":false}),
         }],
+        sampling: Default::default(),
         max_output_tokens: Some(32),
     })
 }

@@ -38,6 +38,7 @@ pub struct BoundTools<'a> {
     profile: [u8; 32],
     prefix: [u8; 32],
     max_output_tokens: Option<u32>,
+    sampling: crate::model::ModelSampling,
     model_key: &'a str,
     // The vector retires before its original reservation.
     _custody: Option<crate::conversation::ContentHold<'a>>,
@@ -65,6 +66,7 @@ impl<'a> AgentProfile<'a> {
             digest: self.digest(),
             prefix: self.prefix_digest(),
             reasoning: self.prefix().reasoning,
+            sampling: self.prefix().sampling,
             cache: self.prefix().cache,
             max_output_tokens: self.overlay().max_output_tokens,
             capacity: crate::context::ModelContextCapacity {
@@ -98,6 +100,7 @@ impl<'a> AgentProfile<'a> {
             profile: self.digest(),
             prefix: self.prefix_digest(),
             max_output_tokens: self.overlay().max_output_tokens,
+            sampling: self.prefix().sampling,
             model_key: self.prefix().key,
             _custody: custody,
         };
@@ -159,6 +162,7 @@ impl<'a> BoundTools<'a> {
             .and_then(|suffix| suffix.strip_prefix('/'));
         if selected != Some(request.model.name.as_str())
             || request.max_output_tokens != self.max_output_tokens
+            || request.sampling != self.sampling
             || request.tools.len() != self.bindings.len()
             || request
                 .tools

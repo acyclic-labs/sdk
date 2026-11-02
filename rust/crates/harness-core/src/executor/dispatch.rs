@@ -7,6 +7,10 @@ struct ObservedCall<'a> {
     operation_id: OperationId,
     dispatch: crate::model::ModelDispatch,
     model: &'a Model,
+    #[cfg(feature = "research")]
+    sampling: crate::model::ModelSampling,
+    #[cfg(feature = "research")]
+    max_output_tokens: Option<u32>,
     purpose: ModelPurpose,
     clock: super::model_usage::CallClock,
 }
@@ -146,6 +150,10 @@ impl StockExecution<'_> {
                     operation_id: input.operation_id,
                     dispatch,
                     model: &request.request().model,
+                    #[cfg(feature = "research")]
+                    sampling: request.request().sampling,
+                    #[cfg(feature = "research")]
+                    max_output_tokens: request.request().max_output_tokens,
                     purpose,
                     clock,
                 },
@@ -422,9 +430,15 @@ impl StockExecution<'_> {
             operation_id,
             dispatch,
             model,
+            #[cfg(feature = "research")]
+            sampling,
+            #[cfg(feature = "research")]
+            max_output_tokens,
             purpose,
             clock,
         } = call;
+        #[cfg(feature = "research")]
+        let mut clock = clock;
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
@@ -452,6 +466,8 @@ impl StockExecution<'_> {
                     break;
                 };
                 let event = event?;
+                #[cfg(feature = "research")]
+                clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())
                     .flatten();
@@ -474,7 +490,7 @@ impl StockExecution<'_> {
                 let usage = match event {
                     ModelEvent::Completed { metadata } => {
                         Some(super::model_usage::ModelCallUsage {
-                            version: 1,
+                            version: ModelUsageRecord::VERSION,
                             completed: true,
                             dispatch,
                             purpose,
@@ -486,8 +502,20 @@ impl StockExecution<'_> {
                                 .as_ref()
                                 .and_then(|(context, _)| context.agent())
                                 .map(|(agent, _)| agent.as_str()),
+                            #[cfg(feature = "research")]
+                            sampling,
+                            #[cfg(feature = "research")]
+                            max_output_tokens,
                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
                             latency_ns,
+                            #[cfg(feature = "research")]
+                            provider_request_id: metadata["provider_request_id"].as_str(),
+                            #[cfg(feature = "research")]
+                            system_fingerprint: metadata["system_fingerprint"].as_str(),
+                            #[cfg(feature = "research")]
+                            ttft_ns: clock.ttft_ns(),
+                            #[cfg(feature = "research")]
+                            cache: ModelCacheObservation::reported(metadata),
                         })
                     }
                     _ => None,

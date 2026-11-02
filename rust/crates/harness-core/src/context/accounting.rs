@@ -177,7 +177,7 @@ mod tests {
                 compose_tools: false,
                 model: Model::new("fixture".into(), "dense".into(), "1".into()).unwrap(),
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(text) }],
-                tools: Vec::new(), max_output_tokens: Some(1),
+                tools: Vec::new(), sampling: Default::default(), max_output_tokens: Some(1),
             }, crate::conversation::Limits::default(), None).unwrap();
             let count = ModelTokenCount { request_digest: request.request_digest(), input_tokens: actual,
                 fixed_tokens: fixed, message_tokens: vec![message] };
@@ -198,6 +198,7 @@ mod tests {
                 content: ModelContent::Text("hello".into()),
             }],
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(1),
         };
         let prepared = PreparedModelRequest::prepare(

@@ -256,6 +256,14 @@ fn parse_response<'a>(
             let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
             parser.allocation.absorb(&mut { origin_custody })?;
             parser.state.set_origin(Some(origin))?;
+            if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED
+                && let Some(id) = response.request_id.as_ref().and_then(|value| value.to_str().ok()) {
+                let mut custody = reserve(work, id.len() as u64 + 64, 2, parser.allocation.bytes())?;
+                parser.allocation.absorb(&mut custody)?;
+                parser.state.request_id(Some(id))?;
+                retain(&mut parser.allocation, parser.state.logical_owned_bytes()?)?;
+            }
+            drop(response.request_id);
             let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
             futures::pin_mut!(frames);
             while let Some(frame) = frames.next().await {

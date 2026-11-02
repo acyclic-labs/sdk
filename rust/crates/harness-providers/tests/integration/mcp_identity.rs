@@ -108,6 +108,7 @@ async fn canonical_consumers(adapter: &str) -> TestResult {
                 content: ModelContent::Text("search".into()),
             }],
             tools: vec![serde_json::from_value(serde_json::to_value(&definition)?)?],
+            sampling: Default::default(),
             max_output_tokens: Some(64),
         },
         acyclic_harness::conversation::Limits::default(),

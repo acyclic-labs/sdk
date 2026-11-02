@@ -13,6 +13,7 @@ fn request(count: usize) -> Result<ModelRequest> {
         model: Model::new("scripted".into(), "encoding".into(), "1".into())?,
         messages: (0..count).map(message).collect(),
         tools: Vec::new(),
+        sampling: Default::default(),
         max_output_tokens: Some(17),
     })
 }
@@ -65,6 +66,64 @@ fn exercise(io: Option<&PreparationIo>) -> Result<()> {
 #[test]
 fn suffix_encoding_preserves_canonical_request_and_array_digests() -> Result<()> {
     exercise(None)
+}
+
+#[test]
+fn sampling_is_pinned_across_incremental_encoding_and_recovery() -> Result<()> {
+    use crate::model::ModelSampling;
+    let baseline = PreparedModelRequest::prepare(request(1)?, Limits::default(), None)?;
+    for sampling in [
+        ModelSampling {
+            temperature: Some(0.0),
+            ..Default::default()
+        },
+        ModelSampling {
+            top_p: Some(0.25),
+            ..Default::default()
+        },
+        ModelSampling {
+            seed: Some(0),
+            ..Default::default()
+        },
+    ] {
+        let mut changed = request(1)?;
+        changed.sampling = sampling;
+        let prepared = PreparedModelRequest::prepare(changed, Limits::default(), None)?;
+        assert_ne!(prepared.request_digest(), baseline.request_digest());
+        let mut continuation = prepared.into_continuation();
+        continuation.messages().push(message(1));
+        let prepared = continuation.finish(Limits::default(), None)?;
+        assert_eq!(
+            prepared.bytes(),
+            crate::contract::canonical_json_bytes(prepared.request())?
+        );
+        let recovered = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
+        assert_eq!(recovered.request().sampling, sampling);
+        assert_eq!(recovered.request_digest(), prepared.request_digest());
+    }
+    for sampling in [
+        ModelSampling {
+            temperature: Some(f64::NAN),
+            ..Default::default()
+        },
+        ModelSampling {
+            temperature: Some(-1.0),
+            ..Default::default()
+        },
+        ModelSampling {
+            top_p: Some(0.0),
+            ..Default::default()
+        },
+        ModelSampling {
+            top_p: Some(1.01),
+            ..Default::default()
+        },
+    ] {
+        let mut invalid = request(1)?;
+        invalid.sampling = sampling;
+        assert!(PreparedModelRequest::prepare(invalid, Limits::default(), None).is_err());
+    }
+    Ok(())
 }
 
 #[test]

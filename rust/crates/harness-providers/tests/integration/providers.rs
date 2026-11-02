@@ -71,6 +71,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     .iter()
                     .map(|name| echo_tool(name).definition)
                     .collect(),
+                sampling: Default::default(),
                 max_output_tokens: Some(64),
             },
             Limits::default(),

@@ -73,6 +73,7 @@ fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
             parser_dispatch(),
             None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+            None,
         )
         .try_collect(),
     )

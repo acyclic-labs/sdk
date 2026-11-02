@@ -37,6 +37,7 @@ impl HttpTransport for Refresh {
             }
             let chunk = Bytes::from(self.response.to_string());
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: self.status,
                 body: Box::pin(futures::stream::once(async { Ok(chunk) })),

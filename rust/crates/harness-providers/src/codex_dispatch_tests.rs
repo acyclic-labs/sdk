@@ -78,6 +78,7 @@ impl HttpTransport for Server {
         Box::pin(async move {
             let (status, body) = self.reply(request)?;
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status,
                 body: Box::pin(futures::stream::once(async { Ok(Bytes::from(body)) })),

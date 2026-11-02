@@ -73,6 +73,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                     content: crate::model::ModelContent::Text("input".into()),
                 }],
                 tools: vec![],
+                sampling: Default::default(),
                 max_output_tokens: None,
             },
             Limits::default(),

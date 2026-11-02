@@ -171,6 +171,7 @@ impl HttpTransport for Replay {
             });
             Ok(HttpResponse {
                 status: response.status,
+                request_id: None,
                 retry_after: None,
                 body,
             })
@@ -240,6 +241,7 @@ fn prepare(
             } else {
                 Vec::new()
             },
+            sampling: Default::default(),
             max_output_tokens: Some(128),
         },
         Limits::default(),

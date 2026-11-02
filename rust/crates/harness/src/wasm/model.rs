@@ -33,6 +33,11 @@ pub(super) struct WasmModelRequestInput {
     model: crate::model::Model,
     messages: Vec<ModelMessage>,
     tools: Vec<WasmToolDefinitionInput>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::ModelSampling::is_default"
+    )]
+    sampling: crate::model::ModelSampling,
     max_output_tokens: Option<u32>,
 }
 
@@ -43,6 +48,7 @@ impl From<WasmModelRequestInput> for crate::model::ModelRequest {
             model: input.model,
             messages: input.messages,
             tools: input.tools.into_iter().map(ToolDefinition::from).collect(),
+            sampling: input.sampling,
             max_output_tokens: input.max_output_tokens,
         }
     }

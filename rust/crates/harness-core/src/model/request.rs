@@ -22,6 +22,12 @@ pub struct ModelRequest {
     pub compose_tools: bool,
     /// Registered tool definitions, including schemas retained for history validation.
     pub tools: Vec<crate::tool::ToolDefinition>,
+    /// Sampling values retained in the original request digest.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::ModelSampling::is_default"
+    )]
+    pub sampling: crate::model::ModelSampling,
     /// Optional output token ceiling.
     pub max_output_tokens: Option<u32>,
 }
@@ -55,6 +61,7 @@ impl ModelRequest {
                 .saturating_add(self.model.revision.len() as u64),
         )?;
         self.model.validate()?;
+        self.sampling.validate()?;
         if self.messages.is_empty() || self.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }

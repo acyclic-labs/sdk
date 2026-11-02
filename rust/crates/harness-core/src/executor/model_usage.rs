@@ -75,11 +75,29 @@ pub(crate) struct ModelCallUsage<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub agent_path: Option<&'a str>,
+    /// Sampling from the original pinned request.
+    #[cfg(feature = "research")]
+    pub sampling: crate::model::ModelSampling,
+    /// Original requested output ceiling; absent remains unbounded.
+    #[cfg(feature = "research")]
+    pub max_output_tokens: Option<u32>,
     pub tokens: ModelTokenUsage,
     /// Dispatch through receipt of the terminal event, including original
     /// journal backpressure between chunks. Excludes the terminal commit.
     /// Unknown for recovered calls and platforms without this clock.
     pub latency_ns: Option<u64>,
+    /// Original HTTP request identifier, never inferred from the generation id.
+    #[cfg(feature = "research")]
+    pub provider_request_id: Option<&'a str>,
+    /// Provider-reported serving fingerprint; absent if unreported.
+    #[cfg(feature = "research")]
+    pub system_fingerprint: Option<&'a str>,
+    /// Dispatch to first nonempty visible or reasoning delta; absent without one.
+    #[cfg(feature = "research")]
+    pub ttft_ns: Option<u64>,
+    /// Original adapter cache policy and prefix identity, distinct from token hits.
+    #[cfg(feature = "research")]
+    pub cache: Option<ModelCacheObservation>,
 }
 
 /// Durable per-call usage view. The journal's terminal observation is the
@@ -88,7 +106,7 @@ pub(crate) struct ModelCallUsage<'a> {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
-    /// Record format, currently one; older layouts are not migrated.
+    /// Record format, currently two; older layouts are not migrated.
     pub version: u32,
     /// A terminal provider event was committed. False preserves an admitted
     /// call whose completion was not observed; its counters stay unknown.
@@ -103,10 +121,33 @@ pub struct ModelUsageRecord {
     pub model: String,
     /// Original agent path; unknown for an executor without an agent binding.
     pub agent_path: Option<String>,
+    /// Sampling from the original pinned request.
+    #[serde(default)]
+    pub sampling: Option<crate::model::ModelSampling>,
+    /// Original requested output ceiling; absent remains unbounded.
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
     /// Provider-reported counters with missing values preserved.
     pub tokens: ModelTokenUsage,
     /// Original local call interval, as defined by the completion producer.
     pub latency_ns: Option<u64>,
+    /// Original HTTP request identifier, never inferred from the generation id.
+    #[serde(default)]
+    pub provider_request_id: Option<String>,
+    /// Provider-reported serving fingerprint; absent if unreported.
+    #[serde(default)]
+    pub system_fingerprint: Option<String>,
+    /// Dispatch to first nonempty visible or reasoning delta; absent without one.
+    #[serde(default)]
+    pub ttft_ns: Option<u64>,
+    /// Original research cache observation; absence does not mean a cache miss.
+    #[serde(default)]
+    pub cache: Option<ModelCacheObservation>,
+}
+
+impl ModelUsageRecord {
+    /// The one per-call format accepted by producers, readers and aggregates.
+    pub const VERSION: u32 = 2;
 }
 
 #[cfg(feature = "filesystem")]
@@ -125,7 +166,7 @@ pub(crate) fn validate(
             "usage record has no original terminal model event",
         ));
     };
-    if record.version != 1
+    if record.version != ModelUsageRecord::VERSION
         || !record.completed
         || record.dispatch.step != step
         || record.purpose != purpose
@@ -134,6 +175,18 @@ pub(crate) fn validate(
         || record.provider.is_empty()
         || record.model.is_empty()
         || record.tokens != ModelTokenUsage::reported(metadata)
+        || record
+            .cache
+            .is_some_and(|cache| Some(cache) != ModelCacheObservation::reported(metadata))
+        || record
+            .provider_request_id
+            .as_deref()
+            .is_some_and(|id| Some(id) != metadata["provider_request_id"].as_str())
+        || record
+            .system_fingerprint
+            .as_deref()
+            .is_some_and(|id| Some(id) != metadata["system_fingerprint"].as_str())
+        || matches!((record.ttft_ns, record.latency_ns), (Some(first), Some(total)) if first > total)
     {
         return Err(stock_boundary(
             io,
@@ -181,51 +234,85 @@ pub async fn usage_page(
     };
     let mut items = Vec::new();
     for record in records {
-        match record.event {
-            ExecutionEvent::ModelStarted {
-                step,
-                purpose,
-                request_digest,
-                request,
-            } => {
-                let model = super::transcript::usage_model(journal, &request).await?;
-                items.push(ModelUsageRecord {
-                    version: 1,
-                    completed: false,
-                    dispatch: crate::model::ModelDispatch {
-                        operation_id: purpose.attempt_operation(operation, None)?,
-                        step,
-                        request_digest,
-                    },
-                    purpose,
-                    provider: model.provider,
-                    model: model.name,
-                    agent_path: Some(agent_path.to_owned()),
-                    tokens: ModelTokenUsage::default(),
-                    latency_ns: None,
-                });
-            }
-            ExecutionEvent::Model {
-                usage: Some(file), ..
-            }
-            | ExecutionEvent::ModelInline {
-                usage: Some(file), ..
-            } => {
-                items.push(
-                    serde_json::from_slice(&journal.load(&file, None)?.await?).map_err(|_| {
-                        Error::Storage("committed usage record is malformed".into())
-                    })?,
-                );
-            }
-            _ => {}
+        if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {
+            items.push(usage);
         }
     }
     Ok(ModelUsagePage { items, end, next })
 }
 
+pub(super) async fn project_record(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    agent_path: &str,
+    record: &ExecutionRecord,
+) -> Result<Option<ModelUsageRecord>> {
+    match &record.event {
+        ExecutionEvent::ModelStarted {
+            step,
+            purpose,
+            request_digest,
+            request,
+        } => {
+            let request = super::transcript::usage_request(journal, request).await?;
+            let model = request.model;
+            Ok(Some(ModelUsageRecord {
+                version: ModelUsageRecord::VERSION,
+                completed: false,
+                dispatch: crate::model::ModelDispatch {
+                    operation_id: purpose.attempt_operation(operation, None)?,
+                    step: *step,
+                    request_digest: *request_digest,
+                },
+                purpose: *purpose,
+                provider: model.provider,
+                model: model.name,
+                agent_path: Some(agent_path.to_owned()),
+                sampling: Some(request.sampling),
+                max_output_tokens: request.max_output_tokens,
+                tokens: ModelTokenUsage::default(),
+                latency_ns: None,
+                provider_request_id: None,
+                system_fingerprint: None,
+                ttft_ns: None,
+                cache: None,
+            }))
+        }
+        ExecutionEvent::Model {
+            usage: Some(file),
+            step,
+            purpose,
+            ..
+        }
+        | ExecutionEvent::ModelInline {
+            usage: Some(file),
+            step,
+            purpose,
+            ..
+        } => {
+            let usage: ModelUsageRecord = serde_json::from_slice(&journal.load(file, None)?.await?)
+                .map_err(|_| Error::Storage("committed usage record is malformed".into()))?;
+            if usage.version != ModelUsageRecord::VERSION
+                || !usage.completed
+                || usage.dispatch.step != *step
+                || usage.purpose != *purpose
+                || usage.dispatch.operation_id != purpose.attempt_operation(operation, None)?
+            {
+                return Err(Error::Storage(
+                    "committed usage record has an unsupported format or call identity".into(),
+                ));
+            }
+            Ok(Some(usage))
+        }
+        _ => Ok(None),
+    }
+}
+
 pub(super) struct CallClock {
     #[cfg(not(target_arch = "wasm32"))]
     started: Option<std::time::Instant>,
+    #[cfg(feature = "research")]
+    first_token_ns: Option<u64>,
 }
 
 impl CallClock {
@@ -233,6 +320,8 @@ impl CallClock {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             started: None,
+            #[cfg(feature = "research")]
+            first_token_ns: None,
         }
     }
 
@@ -241,6 +330,21 @@ impl CallClock {
         {
             self.started = Some(std::time::Instant::now());
         }
+    }
+
+    #[cfg(feature = "research")]
+    pub(super) fn observe(&mut self, event: &ModelEvent) {
+        if self.first_token_ns.is_none()
+            && matches!(event,
+            ModelEvent::Content { delta } | ModelEvent::Reasoning { delta } if !delta.is_empty())
+        {
+            self.first_token_ns = self.elapsed_ns();
+        }
+    }
+
+    #[cfg(feature = "research")]
+    pub(super) fn ttft_ns(&self) -> Option<u64> {
+        self.first_token_ns
     }
 
     pub(super) fn elapsed_ns(&self) -> Option<u64> {

@@ -48,6 +48,7 @@ fn request() -> Result<PreparedModelRequest> {
                 content: ModelContent::Text("input".into()),
             }],
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: None,
         },
         Limits::default(),
@@ -345,7 +346,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     let metadata = serde_json::json!({"usage":{"input_tokens":20,"output_tokens":7}});
     let completed = ModelEvent::Completed { metadata };
     let mut usage = crate::executor::model_usage::ModelCallUsage {
-        version: 1,
+        version: crate::executor::ModelUsageRecord::VERSION,
         completed: true,
         dispatch: crate::model::ModelDispatch {
             operation_id: operation,
@@ -356,6 +357,18 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         provider: "test",
         model: "inline",
         agent_path: None,
+        #[cfg(feature = "research")]
+        sampling: Default::default(),
+        #[cfg(feature = "research")]
+        max_output_tokens: None,
+        #[cfg(feature = "research")]
+        provider_request_id: None,
+        #[cfg(feature = "research")]
+        system_fingerprint: None,
+        #[cfg(feature = "research")]
+        ttft_ns: None,
+        #[cfg(feature = "research")]
+        cache: None,
         tokens: crate::executor::ModelTokenUsage::reported(match &completed {
             ModelEvent::Completed { metadata } => metadata,
             _ => unreachable!(),
@@ -444,6 +457,50 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     );
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     usage.tokens.input = Some(20);
+    let mut altered: crate::executor::ModelUsageRecord = serde_json::from_value(
+        serde_json::to_value(&usage).map_err(|error| Error::Invalid(error.to_string()))?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    for version in [0, 1, 3] {
+        altered.version = version;
+        assert!(
+            crate::executor::validate_model_usage(
+                &altered,
+                operation,
+                0,
+                ModelPurpose::Response,
+                &completed,
+                None
+            )
+            .is_err()
+        );
+    }
+    altered.version = 2;
+    altered.ttft_ns = Some(124);
+    assert!(
+        crate::executor::validate_model_usage(
+            &altered,
+            operation,
+            0,
+            ModelPurpose::Response,
+            &completed,
+            None
+        )
+        .is_err()
+    );
+    altered.ttft_ns = None;
+    altered.provider_request_id = Some("generated-unreported-identity".into());
+    assert!(
+        crate::executor::validate_model_usage(
+            &altered,
+            operation,
+            0,
+            ModelPurpose::Response,
+            &completed,
+            None
+        )
+        .is_err()
+    );
     for _ in 0..2 {
         crate::executor::append_model_event(
             &journal,
@@ -509,6 +566,28 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     assert_eq!(resumed.next, None);
     // Rescanning the prior prefix would duplicate the admitted contribution.
     assert!(after.items.len() > resumed.items.len());
+    #[cfg(feature = "metrics-export")]
+    {
+        let projected =
+            crate::metrics::journal_page(&journal, operation, "agents/usage", 0, |_| None).await?;
+        let resumed =
+            crate::metrics::journal_page(&journal, operation, "agents/usage", quiet.end, |_| None)
+                .await?;
+        assert_eq!(projected.end, after.end);
+        assert_eq!(resumed.end, projected.end);
+        assert_eq!(resumed.batches.len(), 1);
+        let models = projected
+            .batches
+            .iter()
+            .find(|batch| batch.table == crate::metrics::Table::ModelCalls)
+            .unwrap();
+        assert_eq!(models.data.num_rows(), 2);
+        assert_eq!(
+            resumed.batches[0].data,
+            models.data.slice(1, 1),
+            "resume must project the same committed observation without its prefix"
+        );
+    }
     Ok(())
 }
 

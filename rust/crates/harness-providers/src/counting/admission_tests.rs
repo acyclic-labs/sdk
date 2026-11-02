@@ -77,6 +77,7 @@ impl HttpTransport for CountResponse {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: self.status,
                 body: Box::pin(
@@ -195,7 +196,7 @@ proptest::proptest! {
                         Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"{\"input_tokens\":7}"))]))
                     };
                     let status = if attempt < self.failures { self.status } else { 200 };
-                    Ok(HttpResponse { status, body, retry_after: None })
+                    Ok(HttpResponse { status, body, request_id: None, retry_after: None })
                 })
             }
         }

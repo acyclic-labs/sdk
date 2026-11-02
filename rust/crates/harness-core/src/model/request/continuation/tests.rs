@@ -14,6 +14,7 @@ fn request(count: usize) -> Result<ModelRequest> {
         model: Model::new("scripted".into(), "continuation".into(), "1".into())?,
         messages: (0..count).map(|_| text("retained text")).collect(),
         tools: Vec::new(),
+        sampling: Default::default(),
         max_output_tokens: Some(1),
     })
 }

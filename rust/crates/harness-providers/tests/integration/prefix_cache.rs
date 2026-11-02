@@ -96,6 +96,7 @@ impl HttpTransport for Scripted {
             let bytes = self.reply(request)?;
             Ok(HttpResponse {
                 retry_after: None,
+                request_id: None,
                 status: 200,
                 body: Box::pin(futures::stream::iter([Ok(bytes)])),
             })

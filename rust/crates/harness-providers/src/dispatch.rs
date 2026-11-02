@@ -50,7 +50,7 @@ pub(crate) fn generate_encoded<'a>(
             ..cache
         });
         let events = crate::stream::events_named(provider.config.adapter, response.body,
-            provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
+            provider.config.max_event_bytes, dispatch, Some(&names), Some(origin), response.request_id);
         futures::pin_mut!(events);
         while let Some(event) = events.next().await {
             let mut event = event.map_err(crate::diagnostic::rejection)?;

@@ -95,6 +95,7 @@ impl HttpTransport for RacingCli {
                 .ok_or_else(|| invalid("unexpected refresh"))?;
             let bytes = Bytes::from(value.to_string());
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status,
                 body: Box::pin(futures::stream::once(async { Ok(bytes) })),

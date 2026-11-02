@@ -78,12 +78,29 @@ pub(crate) fn chunks(
 async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Result<()> {
     for (adapter, fixture) in fixtures() {
         let dispatch = parser_dispatch();
+        // Generated field mutations distinguish HTTP identity from generation
+        // identity and exercise the disabled research path; no new recording.
+        let fingerprint = matches!(adapter, Adapter::Chat | Adapter::Responses);
+        let fixture = if fingerprint {
+            fixture.replace(
+                "\"id\":\"run\"",
+                "\"id\":\"run\",\"system_fingerprint\":\"generated-fingerprint\"",
+            )
+        } else {
+            fixture.into()
+        };
         for width in [1, 7, 1024] {
-            let body = chunks(fixture, width);
+            let body = chunks(&fixture, width);
             let mut parser = None;
             let allocated = acyclic_test_support::measure(|| {
                 parser = Some(stream::events_named(
-                    adapter, body, 4096, dispatch, None, None,
+                    adapter,
+                    body,
+                    4096,
+                    dispatch,
+                    None,
+                    None,
+                    Some(::http::HeaderValue::from_static("generated-http-identity")),
                 ));
             });
             assert_eq!(allocated.count_total, 0);
@@ -148,11 +165,68 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                 return Err(invalid("missing completion"));
             };
             assert_eq!(metadata["id"], "run");
+            let research = acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED;
+            assert_eq!(
+                metadata["provider_request_id"].as_str(),
+                research.then_some("generated-http-identity")
+            );
+            assert_eq!(
+                metadata["system_fingerprint"].as_str(),
+                (research && fingerprint).then_some("generated-fingerprint")
+            );
             assert!(metadata["usage"].is_object());
             if adapter == Adapter::Anthropic {
                 assert_eq!(metadata["usage"]["input_tokens"], 5);
                 assert_eq!(metadata["usage"]["output_tokens"], 3);
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sampling_projects_without_silent_seed_loss() -> Result<()> {
+    use acyclic_harness_core::model::ModelSampling;
+    for adapter in [
+        Adapter::Chat,
+        Adapter::Responses,
+        Adapter::Anthropic,
+        Adapter::Gemini,
+    ] {
+        let (provider, _) = provider(adapter, 200);
+        let (prepared, _) = request(&provider)?;
+        let mut request = prepared.request().clone();
+        request.sampling = ModelSampling {
+            temperature: Some(0.0),
+            top_p: Some(0.25),
+            seed: None,
+        };
+        let body = projection::body(&provider, &request)?;
+        let config = if adapter == Adapter::Gemini {
+            &body["generationConfig"]
+        } else {
+            &body
+        };
+        assert_eq!(config["temperature"], 0.0);
+        assert_eq!(
+            config[if adapter == Adapter::Gemini {
+                "topP"
+            } else {
+                "top_p"
+            }],
+            0.25
+        );
+        request.sampling.seed = Some(0);
+        if matches!(adapter, Adapter::Anthropic | Adapter::Responses) {
+            assert!(projection::body(&provider, &request).is_err());
+        } else {
+            let body = projection::body(&provider, &request)?;
+            let config = if adapter == Adapter::Gemini {
+                &body["generationConfig"]
+            } else {
+                &body
+            };
+            assert_eq!(config["seed"], 0);
         }
     }
     Ok(())
@@ -278,6 +352,7 @@ impl HttpTransport for Script {
                 .ok_or_else(|| invalid("missing fixture"))?
                 .1;
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: self.status,
                 body: chunks(fixture, 1),
@@ -300,6 +375,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     )
     .unwrap();
     Some(HttpResponse {
+        request_id: None,
         retry_after: None,
         status: 200,
         body: Box::pin(futures::stream::iter([Ok(body.into())])),
@@ -379,6 +455,7 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
                 },
             ],
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(64),
         },
         Limits::default(),
@@ -709,6 +786,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         let request = ModelRequest {
             compose_tools: false,
             model: provider.model.clone(),
+            sampling: Default::default(),
             max_output_tokens: Some(64),
             tools: vec![tool],
             messages: vec![

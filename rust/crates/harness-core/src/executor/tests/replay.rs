@@ -175,6 +175,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
                 content: ModelContent::Text("parent ÃƒÂ©\0Ã°Å¸Â¦â‚¬".into()),
             }],
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(4096),
         },
         Limits::default(),
@@ -621,6 +622,7 @@ mod prepared_request_reuse_properties {
             model,
             messages: expected_messages,
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(512),
         };
         let bytes = crate::contract::canonical_json_bytes(&expected).unwrap();
@@ -695,6 +697,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                     content: ModelContent::Text("p".repeat(parent_bytes)),
                 }],
                 tools: Vec::new(),
+                sampling: Default::default(),
                 max_output_tokens: None,
             },
             Limits::default(),

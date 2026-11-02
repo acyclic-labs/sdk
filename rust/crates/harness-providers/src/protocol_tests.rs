@@ -304,6 +304,7 @@ impl HttpTransport for ToolLoop {
                 .pop_front()
                 .ok_or_else(|| invalid("unexpected dispatch"))?;
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: 200,
                 body: chunks(&reply, 1),

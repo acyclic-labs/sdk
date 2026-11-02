@@ -62,6 +62,7 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
             .iter()
             .map(|binding| binding.tool().definition.clone())
             .collect(),
+        sampling: Default::default(),
         max_output_tokens: None,
     };
     bound.validate_request(&request)?;

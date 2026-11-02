@@ -65,7 +65,7 @@ proptest::proptest! {
         use acyclic_harness::model::{Model, ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, ToolResultContent};
         let part = ModelContentPart::ToolResult {call_id:"call".into(), name:"read".into(), content:ToolResultContent::Json {value:json!(text)}};
         let request = ModelRequest {compose_tools: false,model:Model::new("scripted".into(),"local".into(),"1".into())?,
-            messages:vec![ModelMessage {role:ModelRole::Tool,content:ModelContent::Parts(vec![part.clone(),part])}], tools:vec![], max_output_tokens:None};
+            messages:vec![ModelMessage {role:ModelRole::Tool,content:ModelContent::Parts(vec![part.clone(),part])}], tools:vec![], sampling: Default::default(), max_output_tokens:None};
         proptest::prop_assert!(super::drivers::model_results(&request).is_err());
     }
 }

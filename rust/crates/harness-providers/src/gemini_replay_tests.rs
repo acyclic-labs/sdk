@@ -162,6 +162,7 @@ fn signed_answer_fixture_replays_once_with_exact_native_parts() {
             dispatch,
             None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+            None,
         )
         .try_collect(),
     )
@@ -216,6 +217,7 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
             dispatch,
             None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+            None,
         )
         .try_collect(),
     )
@@ -349,7 +351,7 @@ proptest! {
         let parsed = futures::executor::block_on(stream::events_named(
             Adapter::Gemini, chunks(&wire, width), 32768, dispatch, None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
-        ).try_collect::<Vec<_>>()).unwrap();
+         None,).try_collect::<Vec<_>>()).unwrap();
         let calls: Vec<_> = parsed.iter().filter_map(|event| match event {
             ModelEvent::ToolCall(call) => Some(call), _ => None,
         }).collect();
@@ -414,7 +416,7 @@ proptest! {
         let parsed = futures::executor::block_on(stream::events_named(
             Adapter::Gemini, chunks(&unfinished, width), 32768, dispatch, None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
-        ).collect::<Vec<_>>());
+         None,).collect::<Vec<_>>());
         prop_assert_eq!(parsed.len(), 1);
         prop_assert!(matches!(&parsed[0], Err(Error::ModelUnavailable {
             failure: acyclic_harness_core::ModelTransportFailure::Interrupted, ..
@@ -518,6 +520,7 @@ fn malformed_native_part_fields_fail_before_publication() {
                 dispatch,
                 None,
                 Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+                None,
             )
             .try_collect::<Vec<_>>(),
         )
@@ -669,7 +672,7 @@ proptest! {
             let events=futures::executor::block_on(stream::events_named(
                 Adapter::Gemini,chunks(&input,width),4096,ModelDispatch {step,..dispatch},None,
                 Some(provider.reasoning_origin(provider.key.as_deref(),None)),
-            ).try_collect()).unwrap();
+             None,).try_collect()).unwrap();
             append(events,&mut request,&mut answer);
         }
         finish(&mut request);

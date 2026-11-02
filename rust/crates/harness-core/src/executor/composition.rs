@@ -17,6 +17,8 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            sampling: Default::default(),
+            resolved_sampling: once_cell::sync::OnceCell::new(),
             max_output_tokens: None,
             provider,
             context,
@@ -42,6 +44,14 @@ impl StockExecutor {
     pub fn with_live_reply(mut self, reply: LiveReply) -> Self {
         self.live_reply = Some(reply);
         self
+    }
+
+    /// Pins explicit sampling for an executor without an admitted model profile.
+    pub fn with_sampling(mut self, sampling: crate::model::ModelSampling) -> Result<Self> {
+        sampling.validate()?;
+        self.sampling = Some(sampling);
+        self.resolved_sampling = once_cell::sync::OnceCell::new();
+        Ok(self)
     }
 
     /// Sets the caller's output token budget for each model request.

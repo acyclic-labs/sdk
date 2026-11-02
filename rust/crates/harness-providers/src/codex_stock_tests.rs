@@ -42,6 +42,7 @@ impl HttpTransport for Backend {
         Box::pin(async move {
             let (status, body) = self.answer(&request);
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status,
                 body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(

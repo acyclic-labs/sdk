@@ -465,6 +465,7 @@ pub(crate) fn clone_request(
         model,
         messages,
         tools,
+        sampling: request.sampling,
         max_output_tokens: request.max_output_tokens,
     })
 }
