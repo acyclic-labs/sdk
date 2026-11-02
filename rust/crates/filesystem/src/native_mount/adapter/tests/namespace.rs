@@ -522,7 +522,7 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
         assert_eq!(reported, expected, "{error:?}");
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert_eq!(
-            crate::native_mount::shared::outcome::CallbackFailure::of_source(&error).errno(),
+            crate::native_mount::shared::outcome::source_failure(&error).errno(),
             match expected {
                 "ENOTDIR" => libc::ENOTDIR,
                 "EISDIR" => libc::EISDIR,

@@ -70,6 +70,26 @@ type MemorySource =
 
 #[test]
 fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::shared::outcome::{
+        CallbackFailure as F, source_failure, source_stops_mount,
+    };
+
+    for (cause, expected) in [
+        (GenerationMutationError::AlreadyExists, F::AlreadyExists),
+        (GenerationMutationError::MissingParent, F::NotFound),
+        (GenerationMutationError::MissingSource, F::NotFound),
+        (GenerationMutationError::NotDirectory, F::NotDirectory),
+        (GenerationMutationError::IsDirectory, F::IsDirectory),
+        (
+            GenerationMutationError::DirectoryNotEmpty,
+            F::DirectoryNotEmpty,
+        ),
+    ] {
+        let error = MountSourceError::from(crate::CaptureError::from(FsError::Mutation(cause)));
+        assert_eq!(source_failure(&error), expected, "{error:?}");
+        assert!(!source_stops_mount(&error), "{error:?}");
+    }
+
     let source = source(FilesystemProfile::Portable)?;
     let directory = tempfile::tempdir()?;
     for name in ["first", "second"] {
@@ -126,16 +146,27 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             assert!(single_bytes > 0);
         } else {
             let error = result.expect_err("capture ceiling ignored");
-            assert!(
-                matches!(
-                    &error.error,
-                    crate::CaptureError::Kernel(error) if matches!(error.as_ref(),
-                        FsError::Work(_)
-                            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
-                    )
-                ),
-                "capture ceiling lost its typed refusal: {error:?}"
-            );
+            let original = match &error.error {
+                crate::CaptureError::Kernel(error) => match error.as_ref() {
+                    FsError::Work(error)
+                    | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
+                        *error
+                    }
+                    _ => panic!("capture ceiling lost its typed refusal: {error:?}"),
+                },
+                _ => panic!("capture ceiling lost its typed refusal: {error:?}"),
+            };
+            // Both capture transports keep the same quota cause. In particular,
+            // the native wrapper must not become the session's NativeWork arm.
+            for converted in [
+                MountSourceError::from(error.error),
+                MountSourceError::from(crate::CaptureError::from(FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Work(original),
+                ))),
+            ] {
+                assert!(matches!(&converted, MountSourceError::Work(error) if *error == original));
+                assert!(source_stops_mount(&converted));
+            }
             assert!(!candidate.has_pending_mutations());
             if count == 0 {
                 assert_eq!(work.receipt().source_entries_visited, 0);
