@@ -4,38 +4,95 @@ use std::{sync::Arc, time::Duration};
 #[test]
 fn launch_failure_returns_its_cause_and_original_custody()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
     acyclic_native_runtime::initialize_native_io_services()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let root = tempfile::tempdir()?;
-    let invocation = Invocation {
-        executable: root.path().join("absent-executable"),
-        argv: Vec::new(),
-        cwd: root.path().into(),
-        environment: Default::default(),
-        inherit_environment: false,
-        execution_grant: None,
-        schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        control_timeout_ms: 1000,
-        maximum_output_bytes: 1024,
-        standard_input: None,
-        process_custody: None,
-    };
-    let custody = Arc::new(());
-    let (output, returned) = runtime.block_on(capture_with_custody(
-        invocation,
-        |_, _| Ok(()),
-        || Ok(()),
-        Arc::clone(&custody),
-        None,
-        OutputRetention::Collect,
-    ))?;
-    assert!(Arc::ptr_eq(&custody, &returned));
-    assert!(matches!(
-        output,
-        Err(Error::Process(crate::ProcessError::NotFound { .. }))
-    ));
+    for release_producer in [true, false] {
+        let invocation = Invocation {
+            executable: root.path().join("absent-executable"),
+            argv: Vec::new(),
+            cwd: root.path().into(),
+            environment: Default::default(),
+            inherit_environment: false,
+            execution_grant: None,
+            schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+            control_timeout_ms: 1000,
+            maximum_output_bytes: 1024,
+            standard_input: None,
+            process_custody: None,
+        };
+        let custody = Arc::new(());
+        let coordinator = std::thread::current().id();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = mpsc::channel();
+        let step = Mutex::new(Some((entered, released)));
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checked = Arc::clone(&checks);
+        let operation = capture_with_custody(
+            invocation,
+            |_, _| Ok(()),
+            move || {
+                checked.fetch_add(1, Ordering::SeqCst);
+                assert_ne!(
+                    std::thread::current().id(),
+                    coordinator,
+                    "launch admission occupies its release-producing coordinator"
+                );
+                let (entered, released) = step.lock().unwrap().take().unwrap();
+                entered
+                    .send(())
+                    .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+                released
+                    .recv()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error))
+            },
+            Arc::clone(&custody),
+            None,
+            OutputRetention::Collect,
+        );
+        let (output, returned) = runtime.block_on(async move {
+            tokio::pin!(operation);
+            // The same coordinator awaiting launch must release its native check.
+            // Observe early terminal failure too: producer loss cannot hang here.
+            tokio::select! {
+                entered = started => entered.map_err(|error| Error::Storage(error.to_string()))?,
+                result = &mut operation => {
+                    let _ = result?;
+                    return Err(Error::Storage("launch completed before its control check".into()));
+                }
+            }
+            if release_producer {
+                release
+                    .send(())
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+            }
+            drop(release);
+            operation.await
+        })?;
+        assert!(Arc::ptr_eq(&custody, &returned));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        if release_producer {
+            assert!(matches!(
+                output,
+                Err(Error::Process(crate::ProcessError::NotFound { .. }))
+            ));
+        } else {
+            match output {
+                Err(Error::Process(crate::ProcessError::Io { message, .. })) => {
+                    assert_eq!(message, "receiving on a closed channel")
+                }
+                other => panic!("launch lost its original control failure: {other:?}"),
+            }
+        }
+    }
     Ok(())
 }
 

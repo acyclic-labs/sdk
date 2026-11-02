@@ -169,7 +169,8 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so they run on main's independent native host service.
     // Spawning runs there too; the running child then holds no worker: the
-    // capture awaits readiness between its turns.
+    // capture awaits readiness between its turns. Defer inline execution for
+    // each admission poll: its checks may await this same coordinator.
     let spawner = acyclic_native_runtime::TaskSpawner::current();
     let started =
         acyclic_native_runtime::run_blocking_io(
@@ -200,6 +201,7 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
             None,
         )
         .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
+        .offloaded()
         .await
         .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
     Ok(async move {
