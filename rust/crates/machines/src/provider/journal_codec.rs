@@ -135,6 +135,38 @@ fn encoding(error: serde_json::Error) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn original_fork_terminals_enter_the_permanent_corpus() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let seeds = codec_fuzz::seeds()?;
+        let mut created = false;
+        let mut forked = false;
+        for (_, bytes) in seeds {
+            assert!(codec_fuzz::check(&bytes));
+            if let Ok(terminal) = decode::<Completed>(&bytes) {
+                match terminal.outcome {
+                    MutationOutcome::Created(_) => created = true,
+                    MutationOutcome::Forked { results, .. } => {
+                        assert!(results.count > 1);
+                        forked = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            created,
+            "the original create terminal must enter the corpus"
+        );
+        assert!(
+            forked,
+            "the original paged fork terminal must enter the corpus"
+        );
+        Ok(())
+    }
+
     #[test]
     fn version_refusal_precedes_journal_payload() -> Result<(), Box<dyn std::error::Error>> {
         let value = Intent { digest: [1; 32] };
