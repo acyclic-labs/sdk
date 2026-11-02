@@ -40,12 +40,15 @@ test("conversation cannot consume a future turn's reply before submitting its pr
 test("conversation joins original pipe acceptance before waiting for a reply", async () => {
   const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures["jsonl-reopen"];
   const reply = JSON.parse(captured.stdout);
-  for (const closedInput of [false, true]) {
+  for (const mode of ["accepted", "ended", ...(process.platform === "win32" ? [] : ["closed"])]) {
+    const closedInput = mode !== "accepted";
     const progress = [], captures = [], processes = new Processes({ onProgress: event => progress.push(event) });
     let original, retirementRequested = false;
     try {
       const running = conversation(processes, process.execPath, {
-        workspace: tmpdir(), args: ["-e", closedInput
+        workspace: tmpdir(), args: ["-e", mode === "closed"
+          ? "require('node:fs').closeSync(0);const {port1}=new(require('node:worker_threads').MessageChannel)();port1.on('message',()=>{});console.error(JSON.stringify({input_closed:true}))"
+          : closedInput
           ? "const {port1}=new(require('node:worker_threads').MessageChannel)();port1.on('message',()=>{});process.stdin.once('end',()=>console.error(JSON.stringify({input_closed:true})));process.stdin.resume()"
           : "require('node:readline').createInterface({input:process.stdin}).once('line',()=>process.stdout.write(process.argv[1]))",
           captured.stdout, "--"],
@@ -54,7 +57,7 @@ test("conversation joins original pipe acceptance before waiting for a reply", a
         if (!closedInput) return;
         const kill = active.killExecutable;
         active.killExecutable = () => { retirementRequested = true; return kill(); };
-        active.input.end();
+        if (mode === "ended") active.input.end();
         await new Spool(active.child.stderr, active.closed).next(event => event.input_closed === true);
         const write = active.input.write.bind(active.input);
         active.input.write = (chunk, callback) => write(chunk, error => {
@@ -67,7 +70,7 @@ test("conversation joins original pipe acceptance before waiting for a reply", a
       });
       if (closedInput) await assert.rejects(running, error => {
         assert.equal(error, original, "retain the original pipe write error instead of reply EOF");
-        assert.equal(error.code, "ERR_STREAM_WRITE_AFTER_END");
+        assert.equal(error.code, mode === "ended" ? "ERR_STREAM_WRITE_AFTER_END" : "EPIPE");
         return true;
       });
       else await running;
