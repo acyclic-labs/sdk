@@ -351,14 +351,14 @@ impl StreamProvider for InjectedStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        crate::memory::validate_limit(request.limit)?;
+        let request = request.validate()?.into_request();
         let from = request.from;
         Ok(crate::records_only(
             self.cursor(
                 "read",
                 &request.path,
                 wire::ReadRequest {
-                    key: wire_codec::read_key_to_wire(&request.key),
+                    key: wire_codec::read_key_to_wire(request.key)?,
                     path: request.path.to_string(),
                     from,
                     limit: request.limit,

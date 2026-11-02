@@ -319,12 +319,26 @@ pub fn read_key_from_wire(
         .transpose()
 }
 
-/// Encodes a bounded indexed lookup without interpreting its key.
-pub fn read_key_to_wire(value: &Option<crate::ReadKeySeek>) -> Option<wire::ReadKeySeek> {
-    value.as_ref().map(|value| wire::ReadKeySeek {
-        key: Bytes::copy_from_slice(&value.key),
-        before: value.before,
-    })
+/// Transfers a bounded indexed lookup and its original key backing to the wire.
+/// Native backing retains its original custody and admits transport metadata;
+/// exhausted capacity refuses with `Capacity`, cancellation with `Unavailable`.
+pub fn read_key_to_wire(
+    value: Option<crate::ReadKeySeek>,
+) -> Result<Option<wire::ReadKeySeek>, StreamError> {
+    value
+        .map(|value| {
+            Ok(wire::ReadKeySeek {
+                key: value.key.try_into_bytes().map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::OutOfMemory {
+                        StreamError::Capacity
+                    } else {
+                        StreamError::Unavailable
+                    }
+                })?,
+                before: value.before,
+            })
+        })
+        .transpose()
 }
 
 /// Decodes every follow field through the shared provider contract. A checked

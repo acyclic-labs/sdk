@@ -1,5 +1,6 @@
 //! Provider reads and children pages are finite subscriptions on the session.
 use super::*;
+use futures::FutureExt as _;
 
 fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
     let client = Client::in_process(
@@ -257,6 +258,106 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
 async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let client = local(&provider)?;
+    for length in [1, crate::MAX_RECORD_KEY_BYTES] {
+        for native in [false, true] {
+            let observed = Arc::new(crate::test_meter::Meter::default());
+            let meter = observed.original();
+            let data = vec![b'a'; length + 2];
+            let key = if native {
+                let allocation =
+                    acyclic_native_runtime::ReadAllocation::new(&meter, data.capacity())?;
+                OwnedBytes::from_vec_with_guard(data, allocation, meter.clone())
+                    .map_err(|failure| format!("{:?}", failure.into_error()))?
+            } else {
+                data.into()
+            };
+            let key = key.slice(1..length + 1);
+            let pointer = key.as_ptr();
+            let held = observed.held.load(Ordering::SeqCst);
+            let mut copied = None;
+            // Original projection is the independently allocating copy control.
+            let old = acyclic_test_support::measure(|| {
+                copied = Some(wire::ReadKeySeek {
+                    key: Bytes::copy_from_slice(&key),
+                    before: 4,
+                });
+            });
+            let mut transferred = None;
+            let direct = acyclic_test_support::measure(|| {
+                transferred = Some(wire_codec::read_key_to_wire(Some(crate::ReadKeySeek {
+                    key,
+                    before: 4,
+                })));
+            });
+            let transferred = transferred
+                .ok_or("missing key transfer")??
+                .ok_or("missing key")?;
+            let copied = copied.ok_or("missing copy control")?;
+            assert_eq!(transferred, copied);
+            assert_eq!(transferred.key.as_ptr(), pointer);
+            assert_ne!(copied.key.as_ptr(), pointer);
+            assert_eq!(old.count_total, 1);
+            assert_eq!(direct.count_total, u64::from(native));
+            assert_eq!(
+                observed.held.load(Ordering::SeqCst),
+                held + direct.bytes_total,
+            );
+            let retained = transferred.key.clone();
+            drop(transferred);
+            assert_eq!(
+                observed.held.load(Ordering::SeqCst),
+                held + direct.bytes_total
+            );
+            drop(retained);
+            observed.assert_refunded();
+            eprintln!(
+                "read key length={length} native={native} allocations: copy={} transfer={}",
+                old.count_total, direct.count_total,
+            );
+        }
+    }
+    for cancelled in [false, true] {
+        let observed = Arc::new(crate::test_meter::Meter::default());
+        let meter = observed.original();
+        let data = vec![b'a'];
+        let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, data.capacity())?;
+        let key = OwnedBytes::from_vec_with_guard(data, allocation, meter)
+            .map_err(|failure| format!("{:?}", failure.into_error()))?;
+        let retained = key.clone();
+        let held = observed.held.load(Ordering::SeqCst);
+        let admissions = observed.allocations.load(Ordering::SeqCst);
+        if cancelled {
+            observed.cancelled.store(true, Ordering::SeqCst);
+        } else {
+            observed.limit.store(admissions, Ordering::SeqCst);
+        }
+        let mut request = read("events", 0, 1)?;
+        request.key = Some(crate::ReadKeySeek { key, before: 4 });
+        assert_eq!(
+            client.read(request).await.err(),
+            Some(if cancelled {
+                StreamError::Unavailable
+            } else {
+                StreamError::Capacity
+            }),
+        );
+        assert_eq!(observed.allocations.load(Ordering::SeqCst), admissions);
+        assert_eq!(observed.held.load(Ordering::SeqCst), held);
+        assert_eq!(retained.as_slice(), b"a");
+        drop(retained);
+        observed.assert_refunded();
+    }
+    let mut oversized = read("events", 0, 1)?;
+    oversized.key = Some(crate::ReadKeySeek {
+        key: vec![b'a'; crate::MAX_RECORD_KEY_BYTES + 1].into(),
+        before: 4,
+    });
+    let rejected = client.read(oversized);
+    let mut outcome = None;
+    let refused = acyclic_test_support::measure(|| outcome = rejected.now_or_never());
+    assert!(matches!(outcome, Some(Err(StreamError::LimitExceeded))));
+    assert_eq!(refused.count_total, 0);
+    assert_eq!(refused.bytes_total, 0);
     crate::conformance::key_seek::verify_with(&*provider, async |request| {
         client.read(request).await
     })
