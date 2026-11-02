@@ -102,7 +102,7 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
         model: call.request.model.name.clone(),
         agent_path: Some(call.source.agent_path.into()),
         sampling: Some(call.request.sampling),
-        max_output_tokens: None,
+        max_output_tokens: call.request.max_output_tokens,
         tokens: super::super::super::ModelTokenUsage {
             input: Some(0),
             output: Some(u64::MAX),
@@ -123,7 +123,10 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     let text = reference["samples"][0]["messages"][0]["content"]
         .as_str()
         .expect("captured SDK text");
-    let bytes = serde_json::to_vec(&request(text.into())).map_err(invalid)?;
+    let mut request = request(text.into());
+    request.sampling.temperature = Some(0.25);
+    request.max_output_tokens = Some(19);
+    let bytes = serde_json::to_vec(&request).map_err(invalid)?;
     let admission = admission(&bytes)?;
     let call = Call::new(source(), &admission, &bytes)?;
     let usage = usage(&call);
@@ -183,6 +186,32 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
         ),
         Err(Error::Invalid(_))
     ));
+    for field in 0..4 {
+        let mut foreign = usage.clone();
+        match field {
+            0 => foreign.agent_path = None,
+            1 => foreign.sampling = None,
+            2 => {
+                foreign
+                    .sampling
+                    .as_mut()
+                    .expect("pinned sampling")
+                    .temperature = Some(0.5)
+            }
+            _ => foreign.max_output_tokens = None,
+        }
+        let mut unpublished = Vec::new();
+        assert!(matches!(
+            call.write(
+                &mut unpublished,
+                "2026-11-02T00:00:00Z",
+                &ModelContent::Text(String::new()),
+                Some(&foreign)
+            ),
+            Err(Error::Invalid(_))
+        ));
+        assert!(unpublished.is_empty(), "refusal must precede shard bytes");
+    }
     let mut foreign = source();
     foreign.operation = OperationId::from_bytes([8; 16]);
     assert!(Call::new(foreign, &admission, &bytes).is_err());

@@ -7,6 +7,7 @@
 
 use super::super::{
     ExecutionEvent, ExecutionJournal, ExecutionRecord, ModelPurpose, ModelUsageRecord, OperationId,
+    model_usage::ModelUsageAdmission,
 };
 use crate::{
     Error, Result,
@@ -162,22 +163,27 @@ impl<'a> Call<'a> {
     }
 
     fn validate_usage(&self, usage: Option<&ModelUsageRecord>) -> Result<()> {
-        if let Some(usage) = usage
-            && (usage.version != ModelUsageRecord::VERSION
-                || !usage.completed
-                || usage.dispatch.operation_id
-                    != self
-                        .purpose
-                        .attempt_operation(self.source.operation, None)?
-                || usage.dispatch.step != self.step
-                || usage.dispatch.request_digest != self.request_digest
-                || usage.purpose != self.purpose
-                || usage.provider != self.request.model.provider
-                || usage.model != self.request.model.name
-                || usage
-                    .agent_path
-                    .as_deref()
-                    .is_some_and(|agent| agent != self.source.agent_path))
+        let Some(usage) = usage else {
+            return Ok(());
+        };
+        let admitted = ModelUsageAdmission {
+            dispatch: crate::model::ModelDispatch {
+                operation_id: self
+                    .purpose
+                    .attempt_operation(self.source.operation, None)?,
+                step: self.step,
+                request_digest: self.request_digest,
+            },
+            purpose: self.purpose,
+            provider: &self.request.model.provider,
+            model: &self.request.model.name,
+            agent_path: Some(self.source.agent_path),
+            sampling: Some(self.request.sampling),
+            max_output_tokens: self.request.max_output_tokens,
+        };
+        if usage.version != ModelUsageRecord::VERSION
+            || !usage.completed
+            || usage.admission() != admitted
         {
             return Err(invalid("usage differs from its original admission"));
         }

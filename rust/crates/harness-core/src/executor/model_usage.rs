@@ -143,6 +143,19 @@ pub struct ModelUsageRecord {
     pub cache: Option<ModelCacheObservation>,
 }
 
+/// Borrowed identity shared by original-request and original-usage readers.
+/// Unknown fields retain their absence; completion measurements are excluded.
+#[derive(PartialEq)]
+pub(crate) struct ModelUsageAdmission<'a> {
+    pub dispatch: crate::model::ModelDispatch,
+    pub purpose: ModelPurpose,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub agent_path: Option<&'a str>,
+    pub sampling: Option<crate::model::ModelSampling>,
+    pub max_output_tokens: Option<u32>,
+}
+
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
     pub const VERSION: u32 = 2;
@@ -155,13 +168,19 @@ impl ModelUsageRecord {
     /// allocation, copying, waiting or traversal of other observations.
     #[must_use]
     pub fn same_admission_as(&self, other: &Self) -> bool {
-        self.dispatch == other.dispatch
-            && self.purpose == other.purpose
-            && self.provider == other.provider
-            && self.model == other.model
-            && self.agent_path == other.agent_path
-            && self.sampling == other.sampling
-            && self.max_output_tokens == other.max_output_tokens
+        self.admission() == other.admission()
+    }
+
+    pub(crate) fn admission(&self) -> ModelUsageAdmission<'_> {
+        ModelUsageAdmission {
+            dispatch: self.dispatch,
+            purpose: self.purpose,
+            provider: &self.provider,
+            model: &self.model,
+            agent_path: self.agent_path.as_deref(),
+            sampling: self.sampling,
+            max_output_tokens: self.max_output_tokens,
+        }
     }
 }
 
