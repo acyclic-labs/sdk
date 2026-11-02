@@ -711,18 +711,9 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
             // Recheck the original grant at every disclosure while the same
             // admitted observation and absolute budget remain held.
             resolve(&metadata).map_err(status)?;
-            deadline.check().map_err(deadline_status)?;
             event.map_err(status)
         });
-        // One absolute timer also ends a pull whose producer never replies.
-        // Tonic ends the response at the first error, retaining the same source.
-        let expiry = futures::stream::once(async move {
-            deadline
-                .within(std::future::pending::<wire::AvailabilityCursor>())
-                .await
-                .map_err(deadline_status)
-        });
-        let events = futures::stream::select(frames, expiry);
+        let events = deadline.stream(frames, deadline_status);
         Ok(tonic::Response::new(Box::pin(events)))
     }
 

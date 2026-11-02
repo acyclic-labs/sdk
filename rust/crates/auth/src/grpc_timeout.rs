@@ -1,5 +1,12 @@
 //! The original gRPC call budget, shared by transport and product admission.
-use std::{future::Future, io, time::Duration};
+use futures::{Stream, stream::FusedStream};
+use std::{
+    future::Future,
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 use tonic::codegen::http::{Extensions, HeaderMap, Request};
 
 /// Decodes the caller's optional timeout. Duplicate or malformed values fail
@@ -106,6 +113,26 @@ impl Deadline {
         Ok(result)
     }
 
+    /// Bounds every disclosure and a pending pull by this same absolute cut.
+    /// Source EOF, source failure and expiry retire the stream once; no timer
+    /// outlives its source. `elapsed` supplies the transport's typed error.
+    /// This adds no allocation or per-item timer, and retains no event history.
+    pub fn stream<S, T, E>(
+        self,
+        stream: S,
+        elapsed: impl FnMut(Elapsed) -> E,
+    ) -> impl Stream<Item = Result<T, E>> + FusedStream
+    where
+        S: Stream<Item = Result<T, E>>,
+    {
+        TimedStream {
+            stream: Some(stream),
+            expiry: self.end.map(tokio::time::sleep_until),
+            deadline: self,
+            elapsed,
+        }
+    }
+
     /// Forwards the remaining budget, rounding down when precision decreases.
     /// A request with no deadline removes a prior relative timeout.
     pub fn forward(self, headers: &mut HeaderMap) -> io::Result<()> {
@@ -132,6 +159,71 @@ impl Deadline {
     }
 }
 
+pin_project_lite::pin_project! {
+    struct TimedStream<S, F> {
+        #[pin]
+        stream: Option<S>,
+        #[pin]
+        expiry: Option<tokio::time::Sleep>,
+        deadline: Deadline,
+        elapsed: F,
+    }
+}
+
+impl<S, F, T, E> Stream for TimedStream<S, F>
+where
+    S: Stream<Item = Result<T, E>>,
+    F: FnMut(Elapsed) -> E,
+{
+    type Item = Result<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        let Some(stream) = this.stream.as_mut().as_pin_mut() else {
+            return Poll::Ready(None);
+        };
+        let next = if this.deadline.check().is_err() {
+            Some(Err((this.elapsed)(Elapsed)))
+        } else {
+            let next = stream.poll_next(cx);
+            if this.deadline.check().is_err() {
+                Some(Err((this.elapsed)(Elapsed)))
+            } else {
+                match next {
+                    Poll::Ready(next) => next,
+                    Poll::Pending => {
+                        if this
+                            .expiry
+                            .as_mut()
+                            .as_pin_mut()
+                            .is_some_and(|expiry| expiry.poll(cx).is_ready())
+                        {
+                            Some(Err((this.elapsed)(Elapsed)))
+                        } else {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+            }
+        };
+        if !matches!(next.as_ref(), Some(Ok(_))) {
+            this.stream.set(None);
+            this.expiry.set(None);
+        }
+        Poll::Ready(next)
+    }
+}
+
+impl<S, F, T, E> FusedStream for TimedStream<S, F>
+where
+    S: Stream<Item = Result<T, E>>,
+    F: FnMut(Elapsed) -> E,
+{
+    fn is_terminated(&self) -> bool {
+        self.stream.is_none()
+    }
+}
+
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "invalid grpc-timeout")
 }
@@ -140,6 +232,53 @@ fn invalid() -> io::Error {
 mod tests {
     use super::*;
     use futures::FutureExt as _;
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_stream_retires_at_eof_failure_and_expiry() {
+        use futures::{StreamExt as _, stream};
+
+        for timeout in [Some("1S"), None] {
+            let mut request = Request::new(());
+            if let Some(timeout) = timeout {
+                request
+                    .headers_mut()
+                    .insert("grpc-timeout", timeout.parse().unwrap());
+            }
+            let deadline = Deadline::of(&request).unwrap();
+            let events =
+                deadline.stream(stream::iter([Ok(1), Err("source"), Ok(2)]), |_| "expired");
+            futures::pin_mut!(events);
+            assert_eq!(events.next().await, Some(Ok(1)));
+            assert_eq!(events.next().await, Some(Err("source")));
+            assert!(events.is_terminated());
+            assert_eq!(events.next().now_or_never(), Some(None));
+
+            let empty = deadline.stream(stream::empty::<Result<(), Elapsed>>(), |error| error);
+            futures::pin_mut!(empty);
+            assert_eq!(empty.next().now_or_never(), Some(None));
+            assert!(empty.is_terminated());
+        }
+
+        let request = Request::builder()
+            .header("grpc-timeout", "1S")
+            .body(())
+            .unwrap();
+        let deadline = Deadline::of(&request).unwrap();
+        let (produce, produced) = tokio::sync::oneshot::channel::<()>();
+        let events = deadline.stream(
+            stream::once(async move { produced.await.map_err(|_| Elapsed) }),
+            |error| error,
+        );
+        // The source can become ready at the deadline; disclosure must still
+        // fail at that original cut rather than renewing a per-pull budget.
+        futures::pin_mut!(events);
+        assert!(events.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        produce.send(()).unwrap();
+        assert!(events.next().await.unwrap().is_err());
+        assert!(events.is_terminated());
+        assert_eq!(events.next().now_or_never(), Some(None));
+    }
 
     #[test]
     fn deadline_admission_rejects_ambiguous_headers_and_preserves_wire_units() {

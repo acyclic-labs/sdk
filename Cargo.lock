@@ -137,6 +137,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "futures",
  "js-sys",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",
