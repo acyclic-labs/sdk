@@ -11,6 +11,9 @@ pub use contract::{
     validate_fork, validate_update,
 };
 
+/// Per-agent spend balances staged in the original actor step transaction.
+pub mod escrow;
+
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
