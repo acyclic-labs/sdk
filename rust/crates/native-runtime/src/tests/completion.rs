@@ -1,5 +1,83 @@
 use super::*;
 
+#[test]
+fn offloaded_completion_keeps_native_work_off_the_polling_thread() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let caller = std::thread::current().id();
+    // The negative control exercises the same real host task under the
+    // surrounding callback's ordinary inline policy.
+    {
+        let _inline = InlineBlocking::enter();
+        assert_eq!(
+            complete(run_blocking_io(|| std::thread::current().id(), None)?)?,
+            caller
+        );
+    }
+    for (detach, withdraw) in [(false, false), (true, false), (false, true)] {
+        let file = tempfile::tempfile()?;
+        file.set_len(37)?;
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (finished, retired) = mpsc::channel();
+        let mut task = {
+            // A construction-time thread-local guard cannot bind a policy
+            // to an operation that will be polled later.
+            let _defer = InlineBlocking::defer();
+            run_blocking_io(
+                move || -> io::Result<u64> {
+                    if std::thread::current().id() == caller {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "native work ran on the polling thread",
+                        ));
+                    }
+                    entered.send(()).map_err(io::Error::other)?;
+                    let result = blocked
+                        .recv()
+                        .map_err(io::Error::other)
+                        .and_then(|()| file.metadata().map(|metadata| metadata.len()));
+                    drop(file);
+                    let _ = finished.send(());
+                    result
+                },
+                None,
+            )?
+            .offloaded()
+        };
+        let first = {
+            let _inline = InlineBlocking::enter();
+            Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop()))
+        };
+        assert!(
+            first.is_pending(),
+            "offloaded native work must return control to its polling coordinator: {first:?}"
+        );
+        started.recv().map_err(io::Error::other)?;
+        {
+            let _inline = InlineBlocking::enter();
+            assert!(
+                Pin::new(&mut task)
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+        }
+        // The original release is produced only after the coordinator has
+        // progressed beyond submission. Dropping it must settle the task.
+        if withdraw {
+            drop(release);
+            assert!(complete(task)?.is_err());
+        } else if detach {
+            drop(task);
+            release.send(()).map_err(io::Error::other)?;
+        } else {
+            release.send(()).map_err(io::Error::other)?;
+            assert_eq!(complete(task)??, 37);
+        }
+        retired.recv().map_err(io::Error::other)?;
+    }
+    Ok(())
+}
+
 fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
     let output = crate::process_output(
         crate::ProcessCommand::new(std::env::current_exe()?)

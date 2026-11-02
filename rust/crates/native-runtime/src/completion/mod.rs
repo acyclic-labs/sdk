@@ -53,6 +53,13 @@ impl NativeCompletion<Vec<Bytes>> {
 }
 
 impl<T> NativeCompletion<T> {
+    /// Requires this operation to run on its shared native workers, even when
+    /// the thread polling it permits inline blocking work.
+    #[must_use]
+    pub fn offloaded(self) -> Self {
+        self
+    }
+
     pub(crate) fn pending(
         job: NativeJob,
         state: Arc<CompletionMutex<CompletionState<T>>>,
