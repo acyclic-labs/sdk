@@ -17,6 +17,7 @@ impl ToolExecutor for NativeTool {
         _: &ToolInvocation,
         _: &ToolContext,
         _: &ExecutionGrant,
+        _: crate::NativeWork<'_>,
     ) -> Result<()> {
         if self.supported {
             Ok(())

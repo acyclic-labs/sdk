@@ -300,6 +300,7 @@ impl ToolExecutor for CheckoutTools {
         invocation: &ToolInvocation,
         _context: &ToolContext,
         grant: &acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
         if invocation.name != crate::tools::shell::PLATFORM.name {
             return Err(Error::Unsupported(
@@ -307,8 +308,9 @@ impl ToolExecutor for CheckoutTools {
             ));
         }
         if let Some(ceiling) = &self.execution_grant {
+            let meter = work.map(acyclic_fs::NativeMaterializationWork::runtime_meter);
             ceiling
-                .check_attenuation(grant)
+                .check_attenuation_controlled(grant, meter.as_deref())
                 .map_err(Error::process_io)?;
         }
         Ok(())

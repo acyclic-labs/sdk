@@ -100,10 +100,11 @@ impl ToolExecutor for WorkspaceExecutor {
         invocation: &ToolInvocation,
         context: &ToolContext,
         grant: &acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        target(context, invocation, None)?
+        target(context, invocation, work)?
             .executor()
-            .authorize_execution_grant(invocation, context, grant)
+            .authorize_execution_grant(invocation, context, grant, work)
     }
 
     fn authorize_replay<'a>(
