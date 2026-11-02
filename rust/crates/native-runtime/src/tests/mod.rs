@@ -41,7 +41,7 @@ fn completion_waker() -> Waker {
 
 /// Polls a pending host task until a worker queue accepted its job, parking
 /// until its admission waker fires between polls.
-fn submit<T>(task: &mut NativeCompletion<T>) {
+pub(crate) fn submit<T>(task: &mut NativeCompletion<T>) {
     let waker = completion_waker();
     while task.pending.is_some() {
         assert!(
