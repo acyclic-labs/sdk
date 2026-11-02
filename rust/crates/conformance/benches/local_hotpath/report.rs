@@ -403,12 +403,9 @@ impl Measurements {
                 "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
                 "p50_ratio": quantiles.p50_ns / floor_ns,
                 "p99_ratio": quantiles.p99_ns / floor_ns,
-                "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
-                "p99_pass": quantiles.p99_ns <= floor_ns * 3.0,
                 "timer_only_quantiles": timer,
                 "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
-                "p50_resolution_limited": floor_ns * 1.5 < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
-                "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns.max(floors.minimum_positive_timer_ns()),
+                "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
                 "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                 "raw_ns": raw_ns,
                 "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {

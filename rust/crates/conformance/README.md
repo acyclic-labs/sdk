@@ -45,7 +45,11 @@ JSON lines retain executable identity, raw observations in acquisition order,
 nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
 component medians. Encoding contributes its minimum payload transfer; this is
 an optimistic semantic floor, not a measurement of a particular serializer.
-The p50 and p99 thresholds are respectively 1.5 and 3 times that same floor.
+These model ratios do not determine acceptance: `ratio_qualified` remains false
+until original physical work, provider groups and a matched device guarantee
+are established. The report emits no percentile pass fields. Timestamp
+resolution is checked against the modeled floor itself, without multiplying
+it by an acceptance threshold.
 These are single-operation latency measurements, not throughput or concurrency
 claims. Payloads and exact reads are checked outside the measured intervals.
 Root setup and session samples share the same exact requested-agent receipt
