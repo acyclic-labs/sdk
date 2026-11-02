@@ -2469,7 +2469,7 @@ mod reader_tests {
             let credit_policy = ReaderPolicy {
                 requests: 4,
                 prefetch_requests: 2,
-                timeout_ms: 100,
+                timeout_ms: Some(100),
                 ..ReaderPolicy::default()
             };
             let mut credit = Reader::new(credit_policy).unwrap();
