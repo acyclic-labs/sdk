@@ -237,11 +237,13 @@ fn artifact_handshake_and_context_defaults_are_explicit() {
     );
 }
 
-#[tokio::test]
-async fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
+#[test]
+fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
 -> Result<(), Box<dyn std::error::Error>> {
     use bytes::Bytes;
-    use futures::StreamExt as _;
+    use futures::FutureExt as _;
+    use http_body::{Body as _, Frame};
+    use http_body_util::BodyExt as _;
     let bytes = Bytes::from_static(b"data: first\n\n");
     let buffered = GuestResponse {
         status: 200,
@@ -255,47 +257,47 @@ async fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
     } else {
         return Err("buffered body changed representation".into());
     }
-    let stream = futures::stream::iter([Ok(bytes), Ok(Bytes::from_static(b"data: second\n\n"))]);
+    // SSE and terminal trailers use the same original frame channel. Read data
+    // before publishing trailers or EOF, then drop while the producer is live.
+    let (sender, frames) = futures::channel::mpsc::unbounded();
+    sender.unbounded_send(Ok(Frame::data(bytes.clone())))?;
     let response = http::Response::builder()
         .header("content-type", "text/event-stream")
-        .body(GuestBody::Stream(Box::pin(stream)))?;
-    if let GuestBody::Stream(mut body) = response.into_body() {
-        assert_eq!(
-            body.next().await.transpose()?,
-            Some(Bytes::from_static(b"data: first\n\n"))
-        );
-        assert_eq!(
-            body.next().await.transpose()?,
-            Some(Bytes::from_static(b"data: second\n\n"))
-        );
-    } else {
-        return Err("stream was buffered".into());
-    }
-    // Use the original frame channel: unread/drop cancellation closes that
-    // producer, and terminal headers are never folded into initial headers.
-    use http_body::{Body as _, Frame};
-    use std::pin::Pin;
-    let (sender, frames) = futures::channel::mpsc::unbounded();
-    let data = Bytes::from_static(b"grpc-data");
-    sender.unbounded_send(Ok(Frame::data(data.clone())))?;
+        .body(GuestBody::Frames(Box::pin(
+            http_body_util::StreamBody::new(frames),
+        )))?;
+    let mut body = response.into_body();
+    let frame = body
+        .frame()
+        .now_or_never()
+        .ok_or("data waited for source EOF")?
+        .ok_or("missing data")??;
+    assert_eq!(
+        frame.data_ref().ok_or("expected data")?.as_ptr(),
+        bytes.as_ptr()
+    );
+    assert!(!sender.is_closed());
+    let second = Bytes::from_static(b"data: second\n\n");
+    sender.unbounded_send(Ok(Frame::data(second.clone())))?;
+    let frame = body
+        .frame()
+        .now_or_never()
+        .ok_or("second chunk waited for source EOF")?
+        .ok_or("missing second chunk")??;
+    assert_eq!(frame.data_ref(), Some(&second));
     let mut trailers = http::HeaderMap::new();
     trailers.insert("grpc-status", "0".parse()?);
     trailers.append("x-terminal", "a".parse()?);
     trailers.append("x-terminal", "b".parse()?);
     sender.unbounded_send(Ok(Frame::trailers(trailers.clone())))?;
-    let mut body = GuestBody::Frames(Box::pin(http_body_util::StreamBody::new(frames)));
-    let frame = futures::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
-        .await
-        .ok_or("missing data")??;
-    assert_eq!(
-        frame.data_ref().ok_or("expected data")?.as_ptr(),
-        data.as_ptr()
-    );
-    let terminal = futures::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
-        .await
+    let terminal = body
+        .frame()
+        .now_or_never()
+        .ok_or("trailers waited for source EOF")?
         .ok_or("missing trailers")??;
     assert_eq!(terminal.trailers_ref(), Some(&trailers));
     assert!(!sender.is_closed());
+    assert!(!body.is_end_stream());
     drop(body);
     assert!(sender.is_closed());
     Ok(())

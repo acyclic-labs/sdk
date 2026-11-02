@@ -72,7 +72,9 @@ resume can deliver unconsumed input using the original committed cursor.
 
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
 frames, terminal trailers and cancellation when dropped. Existing buffered
-bytes and lazy chunk streams remain supported without collecting the body.
+bytes use `GuestBody::Buffered`; lazy data and trailers share `GuestBody::Frames`.
+Wrap a chunk stream in `http_body_util::StreamBody` with `Frame::data` items;
+the original producer remains lazy and is cancelled when the body is dropped.
 
 JavaScript `ActorDefinition.fetch` accepts a WHATWG `Response` or
 `GuestResponseStream`: status, initial headers, a lazy body, a terminal
