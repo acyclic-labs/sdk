@@ -40,6 +40,20 @@ export async function fileBytes(path, expected) {
   assert.deepEqual(await readFile(path), Buffer.from(expected, "utf8"), path);
 }
 
+// Both public FileReadSource variants retain identity inside their envelope.
+export function fileRead(result, path, expected) {
+  assert.equal(result.text, expected, "read returned different file bytes");
+  const variants = Object.keys(result.file ?? {});
+  assert.equal(variants.length, 1, "read needs exactly one original file source");
+  assert.ok(variants[0] === "authored" || variants[0] === "content", "unknown file read source");
+  const file = result.file[variants[0]];
+  assert.equal(file?.path, path, "read names a different file");
+  assert.ok(typeof file?.volume?.id === "string" && file.volume.id.length > 0, "read lost its volume identity");
+  assert.ok(variants[0] === "authored" ? file.generation !== undefined : typeof file.version === "string",
+    "read lost its selected revision");
+  return file;
+}
+
 // A request notification is the mock's commit boundary: append and flush precede
 // it, and the HTTP reply follows it. Killing the server can leave an unpublished
 // tail, but cannot truncate an acknowledged record. Case assertions still require

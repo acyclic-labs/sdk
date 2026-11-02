@@ -6,15 +6,35 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { executionSucceeded, fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, fileRead, jsonlReply, messageReply, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
 const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
 const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
+const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
 const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
+
+test("file reads retain the original authored or content source", () => {
+  for (const { event } of fileReads) {
+    const original = event.tool_response, expected = original.text;
+    const kind = Object.keys(original.file)[0], source = original.file[kind];
+    assert.equal(fileRead(original, event.tool_input.path, expected), source);
+    for (const mutate of [
+      value => { delete value.file; },
+      value => { value.file.other = value.file[kind]; },
+      value => { value.file[kind].path = "different.txt"; },
+      value => { delete value.file[kind].volume; },
+      value => { delete value.file[kind][kind === "authored" ? "generation" : "version"]; },
+      value => { value.text += " "; },
+    ]) {
+      const changed = structuredClone(original); mutate(changed);
+      assert.throws(() => fileRead(changed, event.tool_input.path, expected));
+    }
+  }
+});
 
 test("successful execution cannot erase the original returned native cause", () => {
   let stderrReads = 0;
