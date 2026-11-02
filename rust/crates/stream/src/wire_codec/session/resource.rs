@@ -60,25 +60,47 @@ pub fn stream_path(resource: &str) -> Result<StreamPath, StreamError> {
 }
 
 fn decode_stream_path(encoded: &str) -> Result<StreamPath, StreamError> {
-    let mut path = String::new();
+    let mut path = Vec::new();
     for (index, component) in encoded.split('/').enumerate() {
-        let decoded =
-            acyclic_auth::decode_component(component).map_err(|_| StreamError::InvalidArgument)?;
-        // A slash inside a component cannot become a namespace separator.
-        if decoded.contains(&b'/') {
-            return Err(StreamError::InvalidPath);
-        }
         if index != 0 {
-            path.push('/');
+            path.push(b'/');
         }
-        path.push_str(std::str::from_utf8(&decoded).map_err(|_| StreamError::InvalidPath)?);
+        for byte in acyclic_auth::component_bytes(component) {
+            let byte = byte.map_err(|_| StreamError::InvalidArgument)?;
+            // A slash inside a component cannot become a namespace separator.
+            if byte == b'/' {
+                return Err(StreamError::InvalidPath);
+            }
+            path.push(byte);
+        }
     }
-    StreamPath::new(path)
+    StreamPath::new(String::from_utf8(path).map_err(|_| StreamError::InvalidPath)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Original owned-component decoder is the independent allocation control.
+    fn temporary_stream_path(resource: &str) -> Result<StreamPath, StreamError> {
+        envelope(resource)?;
+        let encoded = resource
+            .strip_prefix("streams:/")
+            .ok_or(StreamError::Unsupported)?;
+        let mut path = String::new();
+        for (index, component) in encoded.split('/').enumerate() {
+            let decoded = acyclic_auth::decode_component(component)
+                .map_err(|_| StreamError::InvalidArgument)?;
+            if decoded.contains(&b'/') {
+                return Err(StreamError::InvalidPath);
+            }
+            if index != 0 {
+                path.push('/');
+            }
+            path.push_str(std::str::from_utf8(&decoded).map_err(|_| StreamError::InvalidPath)?);
+        }
+        StreamPath::new(path)
+    }
 
     #[test]
     fn resource_round_trip_preserves_reserved_names_and_literal_percent_bytes()
@@ -113,6 +135,15 @@ mod tests {
                     "resource={path} allocations: temporary={} composed={}",
                     temporary.count_total, composed.count_total
                 );
+                let (_, [temporary, direct]) = acyclic_test_support::differential(
+                    || temporary_stream_path(std::hint::black_box(&resource)),
+                    || stream_path(std::hint::black_box(&resource)),
+                );
+                assert!(direct.count_total < temporary.count_total);
+                eprintln!(
+                    "path={path} allocations: temporary={} direct={}",
+                    temporary.count_total, direct.count_total
+                );
             }
             let decoded = stream_path(&resource)?;
             assert_eq!(decoded.as_str(), path);
@@ -146,9 +177,14 @@ mod tests {
             "streams:/a/",
             "streams:/%2E%2E/b",
             "streams:/caf%C3%A9",
+            "streams:/%FF",
+            "streams:/%00",
+            "streams:/%2F/%gg",
+            "streams:/%FF/%gg",
             "streams:/",
             "fs:/volume",
         ] {
+            assert_eq!(stream_path(resource), temporary_stream_path(resource));
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
             for path in ["events", "a/b", "a.b", "caf%C3%A9", "fs/volume"] {
                 assert!(!stream_resource_matches(

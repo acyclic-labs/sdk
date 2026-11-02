@@ -696,19 +696,30 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
 }
 #[test]
 fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
-    let auth = Arc::new(authority(State::new()));
-    let mut slots = Slots::default();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume/public/", |_| {}), 2)
+    for (encoded, path) in [
+        ("public", "public"),
+        ("public%2Edir/literal%252F", "public.dir/literal%2F"),
+        ("caf%C3%A9", "café"),
+    ] {
+        let auth = Arc::new(authority(State::new()));
+        let mut slots = Slots::default();
+        auth.register(
+            &mut slots,
+            0,
+            &fs_token(&format!("fs:/volume/{encoded}/"), |_| {}),
+            2,
+        )
         .unwrap();
-    let (_, filter, context) = auth
-        .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
-        .unwrap();
-    let indexed = context.filter_paths("fs:/volume", &filter).unwrap();
-    let matches = |key: &[u8]| {
-        indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap())
-    };
-    assert!(matches(b"public/file"));
-    assert!(!matches(b"public-other"));
+        let (_, filter, context) = auth
+            .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+            .unwrap();
+        let indexed = context.filter_paths("fs:/volume", &filter).unwrap();
+        let matches = |key: &[u8]| {
+            indexed.matches(&crate::RecordHeaders::new(vec![key.to_vec().into()], vec![]).unwrap())
+        };
+        assert!(matches(format!("{path}/file").as_bytes()));
+        assert!(!matches(format!("{path}-other").as_bytes()));
+    }
 }
 #[test]
 fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {

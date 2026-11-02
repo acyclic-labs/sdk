@@ -84,9 +84,10 @@ pub fn component_matches(encoded: &str, value: &[u8]) -> bool {
     component_bytes(encoded).eq(value.iter().copied().map(Ok))
 }
 
-// Validation consumes this iterator without collecting; decoding collects the
-// same canonical bytes. No syntax-only caller allocates a component buffer.
-fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {
+/// Iterate canonical decoded bytes without allocating a component buffer.
+/// Malformed input and alternate spellings yield an error during iteration.
+/// Callers must consume the entire component before accepting its spelling.
+pub fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {
     let mut bytes = value.bytes();
     std::iter::from_fn(move || {
         bytes.next().map(|b| {
