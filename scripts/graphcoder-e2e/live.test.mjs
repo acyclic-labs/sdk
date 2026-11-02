@@ -63,6 +63,9 @@ test("collaboration requires the spawned child's exact settled public result", (
       events => { events[1].tool_response.settled[0].phase = "failed"; },
       events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
       events => { events[1].tool_response.error = "wait failed"; },
+      events => { events.push(structuredClone(spawn)); },
+      events => { events.push({ ...structuredClone(spawn), tool_response: {
+        ...spawn.tool_response, agent: "agents/project/other", name: "other" } }); },
     ]) {
       const events = structuredClone(original);
       mutate(events);

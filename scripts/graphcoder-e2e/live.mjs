@@ -41,6 +41,7 @@ export function requireTools(hooks, names, expectedChildResult) {
     remaining.delete(hook.tool_name);
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
+      assert.equal(child, undefined, "single-child journey spawned another child");
       child = hook.tool_response.agent;
       childName = hook.tool_response.name;
     } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
