@@ -550,7 +550,7 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || queries.source().is_some() {
+            let panel_scroll = if overlay.is_some() || queries.source().is_some() {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
