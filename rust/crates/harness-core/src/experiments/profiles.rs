@@ -13,8 +13,8 @@ pub struct Population {
 }
 
 impl Population {
-    /// Checks all executable roles, so descendants cannot select an expensive
-    /// model. `profiles` must be the host's immutable profile snapshot.
+    /// Checks every executable role's declared model. The executor must bind
+    /// those selections; `profiles` is the host's immutable profile snapshot.
     pub fn admit(
         file: ArmsFile,
         profiles: &Profiles,

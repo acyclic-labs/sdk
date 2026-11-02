@@ -45,6 +45,10 @@ per arm across independent cuts, and obtain approval before scaling up. The
 format has no hidden population cap;
 the replicate count is the user's reservation. Arm order rotates between
 replicates to reduce a fixed temporal ordering effect.
+The file, its cut and each arm must be JSON objects. Positional arrays, duplicate
+fields and trailing input are refused at admission. Decoding uses the shared
+streaming object boundary, with one final arm vector and no intermediate JSON
+tree or second validation parse.
 
 `experiments::Population::admit` checks the version, identities, role context and
 declared model selection before execution. All executable roles in the host's

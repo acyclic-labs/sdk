@@ -84,6 +84,34 @@ fn unsafe_admission_and_mismatched_pairs_are_refused_before_execution()
     assert!(Population::admit(arms(), &expensive, &expensive.root()?).is_err());
     let profiles = profiles(CheapModel::Haiku.key())?;
     assert!(Population::admit(arms(), &profiles, &profiles.root()?).is_err());
+    // Authored configuration inputs exercise the actual streaming boundary.
+    let valid = serde_json::to_value(arms())?;
+    ArmsFile::decode(&serde_json::to_vec(&valid)?)?;
+    let root_array = serde_json::json!([
+        valid["version"],
+        valid["experiment"],
+        valid["cut"],
+        valid["replicates"],
+        valid["arms"]
+    ]);
+    assert!(ArmsFile::decode(&serde_json::to_vec(&root_array)?).is_err());
+    let mut cut_array = valid.clone();
+    cut_array["cut"] = serde_json::json!([valid["cut"]["agent"], valid["cut"]["turn"]]);
+    assert!(ArmsFile::decode(&serde_json::to_vec(&cut_array)?).is_err());
+    let mut arm_array = valid.clone();
+    let arm = &valid["arms"][0];
+    arm_array["arms"][0] = serde_json::json!([
+        arm["name"],
+        arm["topology"],
+        arm["role"],
+        arm["model"],
+        arm["prompt"]
+    ]);
+    assert!(ArmsFile::decode(&serde_json::to_vec(&arm_array)?).is_err());
+    let serialized = serde_json::to_string(&valid)?;
+    assert!(ArmsFile::decode(format!("{serialized} null").as_bytes()).is_err());
+    let duplicated = format!("{{\"version\":1,{}", &serialized[1..]);
+    assert!(ArmsFile::decode(duplicated.as_bytes()).is_err());
     let mut invalid = arms();
     invalid.version = 2;
     assert!(ArmsFile::decode(&serde_json::to_vec(&invalid)?).is_err());

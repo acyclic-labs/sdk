@@ -93,7 +93,7 @@ pub struct Arm {
     pub topology: Topology,
     /// Admitted inherited-context role, including its model selection.
     pub role: String,
-    /// Must equal the role's actual model; never a model hint in a prompt.
+    /// Must equal the role's declared model; the executor must bind that model.
     pub model: CheapModel,
     /// New brief. It is staged by the ordinary fork owner.
     pub prompt: String,
@@ -108,17 +108,19 @@ pub struct ArmsFile {
     /// Caller-chosen experiment identity.
     pub experiment: String,
     /// Common immutable saved turn for every arm and replicate.
+    #[serde(deserialize_with = "crate::executor::json::deserialize_object")]
     pub cut: Cut,
     /// Explicit user reservation; there is no implicit population limit.
     pub replicates: NonZeroU64,
     /// Baseline followed by treatments.
+    #[serde(deserialize_with = "crate::executor::json::deserialize_objects")]
     pub arms: Vec<Arm>,
 }
 
 impl ArmsFile {
     /// Decode and validate before any fork or provider call.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let file: Self = serde_json::from_slice(bytes)?;
+        let file: Self = crate::executor::json::decode_object(bytes)?;
         file.validate()?;
         Ok(file)
     }
