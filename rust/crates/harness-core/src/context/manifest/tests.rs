@@ -241,7 +241,7 @@ proptest! {
 #[cfg(feature = "filesystem")]
 #[test]
 fn selected_catalog_positions_keep_only_their_original_funding() -> Result<()> {
-    use crate::executor::{stock_retire_text, stock_string_copy};
+    use crate::executor::stock_string_copy;
 
     fn live(io: &PreparationIo) -> u64 {
         match io {
@@ -318,7 +318,9 @@ fn selected_catalog_positions_keep_only_their_original_funding() -> Result<()> {
                         before,
                         "cancellation prevented original selection retirement"
                     );
-                    stock_retire_text(sibling, Some(io))?;
+                    let sibling_custody = io.guard_owned(sibling_bytes)?;
+                    drop(sibling);
+                    drop(sibling_custody);
                     Ok(())
                 },
             )
