@@ -4,6 +4,7 @@ use acyclic_auth::{
         Deny, PolicyDecision, Request, Target, decode_block, decode_capability, decode_caveat,
         permits,
     },
+    component_matches,
     contract::{
         BlockProto, CapabilityProto, CaveatProto, Limits, RecordAttributes, RecordAttributesProto,
         SocketHostRule, SocketHostRuleProto,
@@ -43,10 +44,9 @@ fuzz_target!(|bytes: &[u8]| {
             Ok(value)
         );
     }
-    assert_eq!(
-        decode_component(&encode_component(bytes)),
-        Ok(bytes.to_vec())
-    );
+    let encoded = encode_component(bytes);
+    assert_eq!(decode_component(&encoded), Ok(bytes.to_vec()));
+    assert!(component_matches(&encoded, bytes));
     if let Ok(text) = std::str::from_utf8(bytes) {
         let attributes = RecordAttributes::default();
         let usage = Limits {
@@ -109,8 +109,14 @@ fuzz_target!(|bytes: &[u8]| {
                 Ok(value)
             );
         }
-        if let Ok(decoded) = decode_component(text) {
+        let decoded = decode_component(text);
+        assert_eq!(
+            component_matches(text, bytes),
+            decoded.as_ref().is_ok_and(|decoded| decoded == bytes)
+        );
+        if let Ok(decoded) = decoded {
             assert_eq!(encode_component(&decoded), text);
+            assert!(component_matches(text, &decoded));
         }
     }
     let numeric = format!(

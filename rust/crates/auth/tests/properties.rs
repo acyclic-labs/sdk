@@ -108,9 +108,27 @@ proptest! {
     }
     // Encoding is a left inverse on arbitrary bytes and injective on pairs,
     // including invalid UTF-8, dots, slashes, query punctuation and percent.
+    // Borrowed matching preserves that identity without a decoded allocation.
     #[test]
     fn opaque_keys_round_trip_without_collisions(a in prop::collection::vec(any::<u8>(),0..64), b in prop::collection::vec(any::<u8>(),0..64), bucket in prop::collection::vec(any::<u8>(),1..16), other_bucket in prop::collection::vec(any::<u8>(),1..16)) {
-        prop_assert_eq!(decode_component(&encode_component(&a)),Ok(a.clone()));
+        let encoded = encode_component(&a);
+        let ((exact, candidate), [decoded, borrowed]) = acyclic_test_support::differential(
+            || {
+                let value = decode_component(std::hint::black_box(&encoded)).unwrap();
+                (value == a, value == b)
+            },
+            || (
+                component_matches(std::hint::black_box(&encoded), std::hint::black_box(&a)),
+                component_matches(std::hint::black_box(&encoded), std::hint::black_box(&b)),
+            ),
+        );
+        prop_assert!(exact);
+        prop_assert_eq!(candidate, a == b);
+        prop_assert_eq!(borrowed.count_total, 0);
+        // Nonempty inputs make the original decoder an allocating control.
+        if !a.is_empty() {
+            prop_assert!(decoded.count_total > 0);
+        }
         prop_assert_eq!(objects_resource(&bucket,&a)==objects_resource(&other_bucket,&b),bucket==other_bucket && a==b);
         prop_assert!(valid_resource(&objects_resource(&bucket,&a)));
     }
