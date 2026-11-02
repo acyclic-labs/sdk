@@ -45,7 +45,20 @@ JSON lines retain executable identity, raw observations in acquisition order,
 nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
 component medians. Encoding contributes its minimum payload transfer; this is
 an optimistic semantic floor, not a measurement of a particular serializer.
-The p50 and p99 thresholds are respectively 1.5 and 3 times that same floor.
+These model ratios do not determine acceptance: `ratio_qualified` remains false
+until original physical work, provider groups and a matched device guarantee
+are established. The report emits no percentile pass fields. Timestamp
+resolution is checked against the modeled floor itself, without multiplying
+it by an acceptance threshold.
+Each operation cohort requires identical floor terms across all its samples;
+a sample with different required work refuses before changing that cohort.
+Run the same quantile and cohort admission controls without calibration, storage
+setup or model calls:
+
+```sh
+cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+```
+
 These are single-operation latency measurements, not throughput or concurrency
 claims. Payloads and exact reads are checked outside the measured intervals.
 Root setup and session samples share the same exact requested-agent receipt
@@ -117,6 +130,15 @@ never become metric labels.
 Native worker context is retained by the original persistence job. Unobserved
 leaves, concurrent work and original provider/group attribution remain unknown,
 so these diagnostics do not qualify `durability_calls` or count device drains.
+The same optional projection retains fixed terminal-sample counters for original
+persistence and blocking-I/O tasks. Queue transfer, closure entry and panic each
+distinguish unknown, false and true; terminal disposition distinguishes unknown,
+success, I/O error, panic and missing result. Outcome remains independent of the
+panic flag, preserving a stored I/O error alongside a panic. An abandoned
+unsubmitted task contributes incomplete evidence with unknown admission and
+terminal, rather than a fabricated successful transfer. These terminal samples
+do not count still-active jobs, queue latency, final backing retirement or native
+Worker execution, and supply no authenticated physical admission binding.
 Run the deterministic observer controls with
 `cargo test --locked -p acyclic-test-support scale::tests`. They execute an
 injected scan, real per-agent threads, virtual timer registrations and a lost
@@ -168,8 +190,12 @@ request and publication holds; independent lifecycles can share the provider's
 existing group sync. Root-publication completion is reported before replay.
 All submissions and initial replay settle before serial operation samples begin.
 
+The native floor report uses the shared local provider defaults: memory capacity
+is unbounded, journal compaction retains its normal targets, and durability uses
+the full-flush policy.
+
 The native floor report also retains a timer-only observation control. Ratios
-include sampler cost; rows flag targets below the measured timestamp resolution.
+include sampler cost; rows flag modeled floors below the measured timestamp resolution.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
 Call and copy calibration use4096-operation batches; hashing uses64-operation
@@ -177,7 +203,7 @@ batches. Their observations and quantiles are normalized batch averages, so
 their calibration p99 does not describe an individual call's tail. Operation
 rows retain individually timed samples without batch averaging.
 Zero-duration samples are retained when both timestamps occupy the same clock
-tick. Resolution flags also use the smallest positive timer-only observation;
+tick. The floor-resolution flag also uses the smallest positive timer-only observation;
 an entirely unresolved timer or a zero-median semantic floor refuses calibration.
 Requested HEAD and LIST results are data. The shared observer excludes exactly
 the original query dispatch from control overhead, retains every provider class,

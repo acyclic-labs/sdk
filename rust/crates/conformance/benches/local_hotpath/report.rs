@@ -47,7 +47,7 @@ impl Quantiles {
     }
 }
 
-pub(super) fn check_quantiles() -> Result {
+pub(super) fn check_observations() -> Result {
     let mut values: Vec<_> = (1..=100).map(f64::from).rev().collect();
     let quantiles = Quantiles::new(&mut values)?;
     if quantiles.p50_ns != 50.0 || quantiles.p99_ns != 99.0 {
@@ -64,8 +64,35 @@ pub(super) fn check_quantiles() -> Result {
             return Err("invalid observations admitted by quantile negative control".into());
         }
     }
+    let mut cohort = Measurements::new(
+        1,
+        RequestLedger::default(),
+        None,
+        "use samples with identical floor terms",
+        &[Operation::ObjectGet],
+    );
+    let mut record = |bytes| {
+        cohort.record(
+            Operation::ObjectGet,
+            Terms {
+                copy_bytes: bytes,
+                ..Terms::default()
+            },
+            Duration::ZERO,
+            Observation::default(),
+            serde_json::Value::Null,
+        )
+    };
+    record(1024)?;
+    if record(2048).is_ok() {
+        return Err("different required work was admitted into one latency cohort".into());
+    }
+    record(1024)?;
+    if cohort.rows[&Operation::ObjectGet].raw_ns.len() != 2 {
+        return Err("refused floor terms changed the original latency cohort".into());
+    }
     emit(
-        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations", "result": "rejected"}),
+        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
     )
 }
 
@@ -82,7 +109,7 @@ pub(super) fn emit(value: impl Serialize) -> Result {
 }
 
 /// Coefficients of the semantic floor, independent of implementation overhead.
-#[derive(Clone, Copy, Default, Serialize)]
+#[derive(Clone, Copy, Default, Eq, PartialEq, Serialize)]
 pub(super) struct Terms {
     pub(super) flushes: u32,
     pub(super) wakes: u32,
@@ -340,6 +367,9 @@ impl Measurements {
             identities: Vec::new(),
             original_work: Vec::new(),
         });
+        if row.terms != floor {
+            return Err(format!("{} samples have different floor terms", operation.name()).into());
+        }
         row.raw_ns.push(ns(elapsed));
         row.work.record(observation.work, &self.recovery)?;
         row.coordinator_allocations
@@ -403,12 +433,9 @@ impl Measurements {
                 "ratio_qualification": "raw semantic-model comparison; physical work, provider group coverage and matched device guarantee remain unqualified",
                 "p50_ratio": quantiles.p50_ns / floor_ns,
                 "p99_ratio": quantiles.p99_ns / floor_ns,
-                "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
-                "p99_pass": quantiles.p99_ns <= floor_ns * 3.0,
                 "timer_only_quantiles": timer,
                 "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
-                "p50_resolution_limited": floor_ns * 1.5 < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
-                "p99_resolution_limited": floor_ns * 3.0 < timer.p99_ns.max(floors.minimum_positive_timer_ns()),
+                "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
                 "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                 "raw_ns": raw_ns,
                 "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {

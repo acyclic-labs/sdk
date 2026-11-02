@@ -166,15 +166,25 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile and cohort admission controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
-    if let Err(error) = run() {
-        let recovery = Options::parse().map_or_else(
-            |_| "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
-            |options| options.recovery(),
-        );
+    let observations_only = std::env::args().any(|argument| argument == "--check-observations");
+    let result = if observations_only {
+        report::check_observations()
+    } else {
+        run()
+    };
+    if let Err(error) = result {
+        let recovery = if observations_only {
+            "cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations".into()
+        } else {
+            match Options::parse() {
+                Ok(options) => options.recovery(),
+                Err(_) => "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
+            }
+        };
         eprintln!("STEP_FAILED local-hotpath: {error}; recovery: {recovery}");
         std::process::exit(1);
     }
@@ -190,7 +200,7 @@ fn run() -> Result {
         #[cfg(not(feature = "local-hotpath-proofs"))]
         return Err("--proofs requires --features local-hotpath-proofs".into());
     }
-    report::check_quantiles()?;
+    report::check_observations()?;
     std::fs::create_dir(&options.root)?;
     let executable = std::fs::read(std::env::current_exe()?)?;
     emit(serde_json::json!({
@@ -272,6 +282,10 @@ fn run() -> Result {
             "syscall_rows": ["unknown", "fsync", "fdatasync", "F_FULLFSYNC", "F_BARRIERFSYNC", "FlushFileBuffers", "syncfs"],
             "outcome_columns": ["ok", "err", "incomplete"],
             "missing_field_columns": ["requested", "syscall", "descriptor", "parent", "os_error_on_failure"],
+            "task_rows": ["persistence", "blocking_io"],
+            "task_boolean_columns": ["unknown", "false", "true"],
+            "task_terminal_columns": ["unknown", "ok", "io_error", "panic", "missing"],
+            "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
         }))?;
     }
     for finding in counts.findings(&options.operations, &recovery) {
