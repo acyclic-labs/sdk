@@ -237,7 +237,7 @@ async fn working_cut_admission_controls(
             execution
                 .stage_working_cut(
                     journal,
-                    working_tail::WorkingCompaction {
+                    crate::executor::working_tail::WorkingCompaction {
                         input: &fresh,
                         step: 0,
                         prior: 0,
