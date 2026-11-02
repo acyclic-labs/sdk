@@ -601,10 +601,10 @@ async fn print(
     entry: &ConversationEntry,
     output: &mut Output,
 ) -> Result<u8, Failure> {
-    let (_, text) = conversation.turn(entry).await?;
+    let text = conversation.output_text(entry).await?;
     output.write(conversation.task(), text.into_bytes()).await?;
     output.write(conversation.task(), [b'\n']).await?;
-    Ok(u8::from(entry.outcome != TurnOutcome::Completed))
+    Ok(u8::from(!entry.outcome.is_completed()))
 }
 
 /// The printed answer of prompt `id`, settled as `entry`.
@@ -614,7 +614,7 @@ async fn answer(
     entry: &ConversationEntry,
     inbox: u64,
 ) -> Result<Value, Failure> {
-    let (_, text) = conversation.turn(entry).await?;
+    let text = conversation.output_text(entry).await?;
     Ok(json!({"id": id, "inbox": inbox, "text": text}))
 }
 
@@ -636,7 +636,7 @@ async fn settled(
                     Some(json!({"id": id, "inbox": inbox, "error": "turn cancelled"}))
                 }
                 TurnOutcome::RestoreConflict => {
-                    let (_, text) = conversation.turn(&entry).await?;
+                    let text = conversation.output_text(&entry).await?;
                     Some(json!({"id": id, "inbox": inbox, "error": text}))
                 }
             }

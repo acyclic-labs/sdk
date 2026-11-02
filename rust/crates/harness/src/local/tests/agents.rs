@@ -244,6 +244,8 @@ async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>>
 
 #[tokio::test]
 async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply, encode_agent_reply};
+
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = text();
@@ -256,7 +258,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let client = conversation(&harness).await?;
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone())?;
     let mut usage = client.usage_query();
     while !usage.synchronized() {
         usage.advance().await?;
@@ -270,6 +273,32 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.request_count(), 1);
+    assert_eq!(
+        client.turn(&entry).await?,
+        (Some("hello".into()), "done".into())
+    );
+    // An output-only projection must not depend on the prompt's source. The
+    // full turn still reads both, and the output keeps its original read fence.
+    let absent = |file: &crate::conversation::FileRef| {
+        crate::conversation::FileRef::new(
+            file.volume().clone(),
+            "missing-turn-text".into(),
+            file.version().into(),
+            file.descriptor().clone(),
+            file.display_name().into(),
+            &mut None,
+        )
+        .map_err(agent)
+    };
+    let mut output_only = entry.clone();
+    let TurnInput::Message { body, .. } = &mut output_only.input else {
+        return Err(Error::Invalid("the settled input is not a prompt".into()));
+    };
+    **body = absent(body)?;
+    assert!(client.turn(&output_only).await.is_err());
+    assert_eq!(client.output_text(&output_only).await?, "done");
+    output_only.output = absent(&entry.output)?;
+    assert!(client.output_text(&output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while usage.totals().completed == 0 {
@@ -279,6 +308,30 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(usage.totals().completed, 1);
     assert!(usage.totals().currency.is_none());
     assert_eq!(usage.totals().token_nano_units.value(), None);
+    // The real journal's current format crosses the same shared boundary in
+    // both directions. No other version or agent can enter this usage view.
+    let command = AgentCommand::Usage {
+        agent: root.clone(),
+        input: inbox,
+        after: 0,
+        wait: false,
+    };
+    let mut reply = Ok(connection.execute(&command).await?);
+    let version = crate::executor::ModelUsageRecord::VERSION;
+    for (version, agent_path) in [(version ^ 1, Some(root.as_str())), (version, None)] {
+        let Ok(AgentReply::Usage {
+            page: Some(page), ..
+        }) = &mut reply
+        else {
+            return Err(Error::Invalid("the settled usage page is absent".into()));
+        };
+        assert!(!page.items.is_empty());
+        for row in &mut page.items {
+            row.version = version;
+            row.agent_path = agent_path.map(str::to_owned);
+        }
+        assert!(encode_agent_reply(&reply, &command).is_err());
+    }
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
