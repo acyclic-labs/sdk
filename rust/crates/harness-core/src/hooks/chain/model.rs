@@ -265,8 +265,11 @@ fn joined(bytes: &[u8]) -> Result<()> {
             ));
         }
         if cancel != 1 {
+            // The join may also schedule itself while polling. Measure only
+            // the wake caused by withdrawing this original result producer.
+            let before = wakes.0.load(Ordering::Relaxed);
             drop(producers[first_completed].take());
-            if wakes.0.load(Ordering::Relaxed) != 1 {
+            if wakes.0.load(Ordering::Relaxed) != before + 1 {
                 return Err(Error::Invalid(
                     "joined hook result lost its first wake".into(),
                 ));
@@ -277,8 +280,9 @@ fn joined(bytes: &[u8]) -> Result<()> {
                 ));
             }
             if cancel == 0 {
+                let before = wakes.0.load(Ordering::Relaxed);
                 drop(producers[1 - first_completed].take());
-                if wakes.0.load(Ordering::Relaxed) != 2 {
+                if wakes.0.load(Ordering::Relaxed) != before + 1 {
                     return Err(Error::Invalid(
                         "joined hook result lost its final wake".into(),
                     ));
