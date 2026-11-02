@@ -14,6 +14,7 @@ use acyclic_stream::{
     AppendRequest, IdempotencyKey, MemoryStream, StreamProvider as _, StreamProviderExt as _,
 };
 use futures::StreamExt as _;
+use std::borrow::Cow;
 
 // Generated arithmetic operands, not captured or fabricated provider output.
 fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
@@ -76,7 +77,7 @@ fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
 
 // These are the file values consumed by hooks and typed readers, separate from
 // the original records that supply them. Compare JSON values, not rendered bytes.
-fn public_file_contract(usage: &Usage, context: &ContextInfo) {
+fn public_file_contract(usage: &Usage<'_>, context: &ContextInfo<'_>) {
     assert_eq!(
         serde_json::to_value(usage).unwrap(),
         serde_json::json!({
@@ -180,7 +181,15 @@ fn public_file_contract(usage: &Usage, context: &ContextInfo) {
 fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
     futures::executor::block_on(async {
         let (admission, mut call, mut price) = call();
-        let first = Usage::project(&admission, &call, Some(&price)).unwrap();
+        let projected = Usage::project(&admission, &call, Some(&price)).unwrap();
+        assert!(matches!(&projected.model, Cow::Borrowed(_)));
+        assert_eq!(projected.model.as_ptr(), call.model.as_ptr());
+        // A decoded file owns its text independently of the producer. The
+        // serialization view must not pre-copy that same original model name.
+        let first: Usage<'static> =
+            serde_json::from_value(serde_json::to_value(&projected).unwrap()).unwrap();
+        assert_eq!(first, projected);
+        assert!(matches!(&first.model, Cow::Owned(_)));
         assert_eq!(first.input_tokens, 100);
         assert!((first.cost - 0.00103).abs() < f64::EPSILON);
         assert_eq!(first.compaction.summarise_now, None);
@@ -238,6 +247,12 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         current.total_tokens = 200;
         current.notify_at = None;
         let context = ContextInfo::project(&current, &admission, &call).unwrap();
+        assert!(matches!(&context.parts, Cow::Borrowed(_)));
+        assert_eq!(context.parts.as_ptr(), current.parts.as_ptr());
+        let decoded: ContextInfo<'static> =
+            serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
+        assert_eq!(decoded, context);
+        assert!(matches!(&decoded.parts, Cow::Owned(_)));
         assert_eq!(context.current.total_tokens, 200);
         assert_eq!(context.last_call.total_tokens, 100);
         assert_ne!(context.current.request, context.last_call.request);
