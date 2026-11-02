@@ -1,4 +1,4 @@
-use crate::reader::backing::{BackingPool, RecordBytes};
+use crate::reader::backing::BackingPool;
 use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire};
 use bytes::Bytes;
 use std::{
@@ -285,12 +285,14 @@ impl StreamView {
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
                 let decoded = frame.decode_record(self.followed.as_ref())?;
-                let charge = record_charge(record)?;
-                if charge > self.policy.bytes {
-                    return Err(StreamError::LimitExceeded);
-                }
+                let budget = self
+                    .policy
+                    .bytes
+                    .checked_sub(record.value.len())
+                    .ok_or(StreamError::LimitExceeded)?;
+                let (mut owned, metadata) =
+                    retain_metadata(record, frame.original_record(), budget)?;
                 let payload = decoded.value;
-                let metadata = charge - record.value.len();
                 let payload = self.backings.retain(payload, self.policy.bytes - metadata);
                 let capacity = payload.backing().capacity();
                 let charge = metadata
@@ -299,7 +301,7 @@ impl StreamView {
                 if charge > self.policy.bytes {
                     return Err(StreamError::LimitExceeded);
                 }
-                let owned = compact_record(record, payload, frame.original_record());
+                owned.value = Bytes::from_owner(payload);
                 while self.records.len() >= self.policy.records
                     || self.bytes > self.policy.bytes - charge
                 {
@@ -338,72 +340,71 @@ impl StreamView {
     }
 }
 
-fn record_charge(record: &wire::Record) -> Result<usize, StreamError> {
-    let mut charge = size_of::<RecordEntry>();
-    for bytes in std::iter::once(record.value.len())
-        .chain(std::iter::once(record.commit_id.len()))
-        .chain(std::iter::once(record.origin.len()))
-        .chain(record.keys.iter().map(|key| size_of::<Bytes>() + key.len()))
-        .chain(record.attributes.iter().map(|attribute| {
-            size_of::<wire::Attribute>() + attribute.name.len() + attribute.value.len()
-        }))
-    {
-        charge = charge
-            .checked_add(bytes)
-            .ok_or(StreamError::LimitExceeded)?;
-    }
-    Ok(charge)
-}
-
-fn compact_record(
+fn retain_metadata(
     record: &wire::Record,
-    payload: RecordBytes,
     original: Option<&acyclic_stream::Record>,
-) -> wire::Record {
-    wire::Record {
+    budget: usize,
+) -> Result<(wire::Record, usize), StreamError> {
+    let mut remaining = budget;
+    let mut charge = |bytes: usize| {
+        remaining = remaining
+            .checked_sub(bytes)
+            .ok_or(StreamError::LimitExceeded)?;
+        Ok::<_, StreamError>(())
+    };
+    charge(size_of::<RecordEntry>())?;
+    let mut keys = Vec::with_capacity(record.keys.len());
+    let mut attributes = Vec::with_capacity(record.attributes.len());
+    charge(std::mem::size_of_val(keys.spare_capacity_mut()))?;
+    charge(std::mem::size_of_val(attributes.spare_capacity_mut()))?;
+    // Charge the retained containers, rather than shrinking them through a
+    // box solely to make their capacity agree with their logical length.
+    let origin = record.origin.clone();
+    charge(origin.capacity())?;
+    charge(record.commit_id.len())?;
+    for (index, key) in record.keys.iter().enumerate() {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        tests::visit_metadata();
+        charge(key.len())?;
+        keys.push(retain_header(
+            key,
+            original.and_then(|record| record.headers.keys().get(index)),
+        ));
+    }
+    for (index, attribute) in record.attributes.iter().enumerate() {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        tests::visit_metadata();
+        let name = attribute.name.clone();
+        charge(name.capacity())?;
+        charge(attribute.value.len())?;
+        attributes.push(wire::Attribute {
+            name,
+            value: retain_header(
+                &attribute.value,
+                original.and_then(|record| {
+                    record
+                        .headers
+                        .attributes()
+                        .get(index)
+                        .map(|attribute| attribute.value)
+                }),
+            ),
+        });
+    }
+    let owned = wire::Record {
         sequence: record.sequence,
-        value: Bytes::from_owner(payload),
+        value: Bytes::new(),
         // Native frame construction already owns this exact fixed-size copy.
         commit_id: original.map_or_else(
             || Bytes::copy_from_slice(&record.commit_id),
             |_| record.commit_id.clone(),
         ),
         committed_at_micros: record.committed_at_micros,
-        origin: record.origin.clone(),
-        keys: record
-            .keys
-            .iter()
-            .enumerate()
-            .map(|(index, key)| {
-                retain_header(
-                    key,
-                    original.and_then(|record| record.headers.keys().get(index)),
-                )
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .into_vec(),
-        attributes: record
-            .attributes
-            .iter()
-            .enumerate()
-            .map(|(index, attribute)| wire::Attribute {
-                name: attribute.name.as_str().into(),
-                value: retain_header(
-                    &attribute.value,
-                    original.and_then(|record| {
-                        record
-                            .headers
-                            .attributes()
-                            .get(index)
-                            .map(|attribute| attribute.value)
-                    }),
-                ),
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .into_vec(),
-    }
+        origin,
+        keys,
+        attributes,
+    };
+    Ok((owned, budget - remaining))
 }
 
 fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -> Bytes {
@@ -416,3 +417,6 @@ fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -
         Bytes::copy_from_slice(bytes)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
