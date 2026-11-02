@@ -239,26 +239,32 @@ pub enum SpawnContext {
     Fork,
 }
 
-/// The role profile an agent was adopted with, pinned for its lifetime. A
-/// role change is a new fork with another pin, never an edit of this one.
+/// Creation data admitted from one template snapshot. Later template changes
+/// affect new children; this agent retains its context and immutable directive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentProfilePin {
-    /// Role file identity.
-    pub role: String,
-    /// Digest of the role file the agent was adopted under.
-    pub digest: [u8; 32],
-    /// Conversation the role selects.
+pub struct CreationConfig {
+    /// Conversation selected at creation, independent of a template name.
     pub context: SpawnContext,
+    /// The exact original template file, absent for the root default.
+    pub template: Option<FileRef>,
+    /// Interim spawn capability list, admitted from template frontmatter.
+    pub may_spawn: Vec<String>,
+    /// Interim tool capability list; absent means the host's admitted tools.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
-/// A host's admitted role profiles, shared by every turn.
-pub trait SpawnProfiles: acyclic_stream::ProviderPlatform {
-    /// The pin of a `role` child of `parent`, after `parent`'s role admits
-    /// it. Refusals are tool failures the model can act on.
-    fn child(&self, parent: &AgentProfilePin, role: &str) -> crate::Result<AgentProfilePin>;
-    /// The pin of every root these profiles create.
-    fn root(&self) -> crate::Result<AgentProfilePin>;
+/// A host's original template reader, shared by direct and model spawns.
+pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
+    /// Reads one child template using the parent's original authority.
+    fn child<'a>(
+        &'a self,
+        parent: &'a CreationConfig,
+        path: &'a super::AgentPath,
+        volumes: &'a [VolumeBinding],
+        template: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<CreationConfig>>;
 }
 
 /// First record of every agent, written by the spawn fork or by root creation.
@@ -270,7 +276,7 @@ pub struct ForkAdopted {
     /// Spawning agent, `None` for a root.
     pub parent: Option<AgentPath>,
     /// Role profile; `None` when an external host owns the agent's loop.
-    pub profile: Option<AgentProfilePin>,
+    pub profile: Option<CreationConfig>,
     /// Inbox sequence of this record; the agent's first consumed input.
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.
@@ -368,7 +374,7 @@ pub struct SpawnRequest {
     /// Task brief, staged on the parent's private volume.
     pub brief: Box<FileRef>,
     /// The child's admitted role profile.
-    pub profile: AgentProfilePin,
+    pub profile: CreationConfig,
     /// Select a retained prior turn instead of the current conversation head.
     pub history: Option<super::HistorySelection>,
 }
@@ -809,10 +815,11 @@ mod tests {
             &mut None,
         )?;
         let spawn = InboxRecord::Spawn(SpawnRequest {
-            profile: AgentProfilePin {
-                role: "worker".into(),
-                digest: [0; 32],
+            profile: CreationConfig {
                 context: SpawnContext::Fork,
+                template: None,
+                may_spawn: Vec::new(),
+                allowed_tools: None,
             },
             history: None,
             by: Sender::User {

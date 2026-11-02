@@ -24,7 +24,7 @@ pub enum TurnEffect {
         /// Task brief, staged on the spawning agent's private volume.
         brief: Box<FileRef>,
         /// The child's role profile, admitted by the spawning agent's role.
-        profile: super::AgentProfilePin,
+        profile: super::CreationConfig,
     },
     /// Send a message to the parent or an open child.
     Send {

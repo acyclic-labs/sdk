@@ -177,8 +177,8 @@ impl TurnExecutors for Changing {
     fn render_bytes(&self) -> Option<u64> {
         self.current().render_bytes()
     }
-    fn profiles(&self) -> Option<Arc<dyn acyclic_harness::agent::SpawnProfiles>> {
-        self.current().profiles()
+    fn templates(&self) -> bool {
+        self.current().templates()
     }
     fn executor<'a>(
         &'a self,
@@ -229,31 +229,8 @@ fn executors(
             Arc::new(Tasks(bindings)),
         )
         .with_agent_tools(&selected)
-        .with_profiles(profiles()?),
+        .with_templates(),
     ))
-}
-
-/// A lead and a forking worker that pin the same model and instructions, so
-/// the worker's fork can reuse its parent's cached prefix. Roles that differ
-/// in either start a different cache by construction.
-fn profiles() -> TestResult<Arc<acyclic_harness::profile::Profiles>> {
-    let role = |name: &str, context: &str, spawns: &str| {
-        acyclic_harness::profile::RoleFile::parse(&format!(
-            "---
-version: 1
-name: {name}
-model: recorded/model
-context: {context}
-may_spawn: [{spawns}]
----
-Work in small verified steps.
-"
-        ))
-    };
-    Ok(Arc::new(acyclic_harness::profile::Profiles::new([
-        role(acyclic_harness::profile::ROOT_ROLE, "top_level", "worker")?,
-        role("worker", "fork", "worker")?,
-    ])?))
 }
 
 fn resolve(
@@ -388,16 +365,15 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
             id: "local".into(),
         },
     );
+    let filesystem = acyclic_fs::Fs::new(
+        acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
     let bound = Bound::local_root(
         issuer,
         Placement {
-            filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                acyclic_fs::LogicalObjectStore::new(Arc::new(
-                    acyclic_objects::MemoryObjects::memory(),
-                )),
-                acyclic_fs::EmbeddedCapabilities::MEMORY,
-            ),
+            filesystem: filesystem.clone(),
             provider: provider.clone(),
             within: acyclic_actors::addressing::ActorReference::new(
                 b"account", b"agents", b"owner",
@@ -425,7 +401,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
                 fresh: vec![acyclic_harness::agent::VolumeBinding {
                     name: PRIVATE_VOLUME.into(),
                     volume: VolumeRef::new(
-                        provider,
+                        provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
@@ -442,6 +418,44 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         return Err("uncertain root".into());
     };
     let agents = bound.agents();
+    // A fork with the same directive preserves the entire admitted prefix.
+    // Use the same real template reader as production, with a home override.
+    let state = agents.state(&root).await?;
+    let authority = acyclic_harness::filesystem::agent_authority(
+        bound.issuer(),
+        bound.admission(),
+        &root,
+        &state.volumes,
+        &[],
+    )
+    .await?;
+    let host = acyclic_harness::filesystem::FilesystemHost::new(filesystem, &provider, None)?;
+    let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+        host,
+        &authority.private.volume,
+        &authority.verifier,
+        &authority.scope,
+        acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let root_template = acyclic_harness::seed::TREE
+        .iter()
+        .find(|(path, _)| *path == "templates/orchestrator/AGENT.md")
+        .unwrap()
+        .1;
+    let child_template =
+        std::str::from_utf8(root_template)?.replace("context: top_level", "context: fork");
+    use acyclic_harness::conversation::ContentPublisher;
+    writer
+        .stage(
+            acyclic_harness::OperationId::new(),
+            "templates/worker/AGENT.md",
+            child_template.as_bytes(),
+            "text/markdown",
+            "AGENT.md",
+            acyclic_harness::conversation::ContentAccess::default(),
+        )?
+        .await?;
     agents.drain(&root).await?;
     let message = |to: &AgentPath, name: &'static str, prompt: &'static str| {
         let bound = &bound;

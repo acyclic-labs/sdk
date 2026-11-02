@@ -979,10 +979,11 @@ fn spawn_request(sequence: u64) -> Wake {
     Wake::Inbox {
         sequence,
         record: InboxRecord::Spawn(SpawnRequest {
-            profile: acyclic_harness_core::agent::AgentProfilePin {
-                role: "worker".into(),
-                digest: [0; 32],
+            profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
+                template: None,
+                may_spawn: Vec::new(),
+                allowed_tools: None,
             },
             history: None,
             by: user(),

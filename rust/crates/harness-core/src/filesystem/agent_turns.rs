@@ -59,6 +59,8 @@ mod admission_tests;
 /// The authority of one agent turn: the agent's conversation issuer, its scope
 /// over every bound volume, and the agent's content bound to that scope.
 pub struct TurnAuthority {
+    /// Original template admission shared with the hosting entrance.
+    pub templates: Option<Arc<dyn crate::agent::SpawnTemplates>>,
     /// Signing custody; it must outlive the turn's journal.
     pub issuer: RuntimeAuthority,
     /// Read and write over the agent's bound volumes.
@@ -395,11 +397,9 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 
-    /// The role profiles these turns run under: roots are pinned to their
-    /// top-level role and children are admitted by their parent's role.
-    /// `None` binds no roles, so neither spawn entrance admits a child.
-    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
-        None
+    /// Whether these turns use filesystem templates at agent creation.
+    fn templates(&self) -> bool {
+        false
     }
 
     /// The execution targets `agent`'s `shell` reaches, announced to its
@@ -438,6 +438,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
     policy: crate::approvals::ApprovalPolicy,
+    templates: Arc<dyn crate::agent::SpawnTemplates>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -502,11 +503,18 @@ where
         limits: TurnLimits,
         policy: crate::approvals::ApprovalPolicy,
     ) -> Self {
+        let issuer = issuer.into();
+        let templates = Arc::new(super::Templates::new(
+            Arc::clone(&host),
+            issuer.clone(),
+            admission.clone(),
+        ));
         Self {
             stream,
             within,
             host,
-            issuer: issuer.into(),
+            issuer,
+            templates,
             admission,
             executors,
             workspace_tools: None,
@@ -515,6 +523,13 @@ where
             goals: Some(Default::default()),
             policy,
         }
+    }
+
+    /// The same reader both model and host child creation use.
+    pub fn templates(&self) -> Option<Arc<dyn crate::agent::SpawnTemplates>> {
+        self.executors
+            .templates()
+            .then(|| Arc::clone(&self.templates))
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
@@ -1743,7 +1758,16 @@ where
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     }
                 }
-                let external: Vec<FileRef> = context.files().cloned().collect();
+                let external: Vec<FileRef> = context
+                    .files()
+                    .chain(
+                        agent
+                            .profile
+                            .as_ref()
+                            .and_then(|creation| creation.template.as_ref()),
+                    )
+                    .cloned()
+                    .collect();
                 let (journal, bindings, files) = self
                     .journal(admitted, &external, Some(&mut context))
                     .await?;
@@ -1854,6 +1878,7 @@ where
                 let journal = journal.with_bound_selection(selected.clone());
                 let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
                 let mut authority = TurnAuthority {
+                    templates: self.templates(),
                     issuer: bindings.issuer,
                     scope: bindings.scope,
                     grants: bindings.grants,
