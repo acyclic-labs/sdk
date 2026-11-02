@@ -2711,7 +2711,11 @@ mod reader_tests {
                 "stale time reordered admitted request deadlines"
             );
 
-            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                requests: heads.len(),
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
             reader.begin_frame(0);
             // The lexically last path arrives first, repeatedly at lower
             // priority. A later unique intent must survive that entire prefix.
