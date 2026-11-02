@@ -485,8 +485,24 @@ pub fn actor_codecs(bytes: &[u8]) {
     }
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
-        && let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record)
     {
+        use acyclic_actors::local::FailureEntry;
+        if let Some(parent) = record.origin.as_str().strip_suffix("/status")
+            && let Ok(path) = acyclic_stream::StreamPath::new(parent)
+            && let Ok(entry) = FailureEntry::decode(&path, &record)
+        {
+            let foreign = acyclic_stream::Record {
+                origin: path.clone(),
+                ..record.clone()
+            };
+            assert!(FailureEntry::decode(&path, &foreign).is_err());
+            if let FailureEntry::Failed(failed) = entry {
+                assert!(failed.input(&record).is_err());
+            }
+        }
+        let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record) else {
+            return;
+        };
         let encoded = invocation
             .record(&acyclic_stream::StreamPath::new("codec/state").unwrap())
             .unwrap();
