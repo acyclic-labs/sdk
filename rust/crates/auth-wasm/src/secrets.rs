@@ -97,20 +97,31 @@ pub struct SecretsClient(Client<FetchTransport>);
 
 #[wasm_bindgen]
 impl SecretsClient {
-    /// This embedding has no invocation-context ingress yet. Operations return
-    /// `missing_operation_context` before calling credentials or fetch; the host
-    /// must supply its original stop/deadline owner before requests can proceed.
+    /// Retain the original host's deadline and stop signal. The host must abort
+    /// on cancellation, expiry (reason `"deadline"`) or source loss. Missing
+    /// ownership still refuses before credentials or fetch; no timer is created.
     #[wasm_bindgen(constructor)]
-    pub fn new(endpoint: &str, credential: Function) -> Result<Self, JsValue> {
+    pub fn new(
+        endpoint: &str,
+        credential: Function,
+        deadline_unix_millis: Option<u64>,
+        stopped: Option<web_sys::AbortSignal>,
+    ) -> Result<Self, JsValue> {
         let endpoint = acyclic_auth::credential::endpoint(endpoint)
             .map_err(|_| error(Error::InvalidRequest))?;
+        let context = match (deadline_unix_millis, stopped) {
+            (Some(deadline), Some(stopped)) => Some(
+                acyclic_auth::operation::javascript::context(deadline, stopped)
+                    .map_err(|_| error(Error::InvalidRequest))?,
+            ),
+            (None, None) => None,
+            _ => return Err(error(Error::MissingOperationContext)),
+        };
         let credentials = acyclic_auth::credential::javascript::provider(credential);
-        // This embedding has no original invocation ingress yet. The shared
-        // client refuses before its credential callback or physical fetch.
         Ok(Self(Client::new(
             FetchTransport { endpoint },
             credentials,
-            None,
+            context,
         )))
     }
 

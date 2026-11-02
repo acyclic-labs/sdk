@@ -169,7 +169,9 @@ cargo test --locked -p acyclic-observability --test operations disabled_operatio
 `Sink::publication_details` opts into the fixed `Publication` projection from
 `acyclic.harness.executor.publication`. Its independent purpose, data and
 control fields retain only recognized producer values, including deferred
-records before the first terminal. Missing values remain unknown. Export's
+records before the first terminal. Missing values remain unknown. An unrecognized
+string or an update of another type clears only that field to unknown, without
+formatting or parsing it. Export's
 existing detail flag controls retention, including when another tuple sink
 requests detail. Metrics alone parse none of these fields. These semantic
 journal declarations do not count native calls, certify group membership or

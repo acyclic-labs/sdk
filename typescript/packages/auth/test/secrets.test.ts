@@ -1,30 +1,48 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer, type RequestListener } from "node:http";
 import { SecretsClient } from "../src/secrets.js";
+import { CredentialCache, CredentialSnapshot } from "../src/credential.js";
 import { SecretsClient as WireClient } from "../src/wasm.js";
 import { SecretKind, SecretListRequestSchema } from "../generated/proto/auth/v1/auth_pb.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 
-// The embedding has no original invocation ingress. Its former successful
-// request path is unavailable until that prerequisite is supplied; shared Rust
-// conformance retains CAS, visibility, permission and response-redaction cases.
+async function serve(fetch: RequestListener) {
+  const server = createServer(fetch);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    async close() {
+      const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      server.closeAllConnections();
+      await closed;
+    },
+  };
+}
+
 test("WASM/TS secrets refuse missing invocation ownership before credentials and HTTP", async () => {
   const planted = "PLANTED_SECRET_DO_NOT_LOG_6547";
   let calls = 0;
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() {
+  const server = await serve((_request, response) => {
     calls++;
-    return new Response(planted, { status: 403 });
-  }});
+    response.writeHead(403).end(planted);
+  });
   let credentials = 0;
   const credential = () => { credentials++; return "allowed-fixture"; };
-  const client = new SecretsClient(server.url.origin, credential);
-  const wire = new WireClient(server.url.origin, credential);
+  const client = new SecretsClient(server.origin, credential, undefined);
+  const wire = new WireClient(server.origin, credential, undefined, undefined);
   async function refused(pending: Promise<unknown>) {
     const outcome = await pending.then(
       () => ({ code: "unexpected_success", message: "request admitted" }),
       (error: unknown) => error,
     );
-    expect(outcome).toMatchObject({ code: "missing_operation_context" });
-    expect(String(outcome)).not.toContain(planted);
+    assert.equal((outcome as { code: string }).code, "missing_operation_context");
+    assert(!String(outcome).includes(planted));
   }
   try {
     await refused(client.list({ scope: "fixture" }));
@@ -35,11 +53,76 @@ test("WASM/TS secrets refuse missing invocation ownership before credentials and
     // create() alone silently drops account: both original admission boundaries
     // must still reject unknown selectors without invoking the credential owner.
     const illegal = { scope: "fixture", account: planted };
-    expect(create(SecretListRequestSchema, illegal)).not.toHaveProperty("account");
-    await expect(client.list(illegal)).rejects.toThrow("invalid request");
+    assert(!Object.hasOwn(create(SecretListRequestSchema, illegal), "account"));
+    await assert.rejects(client.list(illegal), /invalid request/);
     const unknown = new Uint8Array([...canonical, 0x7a, 3, 98, 97, 100]);
-    await expect(wire.list(unknown)).rejects.toThrow("invalid request");
-    expect(credentials).toBe(0);
-    expect(calls).toBe(0);
-  } finally { client.free(); wire.free(); await server.stop(true); }
+    await assert.rejects(wire.list(unknown), /invalid request/);
+    assert.equal(credentials, 0);
+    assert.equal(calls, 0);
+  } finally { client.free(); wire.free(); await server.close(); }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
+
+test("original WASM/TS invocation owns successful HTTP, stopped inputs and open response waits", async () => {
+  const planted = "PLANTED_SECRET_DO_NOT_LOG_6547";
+  const deadlineUnixMillis = 0xffff_ffff_ffff_ffffn;
+  for (const mode of ["ready", "cancelled", "deadline", "source-loss", "pre-stopped", "credential", "credential-source"] as const) {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const stopped = new AbortController();
+    let calls = 0;
+    let credentials = 0;
+    const server = await serve((request, response) => {
+      calls++;
+      assert.equal(request.headers.authorization, "Bearer allowed-fixture");
+      if (mode === "ready") {
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ generation: 7, variables: [], nextCursor: null }));
+        return;
+      }
+      if (mode !== "cancelled") response.writeHead(200).write("{");
+      entered.resolve();
+      // Cancellation holds headers; other stops hold a response before EOF.
+      void release.promise.then(() => response.end());
+    });
+    const credential = async () => {
+      credentials++;
+      if (mode === "credential") { entered.resolve(); await release.promise; }
+      return "allowed-fixture";
+    };
+    const cache = new CredentialCache(async () => {
+      credentials++;
+      return new CredentialSnapshot("allowed-fixture", "original", 100);
+    }, () => ({ nowUnixSeconds: 1, revision: "original" }));
+    if (mode === "pre-stopped") stopped.abort(planted);
+    const client = new SecretsClient(server.origin, mode === "credential-source" ? cache.provider : credential,
+      { deadlineUnixMillis, stopped: stopped.signal });
+    try {
+      const pending = client.list({ scope: "fixture" });
+      if (mode === "ready") {
+        assert.equal((await pending).generation, 7n);
+        assert.equal(calls, 1);
+        assert.equal(credentials, 1);
+      } else {
+        if (mode !== "pre-stopped") {
+          // An early transport/credential failure must end this control too.
+          await Promise.race([entered.promise, pending]);
+          if (mode === "credential-source") cache.invalidate();
+          else stopped.abort(mode === "deadline" ? "deadline" : planted);
+        }
+        const outcome = await pending.then(() => undefined, error => error);
+        assert.equal(outcome?.code, mode === "credential-source" ? "credential_unavailable"
+          : mode === "deadline" ? "operation_deadline" : "operation_cancelled");
+        assert(!String(outcome).includes(planted));
+        if (mode === "pre-stopped") { assert.equal(credentials, 0); assert.equal(calls, 0); }
+        if (mode === "credential") assert.equal(calls, 0);
+      }
+    } finally {
+      release.resolve(); client.free(); await server.close();
+    }
+  }
 });

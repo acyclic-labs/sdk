@@ -1,12 +1,7 @@
 //! Lossless adapter for the public JavaScript CredentialProvider contract.
 use super::*;
-use futures::channel::oneshot;
 use js_sys::{Function, JsString, Reflect};
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, prelude::*};
 use web_sys::{AbortController, AbortSignal};
 
@@ -103,29 +98,12 @@ impl CredentialSource for Source {
             let signal = get(&owner.0, "changed")?
                 .dyn_into::<AbortSignal>()
                 .map_err(invalid)?;
-            let (send, receive) = oneshot::channel();
-            let send = Rc::new(RefCell::new(Some(send)));
-            let changed_send = send.clone();
-            let changed = Closure::new(move |_: web_sys::Event| {
-                if let Some(send) = changed_send.borrow_mut().take() {
-                    let _ = send.send(());
-                }
-            });
-            signal
-                .add_event_listener_with_callback("abort", changed.as_ref().unchecked_ref())
-                .map_err(invalid)?;
-            if signal.aborted() {
-                if let Some(send) = send.borrow_mut().take() {
-                    let _ = send.send(());
-                }
-            }
+            let changed = crate::operation::javascript::listen(signal).map_err(invalid)?;
             Ok(Some(CredentialWatch::from_custodian(
                 validity,
                 Registration {
-                    _owner: owner,
-                    signal,
                     changed,
-                    receive,
+                    _owner: owner,
                 },
             )))
         })()
@@ -179,24 +157,18 @@ impl Drop for Close {
     }
 }
 struct Registration {
+    // Unregister before closing the original source owner.
+    changed: crate::operation::javascript::SignalStop,
     _owner: Close,
-    signal: AbortSignal,
-    changed: Closure<dyn FnMut(web_sys::Event)>,
-    receive: oneshot::Receiver<()>,
 }
 impl Future for Registration {
     type Output = Result<(), CredentialCacheError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.receive)
-            .poll(cx)
-            .map(|result| result.map_err(|_| CredentialCacheError::Unavailable))
-    }
-}
-impl Drop for Registration {
-    fn drop(&mut self) {
-        let _ = self
-            .signal
-            .remove_event_listener_with_callback("abort", self.changed.as_ref().unchecked_ref());
+        Pin::new(&mut self.changed).poll(cx).map(|result| {
+            result
+                .map(|_| ())
+                .map_err(|_| CredentialCacheError::Unavailable)
+        })
     }
 }
 

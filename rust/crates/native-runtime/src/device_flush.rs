@@ -138,6 +138,7 @@ impl Coalescer {
 #[cfg(all(target_vendor = "apple", not(loom)))]
 pub(crate) fn full(
     descriptor: std::os::fd::BorrowedFd<'_>,
+    held: Option<&HeldDevice>,
     stage: impl FnOnce(std::os::fd::BorrowedFd<'_>) -> io::Result<()>,
     drain: impl FnOnce(std::os::fd::BorrowedFd<'_>) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -148,13 +149,48 @@ pub(crate) fn full(
         // reports its own failure.
         Err(_) => return drain(descriptor),
     }
-    let Ok(Some(id)) = apple::local_device(descriptor) else {
-        return drain(descriptor);
+    let resolve = || {
+        apple::local_device(descriptor)
+            .ok()
+            .flatten()
+            .map(apple::device)
     };
-    let device = apple::device(id);
-    device
-        .coalescer
-        .flush(|| device.across_processes(|| drain(descriptor)))
+    let resolved;
+    let device = match held {
+        Some(held) => held.device.get_or_init(resolve).as_ref(),
+        None => {
+            resolved = resolve();
+            resolved.as_ref()
+        }
+    };
+    match device {
+        Some(device) => device
+            .coalescer
+            .flush(|| device.across_processes(|| drain(descriptor))),
+        None => drain(descriptor),
+    }
+}
+
+/// Classification belongs to one retained file, never a descriptor number.
+/// Resolve only after a successful first stage; read-only handles and barriers
+/// need no device work. A failed/nonlocal classification always drains directly.
+#[cfg(target_vendor = "apple")]
+#[derive(Default)]
+pub(crate) struct HeldDevice {
+    #[cfg(not(loom))]
+    device: std::sync::OnceLock<Option<std::sync::Arc<apple::Device>>>,
+}
+
+#[cfg(target_vendor = "apple")]
+impl std::fmt::Debug for HeldDevice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("HeldDevice").finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(target_vendor = "apple", test, not(loom)))]
+pub(crate) fn classification_work() -> [usize; 3] {
+    apple::CLASSIFICATION_WORK.with(std::cell::Cell::get)
 }
 
 #[cfg(all(target_vendor = "apple", not(loom)))]
@@ -172,6 +208,21 @@ mod apple {
     use std::sync::atomic::{AtomicU64, Ordering};
     #[cfg(not(test))]
     use std::sync::{Mutex, OnceLock, PoisonError};
+
+    #[cfg(test)]
+    thread_local! {
+        pub(super) static CLASSIFICATION_WORK: std::cell::Cell<[usize; 3]> =
+            const { std::cell::Cell::new([0; 3]) };
+    }
+
+    #[cfg(test)]
+    fn classification_attempt(kind: usize) {
+        CLASSIFICATION_WORK.with(|work| {
+            let mut counts = work.get();
+            counts[kind] += 1;
+            work.set(counts);
+        });
+    }
 
     pub(super) struct Device {
         pub(super) coalescer: Coalescer,
@@ -210,6 +261,7 @@ mod apple {
     /// threads is proved on `Coalescer`, and across processes below.
     #[cfg(test)]
     pub(super) fn device(id: u64) -> Arc<Device> {
+        classification_attempt(2);
         thread_local! {
             static DEVICES: std::cell::RefCell<BTreeMap<u64, Arc<Device>>> =
                 const { std::cell::RefCell::new(BTreeMap::new()) };
@@ -231,6 +283,8 @@ mod apple {
     /// device number: tracking them would grow the device table and leave a
     /// counter file behind per mount.
     pub(super) fn local_device(descriptor: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<u64>> {
+        #[cfg(test)]
+        classification_attempt(0);
         let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
         // SAFETY: fstatfs fills `filesystem` from the held live descriptor.
         if unsafe { libc::fstatfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
@@ -242,6 +296,8 @@ mod apple {
             return Ok(None);
         }
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        classification_attempt(1);
         // SAFETY: fstat fills `stat` from the held live descriptor.
         if unsafe { libc::fstat(descriptor.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());

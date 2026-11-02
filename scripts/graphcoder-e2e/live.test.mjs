@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Processes } from "./process.mjs";
-import { requests } from "./assertions.mjs";
+import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 import { answer, requireTools } from "./live.mjs";
 
@@ -69,14 +69,23 @@ test("collaboration requires the spawned child's exact settled public result", (
   }
 });
 
-test("a real command's published bytes cannot conceal its failed shell status", async () => {
+test("a real command must publish exact bytes and a successful shell status", async () => {
   const root = await mkdtemp(join(tmpdir(), "live-shell-result-")), processes = new Processes();
   try {
     const path = join(root, "effect.txt");
     const result = await processes.run(process.execPath,
-      ["-e", "require('node:fs').writeFileSync(process.argv[1], 'EXPECTED_BYTES'); process.exitCode = 17", path]);
+      ["-e", `const {writeFileSync}=require('node:fs');
+        const path=process.argv[1], expected='EXPECTED_BYTES';
+        writeFileSync(path, expected);
+        for (const [index, value] of [' '+expected, expected+' ', expected+'\\n',
+          expected+'\\r\\n', '\\ufeff'+expected, expected+expected].entries())
+          writeFileSync(path+index, value);
+        process.exitCode=17`, path]);
     assert.equal(result.code, 17, result.stderr);
-    assert.equal(await readFile(path, "utf8"), "EXPECTED_BYTES");
+    await fileBytes(path, "EXPECTED_BYTES");
+    for (let index = 0; index < 6; index++)
+      await assert.rejects(fileBytes(path + index, "EXPECTED_BYTES"), { code: "ERR_ASSERTION" });
+    await assert.rejects(fileBytes(path + "missing", "EXPECTED_BYTES"), { code: "ENOENT" });
     // Original OS completion supplies these SDK ToolResult fields; the two
     // mutations require each status field to reject failure independently.
     const status = { success: result.code === 0, exit_code: result.code, stop: null };

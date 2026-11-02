@@ -816,6 +816,9 @@ impl Visit for Fields<'_> {
         if let Some(work) = self.operation.work.as_mut() {
             work.record_bool(field, value);
         }
+        if let Some(publication) = self.operation.publication.as_mut() {
+            publication.record_bool(field, value);
+        }
         if let Some(capture) = self.operation.capture_retirement.as_mut() {
             capture.record_bool(field, value);
         }
@@ -840,6 +843,9 @@ impl Visit for Fields<'_> {
         }
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
+        if let Some(publication) = self.operation.publication.as_mut() {
+            publication.record_u64(field, value);
+        }
         if let Some(capture) = self.operation.capture_retirement.as_mut() {
             capture.record_u64(field, value);
         }
@@ -854,6 +860,9 @@ impl Visit for Fields<'_> {
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
+        if let Some(publication) = self.operation.publication.as_mut() {
+            publication.record_i64(field, value);
+        }
         if let Some(work) = self.operation.work.as_mut() {
             work.record_i64(field, value);
         }
@@ -870,6 +879,9 @@ impl Visit for Fields<'_> {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         if let Some(work) = self.operation.work.as_mut() {
             work.record_debug(field, value);
+        }
+        if let Some(publication) = self.operation.publication.as_mut() {
+            publication.record_debug(field, value);
         }
     }
 }
@@ -904,8 +916,6 @@ impl Visit for Terminal {
                 "incomplete" => Some(Outcome::Incomplete),
                 _ => None,
             };
-        } else if matches!(field.name(), "rpc" | "data" | "control") {
-            self.has_publication = true;
         } else if field.name() == "error.kind" {
             self.has_error_kind = true;
         } else if matches!(field.name(), "requested" | "syscall") {
@@ -915,6 +925,7 @@ impl Visit for Terminal {
         }
     }
     fn record_debug(&mut self, field: &Field, _: &dyn fmt::Debug) {
+        self.has_publication |= matches!(field.name(), "rpc" | "data" | "control");
         self.has_work |= matches!(
             field.name(),
             "work.items" | "work.bytes" | "work.durability"

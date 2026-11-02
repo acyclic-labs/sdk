@@ -22,6 +22,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 pub mod agent_conversation;
+mod agent_settings;
 mod agents;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
@@ -101,6 +102,8 @@ pub struct LocalHarness {
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
+    /// The sampling `agent.ts` selected for every model call.
+    sampling: Option<crate::config::Sampling>,
     /// The verifier of a served tree's caller and clients; see
     /// [`LocalHarnessConfig::served`].
     served: Option<Arc<dyn Verifier>>,
@@ -108,6 +111,10 @@ pub struct LocalHarness {
     skill_cache: context::skills::Cache,
     #[cfg(any(test, feature = "hooks"))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
+    /// The before-hook rules of the plugins `plugins.ts` enabled at session
+    /// start, judged after the imported host hooks.
+    #[cfg(any(test, feature = "hooks"))]
+    plugin_hooks: crate::hooks::Hooks,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,

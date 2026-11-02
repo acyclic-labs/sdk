@@ -3,7 +3,10 @@
 
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
-use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _, testing::Counted,
+};
 use std::sync::Arc;
 
 struct Local {
@@ -62,6 +65,26 @@ acyclic_agent_host_conformance::suite!(local_guest_wire, guest_wire);
 
 #[tokio::test]
 async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
+    // Capture a real one-call regression at the same public provider boundary.
+    let directory = tempfile::tempdir()?;
+    let provider =
+        Counted::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?);
+    let ledger = provider.ledger();
+    let absent = StreamPath::new("scale-negative-absent")?;
+    let one = ledger.start_sample();
+    assert_eq!(
+        provider.tail(absent.clone()).await,
+        Err(StreamError::NotFound)
+    );
+    let one = one.finish();
+    let extra = ledger.start_sample();
+    for _ in 0..2 {
+        assert_eq!(
+            provider.tail(absent.clone()).await,
+            Err(StreamError::NotFound)
+        );
+    }
+    let extra = extra.finish();
     for backend in [native().await?, guest_wire().await?] {
         let sample = acyclic_agent_host_conformance::bench(&backend).await?;
         assert_eq!(sample.deliveries, 64);
@@ -85,7 +108,7 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
         );
         assert!(sample.requests.data() >= sample.deliveries as u64);
         println!("AGENT_BENCH {sample:?}");
-        let samples = acyclic_agent_host_conformance::scale(
+        let mut samples = acyclic_agent_host_conformance::scale(
             &backend,
             acyclic_agent_host_conformance::Scale {
                 small: 4,
@@ -96,6 +119,26 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
         assert_eq!(samples.small.idle_agents, 4);
         assert_eq!(samples.large.idle_agents, 16);
         println!("AGENT_SCALE {samples:?}");
+
+        let original_small = samples.small.turns[0];
+        let original_large = samples.large.turns[0];
+        samples.small.turns[0] = one;
+        samples.large.turns[0] = extra;
+        assert!(
+            samples.validate_dispatch().is_err(),
+            "extra native probe passed"
+        );
+        samples.small.turns[0] = original_small;
+
+        // Equal aggregate totals cannot hide work assigned to the wrong turn.
+        samples.large.turns[0].requests = samples.large.requests;
+        assert!(samples.validate_dispatch().is_err(), "misbound turn passed");
+        samples.large.turns[0] = original_large;
+
+        let missing = samples.large.turns.pop().unwrap();
+        assert!(samples.validate_dispatch().is_err(), "missing turn passed");
+        samples.large.turns.push(missing);
+        samples.validate_dispatch()?;
     }
     Ok(())
 }

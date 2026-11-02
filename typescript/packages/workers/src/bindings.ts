@@ -38,36 +38,45 @@ function kind(binding: semantic.Binding) {
 
 /** Materialize selected, host-admitted deployment declarations as typed env objects.
  * Complete canonical admission and producer availability checks before any host
- * factory runs. Resource producers keep the original grant and invocation. */
+ * factory runs. Retain those exact producers and their original receiver for the
+ * batch. Resource producers keep the original grant and invocation. */
 export async function materializeBindings<A = never, H = never, M = never, S = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S>): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S>>>> {
   const selected = await admitDeploymentBindings(declarations);
   const names = new Set<string>();
   const kinds: ReturnType<typeof kind>[] = [];
+  const producers: Partial<BindingAuthority<A, H, M, S>> = Object.create(null);
+  function retain<K extends keyof BindingAuthority<A, H, M, S>>(key: K): void {
+    if (Object.hasOwn(producers, key)) return;
+    const producer = authority[key];
+    if (producer === undefined) throw new TypeError(`binding materialization: missing ${key} producer; recovery: supply the original admitted host producer before guest entry`);
+    producers[key] = producer;
+  }
   for (const binding of selected) {
     if (names.has(binding.name)) throw new TypeError("duplicate binding name");
     names.add(binding.name);
     const selection = kind(binding);
-    const producer = selection === "platformAuthority" || selection === "hostAccess" ? authority.guestAdmission : authority[selection];
-    if (producer === undefined) throw new TypeError(`binding materialization: missing ${selection} producer; recovery: supply the original admitted host producer before guest entry`);
+    retain(selection === "platformAuthority" || selection === "hostAccess" ? "guestAdmission" : selection);
     kinds.push(selection);
   }
   const env: Record<string, DeploymentBinding<A, H, M, S>> = Object.create(null) as Record<string, DeploymentBinding<A, H, M, S>>;
   let state: ActorStateBinding | undefined;
-  selected.forEach((binding, index) => {
+  for (let index = 0; index < selected.length; index++) {
+    const binding = selected[index]!;
     const selection = kinds[index]!;
     switch (selection) {
-      case "namespace": env[binding.name] = new ActorNamespaceBinding(binding.targetAccount, binding.actorNamespace!, authority.namespace(binding), binding.name); break;
-      case "service": env[binding.name] = new WorkerServiceBinding(binding.targetAccount, binding.workerService!, authority.service(binding), binding.name); break;
-      case "stateTransaction": env[binding.name] = state ??= materializeActorState(authority.stateTransaction!); break;
-      case "platformAuthority": case "hostAccess": env[binding.name] = materializeGuestAdmission(selection, authority.guestAdmission); break;
+      case "namespace": env[binding.name] = new ActorNamespaceBinding(binding.targetAccount, binding.actorNamespace!, producers.namespace!.call(authority, binding), binding.name); break;
+      case "service": env[binding.name] = new WorkerServiceBinding(binding.targetAccount, binding.workerService!, producers.service!.call(authority, binding), binding.name); break;
+      case "stateTransaction": env[binding.name] = state ??= materializeActorState(producers.stateTransaction!); break;
+      case "platformAuthority": case "hostAccess": env[binding.name] = materializeGuestAdmission(selection, producers.guestAdmission); break;
       case "objects": {
         // Only the port crosses: its receiver, promises and errors stay the producer's.
-        const port = authority.objects!(binding);
+        const port = producers.objects!.call(authority, binding);
         env[binding.name] = Object.freeze({ open: port.open.bind(port) });
         break;
       }
-      case "machinesWorkspace": case "streams": env[binding.name] = authority[selection]!(binding); break;
+      case "machinesWorkspace": env[binding.name] = producers.machinesWorkspace!.call(authority, binding); break;
+      case "streams": env[binding.name] = producers.streams!.call(authority, binding); break;
     }
-  });
+  }
   return Object.freeze(env);
 }

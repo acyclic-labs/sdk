@@ -1,7 +1,7 @@
 //! On-demand AgentHost workloads shared by native, guest and hosted adapters.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{AgentHost, AgentId, Delivered};
-use acyclic_stream::testing::Requests;
+use acyclic_stream::testing::{RequestClass, Requests};
 use std::{sync::Arc, time::Duration};
 
 const DELIVERIES: usize = 64;
@@ -54,6 +54,59 @@ pub struct ScaleMeasurement {
     pub large: Measurement,
 }
 
+impl ScaleMeasurement {
+    /// Check the original public-dispatch vector for each matched turn.
+    /// Every class must retain exact counts, including zero controls; unknown
+    /// counters cannot qualify. This does not observe hidden backend work.
+    pub fn validate_dispatch(&self) -> Result {
+        let same = |before: Requests, after: Requests| {
+            before == after && before.auxiliary(Some(RequestClass::Data)).is_some()
+        };
+        let failure = |step, evidence: std::fmt::Arguments<'_>| -> super::Failure {
+            format!(
+                "STEP agent-scale {step} failed: {evidence}; recovery: \
+                 call conformance::scale(backend, Scale {{ small: {}, large: {} }})",
+                self.small.idle_agents, self.large.idle_agents,
+            )
+            .into()
+        };
+        for sample in [&self.small, &self.large] {
+            if sample.deliveries != DELIVERIES || sample.turns.len() != sample.deliveries {
+                return Err(failure(
+                    "coverage",
+                    format_args!(
+                        "population={}, deliveries={}, samples={}",
+                        sample.idle_agents,
+                        sample.deliveries,
+                        sample.turns.len(),
+                    ),
+                ));
+            }
+        }
+        if !same(self.small.requests, self.large.requests) {
+            return Err(failure(
+                "dispatch",
+                format_args!(
+                    "aggregate small={:?}, large={:?}",
+                    self.small.requests, self.large.requests,
+                ),
+            ));
+        }
+        for (turn, (small, large)) in self.small.turns.iter().zip(&self.large.turns).enumerate() {
+            if !same(small.requests, large.requests) {
+                return Err(failure(
+                    "dispatch",
+                    format_args!(
+                        "turn={turn}, small={:?}, large={:?}",
+                        small.requests, large.requests,
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Run the shared checked turn workload. No CI or merge gate invokes this.
 /// Request counts are reported separately from timing, so control requests
 /// cannot disappear into a single throughput number.
@@ -62,8 +115,8 @@ pub async fn bench(backend: &dyn Backend) -> Result<Measurement> {
 }
 
 /// Send the same work through the global runtime drain with two idle populations.
-/// At most twice as many data or control calls may be issued at the larger size;
-/// a zero control baseline must remain zero. Population creation, scheduler
+/// Every matched turn must issue the same exact provider-call vector at both
+/// populations. Population creation, scheduler
 /// warmup and final observation are excluded from both request deltas.
 /// Every settled turn must retain exactly one registration per provisioned
 /// agent and leave no ready registration after the global drain.
@@ -77,16 +130,9 @@ pub async fn scale(backend: &dyn Backend, sizes: Scale) -> Result<ScaleMeasureme
     }
     let small = measure(backend, sizes.small).await?;
     let large = measure(backend, sizes.large).await?;
-    if large.requests.data() > small.requests.data().saturating_mul(2)
-        || large.requests.control() > small.requests.control().saturating_mul(2)
-    {
-        return Err(format!(
-            "STEP agent-scale dispatch failed: small={small:?}, large={large:?}; \
-             recovery: rerun conformance::scale with the same backend and Scale {sizes:?}"
-        )
-        .into());
-    }
-    Ok(ScaleMeasurement { small, large })
+    let measurement = ScaleMeasurement { small, large };
+    measurement.validate_dispatch()?;
+    Ok(measurement)
 }
 
 async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measurement> {

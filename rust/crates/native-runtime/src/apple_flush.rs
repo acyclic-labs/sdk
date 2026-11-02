@@ -8,21 +8,26 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 // of its device with every concurrent request (see `device_flush`). The
 // original caller owns admission and observes its first result.
 pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
-    sync_descriptor_requested_once(descriptor, Durability::Full)
+    sync_descriptor_requested_once(descriptor, Durability::Full, None)
 }
 
 fn sync_descriptor_requested_once(
     descriptor: BorrowedFd<'_>,
     requested: Durability,
+    held: Option<&crate::device_flush::HeldDevice>,
 ) -> io::Result<()> {
     #[cfg(not(loom))]
     return crate::device_flush::full(
         descriptor,
+        held,
         |descriptor| syscall_once(descriptor, 0, requested),
         |descriptor| syscall_once(descriptor, libc::F_FULLFSYNC, requested),
     );
     #[cfg(loom)]
-    syscall_once(descriptor, libc::F_FULLFSYNC, requested)
+    {
+        let _ = held;
+        syscall_once(descriptor, libc::F_FULLFSYNC, requested)
+    }
 }
 
 pub(crate) fn order_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
@@ -32,13 +37,14 @@ pub(crate) fn order_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()
 pub(crate) fn sync_once(
     file: &File,
     durability: Durability,
+    held: Option<&crate::device_flush::HeldDevice>,
     mut admit: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     match durability {
-        Durability::Full => full(file, durability, &mut admit),
+        Durability::Full => full(file, durability, held, &mut admit),
         Durability::Barrier => match syscall(file, libc::F_BARRIERFSYNC, durability, &mut admit) {
             Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
-                full(file, durability, &mut admit)
+                full(file, durability, held, &mut admit)
             }
             result => result,
         },
@@ -48,10 +54,11 @@ pub(crate) fn sync_once(
 fn full(
     file: &File,
     requested: Durability,
+    held: Option<&crate::device_flush::HeldDevice>,
     admit: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     admit()?;
-    sync_descriptor_requested_once(file.as_fd(), requested)
+    sync_descriptor_requested_once(file.as_fd(), requested, held)
 }
 
 fn syscall(

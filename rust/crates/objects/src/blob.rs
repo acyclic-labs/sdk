@@ -377,3 +377,7 @@ pub(crate) fn corrupt() -> Error {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;

@@ -36,8 +36,9 @@ pub use heap_layout::HeapLayout;
 pub mod agent;
 #[doc(hidden)]
 pub mod command_request;
-pub mod context;
 #[doc(hidden)]
+pub mod config;
+pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
@@ -94,6 +95,8 @@ mod obs;
 /// Cached OIDC verification and admission through the existing workload authority.
 #[cfg(feature = "oidc")]
 pub mod oidc;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub mod plugins;
 /// Pure resolution of versioned model and role files at epoch admission.
 #[cfg(feature = "filesystem")]
 pub mod profile;

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+
+export async function fileBytes(path, expected) {
+  assert.deepEqual(await readFile(path), Buffer.from(expected, "utf8"), path);
+}
 
 // A request notification is the mock's commit boundary: append and flush precede
 // it, and the HTTP reply follows it. Killing the server can leave an unpublished

@@ -10,6 +10,9 @@ test("namespace get is local, references are scoped, and stub calls stay ordered
   let fail = false;
   const namespace = new ActorNamespaceBinding(bytes("account"), "ClassOne", { async invokeActor(request) {
     expect(request.accountId).toEqual(bytes("account")); expect(request.namespace).toBe("ClassOne");
+    expect(request.actorId).toBe("same");
+    // A transport may mutate its owned request bytes, never the retained scope.
+    if (request.accountId instanceof Uint8Array) request.accountId.fill(120);
     expect(request.bindingName).toBe("OBJECTS"); calls.push(request.rpcMethod!);
     if (fail) throw new Error("rejected");
     return { status: 200, body: request.body, headers: [] };
@@ -21,7 +24,14 @@ test("namespace get is local, references are scoped, and stub calls stay ordered
   expect(() => namespace.idFromReference(new ActorReference(bytes("other"), bytes("ClassOne"), bytes("same")))).toThrow();
   const stub = namespace.get(named, { locationHint: "weur" }); expect(calls).toEqual([]);
   expect(() => namespace.get(named, { locationHint: "wrong" as "weur" })).toThrow();
-  await Promise.all([stub.rpc("first", bytes("1")), stub.rpc("second", bytes("2"))]);
+  const encode = ActorReference.prototype.encode;
+  let encodes = 0;
+  ActorReference.prototype.encode = function () { encodes++; return encode.call(this); };
+  try {
+    await Promise.all([stub.rpc("first", bytes("1")), stub.rpc("second", bytes("2"))]);
+    // Negative control: rebuilding the same immutable reference per call crosses this boundary.
+    expect(encodes).toBe(0);
+  } finally { ActorReference.prototype.encode = encode; }
   expect(calls).toEqual(["first", "second"]);
   fail = true; await expect(stub.rpc("fail", new Uint8Array())).rejects.toThrow("rejected"); fail = false;
   await expect(stub.rpc("forbidden", new Uint8Array())).rejects.toThrow("broken");

@@ -85,6 +85,8 @@ impl NativeFile {
         };
         let payload = Arc::new(NativeFilePayload {
             file,
+            #[cfg(target_vendor = "apple")]
+            device: Default::default(),
             _allocation: allocation,
         });
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -103,8 +105,9 @@ impl NativeFile {
                 overlapped: false,
             }),
             Err(error) => {
-                let NativeFilePayload { file, _allocation } =
-                    Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
+                let NativeFilePayload {
+                    file, _allocation, ..
+                } = Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
                 if _allocation.is_none()
                     && let Some(meter) = meter
                 {
@@ -164,6 +167,19 @@ impl NativeFile {
     ) -> io::Result<NativeCompletion<()>>
     where
         F: FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send + 'static,
+    {
+        self.control_payload_async(move |file, meter| operation(file, meter), meter)
+    }
+
+    fn control_payload_async<F>(
+        &self,
+        operation: F,
+        meter: Option<Arc<dyn NativeReadMeter>>,
+    ) -> io::Result<NativeCompletion<()>>
+    where
+        F: FnOnce(&NativeFilePayload, Option<&dyn NativeReadMeter>) -> io::Result<()>
+            + Send
+            + 'static,
     {
         let file = Arc::clone(&self.file);
         let health = self.health.clone();
@@ -435,7 +451,10 @@ impl NativeFile {
         durability: Durability,
         meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> io::Result<NativeCompletion<()>> {
-        self.control_async(move |file, meter| sync_file(file, durability, meter), meter)
+        self.control_payload_async(
+            move |file, meter| super::operations::sync_owned_file(file, durability, meter),
+            meter,
+        )
     }
 
     /// Writes a caller-accounted payload on this handle's ordered driver.

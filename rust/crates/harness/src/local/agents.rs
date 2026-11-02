@@ -314,16 +314,20 @@ impl LocalHarness {
     /// harness's model, tools, limits and compaction, in its context.
     fn executors(self: &Arc<Self>) -> Arc<dyn TurnExecutors> {
         match &self.agent {
-            Some(model) => Arc::new(
-                crate::filesystem::StockExecutors::new(
+            Some(model) => {
+                let executors = crate::filesystem::StockExecutors::new(
                     model.clone(),
                     self.tools().clone(),
                     (self.limits, self.compaction.clone()),
                     Arc::new(LocalContext(Arc::downgrade(self))),
                 )
                 .with_agent_tools(&self.agent_tools)
-                .with_templates(),
-            ),
+                .with_templates();
+                Arc::new(match self.sampling {
+                    Some(sampling) => executors.with_sampling(sampling),
+                    None => executors,
+                })
+            }
             None => Arc::new(NativeHost),
         }
     }
