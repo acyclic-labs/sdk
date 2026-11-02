@@ -95,6 +95,30 @@ test("terminal rejection cancels a pending body read with the original cause", a
   assert.equal(closes,1);
 });
 
+test("queued body failure preserves the original response cause", async () => {
+  for (const terminalFails of [false, true]) {
+    const terminal = Promise.withResolvers();
+    const originalFailure = new Error("terminal producer failed");
+    const bodyFailure = new Error("body producer failed");
+    let controller, closes = 0;
+    const body = new ReadableStream({start(source) { controller = source; }});
+    const response = openGuestResponse({
+      status:200,headers:new Headers(),body,trailers:terminal.promise,
+      close() { closes++; },
+    });
+    const pending = response.frames[Symbol.asyncIterator]().next();
+    // Queue both original producer failures before either continuation runs.
+    // The terminal owner stops first, but cancellation cannot replace a read
+    // which the native stream has already rejected with another cause.
+    if (terminalFails) terminal.reject(originalFailure);
+    controller.error(bodyFailure);
+    const expected = terminalFails ? originalFailure : bodyFailure;
+    await assert.rejects(pending,error => error === expected);
+    assert.equal(closes,1);
+    assert.equal(body.locked,false);
+  }
+});
+
 test("terminal rejection before consumption closes the original producer once", async () => {
   const terminal = Promise.withResolvers(), cancelled = Promise.withResolvers();
   const failure = new Error("terminal failed before consumption");
