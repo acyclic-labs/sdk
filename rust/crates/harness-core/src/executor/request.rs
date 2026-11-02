@@ -1,5 +1,12 @@
 use super::*;
 
+/// The response loop owns growing history; standalone and summary calls borrow
+/// their already selected history without collecting another inbox boundary.
+pub(super) enum ModelStepHistory<'a> {
+    Turn(&'a mut Vec<ModelMessage>),
+    Selected(&'a [ModelMessage]),
+}
+
 impl StockExecution<'_> {
     /// Runs one admitted model step independently of the stock control loop.
     pub async fn model_step(
@@ -26,7 +33,7 @@ impl StockExecution<'_> {
                 journal,
                 input,
                 step,
-                prior_messages,
+                ModelStepHistory::Selected(prior_messages),
                 ModelPurpose::Response,
                 phase,
             )?
@@ -40,7 +47,7 @@ impl StockExecution<'_> {
         journal: &'a dyn ExecutionJournal,
         input: &'a TurnInput,
         step: u32,
-        prior_messages: &'a [ModelMessage],
+        prior_messages: ModelStepHistory<'a>,
         purpose: ModelPurpose,
         phase: &'a mut DispatchPhase,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelEvent>>> {

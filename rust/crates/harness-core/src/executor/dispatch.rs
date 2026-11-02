@@ -23,21 +23,56 @@ struct PreparedDispatchStep {
 }
 
 impl StockExecution<'_> {
-    /// Cancellation covers preparation and response headers as well as chunks.
+    /// Cancellation covers boundary reads, preparation, headers and chunks.
     pub(super) async fn cancellable_model_step(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        prior_messages: &[ModelMessage],
+        mut prior_messages: request::ModelStepHistory<'_>,
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
         let cancellation = journal.model_cancellation();
-        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
-            self.dispatch_model_step(journal, input, step, prior_messages, purpose, phase),
-        );
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
+            Box::pin(async {
+                if let request::ModelStepHistory::Turn(history) = &mut prior_messages
+                    && let Some(boundary) = journal.model_boundary()
+                {
+                    let (_, records) = self
+                        .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                        .await?;
+                    let frozen = records.iter().find_map(|record| match record.event {
+                        ExecutionEvent::ContextPrepared {
+                            step: recorded,
+                            steering,
+                            ..
+                        } if recorded == step => Some(steering),
+                        _ => None,
+                    });
+                    if matches!(frozen, Some(None)) {
+                        return Err(Error::Storage(
+                            "agent request has no frozen inbox range".into(),
+                        ));
+                    }
+                    for message in boundary
+                        .messages(input.operation_id, step, frozen.flatten())
+                        .await?
+                    {
+                        with_history_io(self.io, |work| {
+                            message.content.validate_limits(self.stock.limits, work)
+                        })?;
+                        stock_vec_push(history, message, self.io)?;
+                    }
+                }
+                let history = match &prior_messages {
+                    request::ModelStepHistory::Turn(history) => history.as_slice(),
+                    request::ModelStepHistory::Selected(history) => history,
+                };
+                self.dispatch_model_step(journal, input, step, history, purpose, phase)
+                    .await
+            });
         completion
             .run(async {
                 match futures::future::select(cancellation, execution).await {

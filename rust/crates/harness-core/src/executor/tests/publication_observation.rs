@@ -545,3 +545,126 @@ async fn publication_field_controls() {
     drop(records);
     assert_eq!(credit.available_permits(), 7);
 }
+
+#[tokio::test]
+async fn boundary_read_cancellation_and_source_loss_precede_model_dispatch() -> Result<()> {
+    use crate::agent::{BoundaryCut, ModelBoundary, SteeringTranscript};
+    use futures::{FutureExt as _, channel::oneshot, future::Either};
+
+    struct Boundary {
+        entered: Mutex<Option<oneshot::Sender<()>>>,
+        read: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl ModelBoundary for Boundary {
+        fn messages(
+            &self,
+            _: OperationId,
+            _: u32,
+            _: Option<BoundaryCut>,
+        ) -> BoxFuture<'_, Result<Vec<ModelMessage>>> {
+            Box::pin(async {
+                let read = self.read.lock().unwrap().take().unwrap();
+                self.entered
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                read.await
+                    .map_err(|_| Error::Storage("boundary source closed".into()))?;
+                Ok(Vec::new())
+            })
+        }
+        fn selection(&self, _: OperationId, _: u32) -> Result<BoundaryCut> {
+            Ok(BoundaryCut {
+                from: 0,
+                through: 0,
+            })
+        }
+        fn admitted(&self, _: OperationId, _: u32) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Err(Error::Storage("blocked boundary was admitted".into())) })
+        }
+        fn transcript(&self, _: OperationId) -> BoxFuture<'_, Result<Option<SteeringTranscript>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    for cancel in [true, false] {
+        let (journal, _issuer) = journal().await?;
+        let stop = acyclic_actors::guest::CancellationToken::new();
+        let (entered, entry) = oneshot::channel();
+        let (producer, read) = oneshot::channel();
+        let journal = journal
+            .with_stop(stop.clone())
+            .with_model_boundary(Arc::new(Boundary {
+                entered: Mutex::new(Some(entered)),
+                read: Mutex::new(Some(read)),
+            }));
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "unexpected".into(),
+        )]));
+        let executor = uncompacted_executor(
+            Model::new("fixture".into(), "boundary".into(), "1".into())?,
+            model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("original".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let execution = Box::pin(executor.execute_progress(input, &journal));
+        let execution = match futures::future::select(execution, entry).await {
+            Either::Right((entered, execution)) => {
+                entered.map_err(|_| Error::Storage("boundary never opened".into()))?;
+                execution
+            }
+            Either::Left(_) => return Err(Error::Storage("execution skipped the boundary".into())),
+        };
+        if cancel {
+            stop.cancel();
+            let result = execution
+                .now_or_never()
+                .ok_or_else(|| Error::Storage("cancel retained boundary read".into()))?;
+            assert!(matches!(
+                result,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            ));
+            assert!(
+                producer.is_canceled(),
+                "cancellation retained the original read"
+            );
+        } else {
+            drop(producer);
+            let result = execution
+                .now_or_never()
+                .ok_or_else(|| Error::Storage("source loss retained boundary wait".into()))?;
+            assert!(
+                matches!(result, Err(Error::Storage(ref cause)) if cause == "boundary source closed")
+            );
+        }
+        assert!(
+            model.requests().is_empty(),
+            "preparation failure dispatched a model"
+        );
+    }
+    // The same original channel read stays pending without the cancellation
+    // race: cancellation is not an incidental property of the source fixture.
+    let (entered, _entry) = oneshot::channel();
+    let (producer, read) = oneshot::channel();
+    let boundary = Boundary {
+        entered: Mutex::new(Some(entered)),
+        read: Mutex::new(Some(read)),
+    };
+    let mut pending = boundary.messages(OperationId::new(), 0, None);
+    assert!(pending.as_mut().now_or_never().is_none());
+    assert!(!producer.is_canceled());
+    drop(pending);
+    assert!(producer.is_canceled());
+    Ok(())
+}
