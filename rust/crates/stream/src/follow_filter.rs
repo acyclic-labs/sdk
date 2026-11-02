@@ -145,6 +145,23 @@ impl FollowFilter {
         })
     }
 
+    /// Validates a record and checks whether projection would preserve it whole.
+    /// Typed changes require every entry to pass, while [`Self::matches`] only
+    /// requires an entry that can survive projection. No record owner is cloned
+    /// and no projected value is constructed.
+    pub fn preserves(&self, record: &crate::Record) -> Result<bool, StreamError> {
+        crate::changes::validate(&record.value, &record.headers)?;
+        Ok(if crate::changes::marked(&record.headers) {
+            record
+                .headers
+                .keys()
+                .iter()
+                .all(|key| self.matches_entry(key, &record.headers))
+        } else {
+            self.matches(&record.headers)
+        })
+    }
+
     /// Projects typed provider changes before delivery. Opaque values retain
     /// the stronger rule that every key must satisfy every authority ceiling.
     pub fn project(&self, mut record: crate::Record) -> Result<Option<crate::Record>, StreamError> {

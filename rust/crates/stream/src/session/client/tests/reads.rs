@@ -624,6 +624,22 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
 async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("tree/a/status")?,
+            records: vec![crate::AppendRecord::changes(
+                b"snapshot",
+                &["b", "z"].map(|key| wire::ChangeEntry {
+                    key: key.into(),
+                    operation: "write".into(),
+                    metadata: Default::default(),
+                }),
+                vec![],
+            )?],
+            if_tail: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
+        })
+        .await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
         retained: Default::default(),
@@ -658,6 +674,110 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             .len(),
         2
     );
+    let change = actual.heads[0]
+        .as_ref()
+        .and_then(|head| head.last.clone())
+        .ok_or("missing change head")?;
+    let opaque = next(&mut provider.read(read("tree/a/status", 0, 1)?).await?).await?;
+    let mut malformed = change.clone();
+    malformed.value = OwnedBytes::default();
+    let mut unknown = change.clone();
+    unknown.headers = crate::RecordHeaders::new(
+        change.headers.keys().to_vec(),
+        vec![crate::Attribute {
+            name: "acyclic.record".into(),
+            value: OwnedBytes::from_static(b"changes/unknown"),
+        }],
+    )?;
+    let mut forged = change.clone();
+    forged.headers = crate::RecordHeaders::new(
+        vec![
+            OwnedBytes::from_static(b"b"),
+            OwnedBytes::from_static(b"zz"),
+        ],
+        change
+            .headers
+            .attributes()
+            .iter()
+            .map(crate::RecordAttribute::to_owned)
+            .collect(),
+    )?;
+    let records = [change.clone(), opaque, malformed, unknown, forged];
+    for (start, end, complete) in [("a", "zz", true), ("b", "c", false), ("x", "y", false)] {
+        use acyclic_auth::{contract::*, testing as signed};
+        let credential = signed::root(|block| {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::Filter(Filter {
+                    keys: vec![KeyRange {
+                        start: start.as_bytes().to_vec(),
+                        end: end.as_bytes().to_vec(),
+                    }],
+                    attributes: vec![],
+                }),
+            });
+        });
+        let capability =
+            acyclic_auth::verify::verify(&credential, &signed::Snapshot::default(), signed::NOW)?;
+        let filter = crate::FollowFilter::authorized(Default::default(), &capability)?;
+        if start == "b" {
+            assert!(filter.matches(&change.headers));
+        }
+        for (index, record) in records.iter().enumerate() {
+            let mut projected = None;
+            crate::changes::take_parsed_bytes();
+            // Original decision remains an independent allocating control.
+            let old = acyclic_test_support::measure(|| {
+                projected = Some(
+                    filter
+                        .project(record.clone())
+                        .map(|projected| projected == Some(record.clone())),
+                );
+            });
+            let old_parsed = crate::changes::take_parsed_bytes();
+            let mut preserved = None;
+            let direct = acyclic_test_support::measure(|| {
+                preserved = Some(filter.preserves(record));
+            });
+            let direct_parsed = crate::changes::take_parsed_bytes();
+            assert_eq!(preserved, projected);
+            assert_eq!(direct.count_total, 0);
+            assert_eq!(direct.bytes_total, 0);
+            if index == 0 {
+                assert_eq!(preserved, Some(Ok(complete)));
+                assert_eq!(direct_parsed, record.value.len());
+                if complete {
+                    assert!(old.count_total > 0);
+                    assert_eq!(old_parsed, 3 * record.value.len());
+                }
+                eprintln!(
+                    "complete record range={start}..{end} allocations: project={} borrow={}; parsed bytes: project={old_parsed} borrow={direct_parsed}",
+                    old.count_total, direct.count_total,
+                );
+            } else if index >= 2 {
+                assert_eq!(preserved, Some(Err(StreamError::InvalidArgument)));
+            }
+        }
+        client.register_credential(2, credential.into())?;
+        for retained_only in [false, true] {
+            let mut selected = request.clone();
+            selected.children = None;
+            selected.paths.truncate(1);
+            if retained_only {
+                selected.paths.clear();
+                selected.retained.push(crate::RetainedRecord {
+                    path: change.origin.clone(),
+                    sequence: change.sequence,
+                    commit_id: change.commit_id,
+                });
+            }
+            let observed = client.heads(selected.clone(), 2).await;
+            if complete {
+                assert_eq!(observed?, provider.heads(selected).await?);
+            } else {
+                assert_eq!(observed, Err(StreamError::AccessDenied));
+            }
+        }
+    }
     // Even one named denial refuses the whole view; absence cannot hide it.
     use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
     client.register_credential(

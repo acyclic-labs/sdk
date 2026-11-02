@@ -105,19 +105,18 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
                 wire::SessionFilter::default(),
                 &*authorization.current()?,
             )?;
-            for head in view.heads.iter().flatten() {
-                if let Some(record) = &head.last {
-                    if filter.project(record.clone())? != Some(record.clone()) {
-                        return Err(StreamError::AccessDenied);
-                    }
-                }
-            }
             for record in view
-                .retained
+                .heads
                 .iter()
-                .filter_map(|selected| selected.record.as_ref())
+                .flatten()
+                .filter_map(|head| head.last.as_ref())
+                .chain(
+                    view.retained
+                        .iter()
+                        .filter_map(|selected| selected.record.as_ref()),
+                )
             {
-                if filter.project(record.clone())? != Some(record.clone()) {
+                if !filter.preserves(record)? {
                     return Err(StreamError::AccessDenied);
                 }
             }
