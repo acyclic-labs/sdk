@@ -5,6 +5,18 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
+struct Wakes(AtomicUsize);
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
     HookSpec {
         run: HookRun::Plugin {
@@ -72,15 +84,6 @@ pub(super) async fn judge(
 /// Caller cancellation must retire the same pending result receiver. Generated
 /// cuts cover the initial round, ordered rewrites and final-input revalidation.
 fn withdrawn(bytes: &[u8]) -> Result<()> {
-    struct Wakes(AtomicUsize);
-    impl Wake for Wakes {
-        fn wake(self: Arc<Self>) {
-            self.wake_by_ref();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
     const CLOSED: &str = "hook result producer closed";
     let phase = bytes.get(3).copied().unwrap_or_default() % 3;
     // Rewriting failure controls block immediately, preserving the original
@@ -198,11 +201,134 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Two original callback results remain jointly owned until both settle. The
+/// configured failure policies bind each retained cause to its selected hook,
+/// independently of completion order. Cancellation releases pending receivers.
+fn joined(bytes: &[u8]) -> Result<()> {
+    let mut first = plugin("first", None);
+    first.run = HookRun::Shell {
+        command: "first".into(),
+        shell: None,
+    };
+    first.failure = HookFailure::Report;
+    let configured = configured(vec![first, plugin("second", None)])?;
+    let original = json!({"tool_name":"shell","tool_input":{"command":"checked"}});
+    let registry = crate::tool::ToolRegistry::default();
+    let channels = [
+        futures::channel::oneshot::channel::<()>(),
+        futures::channel::oneshot::channel::<()>(),
+    ];
+    let [(first_tx, first_rx), (second_tx, second_rx)] = channels;
+    let mut producers = [Some(first_tx), Some(second_tx)];
+    let mut receivers = [Some(first_rx), Some(second_rx)];
+    let visits = [Cell::new(0), Cell::new(0)];
+    let cancel = bytes.first().copied().unwrap_or_default() % 3;
+    let first_completed = usize::from(bytes.get(1).is_some_and(|byte| byte & 1 != 0));
+    {
+        let run = configured.run_commands(
+            HookEvent::PreToolUse,
+            &original,
+            &registry,
+            u64::MAX,
+            |hook, _, _| {
+                let index = usize::from(identity(hook) == "second");
+                visits[index].set(visits[index].get() + 1);
+                let receiver = receivers[index].take();
+                async move {
+                    let receiver = receiver
+                        .ok_or_else(|| Error::Invalid("joined hook dispatched twice".into()))?;
+                    receiver.await.map_err(|_| {
+                        Error::Invalid(
+                            if index == 0 {
+                                "first closed"
+                            } else {
+                                "second closed"
+                            }
+                            .into(),
+                        )
+                    })?;
+                    Err(Error::Invalid("withdrawn producer returned success".into()))
+                }
+            },
+        );
+        let mut run = std::pin::pin!(run);
+        let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+        let waker = Waker::from(wakes.clone());
+        let mut context = Context::from_waker(&waker);
+        let initial = run.as_mut().poll(&mut context);
+        if visits.iter().any(|visits| visits.get() != 1) {
+            return Err(Error::Invalid(
+                "joined hooks exceeded one dispatch per producer".into(),
+            ));
+        }
+        if initial.is_ready() {
+            return Err(Error::Invalid(
+                "joined hooks did not retain both producers".into(),
+            ));
+        }
+        if cancel != 1 {
+            drop(producers[first_completed].take());
+            if wakes.0.load(Ordering::Relaxed) != 1 {
+                return Err(Error::Invalid(
+                    "joined hook result lost its first wake".into(),
+                ));
+            }
+            if run.as_mut().poll(&mut context).is_ready() {
+                return Err(Error::Invalid(
+                    "joined hooks settled before both producers".into(),
+                ));
+            }
+            if cancel == 0 {
+                drop(producers[1 - first_completed].take());
+                if wakes.0.load(Ordering::Relaxed) != 2 {
+                    return Err(Error::Invalid(
+                        "joined hook result lost its final wake".into(),
+                    ));
+                }
+                let Poll::Ready(output) = run.as_mut().poll(&mut context) else {
+                    return Err(Error::Invalid("joined hooks lost their terminal".into()));
+                };
+                let output = output?;
+                if !output.blocks()
+                    || output.updated_input.is_some()
+                    || visits.iter().any(|visits| visits.get() != 1)
+                    || !matches!(
+                        output.diagnostics.as_slice(),
+                        [
+                            HookDiagnostic {
+                                cause: crate::ProcessError::InvalidOutput { exit_code: None, message: first },
+                                blocking: false,
+                            },
+                            HookDiagnostic {
+                                cause: crate::ProcessError::InvalidOutput { exit_code: None, message: second },
+                                blocking: true,
+                            },
+                        ] if first == "first closed" && second == "second closed"
+                    )
+                {
+                    return Err(Error::Invalid(
+                        "joined hooks lost cause identity or dispatch count".into(),
+                    ));
+                }
+            }
+        }
+    }
+    for producer in producers.into_iter().flatten() {
+        if producer.send(()).is_ok() {
+            return Err(Error::Invalid(
+                "cancelled joined hooks retained a result receiver".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Strictness is independent of configuration order. Rewriters must compose in
 /// that order, then every sibling must have checked the exact final input.
 /// Result-producer withdrawal must wake the chain and retain its failure policy;
 /// caller cancellation must release the original result wait.
 pub async fn check(bytes: &[u8]) -> Result<()> {
+    joined(bytes)?;
     let decisions: Vec<_> = bytes
         .iter()
         .copied()
