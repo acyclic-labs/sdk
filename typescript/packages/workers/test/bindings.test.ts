@@ -10,8 +10,15 @@ test("deployment declarations become scoped namespace and private service handle
   let factories = 0;
   const requests: unknown[] = [];
   const authority = {
-    namespace() { factories++; return {async invokeActor(request: semantic.InvokeActorRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}}; },
-    service() { factories++; return {async invokeWorker(request: semantic.InvokeWorkerRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}}; },
+    namespace() {
+      expect(this).toBe(authority);
+      // Earlier effects cannot substitute a later producer after preflight.
+      authority.service = () => { throw new Error("substituted service producer"); };
+      factories++;
+      return {async invokeActor(request: semantic.InvokeActorRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}};
+    },
+    service() { expect(this).toBe(authority); factories++; return {async invokeWorker(request: semantic.InvokeWorkerRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}}; },
+    get objects(): never { throw new Error("unselected Objects producer"); },
   };
   const env = await materializeBindings([namespace,service], authority);
   expect(Object.isFrozen(env)).toBe(true); expect(factories).toBe(2);
