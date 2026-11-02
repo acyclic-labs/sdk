@@ -169,7 +169,8 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
             | crate::StreamsAuthorityRecordError::ZeroSequence => Code::DataLoss,
         },
         E::CorruptStatic(_) | E::Corrupt(_) => Code::DataLoss,
-        E::RejectedStatic(_)
+        E::AccountingHandoffActive
+        | E::RejectedStatic(_)
         | E::Rejected(_)
         | E::ReplayCursorAhead { .. }
         | E::ReservationOriginalHeadUnavailable { .. } => Code::FailedPrecondition,

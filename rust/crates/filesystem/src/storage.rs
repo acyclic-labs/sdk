@@ -141,6 +141,9 @@ pub type AuthorityResult<T> = MeasuredResult<crate::OperationReceipt<T>, Authori
 #[derive(Debug, Error, strum::IntoStaticStr)]
 #[cfg_attr(test, derive(strum::EnumCount))]
 pub enum AuthorityStoreError {
+    /// The original accounting continuation still owns this operation's custody.
+    #[error("authority accounting custody is held by its continuation")]
+    AccountingHandoffActive,
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
     Cancelled,

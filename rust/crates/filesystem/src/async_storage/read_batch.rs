@@ -54,7 +54,7 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
 ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError> {
-    let budget = context.accounting().remaining().map_err(object_error)?;
+    let budget = context.remaining().map_err(crate::ObjectStoreError::from)?;
     let mut batch = AuthorityWork::new(budget, context.cancellation);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -122,6 +122,9 @@ impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {
         match error {
             crate::AuthorityStoreError::Work(error) => crate::ObjectStoreError::Work(error),
             crate::AuthorityStoreError::Cancelled => crate::ObjectStoreError::Cancelled,
+            crate::AuthorityStoreError::AccountingHandoffActive => {
+                crate::ObjectStoreError::AccountingHandoffActive
+            }
             #[cfg(not(target_arch = "wasm32"))]
             crate::AuthorityStoreError::NativeOriginal(error) => {
                 crate::ObjectStoreError::Native(error)
