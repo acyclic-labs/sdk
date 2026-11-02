@@ -99,6 +99,8 @@ mod stock;
 fn fixture(
     replies: Vec<(u16, String)>,
 ) -> acyclic_harness_core::Result<(tempfile::TempDir, CodexLogin, Arc<Server>, String)> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
     let root = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
     let token = format!(
         "header.{}.signature",
