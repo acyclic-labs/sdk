@@ -27,8 +27,7 @@ export function rawNeedles(actions) {
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
-export function matches(screen, raw, condition) {
-  const visible = screenText(screen);
+export function matches(screen, raw, condition, visible = screenText(screen)) {
   return (condition.contains ?? []).every(text => visible.includes(text))
     && (!condition.task_failure || expectedTaskFailure(visible, condition))
     && (condition.absent ?? []).every(text => !visible.includes(text))
@@ -73,7 +72,9 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
-        if (!matches(screen, raw, action.when)) return;
+        if (!matches(screen, raw, action.when, visible)) return;
+        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible),
+          `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(visible, action.when);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
