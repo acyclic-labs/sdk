@@ -596,9 +596,9 @@ async fn stage_text(
     outputs.stage(turn, &bytes).await.map_err(host_error)
 }
 
-/// Settles a rewind or clear, which runs no model request: its checkpoint
-/// carries the latest checkpoint's summary forward (a rewind) or an empty
-/// one (a clear, or a rewind with no checkpoint to restore).
+/// Settles a model-free context selection, staging a refusal when necessary.
+/// A successful rewind carries its checkpoint summary; other selections use
+/// an empty marker.
 async fn settle_selection(
     open: &OpenControl,
     turn: OperationId,
@@ -711,11 +711,26 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let (Queued { inbox, input }, segment) = starting(agent, input)?;
+            if let Some(
+                action @ (ContextAction::Rewind
+                | ContextAction::Clear
+                | ContextAction::Restore { .. }),
+            ) = input.context()
+            {
+                let turn = turn_id(agent, &input)?;
+                let refusal = self
+                    .host
+                    .selection(agent, action)
+                    .await
+                    .map_err(host_error)?;
+                let open = self
+                    .host
+                    .open_control(agent, action, cancellation)
+                    .await
+                    .map_err(host_error)?;
+                return settle_selection(&open, turn, inbox, input, refusal).await;
+            }
             if agent.turn.is_none()
-                && !matches!(
-                    input.context(),
-                    Some(ContextAction::Rewind | ContextAction::Clear)
-                )
                 && let Some(notices) = super::NoticeSelection::pending(agent)
             {
                 // This actor's due alarm is the only continuation producer.
@@ -739,24 +754,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
-            if let Some(
-                action @ (ContextAction::Rewind
-                | ContextAction::Clear
-                | ContextAction::Restore { .. }),
-            ) = input.context()
-            {
-                let refusal = self
-                    .host
-                    .selection(agent, action)
-                    .await
-                    .map_err(host_error)?;
-                let open = self
-                    .host
-                    .open_control(agent, action, stop)
-                    .await
-                    .map_err(host_error)?;
-                return settle_selection(&open, turn, inbox, input, refusal).await;
-            }
             let content = model_input(&input)?;
             let open = self
                 .host
