@@ -103,6 +103,23 @@ mod tests {
         ] {
             crate::admit_external(codec, "tools/list", bytes)
                 .expect("original captured discovery must be admitted");
+            let operation = OperationId::from_bytes([7; 16]);
+            let missing = &bytes[..0];
+            let interrupted = if codec == "stdio" {
+                stdio::codec_fuzz::admit(missing)
+            } else {
+                http::codec_fuzz::admit(missing, "application/json", operation, false)
+            }
+            .expect_err("missing response cannot publish a result");
+            assert!(
+                error_observation(&interrupted).1,
+                "missing MCP reply lost mutation uncertainty"
+            );
+            assert_eq!(
+                acyclic_harness_core::encode_error(&interrupted).operation_id,
+                operation.to_string(),
+                "missing MCP reply lost its original operation"
+            );
             let exercise = |input: &[u8]| {
                 http::codec_fuzz::check(input);
                 stdio::codec_fuzz::check(input);
