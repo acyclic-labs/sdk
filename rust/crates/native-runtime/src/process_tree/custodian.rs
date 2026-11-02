@@ -315,7 +315,7 @@ impl Custodian {
     /// Where a member admits a suspended process of `tree` it started
     /// itself, with the tree's admission secret.
     pub(super) fn admission(&self, tree: usize, secret: &Secret) -> String {
-        format!("{}/{tree}/{}", self.endpoint, admission::encode(secret))
+        admission::endpoint(&self.endpoint, tree, secret)
     }
 
     /// Hands `tree`'s Job and its suspended first member, `process`, to the
