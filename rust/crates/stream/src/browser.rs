@@ -263,6 +263,25 @@ impl BrowserStream {
         operation(&cache.provider).await
     }
 
+    async fn with_retained<T>(
+        &self,
+        lookup: impl AsyncFn(&MemoryStream) -> Result<Option<T>, StreamError>,
+    ) -> Result<Option<T>, StreamError> {
+        {
+            let cache = self.inner.cache.lock().await;
+            // Only completed durable replay certifies this cache. A cancelled
+            // transaction can leave tentative results in an invalid provider.
+            if cache.valid
+                && let Some(value) = lookup(&cache.provider).await?
+            {
+                return Ok(Some(value));
+            }
+        }
+        // Immutable hits need no current observation. Absence still requires
+        // the original transaction, including repair of an invalid cache.
+        self.with_provider(lookup).await
+    }
+
     async fn execute(
         &self,
         command: WriteRequest,
@@ -319,7 +338,7 @@ impl StreamProvider for BrowserStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.with_provider(async move |provider| provider.inspect_idempotency(key).await)
+        self.with_retained(async |provider| provider.inspect_idempotency_inner(key.clone()).await)
             .await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
@@ -356,8 +375,15 @@ impl StreamProvider for BrowserStream {
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.with_provider(async move |provider| provider.read_commit(id).await)
-            .await
+        self.with_retained(
+            async |provider| match provider.read_commit_inner(id).await {
+                Ok(envelope) => Ok(Some(envelope)),
+                Err(StreamError::NotFound) => Ok(None),
+                Err(error) => Err(error),
+            },
+        )
+        .await?
+        .ok_or(StreamError::NotFound)
     }
     async fn follow(
         &self,
