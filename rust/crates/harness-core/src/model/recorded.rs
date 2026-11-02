@@ -389,6 +389,7 @@ impl ModelProvider for RecordedModel {
         observed: &'a [ModelEvent],
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
-        self.live.reconcile_with_native_work(dispatch, observed, work)
+        self.live
+            .reconcile_with_native_work(dispatch, observed, work)
     }
 }

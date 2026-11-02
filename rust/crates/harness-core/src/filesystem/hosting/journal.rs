@@ -153,7 +153,8 @@ where
                 .ok()
                 .and_then(|start| bytes.get(start..))
                 .ok_or(Error::Record("payload offset is past the request's end"))?;
-            let take = usize::try_from(maximum).map_or(page.len(), |maximum| maximum.min(page.len()));
+            let take =
+                usize::try_from(maximum).map_or(page.len(), |maximum| maximum.min(page.len()));
             return Ok((page.get(..take).unwrap_or(page).into(), bytes.len() as u64));
         }
         let length = reference.descriptor().byte_length();

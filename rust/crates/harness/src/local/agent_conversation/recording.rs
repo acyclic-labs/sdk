@@ -122,7 +122,9 @@ async fn observe(
             calls.started = Some((key, *step, RecordedCall::default()));
         }
         ExecutionEvent::ModelInline { event, .. } => calls.event(event.as_bytes().to_vec())?,
-        ExecutionEvent::Model { .. } => calls.event(payload(ExecutionPayloadField::Event).await?)?,
+        ExecutionEvent::Model { .. } => {
+            calls.event(payload(ExecutionPayloadField::Event).await?)?
+        }
         ExecutionEvent::ToolCompleted { step, call_id, .. } => {
             let result: ToolResult =
                 serde_json::from_slice(&payload(ExecutionPayloadField::Result).await?)

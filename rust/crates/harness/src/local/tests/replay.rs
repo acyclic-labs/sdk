@@ -52,7 +52,12 @@ impl DivergenceSink for Divergences {
 }
 impl Divergences {
     fn taken(&self) -> Vec<Divergence> {
-        std::mem::take(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        std::mem::take(
+            &mut self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }
 

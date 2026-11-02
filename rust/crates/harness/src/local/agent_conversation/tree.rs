@@ -59,7 +59,9 @@ impl TreeWalk {
             else {
                 return Err(unexpected());
             };
-            frame.children.extend(items.into_iter().map(|child| child.agent));
+            frame
+                .children
+                .extend(items.into_iter().map(|child| child.agent));
             frame.next = next.map(Some);
         }
         Ok(None)
