@@ -186,7 +186,7 @@ pub(crate) async fn count(
         crate::native::retain(
             hold,
             (retained as u64)
-                .checked_add(crate::http::owned_bytes::control_bytes::<Body>()?)
+                .checked_add(acyclic_auth::operation::bytes_owner_allocation_bytes::<Body>() as u64)
                 .ok_or_else(|| boundary(work, "token count retained capacity overflow"))?,
         )?;
     }

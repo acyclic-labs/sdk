@@ -161,9 +161,9 @@ impl<'a> AuthorityWork<'a> {
                 .1
                 .as_mut()
                 .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                .grow(crate::kernel::allocation::bytes_owner_control_bytes::<
-                    ForkBytes,
-                >()?)?;
+                .grow(
+                    acyclic_auth::operation::bytes_owner_allocation_bytes::<ForkBytes>() as u64,
+                )?;
             return match buffer {
                 (bytes, Some(allocation)) => Ok(Bytes::from_owner(ForkBytes {
                     bytes,

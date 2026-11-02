@@ -8,7 +8,9 @@ use futures::{Future, FutureExt, future::Shared};
 use std::{sync::Arc, time::Duration};
 
 mod bytes;
-pub use bytes::{ProtectedBytes, protect_bytes, reserve_protected_bytes};
+pub use bytes::{
+    ProtectedBytes, bytes_owner_allocation_bytes, protect_bytes, reserve_protected_bytes,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Drop-owned native stop registration.

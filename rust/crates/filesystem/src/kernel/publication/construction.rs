@@ -46,7 +46,7 @@ pub(super) fn prepare_publication_commit(
     cancellation.check()?;
     accounting.check()?;
     let control_bytes =
-        crate::kernel::allocation::bytes_owner_control_bytes::<PublicationPayload>()?;
+        acyclic_auth::operation::bytes_owner_allocation_bytes::<PublicationPayload>() as u64;
     let allocation = RetainedAllocation::claim(control_bytes, 1, accounting)?;
     let payload = Bytes::from_owner(PublicationPayload {
         bytes,

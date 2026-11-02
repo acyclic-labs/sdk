@@ -2,6 +2,20 @@
 
 use zeroize::Zeroizing;
 
+#[repr(C)]
+struct BytesOwner<T> {
+    _references: std::sync::atomic::AtomicUsize,
+    _owner: T,
+}
+
+/// Complete control allocation made by `bytes::Bytes::from_owner`, including
+/// its reference count and owner alignment. Admit this on the original operation
+/// before transferring an owner; payload backing retains its separate custody.
+#[must_use]
+pub const fn bytes_owner_allocation_bytes<T>() -> usize {
+    std::mem::size_of::<BytesOwner<T>>()
+}
+
 /// Transfers collected bytes into protected storage. Reclaims the original
 /// backing when `Bytes` can transfer it, and copies otherwise. Only the returned
 /// allocation is scrubbed; other transport owners retain their own backing.
