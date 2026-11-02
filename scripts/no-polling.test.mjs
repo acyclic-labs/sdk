@@ -274,7 +274,9 @@ test('host language sources cannot hide a wait behind a non-comment slash', () =
   ['scripts/control.cs', 'class Control { void Wait() { System.Threading.Thread.Sleep(1); } }'],
   ['scripts/control.cs', 'class Control { async Task Run() { await System.Threading.Tasks.Task.Delay(1000); } }'],
   ['scripts/control.c', 'void run(void) { clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0); }'],
-  ['scripts/control.cpp', 'void run() { std::this_thread::sleep_for(std::chrono::seconds(1)); }'],
+  ...['cc', 'cpp', 'cxx', 'h', 'hh', 'hpp', 'hxx'].map(extension => [
+   `scripts/control.${extension}`, '// The producer\'s "buffer"\nvoid run() { std::this_thread::sleep_for(std::chrono::seconds(1)); }',
+  ]),
   ['scripts/control.c', 'void run(void) { thrd_sleep(&duration, 0); }'],
   ['scripts/control.cs', '/* outer /* inner */ class Control { void Wait() { System.Threading.Thread.Sleep(1); } } // */'],
   ['scripts/control.c', '/* outer /* inner */ void wait(void) { sleep(1); } // */'],
@@ -469,6 +471,12 @@ test('the entry point compares real Git objects and rejects modified and untrack
   assert.notEqual(check('--inventory', censusPath).status, 0);
   assert.equal(readFileSync(censusPath, 'utf8'), preserved);
   rmSync(join(root, pluginChild));
+  const native = 'scripts/control.hpp';
+  write(native, 'inline void wait() { std::this_thread::sleep_for(std::chrono::seconds(1)); }\n');
+  const nativeUntracked = check('HEAD');
+  assert.notEqual(nativeUntracked.status, 0);
+  assert.match(nativeUntracked.output, /file=scripts\/control.hpp:1 kind=timer-or-readiness/);
+  rmSync(join(root, native));
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
   const modified = check('HEAD');
   assert.notEqual(modified.status, 0);
