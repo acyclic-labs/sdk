@@ -495,15 +495,9 @@ impl NativeChildren {
         let outcome = match exited {
             Err(message) => Outcome::Failed { message },
             Ok(Some(status)) if status.success() => match &running.answer {
-                Outcome::Succeeded(text) => Outcome::Succeeded(TurnOutput {
-                    #[cfg(feature = "research")]
-                    journal_cut: None,
-                    text: text.clone(),
-                    metadata: Value::Null,
-                    steps: 1,
-                    transcript: Vec::new(),
-                    attachments: Vec::new(),
-                }),
+                Outcome::Succeeded(text) => {
+                    Outcome::Succeeded(TurnOutput::new(text.clone(), Value::Null, 1))
+                }
                 Outcome::Failed { message } => Outcome::Failed {
                     message: message.clone(),
                 },

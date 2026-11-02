@@ -536,6 +536,23 @@ pub struct TurnOutput {
     pub transcript: Vec<ModelMessage>,
 }
 
+impl TurnOutput {
+    /// Creates an output without a model transcript, attachments or an
+    /// accepted execution-journal cut. Adapters can supply their original
+    /// transcript and attachments after construction.
+    pub fn new(text: String, metadata: Value, steps: u32) -> Self {
+        Self {
+            #[cfg(feature = "research")]
+            journal_cut: None,
+            text,
+            attachments: Vec::new(),
+            metadata,
+            steps,
+            transcript: Vec::new(),
+        }
+    }
+}
+
 /// Execution progress with its settled value or pending approval operation.
 pub enum ExecutionProgress<T> {
     /// Preparation failed before any provider attempt could start.
