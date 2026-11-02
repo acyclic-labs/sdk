@@ -92,6 +92,111 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn pause_settles_retained_delivery_before_changing_its_state() -> TestResult {
+    for committed in [false, true] {
+        pause_retained_delivery(committed, false).await?;
+    }
+    pause_retained_delivery(false, true).await
+}
+
+async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> TestResult {
+    let provider = Arc::new(Provider::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "pause-retained", &[b"emit", b"emit"]).await?;
+    let handler = Arc::new(Gated {
+        package: Package::new()?,
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    let mut delivery = Box::pin(runtime.drain_actor(&address));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    assert_eq!(handler.active.load(Ordering::SeqCst), 1);
+    // The handler has already claimed its epoch. Cut only its original output
+    // publication, either before commit or after the real committed decision.
+    let (entered, release) = provider.arm(Fault::Unknown);
+    handler.gate.add_permits(1);
+    let (delivered, entered) = futures::join!(delivery, async move {
+        entered.await?;
+        if committed {
+            release.send(()).map_err(|_| "lost publication producer")?;
+        } else {
+            drop(release);
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    });
+    entered?;
+    assert!(matches!(
+        delivered,
+        Err(Error::Stream(StreamError::Unavailable))
+    ));
+    let slot = runtime.slot(&address).ok_or("lost retained placement")?;
+    assert!(slot.inner.lock().await.pending.is_some());
+    assert_eq!(
+        records(&*provider, "out/pause-retained").await?.len(),
+        usize::from(committed)
+    );
+    let parked = Arc::new(AtomicUsize::new(0));
+    if settlement_lost {
+        // Loss of this producer must refuse pause with the original result
+        // still retained. It must neither park resources nor change its cut.
+        let (entered, release) = provider.arm(Fault::Commit);
+        drop(release);
+        let observed = Arc::clone(&parked);
+        let refused = runtime
+            .pause_with(&address, true, async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+        entered.await?;
+        assert!(matches!(
+            refused,
+            Err(Error::Stream(StreamError::Unavailable))
+        ));
+        assert!(slot.inner.lock().await.pending.is_some());
+        assert_eq!(
+            runtime
+                .store
+                .load(&address)
+                .await?
+                .state()
+                .map(State::paused),
+            Some(false)
+        );
+        assert_eq!(parked.load(Ordering::SeqCst), 0);
+    }
+    let observed = Arc::clone(&parked);
+    runtime
+        .pause_with(&address, true, async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })
+        .await?;
+    assert!(
+        slot.inner.lock().await.pending.is_none(),
+        "pause left completed delivery unresolved"
+    );
+    assert_eq!(records(&*provider, "out/pause-retained").await?.len(), 1);
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    assert_eq!(parked.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .store
+            .load(&address)
+            .await?
+            .state()
+            .map(State::paused),
+        Some(true)
+    );
+    runtime.pause(&address, false).await?;
+    handler.gate.add_permits(1);
+    runtime.drain_actor(&address).await?;
+    assert_eq!(records(&*provider, "out/pause-retained").await?.len(), 2);
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Fault {
     Load,
