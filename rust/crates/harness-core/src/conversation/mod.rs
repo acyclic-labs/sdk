@@ -245,8 +245,6 @@ mod files;
 mod history;
 mod message;
 mod outcome;
-#[cfg(feature = "research")]
-pub mod read_set;
 mod selection;
 mod state;
 mod volumes;

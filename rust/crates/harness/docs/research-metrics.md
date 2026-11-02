@@ -159,14 +159,20 @@ leave those keys null for an offline join to the original admission. Export
 adds no provider request or execution-side capture work, retains one request
 at a time, and performs work proportional to that request's canonical bytes.
 
-The research-only `conversation::read_set::TurnReadSet` carrier is available
-without Arrow or RDF dependencies. It records version 1, the fixed original
-agent, execution operation, optional journal cut, explicit producer coverage,
-and either `Closed { file }` or `Unavailable { reason }`. An enclosing absent
-observation, an unavailable observation and a closed empty artifact have
-different meanings. Admit this association once in the original turn
-settlement, bound to its original agent and operation. A failed turn without a
-conversation entry does not imply an empty read set.
+Capture orchestration belongs in the non-enforcing `plugins/capture/` directory,
+using committed records and immutable artifact files. These library functions
+provide its bounded projections and shared publication primitive; they do not
+install a plugin, actor or background subscription. A scope is the grouping root;
+independent root agents do not acquire a fabricated parent.
+
+Future call integration uses the original caller-owned `calls/<id>` reply path
+and its terminal record, rather than a separate capture settlement carrier.
+Publish a read-set artifact only after its declared source cut closes, and bind
+its reference to that original call. A missing terminal or failed/cancelled
+producer leaves coverage unavailable; it never certifies an empty read set.
+Live consumers use the original durable read and alarm rather than polling.
+Status and counts remain the existing phase projection and `counts(range)`;
+the exporter adds neither a status writer nor execution counters.
 
 The following row kinds are reserved for the original research carriers in
 the same six tables. Their producers remain separate from this offline codec:

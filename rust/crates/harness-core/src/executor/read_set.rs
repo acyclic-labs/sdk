@@ -84,7 +84,8 @@ impl Page {
 }
 
 /// Reads up to one page at a caller-pinned settled cut. The cut must come from
-/// the turn's consumed-input fence; a short page or current tail is not finality.
+/// original terminal journal append; an inbox cursor, short page or current tail
+/// does not establish execution finality.
 /// Exact tool-chain lookup reuses the journal's authenticated index. An adapter
 /// without that index refuses instead of scanning prior history per receipt.
 /// All waits are the original replay/index/load results and their typed errors.
@@ -543,24 +544,6 @@ mod tests {
             )?
             .await?;
         let published = storage.read(&artifact).await?;
-        use crate::conversation::{VolumeOwner, read_set::*};
-        let VolumeOwner::Agent(owner) = storage.volume().owner() else {
-            return Err(export_error("read-set fixture lacks its original owner"));
-        };
-        let mut settlement = TurnReadSet {
-            version: 1,
-            agent: *owner,
-            operation,
-            cut: Some(cut),
-            coverage: ReadSetCoverage::CommittedReadToolResultsOnly,
-            observation: ReadSetObservation::Closed { file: artifact },
-        };
-        settlement.validate()?;
-        settlement.agent = AgentId::new();
-        assert!(settlement.validate().is_err());
-        settlement.agent = *owner;
-        settlement.cut = None;
-        assert!(settlement.validate().is_err());
         let records = published
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
