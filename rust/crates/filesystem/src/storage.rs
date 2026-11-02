@@ -326,6 +326,14 @@ pub struct ObjectId {
     pub storage: Option<ObjectStorage>,
 }
 
+impl Serialize for ObjectId {
+    /// Preserve the complete canonical reference, including sealed association,
+    /// through the shared stack-owned encoder; no separate export identity.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.to_bytes().as_slice())
+    }
+}
+
 /// Physical location of lineage-sealed bytes. The referring object's hash binds
 /// this association; the plaintext digest remains the filesystem identity.
 #[derive(
@@ -870,6 +878,9 @@ mod object_id_codec_tests {
                 };
                 let expected = &expected[..length];
                 assert_eq!(bytes.as_slice(), expected);
+                let exported: Vec<u8> =
+                    serde_json::from_value(serde_json::to_value(id).unwrap()).unwrap();
+                assert_eq!(exported, expected);
                 assert_eq!(ObjectId::from_prefix(expected), Ok((id, &[][..])));
                 assert_eq!(ObjectId::try_from(bytes.as_slice()), Ok(id));
                 for length in 0..bytes.len() {

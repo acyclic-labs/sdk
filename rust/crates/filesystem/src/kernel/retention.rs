@@ -16,7 +16,8 @@ const VERSION: u16 = 1;
 const MAXIMUM_LABEL_BYTES: u32 = 255;
 
 /// Why one immutable generation remains durably reachable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RetentionKind {
     /// Human-readable retained workspace checkpoint.
     Checkpoint,

@@ -188,6 +188,46 @@ impl<'a> Sharing<'a> {
     }
 }
 
+/// One original filesystem authority fact in `storage/`, selected by the
+/// existing proven accounting page. Retentions refer to logical generations;
+/// neither equal roots nor multiple references prove physical bytes saved.
+#[cfg(feature = "filesystem")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Storage<'a> {
+    /// Resource file layout; this does not change the filesystem authority wire.
+    pub version: u32,
+    /// Original authorized account's opaque bytes, without UTF-8 conversion.
+    pub account: &'a [u8],
+    /// Original authority, commit, operation, settlement and logical transition.
+    /// The original reader must bind the admitted authority to the agent's
+    /// volume; the fact alone does not establish agent ownership or current use.
+    pub fact: &'a acyclic_fs::accounting::AccountingFact,
+    /// Unknown without original allocation-custody evidence.
+    pub physical_shared_bytes: Option<u64>,
+    /// Unknown without original allocation-custody evidence.
+    pub physical_copied_bytes: Option<u64>,
+}
+
+#[cfg(feature = "filesystem")]
+impl<'a> Storage<'a> {
+    /// Borrow the original proven fact without another authority/object read,
+    /// generation walk, sum, payload copy, clock or retained lookup table.
+    /// AccountingPage.work measures projection work, not agent execution work.
+    pub fn project(
+        account: &'a AccountId,
+        fact: &'a acyclic_fs::accounting::AccountingFact,
+    ) -> Self {
+        Self {
+            version: VERSION,
+            account: account.as_bytes(),
+            fact,
+            physical_shared_bytes: None,
+            physical_copied_bytes: None,
+        }
+    }
+}
+
 /// `own.json` or `subtree.json` over the original aggregate's selected range.
 /// Missing producers stay null. Model unknown counts remain in the original
 /// ModelUsageTotals; a partial known subtotal must never be shown as a total.
