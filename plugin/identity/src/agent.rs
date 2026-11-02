@@ -224,10 +224,11 @@ impl Identity {
         Ok(result)
     }
 
-    pub(super) async fn renew_agent(&self, store: &Arc<Store>) -> Result<Value, Error> {
-        let mut credentials = store
-            .at_endpoint(&self.endpoint, Store::credentials)
-            .await?;
+    pub(super) async fn renew_agent(
+        &self,
+        store: &Arc<Store>,
+        mut credentials: Credentials,
+    ) -> Result<Value, Error> {
         let agent = credentials.agent.as_mut().ok_or_else(|| {
             Error::new(
                 "login_required",

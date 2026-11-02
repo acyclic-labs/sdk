@@ -139,6 +139,8 @@ struct Credentials {
 
 struct Store {
     path: PathBuf,
+    #[cfg(test)]
+    reads: std::sync::atomic::AtomicUsize,
     /// Unlocked explicitly when dropped: a forked child can retain the open
     /// file description until exec.
     _lock: acyclic_native_runtime::FileLock,
@@ -224,7 +226,12 @@ impl Store {
         // fixed sidecar belongs to an interrupted former writer.
         private_file::validate_destination_for_upgrade(&sidecar(&path, ".next"))?;
         private_file::discard_unpublished(&sidecar(&path, ".next"))?;
-        Ok(Arc::new(Self { path, _lock: lock }))
+        Ok(Arc::new(Self {
+            path,
+            _lock: lock,
+            #[cfg(test)]
+            reads: Default::default(),
+        }))
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
@@ -241,6 +248,9 @@ impl Store {
     fn credential_bytes(
         &self,
     ) -> Result<Option<acyclic_native_runtime::owner_record::SecretBytes>, Error> {
+        #[cfg(test)]
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match private_file::read(&self.path, u64::MAX - 1) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -707,6 +717,20 @@ impl Identity {
         }
     }
 
+    async fn refresh_stored(&self, store: &Arc<Store>) -> Result<Value, Error> {
+        let mut credentials = store
+            .at_endpoint(&self.endpoint, Store::credentials)
+            .await?;
+        match credentials.session.take() {
+            Some(session) => {
+                drop(credentials);
+                let session = self.refresh(store, &session).await?;
+                Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
+            }
+            None => self.renew_agent(store, credentials).await,
+        }
+    }
+
     async fn refresh(&self, store: &Arc<Store>, session: &Session) -> Result<Session, Error> {
         // Consume the on-disk token before dispatch so interruption cannot replay it.
         store.transact(Store::clear).await?;
@@ -1068,19 +1092,7 @@ async fn execute(
                 .await?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
-        "refresh" => {
-            if store
-                .at_endpoint(&identity.endpoint, Store::credentials)
-                .await?
-                .session
-                .is_none()
-            {
-                return identity.renew_agent(&store).await;
-            }
-            let session = store.at_endpoint(&identity.endpoint, Store::read).await?;
-            let session = identity.refresh(&store, &session).await?;
-            Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
-        }
+        "refresh" => identity.refresh_stored(&store).await,
         "signup" if options.agent => identity.signup(&store).await,
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
