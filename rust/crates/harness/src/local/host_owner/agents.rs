@@ -318,22 +318,22 @@ impl HostDriver {
         &self,
         agent: &AgentState,
         claim: OperationId,
-        bytes: &[u8],
+        source: &mut dyn crate::conversation::ContentSource,
     ) -> Result<FileRef> {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.events.v1");
         hasher.update(&claim.into_bytes());
         let mut operation = [0; 16];
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
-        let content = self
-            .content(agent, crate::local::host_process::EVENT_LOG_BYTES, &[])
-            .await?;
+        // Volume capacity is the admission boundary. A turn has no separate
+        // cumulative byte cap; the publisher retains bounded source chunks.
+        let content = self.content(agent, u64::MAX, &[]).await?;
         Ok(content
             .writer
-            .stage_once(
+            .stage_stream_once(
                 operation,
                 &format!("native/{claim}.events.jsonl"),
-                bytes,
+                source,
                 "application/x-ndjson",
                 "native",
                 ContentAccess::default(),
@@ -613,10 +613,10 @@ impl NativeAgents {
         &self,
         agent: &AgentPath,
         claim: OperationId,
-        bytes: &[u8],
+        source: &mut dyn crate::conversation::ContentSource,
     ) -> Result<FileRef> {
         let state = self.state(agent).await?;
-        self.driver.stage_events(&state, claim, bytes).await
+        self.driver.stage_events(&state, claim, source).await
     }
 
     /// The brief of `parent`'s child session `reference`; see

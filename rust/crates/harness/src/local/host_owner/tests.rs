@@ -183,6 +183,64 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         events,
     )
     .map_err(storage)?;
+    // Exercise the original stable content operation before Complete. Both
+    // first publication and replay must consume the same source through EOF,
+    // preserving its resume identity without a second file read.
+    let staged = {
+        use crate::local::host_process::{HostProcessLease, children::SessionId};
+        let quiescent =
+            HostProcessLease::acquire(fixture.checkout.path(), &child, &view)?.quiescent();
+        let mut staged = None;
+        for _ in 0..2 {
+            let mut observed = SessionId::default();
+            let file = {
+                let mut source = quiescent
+                    .events(claim(&first)?.operation, &mut observed)?
+                    .ok_or_else(|| Error::Invalid("recorded native log absent".into()))?;
+                fixture
+                    .owner
+                    .native
+                    .stage_events(&child, claim(&first)?.operation, &mut source)
+                    .await?
+            };
+            assert_eq!(
+                observed.id.as_deref(),
+                resume,
+                "publication replay skipped original source EOF"
+            );
+            if let Some(previous) = &staged {
+                assert_eq!(previous, &file, "same claim published another artifact");
+            }
+            staged = Some(file);
+        }
+        staged
+    };
+    // A real source-open/read failure must leave the original claim unsettled
+    // and its log recoverable. Exercise the deployed completion entry point.
+    let log = custody.join(format!("events-{}.jsonl", claim(&first)?.operation));
+    let retained = log.with_extension("retained");
+    std::fs::rename(&log, &retained).map_err(storage)?;
+    std::fs::create_dir(&log).map_err(storage)?;
+    let refused = fixture
+        .session(
+            "child",
+            SessionAction::Complete {
+                claim: claim(&first)?,
+                outcome: crate::Outcome::Cancelled,
+            },
+        )
+        .await;
+    assert!(refused.is_err(), "unreadable native log settled its claim");
+    assert_eq!(
+        fixture.owner.native.session(&child).await?.1.claimed(),
+        Some(claim(&first)?.operation)
+    );
+    assert!(
+        retained.is_file(),
+        "failed publication retired original events"
+    );
+    std::fs::remove_dir(&log).map_err(storage)?;
+    std::fs::rename(&retained, &log).map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
     let failed = fixture
         .session(
@@ -198,6 +256,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(failed.pointer("/status/settled"), Some(&json!(true)));
     let file: crate::conversation::FileRef =
         serde_json::from_value(failed["events"].clone()).map_err(storage)?;
+    assert_eq!(staged.as_ref(), Some(&file));
     let (state, _) = fixture.owner.native.session(&child).await?;
     assert_eq!(fixture.owner.native.read(&state, &file).await?, events);
     assert!(

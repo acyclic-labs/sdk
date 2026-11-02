@@ -64,40 +64,6 @@ fn prompt_bound(prompt: &str) -> Result<()> {
     Ok(())
 }
 
-/// The native resume id an event names: a Codex thread, a Claude Code
-/// session or a Pi session header.
-fn native_session_id(event: &Value) -> Option<&str> {
-    event
-        .get("thread_id")
-        .or_else(|| event.get("session_id"))
-        .or_else(|| {
-            (event.get("type").and_then(Value::as_str) == Some("session"))
-                .then(|| event.get("id"))
-                .flatten()
-        })
-        .and_then(Value::as_str)
-}
-
-/// The last valid native resume id a turn's event log names.
-fn logged_session_id(log: &[u8]) -> Option<String> {
-    log.split(|byte| *byte == b'\n')
-        // Only lines that can name a session are decoded.
-        .filter(|line| {
-            line.windows(b"_id".len()).any(|window| window == b"_id")
-                || line
-                    .windows(b"session".len())
-                    .any(|window| window == b"session")
-        })
-        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-        .filter_map(|event| native_session_id(&event).map(str::to_owned))
-        .filter(|id| valid_session_id(id))
-        .last()
-}
-
-fn valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
-}
-
 /// The claim exchange fused onto request `operation`: its own inbox identity.
 fn handoff(operation: OperationId) -> OperationId {
     crate::local::context::publication_operation(
@@ -316,34 +282,37 @@ impl HostWorkspaceOwner {
                 // The turn's process recorded its whole event stream; the
                 // settled conversation entry carries it, and the resume id
                 // it last named is the session's.
-                let events = match quiescence.events(claim.operation)? {
-                    Some(bytes) => {
-                        if let Some(id) = logged_session_id(&bytes)
-                            && session
-                                .native
-                                .as_ref()
-                                .and_then(|native| native.get("id"))
-                                .and_then(Value::as_str)
-                                != Some(id.as_str())
-                        {
-                            self.native
-                                .request(
-                                    child,
-                                    derived_session(claim.operation),
-                                    &Event::Native {
-                                        session: json!({ "id": id }),
-                                    },
-                                )
-                                .await?;
-                        }
+                let mut resume = super::super::host_process::children::SessionId::default();
+                let events =
+                    if let Some(mut source) = quiescence.events(claim.operation, &mut resume)? {
                         Some(
                             self.native
-                                .stage_events(child, claim.operation, &bytes)
+                                .stage_events(child, claim.operation, &mut source)
                                 .await?,
                         )
-                    }
-                    None => None,
-                };
+                    } else {
+                        None
+                    };
+                // Publication consumes and validates the complete source,
+                // including on replay. No second read derives the resume id.
+                if let Some(id) = resume.id
+                    && session
+                        .native
+                        .as_ref()
+                        .and_then(|native| native.get("id"))
+                        .and_then(Value::as_str)
+                        != Some(id.as_str())
+                {
+                    self.native
+                        .request(
+                            child,
+                            derived_session(claim.operation),
+                            &Event::Native {
+                                session: json!({ "id": id }),
+                            },
+                        )
+                        .await?;
+                }
                 self.native
                     .request(
                         child,

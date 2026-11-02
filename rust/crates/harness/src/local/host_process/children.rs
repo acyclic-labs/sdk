@@ -24,6 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod answer;
+pub(crate) use answer::SessionId;
 use answer::{EVENT_LIMIT, NativeAnswer};
 
 mod tools;

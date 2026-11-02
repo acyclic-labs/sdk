@@ -460,7 +460,7 @@ fn native_fixture(
     exit: &str,
 ) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; cat \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; cat \"$1\" || { printf 'step=replay recorded native output: source read failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
         .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
     command
 }

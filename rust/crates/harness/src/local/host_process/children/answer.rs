@@ -16,6 +16,61 @@ pub(super) fn decode(line: std::io::Result<String>) -> Option<(String, Value)> {
     })
 }
 
+/// Last valid native resume identity, folded while publishing the original log.
+/// The same bounded framer serves live replies and closed-log replay.
+pub(crate) struct SessionId {
+    frames: acyclic_native_runtime::lines::LineBuffer,
+    pub(crate) id: Option<String>,
+}
+
+impl Default for SessionId {
+    fn default() -> Self {
+        Self {
+            frames: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            id: None,
+        }
+    }
+}
+
+impl SessionId {
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
+        for line in self.frames.push(bytes) {
+            let Ok(line) = line else { continue };
+            // Decode only frames that can name a native session.
+            if !(line.contains("_id") || line.contains("session")) {
+                continue;
+            }
+            let Some((_, event)) = decode(Ok(line)) else {
+                continue;
+            };
+            let id = event
+                .get("thread_id")
+                .or_else(|| event.get("session_id"))
+                .or_else(|| {
+                    (event.get("type").and_then(Value::as_str) == Some("session"))
+                        .then(|| event.get("id"))
+                        .flatten()
+                })
+                .and_then(Value::as_str)
+                .filter(|id| {
+                    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+                });
+            if let Some(id) = id {
+                // Most events repeat the same id. Retain its one allocation.
+                if self.id.as_deref() != Some(id) {
+                    self.id = Some(id.into());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        // A crash can leave a complete JSON frame without its final delimiter.
+        // This delimiter belongs only to parsing; publication keeps original bytes.
+        self.push(b"\n");
+    }
+}
+
 /// A preview is not a completed reply. Native hosts can also report a failed
 /// tool or turn before exiting successfully; that refusal owns the outcome.
 #[derive(Default)]
@@ -193,6 +248,24 @@ fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_resume_identity_survives_stream_boundaries() {
+        let captured = include_bytes!("../fixtures/claude-code-completed.jsonl");
+        for chunk in [1, 17, 8192] {
+            let mut session = SessionId::default();
+            // A complete final JSON value need not have its newline on disk.
+            for bytes in captured.trim_ascii_end().chunks(chunk) {
+                session.push(bytes);
+                assert!(session.frames.buffered_bytes() <= EVENT_LIMIT + 8192);
+            }
+            session.finish();
+            assert_eq!(
+                session.id.as_deref(),
+                Some("a14f2590-4397-48a1-a076-1f2dac2d5349")
+            );
+        }
+    }
 
     #[test]
     fn recorded_native_tool_refusals_survive_successful_parent_terminals() {

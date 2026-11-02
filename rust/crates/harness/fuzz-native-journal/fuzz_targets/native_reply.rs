@@ -19,6 +19,13 @@ fuzz_target!(|input: &[u8]| {
     assert_eq!(fragmented.pending, pages.pending);
     assert_eq!(fragmented.outcome, pages.outcome);
     assert_eq!(fragmented.omitted, pages.omitted);
+    assert_eq!(
+        session(
+            input,
+            input.first().map_or(1, |byte| usize::from(*byte) + 1)
+        ),
+        session(input, 8192),
+    );
     // Original failed-tool traces end in successful parent terminals. They
     // must remain failures through the same decoder under either read shape.
     if input == include_bytes!("../corpus/native_reply/claude-tool-refusal")
@@ -27,6 +34,20 @@ fuzz_target!(|input: &[u8]| {
         assert!(matches!(pages.outcome, Some(Outcome::Failed { .. })));
     }
 });
+
+// Exercise the production closed-log resume fold as well as the live reply
+// fold. Its EOF delimiter is parser-only and never changes artifact bytes.
+fn session(input: &[u8], chunk_size: usize) -> Option<String> {
+    let mut session = answer::SessionId::default();
+    for bytes in input.chunks(chunk_size) {
+        session.push(bytes);
+    }
+    session.finish();
+    if let Some(id) = &session.id {
+        assert!(!id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control));
+    }
+    session.id
+}
 
 fn fold(input: &[u8], chunk_size: usize) -> answer::NativeAnswer {
     let mut frames = LineBuffer::new(answer::EVENT_LIMIT);

@@ -17,10 +17,6 @@ pub mod launch;
 fn event_log(claim: OperationId) -> PathBuf {
     PathBuf::from(format!("events-{claim}.jsonl"))
 }
-/// Bound of one turn's native event log, its omission marker included.
-pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
-/// The line ending a log whose later events exceeded its bound.
-const EVENTS_OMITTED: &[u8] = b"{\"type\":\"acyclic.events_omitted\"}\n";
 
 /// Runs the interactive native root with its inherited console and process
 /// group. Native hosts retain terminal/job control; managed children use the
@@ -205,7 +201,12 @@ impl HostProcessLease {
 impl QuiescentHostProcess {
     /// The native event log the process of turn `claim` recorded; `None`
     /// when that turn's process never started.
-    pub(crate) fn events(&self, claim: OperationId) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn events<'a>(
+        &'a self,
+        claim: OperationId,
+        session: &'a mut children::SessionId,
+    ) -> Result<Option<impl crate::conversation::ContentSource + 'a>> {
+        use futures::TryStreamExt as _;
         let file = match self.0.root.open_file(&event_log(claim), false) {
             Ok(file) => file,
             Err(acyclic_fs::demand::DemandError::Absent) => return Ok(None),
@@ -216,16 +217,37 @@ impl QuiescentHostProcess {
             }
             Err(error) => return Err(storage(error)),
         };
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(
-            &mut std::io::Read::take(file, EVENT_LOG_BYTES + 1),
-            &mut bytes,
+        let work = polling_work()?;
+        let file = acyclic_native_runtime::NativeFile::from_file(
+            file,
+            Some(acyclic_native_runtime::NativeFileMeter::Owned(
+                work.runtime_meter(),
+            )),
         )
-        .map_err(storage)?;
-        if bytes.len() as u64 > EVENT_LOG_BYTES {
-            return Err(Error::Invalid("native event log exceeds its bound".into()));
-        }
-        Ok(Some(bytes))
+        .map_err(|(error, _)| storage(error))?;
+        let reader = acyclic_native_runtime::AsyncRangeReader::new(file, 0, u64::MAX);
+        // The retained lease proves this is a closed, finite source. Reuse the
+        // native runtime's owned positional completion, including on cancellation.
+        let stream = futures::stream::try_unfold(
+            (reader, work, session),
+            |(mut reader, work, session)| async move {
+                let window = work.invocation_window().map_err(std::io::Error::other)?;
+                let (bytes, allocation) = reader.read(8192, window.runtime_meter(), false).await?;
+                if bytes.is_empty() {
+                    session.finish();
+                    return Ok::<_, std::io::Error>(None);
+                }
+                session.push(&bytes);
+                Ok(Some((
+                    EventChunk {
+                        bytes,
+                        _allocation: allocation,
+                    },
+                    (reader, work, session),
+                )))
+            },
+        );
+        Ok(Some(Box::pin(stream).into_async_read()))
     }
 
     /// Removes the log of turn `claim` once its conversation entry holds it.
@@ -251,14 +273,19 @@ pub struct HostSessionProcess {
     lease: Option<HostProcessLease>,
     work: acyclic_fs::NativeMaterializationWork,
     output_progress: bool,
-    events: Option<EventLog>,
+    events: Option<std::fs::File>,
 }
 
-/// The running turn's native event log and the bytes it holds.
-struct EventLog {
-    file: std::fs::File,
-    written: u64,
-    omitted: bool,
+/// Drop the owned bytes before returning their native allocation credit.
+struct EventChunk {
+    bytes: bytes::Bytes,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl AsRef<[u8]> for EventChunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 /// Removes `leaf` from `root`; an absent file is already removed.
@@ -301,37 +328,24 @@ impl HostSessionProcess {
         let log = event_log(claim);
         remove_absent(&lease.root, &log)?;
         let file = lease.root.open_file(&log, true).map_err(storage)?;
-        self.events = Some(EventLog {
-            file,
-            written: 0,
-            omitted: false,
-        });
+        self.events = Some(file);
         self.tree
             .spawn(command, Some(&lease.custody))
             .map_err(storage)
     }
 
     /// Appends one native event line to the turn's log, which its settlement
-    /// appends to the conversation. Events past the bound are omitted, once
-    /// marked.
+    /// appends to the conversation. The decoder bounds each frame; turn
+    /// duration never discards later events.
     pub fn record_event(&mut self, line: &[u8]) -> Result<()> {
         let log = self
             .events
             .as_mut()
             .ok_or_else(|| Error::Conflict("native event log absent before spawn".into()))?;
-        if log.omitted {
-            return Ok(());
-        }
         let mut bytes = Vec::with_capacity(line.len() + 1);
-        if log.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
-            bytes.extend_from_slice(line);
-            bytes.push(b'\n');
-        } else {
-            log.omitted = true;
-            bytes.extend_from_slice(EVENTS_OMITTED);
-        }
-        std::io::Write::write_all(&mut log.file, &bytes).map_err(storage)?;
-        log.written += bytes.len() as u64;
+        bytes.extend_from_slice(line);
+        bytes.push(b'\n');
+        std::io::Write::write_all(log, &bytes).map_err(storage)?;
         Ok(())
     }
 
