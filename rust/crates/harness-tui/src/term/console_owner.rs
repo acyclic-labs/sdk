@@ -761,18 +761,56 @@ mod tests {
             assert_restored(&owner);
         });
     }
+    struct InputState {
+        armed: bool,
+        ready: bool,
+        restoring: bool,
+        release: bool,
+    }
     struct InputClose {
-        ready: Mutex<bool>,
+        state: Mutex<InputState>,
         changed: Condvar,
-        silent: bool,
+        late: bool,
+    }
+    impl InputClose {
+        fn publish(&self) -> io::Result<()> {
+            self.state.lock().map_err(|_| io::ErrorKind::Other)?.ready = true;
+            self.changed.notify_all();
+            Ok(())
+        }
     }
 
     impl CloseWake for Arc<InputClose> {
         fn close(&self) -> io::Result<()> {
-            if !self.silent {
-                *self.ready.lock().map_err(|_| io::ErrorKind::Other)? = true;
-                self.changed.notify_all();
+            if self.late { Ok(()) } else { self.publish() }
+        }
+    }
+
+    struct HeldRestore(Arc<InputClose>);
+    impl Write for HeldRestore {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut state = self.0.state.lock().map_err(|_| io::ErrorKind::Other)?;
+            let first = !state.restoring;
+            if first {
+                state.restoring = true;
+                self.0.changed.notify_all();
+                while !state.release {
+                    state = self
+                        .0
+                        .changed
+                        .wait(state)
+                        .map_err(|_| io::ErrorKind::Other)?;
+                }
             }
+            drop(state);
+            // Counterfactual: withhold only close publication until the held
+            // restoration is released. The reader still eventually finishes.
+            if first && self.0.late {
+                self.0.publish()?;
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
@@ -780,40 +818,74 @@ mod tests {
     fn input_close_model(broken: bool) {
         loom::model(move || {
             let input = Arc::new(InputClose {
-                ready: Mutex::new(false),
+                state: Mutex::new(InputState {
+                    armed: false,
+                    ready: false,
+                    restoring: false,
+                    release: false,
+                }),
                 changed: Condvar::new(),
-                silent: broken,
+                late: broken,
             });
             let owner = Owner::notifying(
-                RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
+                RestoreGuard::new(HeldRestore(Arc::clone(&input)), &Capabilities::default()),
                 |_| {},
                 Arc::clone(&input),
             );
             assert!(owner.check_open().is_ok());
             let closing = Arc::clone(&owner);
-            let worker = thread::spawn(move || Owner::close(&closing, |_| Ok(())));
-            let _ = owner.check_open(); // Either side of the concurrent close is valid.
-            if !broken {
-                let mut ready = input
-                    .ready
+            let arming = Arc::clone(&input);
+            let worker = thread::spawn(move || {
+                let mut state = arming
+                    .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                while !*ready {
-                    ready = input
+                while !state.armed {
+                    state = arming
                         .changed
-                        .wait(ready)
+                        .wait(state)
                         .unwrap_or_else(|error| error.into_inner());
                 }
+                drop(state);
+                Owner::close(&closing, |_| Ok(()))
+            });
+            let mut state = input
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.armed = true;
+            input.changed.notify_all();
+            // Close cannot acquire this same mutex until the reader enters
+            // its condition wait, so this is an already-sleeping reader.
+            while !state.ready && !state.restoring {
+                state = input
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
             }
+            // The restoration notification is only a test-control witness:
+            // it lets the negative release the writer without inventing close.
+            while !state.restoring {
+                state = input
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            assert!(!state.release);
+            let published = state.ready;
+            drop(state);
+            let disconnected = matches!(owner.check_open(), Err(error) if error.kind() == io::ErrorKind::NotConnected);
+            let mut state = input
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.release = true;
+            input.changed.notify_all();
+            drop(state);
             assert!(worker.join().is_ok_and(|result| result.is_ok()));
-            // The negative observes the omitted publication directly instead
-            // of hanging a native read until its deadline.
             assert!(
-                *input
-                    .ready
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()),
-                "input lost the original close publication"
+                published && disconnected,
+                "input waited for restoration instead of the original close publication"
             );
             assert!(owner.check_open().is_err());
         });
@@ -821,9 +893,6 @@ mod tests {
     #[test]
     fn input_observes_output_close_before_its_next_bounded_read() {
         input_close_model(false);
-    }
-    #[test]
-    fn negative_control_detects_input_without_close_fence() {
         assert!(std::panic::catch_unwind(|| input_close_model(true)).is_err());
     }
 }
