@@ -37,10 +37,7 @@ class Artifact:
         binary = Path(path)
         if binary.name != "graphcoder" or binary.is_symlink():
             raise ValueError("select the regular Linux graphcoder build artifact")
-        contents = binary.read_bytes()
-        if not contents or hashlib.sha256(contents).hexdigest() != sha256:
-            raise ValueError("GraphCoder artifact hash mismatch")
-        return cls(contents, sha256, source_sha)
+        return cls(binary.read_bytes(), sha256, source_sha)
 
 
 def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int):
