@@ -23,12 +23,18 @@ struct WireEnvelope<T> {
     payload: T,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ResolutionEntry {
-    key: ConflictKey,
-    resolution: MergeResolution,
+macro_rules! wire_entry {
+    ($name:ident, $key:ident: $key_type:ty, $value:ident: $value_type:ty $(,)?) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct $name {
+            $key: $key_type,
+            $value: $value_type,
+        }
+    };
 }
+
+wire_entry!(ResolutionEntry, key: ConflictKey, resolution: MergeResolution);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,12 +66,7 @@ struct MultiRootPlanPayload {
     roots: Vec<MultiRootEntry>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootResolutionsEntry {
-    root_id: WorkspaceRootId,
-    resolutions: Vec<ResolutionEntry>,
-}
+wire_entry!(RootResolutionsEntry, root_id: WorkspaceRootId, resolutions: Vec<ResolutionEntry>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,33 +75,13 @@ struct MultiRootCandidatePayload {
     resolutions: Vec<RootResolutionsEntry>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootFenceEntry {
-    root_id: WorkspaceRootId,
-    fence: MultiRootFence,
-}
+wire_entry!(RootFenceEntry, root_id: WorkspaceRootId, fence: MultiRootFence);
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootConflictEntry {
-    root_id: WorkspaceRootId,
-    plan: MergePlan,
-}
+wire_entry!(RootConflictEntry, root_id: WorkspaceRootId, plan: MergePlan);
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootGenerationEntry {
-    root_id: WorkspaceRootId,
-    generation: GenerationId,
-}
+wire_entry!(RootGenerationEntry, root_id: WorkspaceRootId, generation: GenerationId);
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RootConflictKeysEntry {
-    root_id: WorkspaceRootId,
-    keys: Vec<ConflictKey>,
-}
+wire_entry!(RootConflictKeysEntry, root_id: WorkspaceRootId, keys: Vec<ConflictKey>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +106,38 @@ enum PublicationPayload {
     StaleBeforeCommit(WorkspaceRootId),
     Paused(MultiRootPublicationPayload),
     Conflicted(MultiRootPublicationPayload),
+}
+
+impl From<&Publication> for PublicationPayload {
+    fn from(value: &Publication) -> Self {
+        match value {
+            Publication::Applied(value) => PublicationPayload::Applied(publication_payload(value)),
+            Publication::StaleBeforeCommit(root) => PublicationPayload::StaleBeforeCommit(*root),
+            Publication::Paused(value) => PublicationPayload::Paused(publication_payload(value)),
+            Publication::Conflicted(value) => {
+                PublicationPayload::Conflicted(publication_payload(value))
+            }
+        }
+    }
+}
+
+impl TryFrom<PublicationPayload> for Publication {
+    type Error = CompatibilityWireError;
+
+    fn try_from(value: PublicationPayload) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PublicationPayload::Applied(value) => {
+                Publication::Applied(publication_from_payload(value)?)
+            }
+            PublicationPayload::StaleBeforeCommit(root) => Publication::StaleBeforeCommit(root),
+            PublicationPayload::Paused(value) => {
+                Publication::Paused(publication_from_payload(value)?)
+            }
+            PublicationPayload::Conflicted(value) => {
+                Publication::Conflicted(publication_from_payload(value)?)
+            }
+        })
+    }
 }
 
 /// Invalid or unsupported compatibility wire data.
@@ -157,6 +170,17 @@ fn decode<T: DeserializeOwned>(kind: &str, json: &str) -> Result<T, Compatibilit
     Ok(envelope.payload)
 }
 
+fn unique_entries<T, K: Ord, V>(
+    entries: Vec<T>,
+    project: impl FnMut(T) -> (K, V),
+) -> Result<BTreeMap<K, V>, CompatibilityWireError> {
+    let expected = entries.len();
+    let value = entries.into_iter().map(project).collect::<BTreeMap<_, _>>();
+    (value.len() == expected)
+        .then_some(value)
+        .ok_or(CompatibilityWireError::InvalidValue)
+}
+
 fn resolution_entries(value: &BTreeMap<ConflictKey, MergeResolution>) -> Vec<ResolutionEntry> {
     value
         .iter()
@@ -170,14 +194,7 @@ fn resolution_entries(value: &BTreeMap<ConflictKey, MergeResolution>) -> Vec<Res
 fn resolutions_from_entries(
     entries: Vec<ResolutionEntry>,
 ) -> Result<BTreeMap<ConflictKey, MergeResolution>, CompatibilityWireError> {
-    let length = entries.len();
-    let value = entries
-        .into_iter()
-        .map(|entry| (entry.key, entry.resolution))
-        .collect::<BTreeMap<_, _>>();
-    (value.len() == length)
-        .then_some(value)
-        .ok_or(CompatibilityWireError::InvalidValue)
+    unique_entries(entries, |entry| (entry.key, entry.resolution))
 }
 
 fn merge_candidate_payload(value: &UnpublishedMergeCandidate) -> MergeCandidatePayload {
@@ -221,28 +238,20 @@ fn multi_root_plan_payload(value: &MultiRootMergePlan) -> MultiRootPlanPayload {
 fn multi_root_plan_from_payload(
     value: MultiRootPlanPayload,
 ) -> Result<MultiRootMergePlan, CompatibilityWireError> {
-    let length = value.roots.len();
-    let roots = value
-        .roots
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.root_id,
-                MultiRootMergeRoot {
-                    source_workspace_id: entry.source_workspace_id,
-                    merge_workspace_id: entry.merge_workspace_id,
-                    source_generation: entry.source_generation,
-                    target_workspace_id: entry.target_workspace_id,
-                    target_generation: entry.target_generation,
-                    base_generation: entry.base_generation,
-                    child_wins_bindings: entry.child_wins_bindings,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    if roots.len() != length {
-        return Err(CompatibilityWireError::InvalidValue);
-    }
+    let roots = unique_entries(value.roots, |entry| {
+        (
+            entry.root_id,
+            MultiRootMergeRoot {
+                source_workspace_id: entry.source_workspace_id,
+                merge_workspace_id: entry.merge_workspace_id,
+                source_generation: entry.source_generation,
+                target_workspace_id: entry.target_workspace_id,
+                target_generation: entry.target_generation,
+                base_generation: entry.base_generation,
+                child_wins_bindings: entry.child_wins_bindings,
+            },
+        )
+    })?;
     Ok(MultiRootMergePlan {
         operation_id: value.operation_id,
         parent_context_id: value.parent_context_id,
@@ -339,50 +348,23 @@ fn publication_from_payload(
 ) -> Result<MultiRootPublication, CompatibilityWireError> {
     let published_length = value.published_roots.len();
     let published_roots = value.published_roots.into_iter().collect::<BTreeSet<_>>();
-    let published_generation_length = value.published_generations.len();
-    let published_generations = value
-        .published_generations
-        .into_iter()
-        .map(|entry| (entry.root_id, entry.generation))
-        .collect::<BTreeMap<_, _>>();
-    let fence_length = value.fences.len();
-    let fences = value
-        .fences
-        .into_iter()
-        .map(|entry| (entry.root_id, entry.fence))
-        .collect::<BTreeMap<_, _>>();
-    let conflict_length = value.conflicts.len();
-    let conflicts = value
-        .conflicts
-        .into_iter()
-        .map(|entry| (entry.root_id, entry.plan))
-        .collect::<BTreeMap<_, _>>();
-    let projected_length = value.projected_roots.len();
-    let projected_roots = value
-        .projected_roots
-        .into_iter()
-        .map(|entry| (entry.root_id, entry.generation))
-        .collect::<BTreeMap<_, _>>();
-    let declared_length = value.declared_conflicts.len();
-    let declared_conflicts = value
-        .declared_conflicts
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.root_id,
-                entry.keys.into_iter().collect::<BTreeSet<_>>(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    if published_roots.len() != published_length
-        || published_generations.len() != published_generation_length
-        || fences.len() != fence_length
-        || conflicts.len() != conflict_length
-        || projected_roots.len() != projected_length
-        || declared_conflicts.len() != declared_length
-    {
+    if published_roots.len() != published_length {
         return Err(CompatibilityWireError::InvalidValue);
     }
+    let published_generations = unique_entries(value.published_generations, |entry| {
+        (entry.root_id, entry.generation)
+    })?;
+    let fences = unique_entries(value.fences, |entry| (entry.root_id, entry.fence))?;
+    let conflicts = unique_entries(value.conflicts, |entry| (entry.root_id, entry.plan))?;
+    let projected_roots = unique_entries(value.projected_roots, |entry| {
+        (entry.root_id, entry.generation)
+    })?;
+    let declared_conflicts = unique_entries(value.declared_conflicts, |entry| {
+        (
+            entry.root_id,
+            entry.keys.into_iter().collect::<BTreeSet<_>>(),
+        )
+    })?;
     Ok(MultiRootPublication {
         version: value.version,
         revision: value.revision,
@@ -496,29 +478,13 @@ pub fn decode_multi_root_candidate(
 
 /// Encodes one publication result.
 pub fn encode_publication(value: &Publication) -> Result<String, CompatibilityWireError> {
-    let payload = match value {
-        Publication::Applied(value) => PublicationPayload::Applied(publication_payload(value)),
-        Publication::StaleBeforeCommit(root) => PublicationPayload::StaleBeforeCommit(*root),
-        Publication::Paused(value) => PublicationPayload::Paused(publication_payload(value)),
-        Publication::Conflicted(value) => {
-            PublicationPayload::Conflicted(publication_payload(value))
-        }
-    };
+    let payload = PublicationPayload::from(value);
     encode("publication", &payload)
 }
 
 /// Decodes and validates one publication result.
 pub fn decode_publication(json: &str) -> Result<Publication, CompatibilityWireError> {
-    let value = match decode("publication", json)? {
-        PublicationPayload::Applied(value) => {
-            Publication::Applied(publication_from_payload(value)?)
-        }
-        PublicationPayload::StaleBeforeCommit(root) => Publication::StaleBeforeCommit(root),
-        PublicationPayload::Paused(value) => Publication::Paused(publication_from_payload(value)?),
-        PublicationPayload::Conflicted(value) => {
-            Publication::Conflicted(publication_from_payload(value)?)
-        }
-    };
+    let value = Publication::try_from(decode::<PublicationPayload>("publication", json)?)?;
     let valid = match &value {
         Publication::Applied(value)
         | Publication::Paused(value)
@@ -581,31 +547,14 @@ pub fn decode_multi_root_candidate_payload(json: &str) -> Result<String, Compati
 
 /// Encodes a JSON publication payload using entry-array maps.
 pub fn encode_publication_payload(json: &str) -> Result<String, CompatibilityWireError> {
-    let payload: PublicationPayload = serde_json::from_str(json)?;
-    let value = match payload {
-        PublicationPayload::Applied(value) => {
-            Publication::Applied(publication_from_payload(value)?)
-        }
-        PublicationPayload::StaleBeforeCommit(root) => Publication::StaleBeforeCommit(root),
-        PublicationPayload::Paused(value) => Publication::Paused(publication_from_payload(value)?),
-        PublicationPayload::Conflicted(value) => {
-            Publication::Conflicted(publication_from_payload(value)?)
-        }
-    };
+    let value = Publication::try_from(serde_json::from_str::<PublicationPayload>(json)?)?;
     encode_publication(&value)
 }
 
 /// Decodes a publication envelope to its canonical JSON payload.
 pub fn decode_publication_payload(json: &str) -> Result<String, CompatibilityWireError> {
     let value = decode_publication(json)?;
-    let payload = match &value {
-        Publication::Applied(value) => PublicationPayload::Applied(publication_payload(value)),
-        Publication::StaleBeforeCommit(root) => PublicationPayload::StaleBeforeCommit(*root),
-        Publication::Paused(value) => PublicationPayload::Paused(publication_payload(value)),
-        Publication::Conflicted(value) => {
-            PublicationPayload::Conflicted(publication_payload(value))
-        }
-    };
+    let payload = PublicationPayload::from(&value);
     Ok(serde_json::to_string(&payload)?)
 }
 
@@ -698,6 +647,24 @@ mod tests {
         let encoded = encode_publication(&publication).expect("encode");
         assert!(encoded.contains("publishedGenerations"));
         assert_eq!(decode_publication(&encoded).expect("decode"), publication);
+        let payload = decode_publication_payload(&encoded).expect("payload");
+        let envelope = encode_publication_payload(&payload).expect("envelope");
+        assert_eq!(
+            decode_publication(&envelope).expect("restored publication"),
+            publication
+        );
+        let wire: serde_json::Value = serde_json::from_str(&encoded).expect("encoded JSON");
+        for field in ["publishedRoots", "publishedGenerations", "fences"] {
+            let mut repeated = wire.clone();
+            let entries = repeated["payload"]["value"][field]
+                .as_array_mut()
+                .expect("entry array");
+            entries.push(entries[0].clone());
+            assert!(matches!(
+                decode_publication(&serde_json::to_string(&repeated).expect("duplicate JSON")),
+                Err(CompatibilityWireError::InvalidValue)
+            ));
+        }
 
         // An Applied record without the fences of its roots cannot come from
         // the coordinator, whose recovery rejects it; neither may the decoder.
