@@ -72,6 +72,9 @@ fn execution_native_admission_precedes_agent_resolution() -> Result<(), Box<dyn 
             "{args:?}: {error}"
         );
         assert!(error.contains("recovery: run acyclic"), "{args:?}: {error}");
+        if args == ["reopen", "invalid"] {
+            assert!(error.contains("invalid agent path:"), "{args:?}: {error}");
+        }
     }
     // A valid operation must reach the original selection path. The invalid
     // environment value is a negative control against refusing every command.
@@ -84,6 +87,7 @@ fn execution_native_admission_precedes_agent_resolution() -> Result<(), Box<dyn 
     assert!(!output.status.success());
     let error = String::from_utf8(output.stderr)?;
     assert!(!error.contains("step=admit native command:"), "{error}");
+    assert!(error.contains("invalid agent path:"), "{error}");
     assert_eq!(std::fs::read_dir(directory.path())?.count(), 0);
     Ok(())
 }
