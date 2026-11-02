@@ -190,11 +190,7 @@ async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
     let mut receipt = GenerationReceipt::from_work(&original)?;
     let root = HostRoot::open(directory.path(), &mut original.clone())?;
     let root = receipt.owned_arc(root, 0)?;
-    let name = LogicalName::new(
-        NameEncoding::Utf8,
-        b"file".to_vec(),
-        crate::VolumeLimits::default().maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?;
     let path = materialize_host_path(None, std::slice::from_ref(&name), &mut receipt)?;
     let before = original.receipt();
     cancellation.cancel();
@@ -289,19 +285,11 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         .value;
     let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
     let first = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            b"a-present".to_vec(),
-            limits.maximum_component_bytes,
-        )?],
+        vec![LogicalName::new(NameEncoding::Utf8, b"a-present".to_vec())?],
         limits,
     )?;
     let missing = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            b"z-missing".to_vec(),
-            limits.maximum_component_bytes,
-        )?],
+        vec![LogicalName::new(NameEncoding::Utf8, b"z-missing".to_vec())?],
         limits,
     )?;
     checkout
@@ -731,11 +719,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
     let namespace = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            b"file".to_vec(),
-            limits.maximum_component_bytes,
-        )?],
+        vec![LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?],
         limits,
     )?;
     let host_path = materialize_host_path(None, namespace.components(), &mut receipt)?;

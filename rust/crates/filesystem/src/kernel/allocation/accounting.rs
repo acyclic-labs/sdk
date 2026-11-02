@@ -18,6 +18,15 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    pub(crate) fn cancellation(&self) -> &'a crate::CancellationToken {
+        match self {
+            Self::Standalone { cancellation, .. }
+            | Self::BorrowedStandalone { cancellation, .. } => cancellation,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { cancellation, .. } => cancellation,
+        }
+    }
+
     pub(crate) fn cancellation_wait(
         &mut self,
         cancellation: &crate::CancellationToken,

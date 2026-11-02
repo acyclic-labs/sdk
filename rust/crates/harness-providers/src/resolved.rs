@@ -152,12 +152,15 @@ impl ModelProvider for ResolvedModel {
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         Some(Arc::new(Self {
             files: crate::files::Files {
                 reader: Some(reader),
-                maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
+                maximum_bytes: maximum_bytes
+                    .into_iter()
+                    .chain(self.files.maximum_bytes)
+                    .min(),
             },
             estimator: Arc::clone(&self.estimator),
             model: self.model.clone(),

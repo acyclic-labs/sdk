@@ -9,7 +9,7 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let leaf = put_tree_page(
         &store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?,
             file_id: src_id,
             kind: FileKind::Directory,
         }]),
@@ -19,7 +19,7 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let malformed_root_tree = put_tree_page(
         &store,
         &TreePage::Internal(vec![Child {
-            first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
+            first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec())?,
             page: leaf,
         }]),
         8,
@@ -48,7 +48,7 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
         required_features: 0,
     };
     let src = NamespacePath::new(
-        vec![LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?],
+        vec![LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?],
         config().limits,
     )?;
     let failure = lookup_paths(
@@ -80,8 +80,8 @@ async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicat
     let (generation, main) = fixture(&store).await?;
     let missing = NamespacePath::new(
         vec![
-            LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
-            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?,
+            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec())?,
         ],
         config().limits,
     )?;
@@ -143,7 +143,7 @@ async fn batch_observation_captures_exactly_each_paths_observation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store).await?;
-    let name = |bytes: &[u8]| LogicalName::new(NameEncoding::Utf8, bytes.to_vec(), 255);
+    let name = |bytes: &[u8]| LogicalName::new(NameEncoding::Utf8, bytes.to_vec());
     let paths = [
         main.clone(),
         NamespacePath::new(vec![name(b"src")?, name(b"missing")?], config().limits)?,
@@ -249,8 +249,8 @@ async fn hardlinked_directory_aliases_share_one_directory_frontier()
     let (generation, main) = fixture(&store).await?;
     let alias = NamespacePath::new(
         vec![
-            LogicalName::new(NameEncoding::Utf8, b"alias".to_vec(), 255)?,
-            LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"alias".to_vec())?,
+            LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec())?,
         ],
         config().limits,
     )?;
@@ -274,7 +274,7 @@ async fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store).await?;
-    let missing = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?;
+    let missing = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec())?;
     let path = NamespacePath::new(vec![missing; 10], config().limits)?;
     let paths = vec![&path; 1_224];
     let mut budget = WorkBudget::UNBOUNDED;
@@ -299,7 +299,7 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store).await?;
-    let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?;
+    let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?;
     let src = NamespacePath::new(vec![src_name.clone()], config().limits)?;
     let root = NamespacePath::new(Vec::new(), config().limits)?;
     let mixed = lookup_paths(
@@ -325,11 +325,7 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
     );
 
     let mut invalid_components = main.components().to_vec();
-    invalid_components.push(LogicalName::new(
-        NameEncoding::Utf8,
-        b"child".to_vec(),
-        255,
-    )?);
+    invalid_components.push(LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?);
     let invalid = NamespacePath::new(invalid_components, config().limits)?;
     let failure = lookup_paths(
         &store,

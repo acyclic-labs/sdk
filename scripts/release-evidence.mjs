@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -16,7 +16,7 @@ function fail(message) {
 }
 
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const result = captureCommand(command, args, { cwd: root, encoding: "utf8", });
   if (result.error || result.status !== 0) fail(`${command} failed: ${result.error ?? result.stderr}`);
   return result.stdout.trim();
 }

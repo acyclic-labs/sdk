@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { "InvalidActorBytes.java": "ByteString", "InvalidOptionalInteger.java": "long" };
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
 
-export function qualify(args, command = spawnSync) {
+export function qualify(args, command = captureCommand) {
   const packageRoot = realpathSync(args.package);
   const authority = realpathSync(args.authority);
   const javaHome = realpathSync(args["java-home"]);
@@ -35,7 +35,7 @@ export function qualify(args, command = spawnSync) {
   const env = { ...process.env, JAVA_HOME: javaHome, MAVEN_HOME: mavenHome, LC_ALL: "C" };
   for (const name of ["MAVEN_ARGS", "MAVEN_OPTS", "MAVEN_EXT_CLASS_PATH", "CLASSPATH",
     "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"]) delete env[name];
-  const options = { env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 };
+  const options = { env, encoding: "utf8", timeout: 180_000 };
   const execute = (executable, argv, cwd) => command(executable, argv, { ...options, cwd });
   const javaVersion = execute(java, ["-Xmx256m", "-XX:ActiveProcessorCount=1", "-version"], directory);
   const javacVersion = execute(javac, ["-J-Xmx256m", "-J-XX:ActiveProcessorCount=1", "-version"], directory);

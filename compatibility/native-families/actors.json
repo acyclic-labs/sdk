@@ -62,6 +62,7 @@
     "scripts/generated-bindings.mjs",
     "scripts/native-family.mjs",
     "scripts/package-closure.mjs",
+    "scripts/process-capture.mjs",
     "tsconfig.base.json",
     "typescript/packages/actors/generated/proto",
     "typescript/packages/actors/package.json",

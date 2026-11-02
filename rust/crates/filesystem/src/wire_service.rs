@@ -40,19 +40,20 @@ enum JoinTargetHead<A: 'static, O: 'static> {
     Stale(Generation<A, O>),
 }
 
-/// Hard bounds and explicitly available optional hosted capabilities.
+/// Transfer byte limits and explicitly selected deployment policies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FilesystemWireLimits {
     /// Largest accepted encoded request.
     pub maximum_request_bytes: u64,
     /// Largest response body or aggregate page.
     pub maximum_response_bytes: u64,
-    /// Largest atomic transaction.
-    pub maximum_transaction_mutations: u32,
+    /// Optional deployment-selected mutation count for one atomic transaction.
+    pub maximum_transaction_mutations: Option<u32>,
     /// Largest directory, diff, or transfer page.
     pub maximum_page_items: u32,
-    /// Longest accepted lifetime for a scoped deployment credential.
-    pub maximum_credential_seconds: u64,
+    /// Optional deployment-selected credential lifetime policy. Authority expiry
+    /// always bounds the resulting credential, including when this is absent.
+    pub maximum_credential_seconds: Option<std::num::NonZeroU64>,
 }
 
 impl Default for FilesystemWireLimits {
@@ -60,9 +61,9 @@ impl Default for FilesystemWireLimits {
         Self {
             maximum_request_bytes: 16 * 1024 * 1024,
             maximum_response_bytes: DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES,
-            maximum_transaction_mutations: 2_048,
+            maximum_transaction_mutations: None,
             maximum_page_items: DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
-            maximum_credential_seconds: 3_600,
+            maximum_credential_seconds: None,
         }
     }
 }
@@ -232,7 +233,7 @@ pub struct FilesystemWireService<A: 'static, O: 'static> {
 }
 
 impl<A, O> FilesystemWireService<A, O> {
-    /// Binds one canonical engine and validates finite protocol bounds.
+    /// Binds one canonical engine and validates transfer bounds and policies.
     ///
     /// # Errors
     ///
@@ -240,9 +241,8 @@ impl<A, O> FilesystemWireService<A, O> {
     pub fn new(filesystem: Fs<A, O>, limits: FilesystemWireLimits) -> Result<Self, Status> {
         if limits.maximum_request_bytes == 0
             || limits.maximum_response_bytes == 0
-            || limits.maximum_transaction_mutations == 0
+            || limits.maximum_transaction_mutations == Some(0)
             || limits.maximum_page_items == 0
-            || limits.maximum_credential_seconds == 0
         {
             return Err(Status::invalid_argument(
                 "filesystem wire bounds must be nonzero",
@@ -254,6 +254,20 @@ impl<A, O> FilesystemWireService<A, O> {
             credential_issuer: None,
             source_provider: None,
         })
+    }
+
+    fn require_transaction_count(&self, count: usize) -> Result<(), Status> {
+        if count == 0
+            || self
+                .limits
+                .maximum_transaction_mutations
+                .is_some_and(|maximum| u32::try_from(count).map_or(true, |count| count > maximum))
+        {
+            return Err(Status::invalid_argument(
+                "transaction mutation count is invalid",
+            ));
+        }
+        Ok(())
     }
 
     /// Borrows the exact engine served by this adapter.
