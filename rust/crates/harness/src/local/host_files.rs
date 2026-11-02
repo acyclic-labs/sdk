@@ -1053,23 +1053,19 @@ fn remove_projection(path: &Path) -> Result<()> {
 }
 
 fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
-    bounded_bytes(path, MAXIMUM_BYTES)
-}
-
-fn bounded_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
     let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
-    if !metadata.is_file() || metadata.len() > maximum {
+    if !metadata.is_file() || metadata.len() > MAXIMUM_BYTES {
         return Err(Error::Invalid(
             "native file projection must be a bounded regular file".into(),
         ));
     }
     let mut bytes = Vec::new();
-    file.take(maximum + 1)
+    file.take(MAXIMUM_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(storage)?;
-    if bytes.len() as u64 > maximum {
+    if bytes.len() as u64 > MAXIMUM_BYTES {
         return Err(Error::Invalid(
             "native file projection grew beyond its bound".into(),
         ));

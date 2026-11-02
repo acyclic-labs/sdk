@@ -326,19 +326,6 @@ fn keep_first(first: &mut Result<()>, next: Result<()>) {
     }
 }
 
-/// Negative controls only: projects outside any execution scope, so nothing
-/// retires the projection until `retire`.
-#[cfg(test)]
-pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
-    for (relative, mount) in mounts.mounts() {
-        if let Some(source) = &mount.view.source {
-            let root = projection_root(&source.destination, relative)?;
-            drop(source.enter(root, relative, mount.mode.read_only()).await?);
-        }
-    }
-    Ok(())
-}
-
 /// Retires every projection when the host disconnects. A volume a worker still
 /// owns reports a conflict, but every other volume is still published and
 /// retired rather than abandoned unpublished when the harness drops.
