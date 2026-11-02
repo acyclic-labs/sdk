@@ -3,7 +3,7 @@ import type { Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
-import { streamFailure } from "./error.js";
+import { grpcStreamError } from "./error.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
@@ -234,8 +234,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  return streamFailure(grpcErrorCode(error.code, error.rawMessage), error.rawMessage, operation)
-    ?? new StreamError("unavailable", error.rawMessage);
+  return grpcStreamError(error.code, error.rawMessage, operation);
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */

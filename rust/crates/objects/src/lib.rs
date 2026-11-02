@@ -118,7 +118,7 @@ pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 const MAX_PEM_BYTES: usize = 64 * 1024;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+pub use acyclic_auth::credential::MAX_CREDENTIAL_BYTES as MAX_BEARER_TOKEN_BYTES;
 
 /// Semantic service failure or the original local operation stop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

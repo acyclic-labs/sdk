@@ -13,6 +13,13 @@ pub fn grpc_error_code(code: i32, message: &str) -> String {
         .to_owned()
 }
 
+/// Classify and project a gRPC failure in one boundary crossing.
+#[wasm_bindgen(js_name = publicGrpcErrorCode)]
+pub fn public_grpc_error_code(code: i32, message: &str, route: &str) -> Option<String> {
+    let error = wire_codec::status(&tonic::Status::new(tonic::Code::from_i32(code), message));
+    public_http_error_code(error.code(), route)
+}
+
 /// Complete Rust-owned code inventory; adapters must not maintain another list.
 #[wasm_bindgen(js_name = streamErrorCodes)]
 pub fn stream_error_codes() -> Vec<String> {
