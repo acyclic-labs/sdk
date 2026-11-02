@@ -4,7 +4,6 @@ use acyclic_native_runtime::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
     NativeOperationReservation,
 };
-use sha2::Digest as _;
 
 struct CapacityReservation {
     counters: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
@@ -99,7 +98,12 @@ impl MemoryStream {
         // The tree can grow up to the admitted replay limit while this completion is pending.
         let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
         self.reserve_commit_index(&mut probes)?;
-        let mut plan = self.plan_commit(&mut state, &request, &[], CommitId::default(), 0)?;
+        let mut plan = self.plan_commit(
+            &mut state,
+            &[prepared_mutation(&request)?],
+            CommitId::default(),
+            0,
+        )?;
         let range = append_mut(&mut plan.result);
         range.start = expected;
         range.tail = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
@@ -141,12 +145,13 @@ impl MemoryStream {
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
         let conflict = self.vector(2)?;
         let prototype = self.copy_envelope(&plan.envelope)?;
-        let conditions: [CommitCondition; 2] = request
+        let effect = request.effects.pop().ok_or(StreamError::InvalidArgument)?;
+        let conditions: [CommitCondition; 2] = effect
             .conditions
             .try_into()
             .map_err(|_| StreamError::InvalidArgument)?;
         drop(state);
-        drop(request.mutations);
+        drop((effect.mutations, request.effects));
         drop(input);
         let key = request.idempotency_key;
         let deadline = request.deadline_unix_millis;
@@ -199,8 +204,11 @@ impl MemoryStream {
             }
             return Ok(None);
         }
-        for condition in &request.conditions {
-            if !state.paths.contains_key(condition_path(condition)) {
+        for condition in request.conditions() {
+            if !state
+                .paths
+                .contains_key(crate::CommitCondition::path(condition))
+            {
                 return Err(StreamError::NotFound);
             }
             if self.condition_conflict(state, condition)?.is_some() {
@@ -556,22 +564,7 @@ fn digest(
     path: &StreamPath,
     body: &crate::AppendRecord,
 ) -> ([u8; 32], u64) {
-    let mut hash = request_hasher(b"commit");
-    hash_conditions(&mut hash, conditions);
-    hash.update([1]);
-    hash_path(&mut hash, path);
-    hash_records(&mut hash, std::slice::from_ref(body));
-    let bytes = b"acyclic.stream.request.v1\0".len() as u64
-        + 6
-        + conditions
-            .iter()
-            .map(|condition| 17 + condition_path(condition).as_str().len() as u64)
-            .sum::<u64>()
-        + 25
-        + path.as_str().len() as u64
-        + body.hash_bytes()
-        - 8;
-    (hash.finalize().into(), bytes)
+    crate::request::hard_append_digest(conditions, path, std::slice::from_ref(body))
 }
 fn copy_outcome(
     stored: &Retained,
@@ -636,18 +629,35 @@ fn copied_bytes(value: &CommitOutcome) -> u64 {
     }
 }
 
+/// The one append of a prepared request, which [`prepared_tail`] admitted.
+fn prepared_mutation(request: &CommitRequest) -> Result<&CommitMutation, StreamError> {
+    match request.effects.as_slice() {
+        [effect] => effect.mutations.first().ok_or(StreamError::InvalidArgument),
+        _ => Err(StreamError::InvalidArgument),
+    }
+}
+
 fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, StreamError> {
     if maximum > MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
     normalize_commit(request)?;
     validate_commit_shape(request)?;
-    let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
+    let [
+        CommitEffect {
+            conditions,
+            mutations,
+            soft: false,
+        },
+    ] = request.effects.as_slice()
+    else {
         return Err(StreamError::InvalidArgument);
     };
-    if request.conditions.len() != 2
-        || request
-            .conditions
+    let [CommitMutation::Append { path, records }] = mutations.as_slice() else {
+        return Err(StreamError::InvalidArgument);
+    };
+    if conditions.len() != 2
+        || conditions
             .iter()
             .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
         || records.len() != 1
@@ -657,8 +667,7 @@ fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, Str
     {
         return Err(StreamError::InvalidArgument);
     }
-    request
-        .conditions
+    conditions
         .iter()
         .find_map(|condition| match condition {
             CommitCondition::Tail {

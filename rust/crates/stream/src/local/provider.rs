@@ -146,7 +146,7 @@ impl StreamProvider for LocalStream {
             crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
                 tracing::info_span!(
                     "acyclic.stream.commit",
-                    items = request.mutations.len(),
+                    items = request.mutations().count(),
                     outcome = Empty,
                     error.kind = Empty,
                 )
@@ -472,9 +472,8 @@ fn describe_commit(request: &CommitRequest) {
             "commit {:?}: {:?}",
             request.idempotency_key,
             request
-                .mutations
-                .iter()
-                .map(|mutation| mutation.path().as_str())
+                .mutations()
+                .map(|mutation| crate::CommitMutation::path(mutation).as_str())
                 .collect::<Vec<_>>()
         )
     });

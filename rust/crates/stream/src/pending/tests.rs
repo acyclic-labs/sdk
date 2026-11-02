@@ -21,13 +21,15 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     let path = stream.path().clone();
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: stream.path().clone(),
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: stream.path().clone(),
-            records: vec!["original".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: stream.path().clone(),
+            }],
+            vec![CommitMutation::Append {
+                path: stream.path().clone(),
+                records: vec!["original".into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     let executor = Executor::default();
@@ -44,7 +46,7 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     assert_eq!(retained.clone().wait().await?, outcome);
     assert_eq!(provider.commit(request.clone()).await?, outcome);
     let mut changed = request;
-    let CommitMutation::Append { records, .. } = &mut changed.mutations[0] else {
+    let CommitMutation::Append { records, .. } = &mut changed.effects[0].mutations[0] else {
         unreachable!()
     };
     *records = vec!["changed".into()];
@@ -54,11 +56,11 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     );
 
     // Even losing every waiter cannot revoke custody already submitted.
-    let request = CommitRequest {
-        conditions: Vec::new(),
+    let mut request = CommitRequest {
         idempotency_key: IdempotencyKey::unique(),
         ..retained.request().clone()
     };
+    request.effects[0].conditions.clear();
     drop(Pending::submit(
         Arc::clone(&provider),
         request.clone(),
@@ -85,11 +87,13 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     let path = StreamPath::new("pending/native")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec!["original native result".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec!["original native result".into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     let meter = Arc::new(Meter::default());

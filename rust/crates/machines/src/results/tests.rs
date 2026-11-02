@@ -4,8 +4,8 @@ use crate::{
     SimulatedMachines,
 };
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, IdempotencyKey as StreamKey,
-    LocalStream, LocalStreamLimits,
+    AppendOutcome, AppendRequest, CommitEffect, CommitOutcome, CommitRequest,
+    IdempotencyKey as StreamKey, LocalStream, LocalStreamLimits,
 };
 use futures::FutureExt as _;
 use proptest::prelude::*;
@@ -117,19 +117,21 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     let terminal = StreamPath::new(format!("{root}/operations/{operation}"))?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![condition],
-        mutations: vec![
-            mutation,
-            CommitMutation::Append {
-                path: terminal.clone(),
-                records: vec![AppendRecord::from("original terminal success; count=1025")],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![condition],
+            vec![
+                mutation,
+                CommitMutation::Append {
+                    path: terminal.clone(),
+                    records: vec![AppendRecord::from("original terminal success; count=1025")],
+                },
+            ],
+        )],
         idempotency_key: StreamKey::unique(),
     };
     let mut beyond_source = request.clone();
     beyond_source.idempotency_key = StreamKey::unique();
-    let CommitMutation::Fork { at_tail, .. } = &mut beyond_source.mutations[0] else {
+    let CommitMutation::Fork { at_tail, .. } = &mut beyond_source.effects[0].mutations[0] else {
         panic!("results must share the original staged prefix");
     };
     *at_tail += 1;

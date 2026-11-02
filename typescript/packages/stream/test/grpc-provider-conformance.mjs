@@ -135,15 +135,15 @@ if (process.argv.includes("--client")) {
   assert.equal(followed, 2);
   assert.equal((await provider.fork(path, `${prefix}/fork`, { atTail: 1n, idempotencyKey: key(`${prefix}-fork`) })).tail, 1n);
   assert.deepEqual((await provider.childrenPage({ parent: prefix, limit: 8 })).children.map(item => item.path), [`${prefix}/events`, `${prefix}/fork`]);
-  const committed = await provider.commit({ conditions: [{ path, ifTail: 2n }, { path: `${prefix}/other`, ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: `${prefix}/other`, values: [body("other")] } }] }, { idempotencyKey: key(`${prefix}-commit`) });
+  const committed = await provider.commit({ effects: [{ conditions: [{ path, ifTail: 2n }, { path: `${prefix}/other`, ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: `${prefix}/other`, values: [body("other")] } }], soft: false }] }, { idempotencyKey: key(`${prefix}-commit`) });
   assert.equal(committed.ok, true);
   assert.equal(committed.appends.find(append => append.path === path).tail, 3n);
   assert.equal((await provider.readCommit(committed.commitId)).mutations.length, 2);
   assert.equal((await provider.inspectIdempotency(key(`${prefix}-commit`))).outcome.type, "commit");
-  const conflict = await provider.commit({ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }] }, { idempotencyKey: key(`${prefix}-conflict`) });
+  const conflict = await provider.commit({ effects: [{ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }], soft: false }] }, { idempotencyKey: key(`${prefix}-conflict`) });
   assert.equal(conflict.ok, false);
   assert.equal(await provider.tail(path), 3n);
-  await assert.rejects(provider.commit({ conditions: [{ path: `${prefix}/invalid-cut`, ifAbsent: true }], mutations: [{ fork: { source: path, destination: `${prefix}/invalid-cut`, atTail: 4n, values: [] } }] }, { idempotencyKey: key(`${prefix}-invalid-cut`) }), error => error instanceof StreamError && error.code === "invalid_argument");
+  await assert.rejects(provider.commit({ effects: [{ conditions: [{ path: `${prefix}/invalid-cut`, ifAbsent: true }], mutations: [{ fork: { source: path, destination: `${prefix}/invalid-cut`, atTail: 4n, values: [] } }], soft: false }] }, { idempotencyKey: key(`${prefix}-invalid-cut`) }), error => error instanceof StreamError && error.code === "invalid_argument");
   const denied = new GrpcStreamProvider({ ...options, token: "wrong" });
   await assert.rejects(denied.tail(path), error => error instanceof StreamError && error.code === "access_denied");
   await assert.rejects(provider.tail("invalid//path"), error => error instanceof StreamError && error.code === "invalid_path");

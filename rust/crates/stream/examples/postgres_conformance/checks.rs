@@ -87,14 +87,16 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     let committed = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 3,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"deadline").into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 3,
+            }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![OwnedBytes::from_static(b"deadline").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"deadline-replay".to_vec())?,
     };
     let outcome = provider.commit(committed.clone()).await?;

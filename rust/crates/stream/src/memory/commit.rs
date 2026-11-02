@@ -151,14 +151,14 @@ impl MemoryStream {
         Ok((records, claim))
     }
 
-    fn facts<'a>(
+    fn facts(
         &self,
         state: &State,
-        source: impl Iterator<Item = &'a CommitMutation> + Clone,
+        source: &[&CommitMutation],
         commit_id: CommitId,
         time: u64,
     ) -> Result<(Vec<CommittedMutation>, Allocation), StreamError> {
-        let (output, mut allocation) = self.vector(source.clone().count())?;
+        let (output, mut allocation) = self.vector(source.len())?;
         let facts = crate::preparation::facts(
             source,
             |path| Ok(state.tail(path)),
@@ -424,19 +424,22 @@ impl MemoryStream {
         Ok(None)
     }
 
-    /// Plans `request` without its `skipped` soft appends.
+    /// Plans the `applied` mutations of a settled commit, in canonical order.
     fn plan_commit(
         &self,
         state: &mut State,
-        request: &CommitRequest,
-        skipped: &[StreamPath],
+        applied: &[&CommitMutation],
         commit_id: CommitId,
         time: u64,
     ) -> Result<CommitPlan, StreamError> {
-        let applied = crate::preparation::applied(request, skipped);
-        let (facts, facts_claim) = self.facts(state, applied.clone(), commit_id, time)?;
+        let (facts, facts_claim) = self.facts(state, applied, commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
-        let (paths, paths_claim) = self.paths(state, applied.map(crate::CommitMutation::path))?;
+        let (paths, paths_claim) = self.paths(
+            state,
+            applied
+                .iter()
+                .map(|mutation| crate::CommitMutation::path(mutation)),
+        )?;
         let envelope = CommittedEnvelope {
             commit_id,
             committed_at_micros: time,
@@ -506,12 +509,17 @@ impl MemoryStream {
         check_deadline()?;
         let mut probes =
             self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
-        let (mut conflicts, output_claim) = self.vector(request.conditions.len())?;
-        for condition in &request.conditions {
-            if let Some(conflict) = self.condition_conflict(state, condition)? {
-                conflicts.push(conflict);
-            }
-        }
+        let (conflicts, output_claim) =
+            self.vector(crate::preparation::hard_conditions(request))?;
+        // The receipt carries the skipped soft effects, so their claim joins
+        // the receipt's output claim below.
+        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
+        let (conflicts, skipped) = crate::preparation::settle(
+            request,
+            |condition| self.condition_conflict(state, condition),
+            conflicts,
+            skipped,
+        )?;
         if !conflicts.is_empty() {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
@@ -544,13 +552,14 @@ impl MemoryStream {
             return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
-        // The receipt carries the skipped soft appends, so their claim joins
-        // the receipt's output claim below.
-        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
-        let skipped = crate::preparation::settle(request, |path| Ok(state.tail(path)), skipped)?;
-        crate::preparation::authority(request, |path| Ok(state.tail(path)))?;
+        // Planning views the applied mutations in canonical order through one
+        // admitted vector of references; no request vector is copied.
+        let (applied, applied_claim) =
+            self.vector(crate::preparation::applied_len(request, &skipped))?;
+        let applied = crate::preparation::applied(request, &skipped, applied)?;
+        crate::preparation::authority(&applied, |path| Ok(state.tail(path)))?;
         admit_replay(state, self.limits)?;
-        reserve_coordinated(state, request, &skipped, self.limits)?;
+        reserve_coordinated(state, &applied, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -567,7 +576,8 @@ impl MemoryStream {
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
         );
-        let mut plan = self.plan_commit(state, request, &skipped, commit_id, time)?;
+        let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
+        drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
         if let CommitOutcome::Committed(receipt) = &mut plan.result {
             receipt.skipped = skipped;
@@ -649,7 +659,7 @@ impl MemoryStream {
         state: &State,
         condition: &CommitCondition,
     ) -> Result<Option<CommitConflict>, StreamError> {
-        let path = condition_path(condition);
+        let path = crate::CommitCondition::path(condition);
         let actual = state.tail(path);
         crate::preparation::condition_conflict(condition, actual, || {
             let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
@@ -731,10 +741,7 @@ fn bind_acceptance(
         if fact_records(fact).is_empty() {
             continue;
         }
-        let path = match fact {
-            CommittedMutation::Append(append) => &append.path,
-            CommittedMutation::Fork(fork) => &fork.destination,
-        };
+        let path = crate::request::fact_path(fact);
         let data = namespace.unpublished_path(path)?;
         let History::Batch { records, .. } =
             Arc::get_mut(data.history.as_mut().ok_or(StreamError::Unavailable)?)
@@ -875,10 +882,7 @@ fn install_namespace(
     // Only missing subscriptions beneath a published destination can be
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
-        let path = match fact {
-            CommittedMutation::Append(append) => &append.path,
-            CommittedMutation::Fork(fork) => &fork.destination,
-        };
+        let path = crate::request::fact_path(fact);
         if previous.get(path).is_some() {
             continue;
         }

@@ -5,7 +5,8 @@ use super::{Result, create, driver::file, id, intent, user};
 use acyclic_harness_core::agent::*;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, StreamProvider,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
+    StreamProvider,
 };
 
 fn message(name: &str) -> Result<TurnInput> {
@@ -35,14 +36,16 @@ async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>
     let conversation = path.conversation()?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: conversation.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: conversation,
-            records: records.into_iter().map(Into::into).collect(),
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: conversation.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: conversation,
+                records: records.into_iter().map(Into::into).collect(),
+            }],
+        )],
         idempotency_key: intent_key(path.as_str(), &[])?,
     };
     assert!(matches!(

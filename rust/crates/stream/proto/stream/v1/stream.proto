@@ -348,14 +348,6 @@ message AppendMutation {
   repeated AppendRecord records = 2;
 }
 
-// Appends only if `path` exists and `closed`, when nonempty, does not;
-// otherwise the commit skips it and reports `path` in CommitReceipt.skipped.
-message SoftAppendMutation {
-  string path = 1;
-  repeated AppendRecord records = 2;
-  string closed = 3;
-}
-
 // Forks the whole source subtree at the pre-commit cut, sharing its nodes.
 // at_tail selects the root stream prefix; descendant heads are inherited whole.
 // Appends records to the destination root at the same linearization point.
@@ -369,18 +361,28 @@ message ForkMutation {
 }
 
 message CommitMutation {
-  reserved 3, 4;
-  reserved "trim", "delete";
+  reserved 3, 4, 5;
+  reserved "trim", "delete", "soft_append";
   oneof mutation {
     AppendMutation append = 1;
     ForkMutation fork = 2;
-    SoftAppendMutation soft_append = 5;
   }
 }
 
-message CommitRequest {
+// One all-or-none group of mutations guarded by its own conditions, which are
+// evaluated on the pre-commit state. A hard effect whose conditions fail
+// refuses the whole commit; a soft one is skipped and reported by its index.
+message CommitEffect {
   repeated CommitCondition conditions = 1;
   repeated CommitMutation mutations = 2;
+  bool soft = 3;
+}
+
+message CommitRequest {
+  reserved 1, 2;
+  reserved "conditions", "mutations";
+  // Nonempty, in request order; every mutation path is unique in the commit.
+  repeated CommitEffect effects = 6;
   bytes idempotency_key = 3;
   optional uint64 deadline_unix_millis = 4;
   // Select the original accepted envelope in this acknowledgement. This is a
@@ -475,7 +477,10 @@ message CommitReceipt {
   repeated AppendRange appends = 3;
   repeated ForkReceipt forks = 4;
   Revision revision = 5;
-  repeated string skipped = 6;
+  reserved 6;
+  reserved "skipped";
+  // Indices of the soft effects the commit skipped, ascending.
+  repeated uint32 skipped_effects = 7;
 }
 
 message ReadCommitRequest {

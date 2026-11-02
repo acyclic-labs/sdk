@@ -71,9 +71,14 @@ try {
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4], ["keys", 5], ["attributes", 6], ["origin", 7]]);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);
-  assertFields("CommitMutation", [["append", 1], ["fork", 2], ["soft_append", 5]]);
-  assertFields("SoftAppendMutation", [["path", 1], ["records", 2], ["closed", 3]]);
-  assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
+  assertFields("CommitMutation", [["append", 1], ["fork", 2]]);
+  assertReserved("CommitMutation", [[3, 4], [4, 5], [5, 6]], ["trim", "delete", "soft_append"]);
+  assert.ok(!messages.has("SoftAppendMutation"), "SoftAppendMutation was removed");
+  assertFields("CommitEffect", [["conditions", 1], ["mutations", 2], ["soft", 3]]);
+  assertFields("CommitRequest", [["idempotency_key", 3], ["deadline_unix_millis", 4], ["include_envelope", 5], ["effects", 6]]);
+  assertReserved("CommitRequest", [[1, 2], [2, 3]], ["conditions", "mutations"]);
+  assertFields("CommitReceipt", [["commit_id", 1], ["committed_at_micros", 2], ["appends", 3], ["forks", 4], ["revision", 5], ["skipped_effects", 7]]);
+  assertReserved("CommitReceipt", [[6, 7]], ["skipped"]);
   assertFields("CommittedMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommittedMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
   assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3], ["present", 4]]);

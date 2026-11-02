@@ -1,5 +1,5 @@
 use super::*;
-use crate::guest::{CodecIdentity, Effect};
+use crate::guest::CodecIdentity;
 use acyclic_stream::{LocalStream, MemoryStream, ReadRequest};
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -242,16 +242,16 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     assert_eq!(store.load(&address).await?.tail, before.tail);
     let mut forked = result.clone();
     let reply_parent = StreamPath::new(format!("{}/replies", before.path()))?;
-    let reply_fork = Effect {
-        conditions: Vec::new(),
-        mutation: CommitMutation::Fork {
+    let reply_fork = acyclic_stream::CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Fork {
             exclude: Vec::new(),
             source: before.path().clone(),
             destination: reply_parent,
             at_tail: 0,
             records: Vec::new(),
-        },
-    };
+        }],
+    );
     forked.effects.push(reply_fork.clone());
     assert!(matches!(
         store.prepare_publish(
@@ -366,7 +366,7 @@ async fn invocation_completion_rejects_changed_original_publication() -> TestRes
             .into_request()?;
         match fault {
             0 => {
-                for mutation in &mut request.mutations {
+                for mutation in &mut request.effects[0].mutations {
                     if let CommitMutation::Append { path, records } = mutation {
                         if path == before.path() {
                             records[0] = before.state().ok_or("missing state")?.encode().into();
@@ -374,20 +374,20 @@ async fn invocation_completion_rejects_changed_original_publication() -> TestRes
                     }
                 }
             }
-            1 => request.mutations.retain(|mutation| {
+            1 => request.effects[0].mutations.retain(|mutation| {
                 !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
             }),
             2 => {
                 let mut state_only = request.clone();
-                state_only.mutations.retain(|mutation| {
+                state_only.effects[0].mutations.retain(|mutation| {
                     matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
                 });
                 assert!(matches!(provider.commit(state_only).await?, CommitOutcome::Committed(_)));
                 request.idempotency_key = key("changed-publication/separate-reply")?;
-                request.mutations.retain(|mutation| {
+                request.effects[0].mutations.retain(|mutation| {
                     !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
                 });
-                request.conditions.retain(|condition| {
+                request.effects[0].conditions.retain(|condition| {
                     matches!(condition, CommitCondition::Absent { .. })
                 });
             }
@@ -673,24 +673,24 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
             },
         );
         value.effects = vec![
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: output.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: output.clone(),
                     records: vec![Bytes::from_static(b"a").into()],
-                },
-            },
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+                }],
+            ),
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: output.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: output.clone(),
                     records: vec![Bytes::from_static(b"b").into()],
-                },
-            },
+                }],
+            ),
         ];
         value
     };

@@ -1,6 +1,7 @@
 use crate::{
-    AppendRecord, AppendRequest, Attribute, CommitCondition, CommitMutation, CommitRequest,
-    IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamError, StreamPath,
+    AppendRecord, AppendRequest, Attribute, CommitCondition, CommitEffect, CommitMutation,
+    CommitRequest, IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamError,
+    StreamPath,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,8 +107,10 @@ fn commit(record: AppendRecord, fork: bool) -> Result<CommitRequest, StreamError
     };
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: destination }],
-        mutations: vec![mutation],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Absent { path: destination }],
+            vec![mutation],
+        )],
         idempotency_key: IdempotencyKey::new(b"same retry".as_slice())?,
     })
 }

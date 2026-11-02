@@ -38,11 +38,13 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
         meter.limit.store(limit, Ordering::SeqCst);
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![CommitMutation::Append {
-                path: StreamPath::new("prebox")?,
-                records: vec![crate::OwnedBytes::from_static(b"value").into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new("prebox")?,
+                    records: vec![crate::OwnedBytes::from_static(b"value").into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new("prebox")?,
         };
         if limit != u64::MAX {

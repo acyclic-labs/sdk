@@ -415,8 +415,8 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
         // Fresh original input plus activation share one conditional commit.
         // Input publication and its finite read are outside the durable row.
         let mut input = PreparedPublish::foreign(key(format!("actor-input/{index}"))?);
-        input.join(Effect {
-            conditions: vec![if index == 0 {
+        input.join(acyclic_stream::CommitEffect::hard(
+            vec![if index == 0 {
                 CommitCondition::Absent {
                     path: inbox.path().clone(),
                 }
@@ -426,11 +426,11 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
                     expected: sequence,
                 }
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: inbox.path().clone(),
                 records: vec![payload.clone().into()],
-            },
-        })?;
+            }],
+        ))?;
         input.join(store.activation(&address))?;
         store.submit(input).await?;
         let mut records = inbox.read(sequence, 1).await?;

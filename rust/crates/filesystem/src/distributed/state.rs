@@ -241,11 +241,10 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
                 "observation and publication use different Streams owners",
             ));
         }
-        let path = super::policy::condition_path(&observed.condition);
+        let path = acyclic_stream::CommitCondition::path(&observed.condition);
         if commit
             .request()
-            .mutations
-            .iter()
+            .mutations()
             .any(|mutation| mutation.path() == path)
         {
             return Err(AuthorityStoreError::RejectedStatic(
@@ -263,10 +262,11 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             .ok_or(AuthorityStoreError::RejectedStatic(
                 "sealed filesystem commit",
             ))?;
-        super::composition::grow(&mut request.conditions, 1, work)?;
-        super::composition::grow(&mut request.mutations, 1, work)?;
-        super::policy::merge_condition(&mut request.conditions, condition, work)?;
-        request
+        let effect = super::composition::hard_effect(request, work)?;
+        super::composition::grow(&mut effect.conditions, 1, work)?;
+        super::composition::grow(&mut effect.mutations, 1, work)?;
+        super::policy::merge_condition(&mut effect.conditions, condition, work)?;
+        effect
             .mutations
             .push(CommitMutation::Append { path, records });
         commit.hold(hold);
@@ -310,7 +310,8 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     ) -> Result<(), AuthorityStoreError> {
         work.check()?;
         let owner = self.operation_claims().owner_identity();
-        super::composition::grow(&mut request.conditions, observations.len(), work)?;
+        let effect = super::composition::hard_effect(request, work)?;
+        super::composition::grow(&mut effect.conditions, observations.len(), work)?;
         for observed in observations {
             if observed.owner != owner {
                 return Err(AuthorityStoreError::RejectedStatic(
@@ -318,7 +319,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
                 ));
             }
             let condition = clone_condition(&observed.condition, work)?;
-            super::policy::merge_condition(&mut request.conditions, condition, work)?;
+            super::policy::merge_condition(&mut effect.conditions, condition, work)?;
         }
         // Every fence is part of the canonical command before size admission.
         // Neither an explicit lease nor the caller's existing deadline may be
@@ -337,7 +338,7 @@ fn clone_condition(
     condition: &CommitCondition,
     work: &mut AuthorityWork<'_>,
 ) -> Result<CommitCondition, AuthorityStoreError> {
-    let path = work.own_path(super::policy::condition_path(condition).as_str())?;
+    let path = work.own_path(acyclic_stream::CommitCondition::path(condition).as_str())?;
     Ok(match condition {
         CommitCondition::Head {
             expected,

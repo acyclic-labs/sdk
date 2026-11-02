@@ -16,12 +16,12 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::{ActorLimits, CodeSha256},
     guest::{
-        AlarmChange, Checkpoint, Delivery, Effect, GuestError, GuestFuture, Handler, Manifest,
-        Transition, Trigger,
+        AlarmChange, Checkpoint, Delivery, GuestError, GuestFuture, Handler, Manifest, Transition,
+        Trigger,
     },
     local::{PreparedPublish, Store, Subscription},
 };
-use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
+use acyclic_stream::{CommitEffect, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -120,7 +120,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     }
 
     /// The same-commit effect that wakes `actor` after a write to its inbox.
-    pub(super) fn wake(&self, actor: &ActorReference) -> Effect {
+    pub(super) fn wake(&self, actor: &ActorReference) -> CommitEffect {
         self.store.activation(actor)
     }
 
@@ -131,7 +131,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         actor: &ActorReference,
         agent: &AgentPath,
         cursor: u64,
-    ) -> Result<[Effect; 2], Error> {
+    ) -> Result<[CommitEffect; 2], Error> {
         let subscriptions = BTreeMap::from([(
             INBOX.to_owned(),
             Subscription {
@@ -156,7 +156,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         let created = create_root(intent, adopted)?;
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
-        let effects = effects(created.request).chain(self.create(&actor, &created.child, 0)?);
+        let effects =
+            created
+                .request
+                .effects
+                .into_iter()
+                .chain(self.create(&actor, &created.child, 0)?);
         for effect in effects {
             publish
                 .join(effect)
@@ -351,7 +356,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         };
         let step = prepared.step();
         let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
-        let mut effects: Vec<_> = effects(request).collect();
+        let mut effects = request.effects;
         let spawned: BTreeSet<_> = step
             .outs
             .iter()
@@ -393,16 +398,6 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             effects,
         })
     }
-}
-
-/// The lowered commit as effects: the first carries every condition, so the
-/// runtime's join keeps them sorted and unique by path.
-fn effects(request: CommitRequest) -> impl Iterator<Item = Effect> {
-    let mut conditions = Some(request.conditions);
-    request.mutations.into_iter().map(move |mutation| Effect {
-        conditions: conditions.take().unwrap_or_default(),
-        mutation,
-    })
 }
 
 impl<P, D> Handler for AgentHandler<P, D>

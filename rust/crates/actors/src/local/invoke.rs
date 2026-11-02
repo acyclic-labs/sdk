@@ -1,13 +1,14 @@
 //! Invocation uses the existing input, checkpoint publication and stream replay.
 use super::{Error, Snapshot, State, Store};
 use crate::{
-    guest::{Effect, GuestError, Trigger},
+    guest::{GuestError, Trigger},
     invocation::Invocation,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommittedMutation, FollowRequest, IdempotencyKey,
-    ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitEffect, CommitId, CommitMutation, CommittedMutation, FollowRequest,
+    IdempotencyKey, ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -153,7 +154,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     pub(super) async fn enqueue_joined(
         &self,
         invocation: &Invocation,
-        joined: impl FnOnce(&StreamPath) -> Result<Vec<Effect>, Error>,
+        joined: impl FnOnce(&StreamPath) -> Result<Vec<CommitEffect>, Error>,
     ) -> Result<InvocationTicket, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.enqueue_invoke",
@@ -171,13 +172,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let mut publication = super::PreparedPublish::foreign(IdempotencyKey::new(
                     invocation.identity(snapshot.path.as_str()).to_vec(),
                 )?);
-                publication.join(Effect {
-                    conditions: Vec::new(),
-                    mutation: CommitMutation::Append {
+                publication.join(acyclic_stream::CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
                         path: input.clone(),
                         records: vec![invocation.record(&snapshot.path)?],
-                    },
-                })?;
+                    }],
+                ))?;
                 publication.join(self.activation(invocation.actor()))?;
                 for effect in joined(&input)? {
                     publication.join(effect)?;
@@ -366,8 +367,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         trigger: &Trigger,
         delivered: Option<&Record>,
         outcome: Option<Result<&Bytes, &GuestError>>,
-        effects: &[Effect],
-    ) -> Result<Option<(StreamPath, Effect)>, Error> {
+        effects: &[CommitEffect],
+    ) -> Result<Option<(StreamPath, CommitEffect)>, Error> {
         let invocation = delivered
             .map(Invocation::decode_bound)
             .transpose()?
@@ -395,7 +396,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let path = reply_path(&previous.path, &invocation)?;
         if effects
             .iter()
-            .any(|effect| super::mutation_targets(&effect.mutation, &path))
+            .flat_map(|effect| &effect.mutations)
+            .any(|mutation| super::mutation_targets(mutation, &path))
         {
             return Err(Error::Invalid(
                 "guest effect targets the host's invocation reply",
@@ -427,13 +429,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         .encode_to_vec();
         Ok(Some((
             path.clone(),
-            Effect {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
                     path,
                     records: vec![value.into()],
-                },
-            },
+                }],
+            ),
         )))
     }
 }

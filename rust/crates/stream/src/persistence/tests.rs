@@ -2,8 +2,8 @@ use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::StreamProviderExt as _;
 use crate::{
-    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
-    MemoryStream, StreamProvider,
+    AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ForkRequest,
+    IdempotencyKey, MemoryStream, StreamProvider,
 };
 
 const BOUND: usize = 1024 * 1024;
@@ -69,28 +69,30 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
     round_trip(&provider, key(b"fork")?).await?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent {
-                path: StreamPath::new("forked")?,
-            },
-            CommitCondition::Tail {
-                path: source.clone(),
-                expected: 1,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: source.clone(),
-                records: vec![(Bytes::from_static(b"two")).into()],
-            },
-            CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: source.clone(),
-                destination: StreamPath::new("forked")?,
-                at_tail: 1,
-                records: vec![(Bytes::from_static(b"fork-two")).into()],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Absent {
+                    path: StreamPath::new("forked")?,
+                },
+                CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 1,
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![(Bytes::from_static(b"two")).into()],
+                },
+                CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: source.clone(),
+                    destination: StreamPath::new("forked")?,
+                    at_tail: 1,
+                    records: vec![(Bytes::from_static(b"fork-two")).into()],
+                },
+            ],
+        )],
         idempotency_key: key(b"commit")?,
     };
     let outcome = provider.commit(request.clone()).await?;

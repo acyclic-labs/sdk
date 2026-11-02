@@ -20,16 +20,16 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::{ActorLimits, CodeSha256},
     guest::{
-        AlarmChange, Checkpoint, CodecIdentity, Composer, Composition, Delivery, Effect,
-        GuestError, GuestEventResult, GuestFuture, GuestSocketEvent, Handler, Manifest,
-        Participant, SocketHost, SocketPayload, Transition, WebSocketId,
+        AlarmChange, Checkpoint, CodecIdentity, Composer, Composition, Delivery, GuestError,
+        GuestEventResult, GuestFuture, GuestSocketEvent, Handler, Manifest, Participant,
+        SocketHost, SocketPayload, Transition, WebSocketId,
     },
     local::{PreparedPublish, Store, Subscription},
     sockets::socket_reply,
 };
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    Record, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
+    IdempotencyKey, Record, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -92,7 +92,7 @@ impl State {
     }
 
     /// The presence record for the current connection.
-    fn status(&self) -> Result<Effect> {
+    fn status(&self) -> Result<CommitEffect> {
         let mut target = self.target.clone();
         target.state = if self.connection.is_some() {
             TargetState::Online
@@ -117,7 +117,7 @@ impl State {
         ))
     }
 
-    fn event(&self, op: OperationId, event: RunEvent) -> Result<Effect> {
+    fn event(&self, op: OperationId, event: RunEvent) -> Result<CommitEffect> {
         let record = RunRecord {
             v: RECORD_VERSION,
             event,
@@ -129,7 +129,7 @@ impl State {
     }
 
     /// One session end covers every unfinished operation without a registry.
-    fn lose(&self, reason: &str, effects: &mut Vec<Effect>) -> Result<()> {
+    fn lose(&self, reason: &str, effects: &mut Vec<CommitEffect>) -> Result<()> {
         effects.push(append(
             self.paths()?
                 .session_end(&self.target.name, self.generation)?,
@@ -148,7 +148,7 @@ impl State {
         &mut self,
         provider: &P,
         record: &Record,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<()> {
         // A record that is no run is no command; dispatch writes only runs.
         let Ok(run) = decode::<Run>(&record.value) else {
@@ -209,7 +209,7 @@ impl State {
         &self,
         provider: &P,
         message: DeviceMessage,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<()> {
         let Some((_, current)) = &self.connection else {
             return Ok(());
@@ -274,14 +274,14 @@ impl State {
     }
 }
 
-fn append(path: StreamPath, record: AppendRecord) -> Effect {
-    Effect {
-        conditions: Vec::new(),
-        mutation: CommitMutation::Append {
+fn append(path: StreamPath, record: AppendRecord) -> CommitEffect {
+    CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Append {
             path,
             records: vec![record],
-        },
-    }
+        }],
+    )
 }
 
 /// One handler package for every device's actor.
@@ -316,7 +316,7 @@ impl<P: StreamProvider + ?Sized> TargetActor<P> {
         &self,
         delivery: &Delivery,
         state: &mut State,
-        effects: &mut Vec<Effect>,
+        effects: &mut Vec<CommitEffect>,
     ) -> Result<Option<bytes::Bytes>> {
         if let (acyclic_actors::guest::Trigger::Record { subscription, .. }, Some(record)) =
             (&delivery.trigger, &delivery.record)

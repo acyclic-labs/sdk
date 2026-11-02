@@ -3,9 +3,9 @@ import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
-  CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
+  CommitCondition, CommitMutation, CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
-  StreamProvider, ProviderCommitRequest,
+  StreamProvider, ProviderCommitEffect, ProviderCommitRequest,
 } from "./types.js";
 import { StreamError, commitId, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
@@ -107,7 +107,12 @@ export class StreamClient {
   /** Transfers one exact keyed commit to an owned, cancellation-independent handle. */
   submit(request: CommitRequest, options: CommitOptions): Pending {
     const authoredOptions = structuredClone(options);
-    const conditions = request.conditions.map(condition => {
+    const effects = request.effects.map(effect => ({ conditions: this.#conditions(effect.conditions), mutations: this.#mutations(effect.mutations), soft: effect.soft ?? false }));
+    return Pending.submit(this.provider, { effects }, authoredOptions);
+  }
+
+  #conditions(conditions: readonly CommitCondition[]): ProviderCommitEffect["conditions"] {
+    return conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
         return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail), ...(condition.ifCommitId === undefined ? {} : { ifCommitId: commitId(condition.ifCommitId) }) };
@@ -120,16 +125,13 @@ export class StreamClient {
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return { path: condition.path, ifAbsent: true as const };
     });
-    const mutations = request.mutations.map(mutation => {
+  }
+
+  #mutations(mutations: readonly CommitMutation[]): ProviderCommitEffect["mutations"] {
+    return mutations.map(mutation => {
       if ("append" in mutation) {
         sameProvider(this.provider, mutation.append.stream);
         return { append: { path: mutation.append.stream.path, values: mutation.append.values.map(value => mutation.append.stream.encode(value)) } };
-      }
-      if ("softAppend" in mutation) {
-        const { stream, values, closed } = mutation.softAppend;
-        sameProvider(this.provider, stream);
-        if (closed !== undefined) validatePathValue(closed);
-        return { softAppend: { path: stream.path, values: values.map(value => stream.encode(value)), ...(closed === undefined ? {} : { closed }) } };
       }
       if ("fork" in mutation) {
         sameProvider(this.provider, mutation.fork.source);
@@ -139,7 +141,6 @@ export class StreamClient {
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
-    return Pending.submit(this.provider, { conditions, mutations }, authoredOptions);
   }
   readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
 }

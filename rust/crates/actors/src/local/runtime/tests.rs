@@ -1,11 +1,11 @@
 use super::*;
 use crate::conformance::{self, Failure, Package, Target};
-use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
+use crate::guest::{AlarmChange, Checkpoint, GuestFuture, Manifest, Transition};
 use crate::local::{PreparedPublish, Subscription};
 use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitRequest, LocalStream, MemoryStream,
-    StreamPath,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, LocalStream,
+    MemoryStream, StreamPath,
 };
 use bytes::Bytes;
 use futures::TryFutureExt as _;
@@ -788,13 +788,15 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
         &provider
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: StreamPath::new("agents/first")?,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new("agents/first")?,
-                    records: prefix,
-                }],
+                effects: vec![CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: StreamPath::new("agents/first")?,
+                    }],
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("agents/first")?,
+                        records: prefix,
+                    }],
+                )],
                 idempotency_key: key("prefix")?,
             })
             .await?,
@@ -817,28 +819,30 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
             prepared.join(effect)?;
         }
     }
-    prepared.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    prepared.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: StreamPath::new("unrelated/log")?,
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: StreamPath::new("unrelated/log")?,
             records: vec![Bytes::from_static(b"spawned").into()],
-        },
-    })?;
+        }],
+    ))?;
     PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Tail {
-                    path: StreamPath::new("agents/first")?,
-                    expected: 5,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new("agents/first")?,
-                    records: vec![Bytes::from_static(b"emit").into()],
-                }],
+                effects: vec![CommitEffect::hard(
+                    vec![CommitCondition::Tail {
+                        path: StreamPath::new("agents/first")?,
+                        expected: 5,
+                    }],
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("agents/first")?,
+                        records: vec![Bytes::from_static(b"emit").into()],
+                    }],
+                )],
                 idempotency_key: key("send")?,
             })
             .await?,
@@ -947,15 +951,15 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
             prepared.join(effect)?;
         }
         // The first input rides in the same commit as the creation.
-        prepared.join(Effect {
-            conditions: vec![CommitCondition::Absent {
+        prepared.join(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent {
                 path: inbox.clone(),
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: inbox,
                 records: vec![Bytes::from_static(b"emit").into()],
-            },
-        })?;
+            }],
+        ))?;
         PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     }
     let mut task = task.unwrap_or_else(launch);
@@ -1021,15 +1025,15 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     )? {
         prepared.join(effect)?;
     }
-    prepared.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    prepared.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: inbox.clone(),
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: inbox,
             records: vec![Bytes::from_static(b"emit").into()],
-        },
-    })?;
+        }],
+    ))?;
     PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -1076,18 +1080,18 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     )? {
         prepared.join(effect)?;
     }
-    prepared.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    prepared.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: inbox.clone(),
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: inbox,
             records: commands
                 .iter()
                 .map(|command| Bytes::from_static(command).into())
                 .collect(),
-        },
-    })?;
+        }],
+    ))?;
     PreparedPublish::settle(&store.provider().commit(prepared.into_request()?).await?)?;
     Ok(address)
 }
@@ -1275,13 +1279,13 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
                 cursor: 0,
             },
         );
-        create.join(Effect {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutation: CommitMutation::Append {
+        create.join(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
                 path,
                 records: vec![Bytes::from_static(b"emit").into(); if index == 0 { 128 } else { 1 }],
-            },
-        })?;
+            }],
+        ))?;
     }
     for effect in store.create(&address, subscriptions, Some(ledger("out/rotation")?))? {
         create.join(effect)?;

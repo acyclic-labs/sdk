@@ -447,14 +447,16 @@ fn gate_commit(
     let path = stream_path(reservation.authority_id, "/publication-gate")?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: reservation.gate_tail,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![body.into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: reservation.gate_tail,
+            }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![body.into()],
+            }],
+        )],
         idempotency_key: key,
     })
 }
@@ -663,8 +665,7 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
         let id = AuthorityId::from_bytes([1; 16]);
         let mut request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: stream_key(b"gateless", &id.into_bytes())?,
         };
         let epoch = Epoch::GENESIS.get().to_le_bytes();
@@ -674,20 +675,20 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
             ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
         ] {
             let path = stream_path(id, suffix)?;
-            request
+            request.effects[0]
                 .conditions
                 .push(CommitCondition::Absent { path: path.clone() });
-            request.mutations.push(CommitMutation::Append {
+            request.effects[0].mutations.push(CommitMutation::Append {
                 path,
                 records: vec![body.into()],
             });
         }
         if let Some(gate) = gate {
             let path = stream_path(id, "/publication-gate")?;
-            request
+            request.effects[0]
                 .conditions
                 .push(CommitCondition::Absent { path: path.clone() });
-            request.mutations.push(CommitMutation::Append {
+            request.effects[0].mutations.push(CommitMutation::Append {
                 path,
                 records: vec![
                     acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE).into(),

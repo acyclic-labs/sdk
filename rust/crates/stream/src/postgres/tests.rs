@@ -217,14 +217,16 @@ async fn publication_uses_only_required_sql_observations()
     // already elapsed deadline. A condition conflict must not mask expiry.
     let expired_conflict = CommitRequest {
         deadline_unix_millis: Some(1),
-        conditions: vec![CommitCondition::Tail {
-            path: original.path.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: StreamPath::new("deadline/control")?,
-            records: vec!["deadline".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: original.path.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: StreamPath::new("deadline/control")?,
+                records: vec!["deadline".into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     replica.set_proposal_clock(0);
@@ -250,9 +252,12 @@ async fn publication_uses_only_required_sql_observations()
             .execute(
                 WriteRequest::Commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: original.path.clone(),
-                        expected: 2,
+                    effects: vec![crate::CommitEffect {
+                        conditions: vec![CommitCondition::Tail {
+                            path: original.path.clone(),
+                            expected: 2,
+                        }],
+                        ..expired_conflict.effects[0].clone()
                     }],
                     ..expired_conflict
                 }),

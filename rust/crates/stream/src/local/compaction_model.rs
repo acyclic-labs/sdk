@@ -6,22 +6,24 @@ use std::task::{Context, Poll};
 fn request() -> CommitRequest {
     CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            crate::CommitCondition::Tail {
-                path: StreamPath::new("agents/a").unwrap(),
-                expected: 1,
-            },
-            crate::CommitCondition::Absent {
-                path: StreamPath::new("agents/b").unwrap(),
-            },
-        ],
-        mutations: ["agents/a", "agents/b"]
-            .into_iter()
-            .map(|path| crate::CommitMutation::Append {
-                path: StreamPath::new(path).unwrap(),
-                records: vec![crate::OwnedBytes::from_static(b"accepted").into()],
-            })
-            .collect(),
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                crate::CommitCondition::Tail {
+                    path: StreamPath::new("agents/a").unwrap(),
+                    expected: 1,
+                },
+                crate::CommitCondition::Absent {
+                    path: StreamPath::new("agents/b").unwrap(),
+                },
+            ],
+            ["agents/a", "agents/b"]
+                .into_iter()
+                .map(|path| crate::CommitMutation::Append {
+                    path: StreamPath::new(path).unwrap(),
+                    records: vec![crate::OwnedBytes::from_static(b"accepted").into()],
+                })
+                .collect(),
+        )],
         idempotency_key: IdempotencyKey::new(crate::OwnedBytes::from_static(b"compacting"))
             .unwrap(),
     }

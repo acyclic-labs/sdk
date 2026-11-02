@@ -7,9 +7,9 @@ use super::fork::{absent, append, facts, key, path, values};
 use super::{Failure, History, Invariant};
 use crate::StreamProviderExt as _;
 use crate::{
-    ChildrenPageRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record, StreamError,
-    StreamPath, StreamProvider,
+    ChildrenPageRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
+    CommitRequest, CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record,
+    StreamError, StreamPath, StreamProvider,
 };
 use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -106,28 +106,30 @@ fn spawn_request<P: StreamProvider + ?Sized>(
     )?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent {
-                path: child.clone(),
-            },
-            CommitCondition::Tail {
-                path: conversation.clone(),
-                expected: conversation_tail,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Fork {
-                exclude: exclude(history)?,
-                source: parent.clone(),
-                destination: child.clone(),
-                at_tail,
-                records: records_of(&[adopted]),
-            },
-            CommitMutation::Append {
-                path: conversation,
-                records: records_of(&[b"spawn-result"]),
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Absent {
+                    path: child.clone(),
+                },
+                CommitCondition::Tail {
+                    path: conversation.clone(),
+                    expected: conversation_tail,
+                },
+            ],
+            vec![
+                CommitMutation::Fork {
+                    exclude: exclude(history)?,
+                    source: parent.clone(),
+                    destination: child.clone(),
+                    at_tail,
+                    records: records_of(&[adopted]),
+                },
+                CommitMutation::Append {
+                    path: conversation,
+                    records: records_of(&[b"spawn-result"]),
+                },
+            ],
+        )],
         idempotency_key: key(history, label)?,
     })
 }
@@ -198,47 +200,48 @@ impl Spawn {
     ) -> Result<CommitRequest, Failure> {
         Ok(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![
-                CommitCondition::Absent {
-                    path: self.actor.clone(),
-                },
-                CommitCondition::Absent {
-                    path: self.child_volume.clone(),
-                },
-                parent_head,
-                CommitCondition::Absent {
-                    path: self.child.clone(),
-                },
-            ],
-            mutations: vec![
-                CommitMutation::Fork {
-                    exclude: exclude(history)?,
-                    source: history.path.clone(),
-                    destination: self.child.clone(),
-                    at_tail: 2,
-                    records: records_of(&[b"fork-adopted"]),
-                },
-                CommitMutation::Append {
-                    path: self.actor.clone(),
-                    records: records_of(&[b"state-0"]),
-                },
-                CommitMutation::Fork {
-                    exclude: Vec::new(),
-                    source: self.volume.clone(),
-                    destination: self.child_volume.clone(),
-                    at_tail: 1,
-                    records: Vec::new(),
-                },
-                CommitMutation::Append {
-                    path: self.parent_actor.clone(),
-                    records: records_of(&[b"parent-state-2"]),
-                },
-                // Unconditioned companion: a same-commit write to a source descendant.
-                CommitMutation::Append {
-                    path: self.conversation.clone(),
-                    records: records_of(&[b"spawn-result"]),
-                },
-            ],
+            effects: vec![CommitEffect::hard(
+                vec![
+                    CommitCondition::Absent {
+                        path: self.actor.clone(),
+                    },
+                    CommitCondition::Absent {
+                        path: self.child_volume.clone(),
+                    },
+                    parent_head,
+                    CommitCondition::Absent {
+                        path: self.child.clone(),
+                    },
+                ],
+                vec![
+                    CommitMutation::Fork {
+                        exclude: exclude(history)?,
+                        source: history.path.clone(),
+                        destination: self.child.clone(),
+                        at_tail: 2,
+                        records: records_of(&[b"fork-adopted"]),
+                    },
+                    CommitMutation::Append {
+                        path: self.actor.clone(),
+                        records: records_of(&[b"state-0"]),
+                    },
+                    CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source: self.volume.clone(),
+                        destination: self.child_volume.clone(),
+                        at_tail: 1,
+                        records: Vec::new(),
+                    },
+                    CommitMutation::Append {
+                        path: self.parent_actor.clone(),
+                        records: records_of(&[b"parent-state-2"]),
+                    },
+                    CommitMutation::Append {
+                        path: self.conversation.clone(),
+                        records: records_of(&[b"spawn-result"]),
+                    },
+                ],
+            )],
             idempotency_key: history.key.clone(),
         })
     }
@@ -403,13 +406,15 @@ fn send<P: StreamProvider + ?Sized>(
 ) -> Result<CommitRequest, Failure> {
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: closed.clone(),
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: history.path.clone(),
-            records: records_of(&[value]),
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: closed.clone(),
+            }],
+            vec![CommitMutation::Append {
+                path: history.path.clone(),
+                records: records_of(&[value]),
+            }],
+        )],
         idempotency_key: key(history, label)?,
     })
 }
@@ -429,19 +434,21 @@ pub(super) async fn closed_inbox<P: StreamProvider + ?Sized>(
     .await?;
     let archive = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent {
-            path: closed.clone(),
-        }],
-        mutations: vec![
-            CommitMutation::Append {
-                path: history.path.clone(),
-                records: records_of(&[b"archive"]),
-            },
-            CommitMutation::Append {
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Absent {
                 path: closed.clone(),
-                records: records_of(&[b"closed"]),
-            },
-        ],
+            }],
+            vec![
+                CommitMutation::Append {
+                    path: history.path.clone(),
+                    records: records_of(&[b"archive"]),
+                },
+                CommitMutation::Append {
+                    path: closed.clone(),
+                    records: records_of(&[b"closed"]),
+                },
+            ],
+        )],
         idempotency_key: history.key.clone(),
     };
     let archived = history.result("archive", history.provider.commit(archive.clone()).await)?;

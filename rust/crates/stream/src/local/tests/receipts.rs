@@ -156,20 +156,22 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
     } else {
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![
-                crate::CommitCondition::Tail {
+            effects: vec![crate::CommitEffect::hard(
+                vec![
+                    crate::CommitCondition::Tail {
+                        path: path(),
+                        expected: 1,
+                    },
+                    crate::CommitCondition::Tail {
+                        path: StreamPath::new("native-deferral-owner")?,
+                        expected: 1,
+                    },
+                ],
+                vec![crate::CommitMutation::Append {
                     path: path(),
-                    expected: 1,
-                },
-                crate::CommitCondition::Tail {
-                    path: StreamPath::new("native-deferral-owner")?,
-                    expected: 1,
-                },
-            ],
-            mutations: vec![crate::CommitMutation::Append {
-                path: path(),
-                records,
-            }],
+                    records,
+                }],
+            )],
             idempotency_key: IdempotencyKey::new("native-deferral")?,
         };
         let outcome = if entry == 1 {

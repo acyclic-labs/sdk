@@ -20,20 +20,22 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     }
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: path("completion/owner")?,
-                expected: 1,
-            },
-            CommitCondition::Tail {
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: path("completion/owner")?,
+                    expected: 1,
+                },
+                CommitCondition::Tail {
+                    path: path("completion/target")?,
+                    expected: 1,
+                },
+            ],
+            vec![CommitMutation::Append {
                 path: path("completion/target")?,
-                expected: 1,
-            },
-        ],
-        mutations: vec![CommitMutation::Append {
-            path: path("completion/target")?,
-            records: vec![(OwnedBytes::from_static(b"real-guarded-body")).into()],
-        }],
+                records: vec![(OwnedBytes::from_static(b"real-guarded-body")).into()],
+            }],
+        )],
         idempotency_key: key(b"guarded-clock")?,
     };
     let meter = Arc::new(Meter::default());
@@ -178,13 +180,15 @@ async fn native_commit_projection_keeps_earliest_deadline_and_exact_retry() -> M
     let target = path("native-deadline")?;
     let mut request = CommitRequest {
         deadline_unix_millis: Some(100),
-        conditions: vec![CommitCondition::Absent {
-            path: target.clone(),
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: target.clone(),
-            records: vec!["value".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: target.clone(),
+            }],
+            vec![CommitMutation::Append {
+                path: target.clone(),
+                records: vec!["value".into()],
+            }],
+        )],
         idempotency_key: crate::IdempotencyKey::unique(),
     };
     for (retained, supplied) in [(Some(100), Some(200)), (Some(200), Some(100))] {
@@ -230,22 +234,27 @@ async fn native_commit_projection_keeps_earliest_deadline_and_exact_retry() -> M
 }
 
 #[tokio::test]
-async fn a_native_retry_replays_the_skipped_soft_appends() -> MemoryResult<()> {
+async fn a_native_retry_replays_the_skipped_soft_effects() -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let (gone, kept) = (path("native-soft/gone")?, path("native-soft/kept")?);
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![
-            CommitMutation::SoftAppend {
-                path: gone.clone(),
-                records: vec!["lost".into()],
-                closed: None,
+        effects: vec![
+            crate::CommitEffect {
+                conditions: vec![crate::CommitCondition::Present { path: gone.clone() }],
+                mutations: vec![CommitMutation::Append {
+                    path: gone,
+                    records: vec!["lost".into()],
+                }],
+                soft: true,
             },
-            CommitMutation::Append {
-                path: kept,
-                records: vec!["kept".into()],
-            },
+            crate::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: kept,
+                    records: vec!["kept".into()],
+                }],
+            ),
         ],
         idempotency_key: crate::IdempotencyKey::unique(),
     };
@@ -262,7 +271,7 @@ async fn a_native_retry_replays_the_skipped_soft_appends() -> MemoryResult<()> {
     let CommitOutcome::Committed(receipt) = &receipts[0] else {
         return Err("expected a committed receipt".into());
     };
-    assert_eq!(receipt.skipped, [gone]);
+    assert_eq!(receipt.skipped, [0]);
     assert_eq!(
         receipts[0], receipts[1],
         "the retry replays the original receipt"

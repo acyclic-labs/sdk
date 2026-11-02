@@ -7,24 +7,26 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
     let second = StreamPath::new("conformance/atomic-second")?;
     let atomic_key = crate::IdempotencyKey::new(crate::OwnedBytes::from_static(b"http-atomic"))?;
     let atomic = crate::CommitRequest {
-        conditions: vec![
-            crate::CommitCondition::Absent {
-                path: first.clone(),
-            },
-            crate::CommitCondition::Absent {
-                path: second.clone(),
-            },
-        ],
-        mutations: vec![
-            crate::CommitMutation::Append {
-                path: first.clone(),
-                records: vec![crate::OwnedBytes::from_static(b"first").into()],
-            },
-            crate::CommitMutation::Append {
-                path: second.clone(),
-                records: vec![crate::OwnedBytes::from_static(b"second").into()],
-            },
-        ],
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                crate::CommitCondition::Absent {
+                    path: first.clone(),
+                },
+                crate::CommitCondition::Absent {
+                    path: second.clone(),
+                },
+            ],
+            vec![
+                crate::CommitMutation::Append {
+                    path: first.clone(),
+                    records: vec![crate::OwnedBytes::from_static(b"first").into()],
+                },
+                crate::CommitMutation::Append {
+                    path: second.clone(),
+                    records: vec![crate::OwnedBytes::from_static(b"second").into()],
+                },
+            ],
+        )],
         idempotency_key: atomic_key.clone(),
         deadline_unix_millis: None,
     };
@@ -47,13 +49,15 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
     assert_eq!(envelope.mutations.len(), 2);
     let deadline_path = StreamPath::new("conformance/deadline")?;
     let request = crate::CommitRequest {
-        conditions: vec![crate::CommitCondition::Absent {
-            path: deadline_path.clone(),
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: deadline_path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"must-not-commit").into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Absent {
+                path: deadline_path.clone(),
+            }],
+            vec![crate::CommitMutation::Append {
+                path: deadline_path.clone(),
+                records: vec![crate::OwnedBytes::from_static(b"must-not-commit").into()],
+            }],
+        )],
         idempotency_key: crate::IdempotencyKey::new(crate::OwnedBytes::from_static(
             b"http-deadline",
         ))?,

@@ -723,7 +723,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             sequence + 1,
             delivery_key(&settled.state, &format!("goal-{sequence}"))?,
         )?;
-        broken.mutations.retain(|mutation| !matches!(mutation,
+        broken.effects[0].mutations.retain(|mutation| !matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str().contains("/goals/")));
         assert!(matches!(
             missing_completion.commit(broken).await?,

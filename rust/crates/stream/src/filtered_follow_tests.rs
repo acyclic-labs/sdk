@@ -284,44 +284,44 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
     for fork in [false, true] {
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![if fork {
-                CommitCondition::Absent {
-                    path: StreamPath::new("header-fork")?,
-                }
-            } else {
-                CommitCondition::Tail {
-                    path: path.clone(),
-                    expected: 1,
-                }
-            }],
-            mutations: vec![if fork {
-                CommitMutation::Fork {
-                    exclude: Vec::new(),
-                    source: path.clone(),
-                    destination: StreamPath::new("header-fork")?,
-                    at_tail: 1,
-                    records: vec![record("a", "alice")?],
-                }
-            } else {
-                CommitMutation::Append {
-                    path: path.clone(),
-                    records: vec![record("a", "alice")?],
-                }
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![if fork {
+                    CommitCondition::Absent {
+                        path: StreamPath::new("header-fork")?,
+                    }
+                } else {
+                    CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: 1,
+                    }
+                }],
+                vec![if fork {
+                    CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source: path.clone(),
+                        destination: StreamPath::new("header-fork")?,
+                        at_tail: 1,
+                        records: vec![record("a", "alice")?],
+                    }
+                } else {
+                    CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![record("a", "alice")?],
+                    }
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(if fork { "fork" } else { "commit" })?,
         };
         let outcome = provider.commit(request.clone()).await?;
         assert_eq!(provider.commit(request.clone()).await?, outcome);
         for body in [record("b", "alice")?, record("a", "bob")?] {
             let mut changed = request.clone();
-            match changed
+            match changed.effects[0]
                 .mutations
                 .first_mut()
                 .ok_or("missing commit mutation")?
             {
-                CommitMutation::Append { records, .. }
-                | CommitMutation::SoftAppend { records, .. }
-                | CommitMutation::Fork { records, .. } => {
+                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                     *records = vec![body];
                 }
             }

@@ -240,17 +240,23 @@ fn validate_commit_result(value: &Value) -> Result {
             Some(skipped) => array(skipped)?.as_slice(),
             None => &[],
         };
-        if appends.len().saturating_add(forks.len()) == 0
-            || appends
-                .len()
-                .saturating_add(forks.len())
-                .saturating_add(skipped.len())
-                > crate::MAX_ITEMS
+        // A commit that skipped every effect publishes nothing.
+        if (appends.len().saturating_add(forks.len()) == 0 && skipped.is_empty())
+            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS
+            || skipped.len() > crate::MAX_ITEMS
         {
             return Err("invalid receipt size");
         }
-        for skipped in skipped {
-            path(skipped)?;
+        let mut previous = None;
+        for index in skipped {
+            let index = index
+                .as_u64()
+                .filter(|index| *index <= u64::from(u32::MAX))
+                .ok_or("skipped must list effect indices")?;
+            if previous.is_some_and(|previous| previous >= index) {
+                return Err("skipped must ascend");
+            }
+            previous = Some(index);
         }
         for range in appends {
             let range = object(range)?;

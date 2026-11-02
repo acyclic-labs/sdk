@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitId, CommitMutation,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest,
 };
 use futures::{
@@ -87,26 +87,28 @@ async fn agent(
     let expected = if first { 1 } else { 2 };
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: own.clone(),
-                expected,
-            },
-            CommitCondition::Tail {
-                path: peer.clone(),
-                expected,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: own.clone(),
-                records: vec![(OwnedBytes::from(value.clone())).into()],
-            },
-            CommitMutation::Append {
-                path: peer,
-                records: vec![(OwnedBytes::from(value)).into()],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: own.clone(),
+                    expected,
+                },
+                CommitCondition::Tail {
+                    path: peer.clone(),
+                    expected,
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: own.clone(),
+                    records: vec![(OwnedBytes::from(value.clone())).into()],
+                },
+                CommitMutation::Append {
+                    path: peer,
+                    records: vec![(OwnedBytes::from(value)).into()],
+                },
+            ],
+        )],
         idempotency_key: IdempotencyKey::new(format!("agent-{id}").into_bytes())?,
     };
     assert!(matches!(

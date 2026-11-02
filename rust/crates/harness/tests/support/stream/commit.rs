@@ -7,11 +7,11 @@ impl<P: StreamProvider> LostSessionAck<P> {
         &self,
         request: &acyclic_stream::CommitRequest,
     ) -> Result<(u8, u8), StreamError> {
-        let owned = request.conditions.iter().any(|condition| {
+        let owned = request.conditions().any(|condition| {
             matches!(condition,
             acyclic_stream::CommitCondition::Tail { path, .. } if path.as_str() == COORDINATOR_PATH)
         });
-        let coordinator_write = request.mutations.iter().any(|mutation| matches!(mutation,
+        let coordinator_write = request.mutations().any(|mutation| matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str() == COORDINATOR_PATH));
         let pause = if owned && !coordinator_write {
             self.owned_commit_pause
@@ -29,7 +29,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             pause.release.await.map_err(|_| StreamError::Unavailable)?;
         }
         self.io.writes.fetch_add(1, Ordering::SeqCst);
-        for mutation in &request.mutations {
+        for mutation in request.mutations() {
             if let acyclic_stream::CommitMutation::Append { records, .. } = mutation {
                 self.measure_write(records);
             }
@@ -38,7 +38,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
             return Err(StreamError::Unavailable);
         }
-        if request.mutations.iter().any(|mutation| matches!(mutation,
+        if request.mutations().any(|mutation| matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str() == COORDINATOR_PATH))
             && self.location_fault.compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok()
         {
@@ -46,8 +46,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
         }
         if self.execution_race.swap(false, Ordering::SeqCst) {
             let (path, tail) = request
-                .conditions
-                .iter()
+                .conditions()
                 .find_map(|condition| match condition {
                     acyclic_stream::CommitCondition::Absent { path }
                         if path.as_str().starts_with("harness/v2/execution/") =>
@@ -71,7 +70,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 })
                 .await?;
         }
-        let selected = request.conditions.iter().any(|condition| matches!(condition,
+        let selected = request.conditions().any(|condition| matches!(condition,
             acyclic_stream::CommitCondition::Tail { path, expected } if path.as_str().starts_with("harness/v2/execution/") && *expected == self.execution_tail.load(Ordering::SeqCst)));
         let fault = if selected {
             self.execution_fault.swap(0, Ordering::SeqCst)
@@ -84,7 +83,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
         if fault == ExecutionFaultMode::Before as u8 {
             return Err(StreamError::Unavailable);
         }
-        let aggregate = request.mutations.iter().any(|mutation| matches!(mutation,
+        let aggregate = request.mutations().any(|mutation| matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str().starts_with("harness/v2/aggregate-operations/")));
         let aggregate_fault = if aggregate {
             self.aggregate_commits.fetch_add(1, Ordering::SeqCst);

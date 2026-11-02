@@ -3,14 +3,16 @@ use super::*;
 fn request(path: &StreamPath) -> Result<CommitRequest, StreamError> {
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Tail {
-            path: path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"started").into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Tail {
+                path: path.clone(),
+                expected: 1,
+            }],
+            vec![crate::CommitMutation::Append {
+                path: path.clone(),
+                records: vec![OwnedBytes::from_static(b"started").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"dispatch-retry"))?,
     })
 }

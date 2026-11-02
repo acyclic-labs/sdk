@@ -86,13 +86,13 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         let journal_path = StreamPath::new(format!("{}/journal", store.path(&address)?))?;
         let mut prepared = binding.prepare_publish(&record(0), None, update, key("hot/joined")?)?;
         assert!(matches!(
-            prepared.join(Effect {
-                conditions: Vec::new(),
-                mutation: CommitMutation::Append {
+            prepared.join(acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
                     path: journal_path.clone(),
                     records: vec![Bytes::from_static(b"forged").into()],
-                },
-            }),
+                }]
+            )),
             Err(Error::Invalid("effect changes the host's actor journal"))
         ));
         let snapshot = store

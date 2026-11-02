@@ -145,7 +145,8 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
 }
 
 pub(crate) fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
-    if value.mutations.is_empty() || value.mutations.len() > MAX_ITEMS {
+    // A commit that skipped every effect retains an envelope without facts.
+    if value.mutations.len() > MAX_ITEMS {
         return Err(StreamError::InvalidArgument);
     }
     let mut previous: Option<&StreamPath> = None;

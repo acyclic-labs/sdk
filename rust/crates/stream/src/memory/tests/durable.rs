@@ -71,14 +71,16 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
     ));
     let commit = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: request(0)?.path.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: request(0)?.path,
-            records: vec![Bytes::from_static(b"refused").into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: request(0)?.path.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: request(0)?.path,
+                records: vec![Bytes::from_static(b"refused").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"conflict-identity".to_vec())?,
     };
     assert!(matches!(
@@ -241,14 +243,16 @@ async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_dea
     assert_eq!(append.records[0].committed_at_micros, 3_000);
     let request = CommitRequest {
         deadline_unix_millis: Some(10),
-        conditions: vec![CommitCondition::Tail {
-            path: request(0)?.path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: request(0)?.path,
-            records: vec![Bytes::from_static(b"durable").into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: request(0)?.path.clone(),
+                expected: 1,
+            }],
+            vec![CommitMutation::Append {
+                path: request(0)?.path,
+                records: vec![Bytes::from_static(b"durable").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"accepted-before-deadline".to_vec())?,
     };
     // The journal prepared its stamp at 5 ms, then durability completed after 10 ms.
@@ -307,26 +311,28 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
             }),
             _ => WriteRequest::Commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: StreamPath::new("forked")?,
-                }],
-                mutations: vec![
-                    CommitMutation::Append {
-                        path: destination.clone(),
-                        records: vec![Bytes::from_static(b"accepted").into()],
-                    },
-                    CommitMutation::Append {
-                        path: StreamPath::new("new/parents")?,
-                        records: vec![Bytes::from_static(b"parent").into()],
-                    },
-                    CommitMutation::Fork {
-                        source: source.path,
-                        destination: StreamPath::new("forked")?,
-                        at_tail: 1,
-                        exclude: Vec::new(),
-                        records: vec![Bytes::from_static(b"private").into()],
-                    },
-                ],
+                effects: vec![crate::CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: StreamPath::new("forked")?,
+                    }],
+                    vec![
+                        CommitMutation::Append {
+                            path: destination.clone(),
+                            records: vec![Bytes::from_static(b"accepted").into()],
+                        },
+                        CommitMutation::Append {
+                            path: StreamPath::new("new/parents")?,
+                            records: vec![Bytes::from_static(b"parent").into()],
+                        },
+                        CommitMutation::Fork {
+                            source: source.path,
+                            destination: StreamPath::new("forked")?,
+                            at_tail: 1,
+                            exclude: Vec::new(),
+                            records: vec![Bytes::from_static(b"private").into()],
+                        },
+                    ],
+                )],
                 idempotency_key: IdempotencyKey::unique(),
             }),
         };

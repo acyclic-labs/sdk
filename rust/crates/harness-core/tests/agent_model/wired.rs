@@ -18,10 +18,10 @@ use acyclic_harness_core::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath,
-    StreamProvider,
+    AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitEffect, CommitId,
+    CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
+    StreamPath, StreamProvider,
 };
 use std::sync::Arc;
 
@@ -602,13 +602,15 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     stream
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: path.conversation()?,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path.conversation()?,
-                records,
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: path.conversation()?,
+                }],
+                vec![CommitMutation::Append {
+                    path: path.conversation()?,
+                    records,
+                }],
+            )],
             idempotency_key: intent_key("settle", &[path.as_str()])?,
         })
         .await?;
@@ -753,11 +755,13 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             stream
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.conversation()?,
-                        records: vec![bytes.clone().into()],
-                    }],
+                    effects: vec![CommitEffect::hard(
+                        vec![],
+                        vec![CommitMutation::Append {
+                            path: path.conversation()?,
+                            records: vec![bytes.clone().into()],
+                        }],
+                    )],
                     idempotency_key: intent_key("settle-roster", &[&n.to_string()])?,
                 })
                 .await?;
@@ -856,11 +860,13 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         stream
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![CommitMutation::Append {
-                    path: path.clone(),
-                    records: entry.iter().cloned().map(Into::into).collect(),
-                }],
+                effects: vec![CommitEffect::hard(
+                    vec![CommitCondition::Absent { path: path.clone() }],
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: entry.iter().cloned().map(Into::into).collect(),
+                    }],
+                )],
                 idempotency_key: intent_key("settle", &[path.as_str()])?,
             })
             .await?;
@@ -1045,13 +1051,15 @@ async fn admitted_root_after_its_child(
         stream
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: root.conversation()?,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: root.conversation()?,
-                    records,
-                }],
+                effects: vec![CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: root.conversation()?,
+                    }],
+                    vec![CommitMutation::Append {
+                        path: root.conversation()?,
+                        records,
+                    }],
+                )],
                 idempotency_key: intent_key("settle", &[root.as_str()])?,
             })
             .await?;

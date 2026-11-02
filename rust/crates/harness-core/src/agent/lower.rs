@@ -2,13 +2,14 @@
 //!
 //! Own streams (conversation, status) are conditioned on the exact tails in the
 //! prior state, because the agent is their only writer. A message to another
-//! agent is a Streams soft append guarded by the recipient's `closed` marker:
-//! an absent or archived recipient skips it, which the receipt reports, and
-//! never fails the step. Protocol records (a parent archiving its subtree
-//! awaits every child's `ChildDone`) go to tree members that exist by
-//! construction and stay unconditional appends, so a moved tail or a closed
-//! recipient never blocks a step. Spawns fork
-//! the agent's own subtree at its consumed cursor; the same-commit conversation
+//! agent is one soft Streams effect, `Present{inbox}` and `Absent{closed}`
+//! guarding the append to the recipient's inbox: an absent or archived
+//! recipient skips it, which the receipt reports, and never fails the step.
+//! Protocol records (a parent archiving its subtree awaits every child's
+//! `ChildDone`) go to tree members that exist by construction and stay
+//! unconditional appends, so a moved tail or a closed recipient never blocks a
+//! step. Spawns fork the agent's own subtree at its consumed cursor; the
+//! same-commit conversation
 //! append is a source-descendant write, which Streams excludes from the child's
 //! inherited cut, so the child sees exactly the conversation before this step.
 
@@ -17,7 +18,8 @@ use super::{
     Sender, Step, VolumeBinding, commit,
 };
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
+    StreamPath,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 struct Builder {
     conditions: BTreeMap<StreamPath, CommitCondition>,
     appends: BTreeMap<StreamPath, Vec<AppendRecord>>,
-    /// Soft appends and the closed marker that guards each recipient.
+    /// Messages to other agents by inbox, each with the recipient's closed
+    /// marker; every inbox becomes its own soft effect.
     soft: BTreeMap<StreamPath, (Vec<AppendRecord>, StreamPath)>,
     forks: Vec<CommitMutation>,
     created: BTreeSet<StreamPath>,
@@ -33,13 +36,9 @@ struct Builder {
 
 impl Builder {
     fn condition(&mut self, condition: CommitCondition) {
-        let path = match &condition {
-            CommitCondition::Head { path, .. }
-            | CommitCondition::Tail { path, .. }
-            | CommitCondition::Absent { path }
-            | CommitCondition::Present { path } => path.clone(),
-        };
-        self.conditions.entry(path).or_insert(condition);
+        self.conditions
+            .entry(CommitCondition::path(&condition).clone())
+            .or_insert(condition);
     }
 
     /// A hard append to a path that also has soft records keeps their order
@@ -121,10 +120,12 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             }
             let spawn = commit::spawn_at(path, intent, cursor, adopted, history.as_ref())?;
             builder.created.insert(spawn.child.inbox()?);
-            for condition in spawn.request.conditions {
-                builder.condition(condition);
+            for effect in spawn.request.effects {
+                for condition in effect.conditions {
+                    builder.condition(condition);
+                }
+                builder.forks.extend(effect.mutations);
             }
-            builder.forks.extend(spawn.request.mutations);
         }
     }
     let mut sequence = prior_conversation;
@@ -204,17 +205,34 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             .into_iter()
             .map(|(path, records)| CommitMutation::Append { path, records }),
     );
-    mutations.extend(builder.soft.into_iter().map(|(path, (records, closed))| {
-        CommitMutation::SoftAppend {
-            path,
-            records,
-            closed: Some(closed),
-        }
-    }));
+    let conditions: Vec<_> = builder.conditions.into_values().collect();
+    let hard = (!conditions.is_empty() || !mutations.is_empty())
+        .then(|| CommitEffect::hard(conditions, mutations));
+    let effects = hard
+        .into_iter()
+        .chain(builder.soft.into_iter().map(|(inbox, (records, closed))| {
+            let mut conditions = vec![
+                CommitCondition::Present {
+                    path: inbox.clone(),
+                },
+                CommitCondition::Absent { path: closed },
+            ];
+            conditions.sort_by(|left, right| {
+                CommitCondition::path(left).cmp(CommitCondition::path(right))
+            });
+            CommitEffect {
+                conditions,
+                mutations: vec![CommitMutation::Append {
+                    path: inbox,
+                    records,
+                }],
+                soft: true,
+            }
+        }))
+        .collect();
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: builder.conditions.into_values().collect(),
-        mutations,
+        effects,
         idempotency_key: key,
     })
 }

@@ -132,13 +132,15 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
     .await?;
     let accepted = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Absent {
-            path: StreamPath::new("deadline/accepted")?,
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: StreamPath::new("deadline/accepted")?,
-            records: vec![(Bytes::from_static(b"accepted")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Absent {
+                path: StreamPath::new("deadline/accepted")?,
+            }],
+            vec![crate::CommitMutation::Append {
+                path: StreamPath::new("deadline/accepted")?,
+                records: vec![(Bytes::from_static(b"accepted")).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
     };
     assert!(matches!(
@@ -152,13 +154,15 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
     ));
     let expired = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Absent {
-            path: StreamPath::new("deadline/expired")?,
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: StreamPath::new("deadline/expired")?,
-            records: vec![(Bytes::from_static(b"expired")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Absent {
+                path: StreamPath::new("deadline/expired")?,
+            }],
+            vec![crate::CommitMutation::Append {
+                path: StreamPath::new("deadline/expired")?,
+                records: vec![(Bytes::from_static(b"expired")).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
     };
     assert_eq!(

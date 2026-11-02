@@ -98,11 +98,9 @@ impl Before {
             WriteRequest::Append(request) => vec![(request.path.clone(), false)],
             WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
             WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
-                .mutations
-                .iter()
+                .mutations()
                 .map(|mutation| match mutation {
-                    CommitMutation::Append { path, .. }
-                    | CommitMutation::SoftAppend { path, .. } => (path.clone(), false),
+                    CommitMutation::Append { path, .. } => (path.clone(), false),
                     CommitMutation::Fork { destination, .. } => (destination.clone(), true),
                 })
                 .collect(),

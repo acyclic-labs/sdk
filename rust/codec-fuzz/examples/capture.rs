@@ -923,7 +923,9 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     );
     let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
     let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
-    if let CommitMutation::Append { records, .. } = &effects[0].mutation {
+    if let Some(CommitMutation::Append { records, .. }) =
+        effects.iter().flat_map(|effect| &effect.mutations).next()
+    {
         let record = records.first().ok_or("actor creation emitted no state")?;
         save(
             "actor_codecs",

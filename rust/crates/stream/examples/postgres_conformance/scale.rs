@@ -27,8 +27,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions,
-                    mutations,
+                    effects: vec![acyclic_stream::CommitEffect::hard(conditions, mutations)],
                     idempotency_key: IdempotencyKey::new(format!("scale-{base}").into_bytes())?,
                 })
                 .await?,

@@ -522,14 +522,16 @@ mod tests {
         let path = StreamPath::new("attested/native")?;
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 0,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![b"native".as_slice().into()],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 0,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![b"native".as_slice().into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(b"native".to_vec())?,
         };
         let digest = super::commit_digest(&request)?;
@@ -571,14 +573,16 @@ mod tests {
         let path = StreamPath::new("attested/prepared")?;
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 0,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![b"".as_slice().into()],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 0,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![b"".as_slice().into()],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(b"prepared".to_vec())?,
         };
         let work = acyclic_fs::NativeMaterializationWork::new(

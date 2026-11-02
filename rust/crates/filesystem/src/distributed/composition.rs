@@ -255,8 +255,16 @@ impl FilesystemCommit {
     fn mark(&self) -> CommitMark {
         CommitMark {
             deadline: self.request.deadline_unix_millis,
-            conditions: self.request.conditions.len(),
-            mutations: self.request.mutations.len(),
+            effects: self.request.effects.len(),
+            hard: self
+                .request
+                .effects
+                .iter()
+                .position(|effect| !effect.soft)
+                .map(|index| {
+                    let effect = &self.request.effects[index];
+                    (index, effect.conditions.len(), effect.mutations.len())
+                }),
             authorities: self.authorities.len(),
             contributions: self.contributions.len(),
             holds: self.holds.len(),
@@ -269,8 +277,13 @@ impl FilesystemCommit {
     /// complete, so their actors keep their heads.
     fn rollback(&mut self, mark: CommitMark) {
         self.request.deadline_unix_millis = mark.deadline;
-        self.request.conditions.truncate(mark.conditions);
-        self.request.mutations.truncate(mark.mutations);
+        self.request.effects.truncate(mark.effects);
+        if let Some((index, conditions, mutations)) = mark.hard
+            && let Some(effect) = self.request.effects.get_mut(index)
+        {
+            effect.conditions.truncate(conditions);
+            effect.mutations.truncate(mutations);
+        }
         self.authorities.truncate(mark.authorities);
         self.contributions.truncate(mark.contributions);
         self.holds.truncate(mark.holds);
@@ -284,8 +297,9 @@ impl FilesystemCommit {
 struct CommitMark {
     deadline: Option<u64>,
     owner: Option<[u8; 16]>,
-    conditions: usize,
-    mutations: usize,
+    effects: usize,
+    /// The hard effect's position and lengths, when the request had one.
+    hard: Option<(usize, usize, usize)>,
     authorities: usize,
     contributions: usize,
     holds: usize,
@@ -323,6 +337,28 @@ const CREATION_ENTRIES: usize = 9;
 
 /// Makes room for `additional` entries through funded authority work. The
 /// caller built its request with only its own capacity.
+/// The hard effect every filesystem condition and mutation joins.
+///
+/// Hard effects publish all or none together, so filesystem state and its
+/// fences commit exactly when the caller's hard effects do and are never
+/// skipped with a soft one. A request without a hard effect gains one.
+pub(super) fn hard_effect<'r>(
+    request: &'r mut CommitRequest,
+    work: &mut AuthorityWork<'_>,
+) -> Result<&'r mut CommitEffect, AuthorityStoreError> {
+    let index = match request.effects.iter().position(|effect| !effect.soft) {
+        Some(index) => index,
+        None => {
+            grow(&mut request.effects, 1, work)?;
+            request
+                .effects
+                .push(CommitEffect::hard(Vec::new(), Vec::new()));
+            request.effects.len() - 1
+        }
+    };
+    Ok(&mut request.effects[index])
+}
+
 pub(super) fn grow<T>(
     entries: &mut Vec<T>,
     additional: usize,
@@ -373,8 +409,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         else {
             return Ok(false);
         };
-        grow(&mut commit.request.conditions, part.conditions.len(), work)?;
-        grow(&mut commit.request.mutations, part.mutations.len(), work)?;
+        let effect = hard_effect(&mut commit.request, work)?;
+        grow(
+            &mut effect.conditions,
+            part.effects[0].conditions.len(),
+            work,
+        )?;
+        grow(&mut effect.mutations, part.effects[0].mutations.len(), work)?;
         grow(&mut commit.authorities, 1, work)?;
         grow(&mut commit.contributions, 1, work)?;
         grow(&mut commit.publications, 1, work)?;
@@ -385,8 +426,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        commit.request.conditions.append(&mut part.conditions);
-        commit.request.mutations.append(&mut part.mutations);
+        let effect = hard_effect(&mut commit.request, work)?;
+        effect.conditions.append(&mut part.effects[0].conditions);
+        effect.mutations.append(&mut part.effects[0].mutations);
         commit.authorities.push(append.authority_id);
         commit.contributions.push(Contribution {
             actor,
@@ -417,8 +459,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // streams, records, epoch, gate, lineage and namespace changes.
         let mut part = CommitRequest {
             deadline_unix_millis: None,
-            conditions: work.vec(CREATION_ENTRIES)?,
-            mutations: work.vec(CREATION_ENTRIES)?,
+            effects: vec![CommitEffect::hard(
+                work.vec(CREATION_ENTRIES)?,
+                work.vec(CREATION_ENTRIES)?,
+            )],
             idempotency_key: commit.request.idempotency_key.clone(),
         };
         let actor = self.actor(authority, work)?;
@@ -432,10 +476,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             source,
             work,
         )?;
-        grow(&mut commit.request.conditions, part.conditions.len(), work)?;
-        grow(&mut commit.request.mutations, part.mutations.len(), work)?;
-        commit.request.conditions.append(&mut part.conditions);
-        commit.request.mutations.append(&mut part.mutations);
+        let effect = hard_effect(&mut commit.request, work)?;
+        grow(
+            &mut effect.conditions,
+            part.effects[0].conditions.len(),
+            work,
+        )?;
+        grow(&mut effect.mutations, part.effects[0].mutations.len(), work)?;
+        let effect = hard_effect(&mut commit.request, work)?;
+        effect.conditions.append(&mut part.effects[0].conditions);
+        effect.mutations.append(&mut part.effects[0].mutations);
         commit.authorities.push(authority);
         commit.contributions.push(Contribution {
             actor,
@@ -510,9 +560,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let (path, located) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
-        grow(&mut commit.request.conditions, 1, work)?;
+        let effect = hard_effect(&mut commit.request, work)?;
+        grow(&mut effect.conditions, 1, work)?;
         super::policy::merge_condition(
-            &mut commit.request.conditions,
+            &mut effect.conditions,
             CommitCondition::Tail {
                 path,
                 expected: located.lineage,

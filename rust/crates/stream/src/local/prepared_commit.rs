@@ -119,8 +119,10 @@ impl LocalStream {
         let WriteRequest::Commit(request) = &mut command else {
             unreachable!()
         };
-        let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
-        else {
+        let [crate::CommitEffect { mutations, .. }] = request.effects.as_mut_slice() else {
+            unreachable!()
+        };
+        let [crate::CommitMutation::Append { records, .. }] = mutations.as_mut_slice() else {
             unreachable!()
         };
         *records.first_mut().ok_or(StreamError::InvalidArgument)? = body.clone();

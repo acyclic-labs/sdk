@@ -101,9 +101,9 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         let request = commit.request();
         // seal_observed uses canonical path order. Walk conditions once across
         // all destinations, including extra policy/actor observations.
-        let mut conditions = request.conditions.iter().peekable();
+        let mut conditions = request.effects[0].conditions.iter().peekable();
         let mut commit_id = None;
-        for mutation in &request.mutations {
+        for mutation in &request.effects[0].mutations {
             let step = WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
@@ -133,7 +133,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             }
             while conditions
                 .peek()
-                .is_some_and(|condition| super::policy::condition_path(condition) < path)
+                .is_some_and(|condition| acyclic_stream::CommitCondition::path(condition) < path)
             {
                 work.charge(step)?;
                 conditions.next();

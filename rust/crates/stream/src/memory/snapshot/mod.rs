@@ -351,10 +351,7 @@ fn reconstruct(
         let (paths, _paths) = builder
             .paths(
                 &state,
-                envelope.mutations.iter().map(|mutation| match mutation {
-                    CommittedMutation::Append(append) => &append.path,
-                    CommittedMutation::Fork(fork) => &fork.destination,
-                }),
+                envelope.mutations.iter().map(crate::request::fact_path),
             )
             .ok()?;
         let namespace = stage_namespace(

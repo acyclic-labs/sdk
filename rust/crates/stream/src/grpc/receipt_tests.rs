@@ -65,11 +65,13 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
     let path = StreamPath::new("accepted/input")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"original accepted body").into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![crate::OwnedBytes::from_static(b"original accepted body").into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     let accepted = provider.commit_accepted(request.clone()).await?;
@@ -121,7 +123,7 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
     }
     assert!(crate::wire_codec::commit_write_outcome_from_wire(original, false).is_err());
     let mut changed = request.clone();
-    let CommitMutation::Append { records, .. } = &mut changed.mutations[0] else {
+    let CommitMutation::Append { records, .. } = &mut changed.effects[0].mutations[0] else {
         panic!("append")
     };
     records[0].value = crate::OwnedBytes::from_static(b"substituted caller body");

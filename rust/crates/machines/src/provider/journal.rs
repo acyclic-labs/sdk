@@ -2,8 +2,8 @@
 use super::journal_codec::{Operation, decode as decode_bytes, encode};
 use super::*;
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendRecord, CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome,
+    CommitReceipt, CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
     StreamProviderExt as _,
 };
 
@@ -240,8 +240,7 @@ impl Journal {
         identity.extend_from_slice(phase);
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions,
-            mutations,
+            effects: vec![CommitEffect::hard(conditions, mutations)],
             idempotency_key: acyclic_stream::IdempotencyKey::new(Sha256::digest(identity).to_vec())
                 .map_err(storage)?,
         };

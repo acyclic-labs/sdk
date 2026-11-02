@@ -23,8 +23,8 @@ use crate::agent::AgentPath;
 use crate::tool::{ToolExecutor, ToolInvocation, ToolResult};
 use acyclic_machines::MachineState;
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, ChildrenPageRequest, CommitCondition, CommitMutation,
-    CommitRequest, ReadRequest, StreamError, StreamProviderExt as _,
+    AppendRecord, BoxProviderFuture, ChildrenPageRequest, CommitCondition, CommitEffect,
+    CommitMutation, CommitRequest, ReadRequest, StreamError, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -256,11 +256,13 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         digest.update(&value);
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from(value)],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from(value)],
+                }],
+            )],
             idempotency_key: acyclic_stream::IdempotencyKey::new(
                 digest.finalize().as_bytes().to_vec(),
             )?,
@@ -339,14 +341,16 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let (_, key) = intent("bind", agent, &binding.target)?;
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 1,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from(value)],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from(value)],
+                }],
+            )],
             // Agent paths are long; the commit key is their digest.
             idempotency_key: acyclic_stream::IdempotencyKey::new(
                 blake3::hash(key.as_str().as_bytes()).as_bytes().to_vec(),

@@ -16,8 +16,8 @@ use acyclic_harness_core::{
     runtime::{InProcessTargets, Target},
 };
 use acyclic_stream::{
-    AppendRecord, CommitMutation, CommitRequest, FollowRequest, FollowUpdate, IdempotencyKey,
-    MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitEffect, CommitMutation, CommitRequest, FollowRequest, FollowUpdate,
+    IdempotencyKey, MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
     runtime::PlatformExecutor,
     session::{Client, SocketProvider as _, testing},
 };
@@ -590,15 +590,16 @@ async fn committed_handover(refused_close: bool) -> Result {
             })?;
             Ok(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![
-                    CommitMutation::Append {
-                        path: paths.queue("desktop")?,
-                        records: vec![AppendRecord::from(bytes)],
-                    },
+                effects: vec![
+                    CommitEffect::hard(
+                        Vec::new(),
+                        vec![CommitMutation::Append {
+                            path: paths.queue("desktop")?,
+                            records: vec![AppendRecord::from(bytes)],
+                        }],
+                    ),
                     Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                        .activation(&actor)
-                        .mutation,
+                        .activation(&actor),
                 ],
                 idempotency_key: IdempotencyKey::new(key.to_vec())?,
             })
@@ -607,7 +608,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         let contributed = acyclic_harness_core::tool::Dispatch {
             delivery: (
                 paths.queue("desktop")?,
-                match &request.mutations[0] {
+                match &request.effects[0].mutations[0] {
                     CommitMutation::Append { records, .. } => records[0].value.clone().into(),
                     _ => return Err("missing original delivery".into()),
                 },

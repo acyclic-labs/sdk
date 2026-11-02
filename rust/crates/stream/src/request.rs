@@ -1,8 +1,8 @@
 //! Canonical request validation and retry identity.
 use crate::AppendRecord;
 use crate::{
-    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, MAX_COMMAND_BYTES,
-    MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
+    AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ForkRequest,
+    MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
 pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamError> {
@@ -112,57 +112,28 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
     validate_commit(request)?;
     // The digest alone retains nothing, so it allocates nothing.
-    Ok(hash_commit(request, |_| ()).1)
+    Ok(hash_commit(request, |_, _| ()))
 }
 
-/// Retains only the canonical conditions hash state and one digest per soft
-/// append, never a second record copy.
+/// Retains, per effect, its header hash state, its digest and its mutation
+/// paths: enough to join retained facts to the submitted body without the
+/// request, and never a record copy.
 pub struct CommitBinding {
-    conditions: Sha256,
-    soft: Vec<SoftBinding>,
+    effects: Vec<EffectBinding>,
+    /// Every effect's mutation paths, effect by effect, each in canonical order.
+    paths: Vec<StreamPath>,
     digest: [u8; 32],
 }
 
-/// A soft append's identity, which a skip leaves out of the envelope.
-struct SoftBinding {
-    path: StreamPath,
-    closed: Option<StreamPath>,
-    records: [u8; 32],
-}
-
-/// Digest of a soft append's records, computable from the request or from
-/// the committed records alike.
-fn soft_records_digest<'a>(
-    records: impl ExactSizeIterator<Item = (&'a [u8], &'a crate::RecordHeaders)>,
-) -> [u8; 32] {
-    let mut hash = request_hasher(b"soft-records");
-    hash.update((records.len() as u64).to_le_bytes());
-    for (value, headers) in records {
-        hash_record(&mut hash, value, headers);
-    }
-    hash.finalize().into()
-}
-
-fn hash_soft(
-    hash: &mut Sha256,
-    path: &StreamPath,
-    closed: Option<&StreamPath>,
-    records: &[u8; 32],
-) {
-    hash.update([3]);
-    hash_path(hash, path);
-    match closed {
-        Some(closed) => {
-            hash.update([1]);
-            hash_path(hash, closed);
-        }
-        None => hash.update([0]),
-    }
-    hash.update(records);
-}
-
-fn soft_hash_bytes(path: &StreamPath, closed: Option<&StreamPath>) -> u64 {
-    1 + path_hash_bytes(path) + 1 + closed.map_or(0, path_hash_bytes) + 32
+/// One effect's identity. A skipped effect leaves no facts, so only this
+/// binding remains of it.
+struct EffectBinding {
+    /// Hash state after the effect's soft flag, conditions and mutation count.
+    header: Sha256,
+    /// The effect's digest over its submitted mutations.
+    digest: [u8; 32],
+    soft: bool,
+    mutations: usize,
 }
 
 impl CommitBinding {
@@ -173,6 +144,7 @@ impl CommitBinding {
 
     /// Joins actual retained immutable facts to the originally submitted body.
     /// Admits their exact hash work before hashing their values and headers.
+    /// An effect applied iff its facts exist; a skipped soft effect has none.
     /// The outer error preserves work refusal; the inner error is malformed facts.
     pub fn matches_with<E>(
         &self,
@@ -182,94 +154,41 @@ impl CommitBinding {
         if let Err(error) = crate::persistence::validate_envelope(envelope) {
             return Ok(Err(error));
         }
-        let mut bytes = self
-            .soft
-            .iter()
-            .map(|soft| soft_hash_bytes(&soft.path, soft.closed.as_ref()))
-            .sum::<u64>();
-        for mutation in &envelope.mutations {
-            let records = match mutation {
-                crate::CommittedMutation::Append(append) => {
-                    bytes += 1 + path_hash_bytes(&append.path);
-                    &append.records
-                }
-                crate::CommittedMutation::Fork(fork) => {
-                    bytes += 1
-                        + path_hash_bytes(&fork.source)
-                        + path_hash_bytes(&fork.destination)
-                        + 8
-                        + 8
-                        + fork.exclude.iter().map(path_hash_bytes).sum::<u64>();
-                    &fork.records
-                }
+        admit(envelope.mutations.iter().map(fact_hash_bytes).sum())?;
+        let facts = envelope.mutations.as_slice();
+        let fact = |path: &StreamPath| {
+            facts
+                .binary_search_by(|fact| fact_path(fact).cmp(path))
+                .ok()
+                .and_then(|index| facts.get(index))
+        };
+        let mut paths = self.paths.as_slice();
+        let mut joined = 0_usize;
+        for effect in &self.effects {
+            let Some((own, rest)) = paths.split_at_checked(effect.mutations) else {
+                return Ok(Ok(false));
             };
-            bytes += 8 + records
-                .iter()
-                .map(|record| 8 + record.value.len() as u64 + record.headers.hash_bytes())
-                .sum::<u64>();
-        }
-        admit(bytes)?;
-        let mut hash = self.conditions.clone();
-        let mut soft = self.soft.iter().peekable();
-        for mutation in &envelope.mutations {
-            let path = match mutation {
-                crate::CommittedMutation::Append(append) => &append.path,
-                crate::CommittedMutation::Fork(fork) => &fork.destination,
-            };
-            // Soft appends before this fact were skipped: only their binding remains.
-            while let Some(skipped) = soft.next_if(|soft| soft.path < *path) {
-                hash_soft(
-                    &mut hash,
-                    &skipped.path,
-                    skipped.closed.as_ref(),
-                    &skipped.records,
-                );
-            }
-            if let Some(applied) = soft.next_if(|soft| soft.path == *path) {
-                let crate::CommittedMutation::Append(append) = mutation else {
-                    return Ok(Ok(false));
-                };
-                let records = soft_records_digest(
-                    append
-                        .records
-                        .iter()
-                        .map(|record| (&record.value[..], &record.headers)),
-                );
-                if records != applied.records {
+            paths = rest;
+            if own.first().and_then(|path| fact(path)).is_none() {
+                // All or none: a skipped effect leaves no fact behind.
+                if !effect.soft || own.iter().any(|path| fact(path).is_some()) {
                     return Ok(Ok(false));
                 }
-                hash_soft(&mut hash, &applied.path, applied.closed.as_ref(), &records);
                 continue;
             }
-            let records = match mutation {
-                crate::CommittedMutation::Append(append) => {
-                    hash.update([1]);
-                    hash_path(&mut hash, &append.path);
-                    &append.records
-                }
-                crate::CommittedMutation::Fork(fork) => {
-                    hash.update([2]);
-                    hash_path(&mut hash, &fork.source);
-                    hash_path(&mut hash, &fork.destination);
-                    hash.update(fork.forked_at.to_le_bytes());
-                    hash_canonical_exclusions(&mut hash, &fork.exclude);
-                    &fork.records
-                }
-            };
-            hash.update((records.len() as u64).to_le_bytes());
-            for record in records {
-                hash_record(&mut hash, &record.value, &record.headers);
+            let mut hash = effect.header.clone();
+            for path in own {
+                let Some(found) = fact(path) else {
+                    return Ok(Ok(false));
+                };
+                hash_fact(&mut hash, found);
+                joined += 1;
+            }
+            if <[u8; 32]>::from(hash.finalize()) != effect.digest {
+                return Ok(Ok(false));
             }
         }
-        for skipped in soft {
-            hash_soft(
-                &mut hash,
-                &skipped.path,
-                skipped.closed.as_ref(),
-                &skipped.records,
-            );
-        }
-        Ok(Ok(<[u8; 32]>::from(hash.finalize()) == self.digest))
+        Ok(Ok(joined == facts.len()))
     }
 }
 
@@ -283,66 +202,145 @@ pub fn commit_binding_with<E>(
         return Ok(Err(error));
     }
     admit(commit_hash_bytes(request))?;
-    let mut soft = Vec::new();
-    let (conditions, digest) = hash_commit(request, |binding| soft.push(binding));
+    let mut effects = Vec::with_capacity(request.effects.len());
+    let mut paths = Vec::with_capacity(request.mutations().count());
+    let digest = hash_commit(request, |effect, (header, digest)| {
+        paths.extend(
+            effect
+                .mutations
+                .iter()
+                .map(|m| crate::CommitMutation::path(m).clone()),
+        );
+        effects.push(EffectBinding {
+            header: header.clone(),
+            digest,
+            soft: effect.soft,
+            mutations: effect.mutations.len(),
+        });
+    });
     Ok(Ok(CommitBinding {
-        conditions,
-        soft,
+        effects,
+        paths,
         digest,
     }))
 }
 
-/// The one canonical commit hash: the conditions' hash state and the request
-/// digest. Each soft append's binding goes to `retain`, which a digest-only
-/// caller drops.
+/// The one canonical commit hash: one digest per effect, in request order,
+/// then the request digest over them. Each effect, with its header hash state
+/// and digest, goes to `retain`, which a digest-only caller drops.
 fn hash_commit(
-    request: &mut CommitRequest,
-    mut retain: impl FnMut(SoftBinding),
-) -> (Sha256, [u8; 32]) {
+    request: &CommitRequest,
+    mut retain: impl FnMut(&CommitEffect, (&Sha256, [u8; 32])),
+) -> [u8; 32] {
     let mut hash = request_hasher(b"commit");
-    hash_conditions(&mut hash, &request.conditions);
-    let conditions = hash.clone();
-    for mutation in &mut request.mutations {
-        match mutation {
-            CommitMutation::Append { path, records } => {
-                hash.update([1]);
-                hash_path(&mut hash, path);
-                hash_records(&mut hash, records);
-            }
-            CommitMutation::SoftAppend {
-                path,
-                records,
-                closed,
-            } => {
-                let records = soft_records_digest(
-                    records
-                        .iter()
-                        .map(|record| (&record.value[..], &record.headers)),
-                );
-                hash_soft(&mut hash, path, closed.as_ref(), &records);
-                retain(SoftBinding {
-                    path: path.clone(),
-                    closed: closed.clone(),
-                    records,
-                });
-            }
-            CommitMutation::Fork {
-                source,
-                destination,
-                at_tail,
-                records,
-                exclude,
-            } => {
-                hash.update([2]);
-                hash_path(&mut hash, source);
-                hash_path(&mut hash, destination);
-                hash.update(at_tail.to_le_bytes());
-                hash_canonical_exclusions(&mut hash, exclude);
-                hash_records(&mut hash, records);
-            }
+    hash.update((request.effects.len() as u64).to_le_bytes());
+    for effect in &request.effects {
+        let header = effect_hasher(effect.soft, &effect.conditions, effect.mutations.len());
+        let mut body = header.clone();
+        for mutation in &effect.mutations {
+            hash_mutation(&mut body, mutation);
+        }
+        let digest: [u8; 32] = body.finalize().into();
+        hash.update(digest);
+        retain(effect, (&header, digest));
+    }
+    hash.finalize().into()
+}
+
+/// The canonical digest of a commit of one hard append effect, without
+/// constructing the request, and its exact hash work.
+pub(crate) fn hard_append_digest(
+    conditions: &[CommitCondition],
+    path: &StreamPath,
+    records: &[AppendRecord],
+) -> ([u8; 32], u64) {
+    let mut effect = effect_hasher(false, conditions, 1);
+    hash_append(&mut effect, path, records);
+    let mut hash = request_hasher(b"commit");
+    hash.update(1_u64.to_le_bytes());
+    hash.update(<[u8; 32]>::from(effect.finalize()));
+    let bytes =
+        commit_frame_bytes(1) + effect_header_bytes(conditions) + append_hash_bytes(path, records);
+    (hash.finalize().into(), bytes)
+}
+
+fn effect_hasher(soft: bool, conditions: &[CommitCondition], mutations: usize) -> Sha256 {
+    let mut hash = request_hasher(b"effect");
+    hash.update([u8::from(soft)]);
+    hash.update((conditions.len() as u64).to_le_bytes());
+    hash_conditions(&mut hash, conditions);
+    hash.update((mutations as u64).to_le_bytes());
+    hash
+}
+
+fn hash_append(hash: &mut Sha256, path: &StreamPath, records: &[AppendRecord]) {
+    hash.update([1]);
+    hash_path(hash, path);
+    hash_records(hash, records);
+}
+
+fn hash_mutation(hash: &mut Sha256, mutation: &CommitMutation) {
+    match mutation {
+        CommitMutation::Append { path, records } => hash_append(hash, path, records),
+        CommitMutation::Fork {
+            source,
+            destination,
+            at_tail,
+            records,
+            exclude,
+        } => {
+            hash.update([2]);
+            hash_path(hash, source);
+            hash_path(hash, destination);
+            hash.update(at_tail.to_le_bytes());
+            hash_canonical_exclusions(hash, exclude);
+            hash_records(hash, records);
         }
     }
-    (conditions, hash.finalize().into())
+}
+
+/// Hashes a retained fact exactly as [`hash_mutation`] hashed its mutation.
+fn hash_fact(hash: &mut Sha256, fact: &crate::CommittedMutation) {
+    let records = match fact {
+        crate::CommittedMutation::Append(append) => {
+            hash.update([1]);
+            hash_path(hash, &append.path);
+            &append.records
+        }
+        crate::CommittedMutation::Fork(fork) => {
+            hash.update([2]);
+            hash_path(hash, &fork.source);
+            hash_path(hash, &fork.destination);
+            hash.update(fork.forked_at.to_le_bytes());
+            hash_canonical_exclusions(hash, &fork.exclude);
+            &fork.records
+        }
+    };
+    hash.update((records.len() as u64).to_le_bytes());
+    for record in records {
+        hash_record(hash, &record.value, &record.headers);
+    }
+}
+
+fn fact_hash_bytes(fact: &crate::CommittedMutation) -> u64 {
+    let (head, records) = match fact {
+        crate::CommittedMutation::Append(append) => {
+            (1 + path_hash_bytes(&append.path), &append.records)
+        }
+        crate::CommittedMutation::Fork(fork) => (
+            1 + path_hash_bytes(&fork.source)
+                + path_hash_bytes(&fork.destination)
+                + 8
+                + 8
+                + fork.exclude.iter().map(path_hash_bytes).sum::<u64>(),
+            &fork.records,
+        ),
+    };
+    head + 8
+        + records
+            .iter()
+            .map(|record| 8 + record.value.len() as u64 + record.headers.hash_bytes())
+            .sum::<u64>()
 }
 
 /// Normalizes a commit and admits its shape and complete encoded command size.
@@ -382,9 +380,11 @@ pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition])
     }
 }
 
+const REQUEST_DOMAIN: &[u8] = b"acyclic.stream.request.v1\0";
+
 pub(crate) fn request_hasher(kind: &[u8]) -> Sha256 {
     let mut hash = Sha256::new();
-    hash.update(b"acyclic.stream.request.v1\0");
+    hash.update(REQUEST_DOMAIN);
     hash.update(kind);
     hash
 }
@@ -408,7 +408,7 @@ pub fn conditioned_record_digest_with<E>(
     let domain = b"conditioned-record";
     let headers = crate::RecordHeaders::default();
     admit(
-        b"acyclic.stream.request.v1\0".len() as u64
+        REQUEST_DOMAIN.len() as u64
             + domain.len() as u64
             + condition_hash_bytes(condition)
             + 8
@@ -431,7 +431,7 @@ pub fn appended_record_digest_with<E>(
     let domain = b"appended-record";
     let headers = crate::RecordHeaders::default();
     admit(
-        b"acyclic.stream.request.v1\0".len() as u64
+        REQUEST_DOMAIN.len() as u64
             + domain.len() as u64
             + path_hash_bytes(path)
             + 8
@@ -454,32 +454,36 @@ fn condition_hash_bytes(condition: &CommitCondition) -> u64 {
     }
 }
 
+/// The request frame: its domain, effect count and one digest per effect.
+fn commit_frame_bytes(effects: usize) -> u64 {
+    REQUEST_DOMAIN.len() as u64 + b"commit".len() as u64 + 8 + 32 * effects as u64
+}
+
+/// One effect's domain, soft flag, conditions and their counts.
+fn effect_header_bytes(conditions: &[CommitCondition]) -> u64 {
+    REQUEST_DOMAIN.len() as u64
+        + b"effect".len() as u64
+        + 1
+        + 8
+        + conditions.iter().map(condition_hash_bytes).sum::<u64>()
+        + 8
+}
+
+fn append_hash_bytes(path: &StreamPath, records: &[AppendRecord]) -> u64 {
+    1 + path_hash_bytes(path) + records_hash_bytes(records)
+}
+
 pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
-    b"acyclic.stream.request.v1\0".len() as u64
-        + b"commit".len() as u64
+    commit_frame_bytes(request.effects.len())
         + request
-            .conditions
+            .effects
             .iter()
-            .map(condition_hash_bytes)
+            .map(|effect| effect_header_bytes(&effect.conditions))
             .sum::<u64>()
         + request
-            .mutations
-            .iter()
+            .mutations()
             .map(|mutation| match mutation {
-                CommitMutation::Append { path, records } => {
-                    1 + path_hash_bytes(path) + records_hash_bytes(records)
-                }
-                // The records digest, then the mutation hash over it.
-                CommitMutation::SoftAppend {
-                    path,
-                    records,
-                    closed,
-                } => {
-                    b"acyclic.stream.request.v1\0".len() as u64
-                        + b"soft-records".len() as u64
-                        + records_hash_bytes(records)
-                        + soft_hash_bytes(path, closed.as_ref())
-                }
+                CommitMutation::Append { path, records } => append_hash_bytes(path, records),
                 CommitMutation::Fork {
                     source,
                     destination,
@@ -527,27 +531,43 @@ fn hash_record(hash: &mut Sha256, value: &[u8], headers: &crate::RecordHeaders) 
     }
 }
 
-pub(crate) fn condition_path(condition: &CommitCondition) -> &StreamPath {
-    match condition {
-        CommitCondition::Tail { path, .. }
-        | CommitCondition::Head { path, .. }
-        | CommitCondition::Absent { path }
-        | CommitCondition::Present { path } => path,
+/// The path a committed fact publishes: the key of its canonical order.
+pub(crate) fn fact_path(fact: &crate::CommittedMutation) -> &StreamPath {
+    match fact {
+        crate::CommittedMutation::Append(append) => &append.path,
+        crate::CommittedMutation::Fork(fork) => &fork.destination,
     }
 }
 
+/// The condition a canonical `effect` places on `path`, if any.
+pub(crate) fn effect_condition<'a>(
+    effect: &'a CommitEffect,
+    path: &StreamPath,
+) -> Option<&'a CommitCondition> {
+    effect
+        .conditions
+        .binary_search_by(|condition| crate::CommitCondition::path(condition).cmp(path))
+        .ok()
+        .and_then(|index| effect.conditions.get(index))
+}
+
+/// Sorts each effect's conditions and mutations into canonical path order and
+/// refuses a path conditioned twice by one effect or mutated twice by the
+/// commit. Effects keep their request order: a receipt names them by index.
 pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    if request.conditions.len() > MAX_ITEMS
-        || request.mutations.is_empty()
-        || request.mutations.len() > MAX_ITEMS
+    if request.effects.is_empty()
+        || request
+            .effects
+            .iter()
+            .any(|effect| effect.mutations.is_empty())
+        || request.conditions().count() > MAX_ITEMS
+        || request.mutations().count() > MAX_ITEMS
     {
         return Err(StreamError::LimitExceeded);
     }
-    for mutation in &request.mutations {
+    for mutation in request.mutations() {
         match mutation {
-            CommitMutation::Append { records, .. } | CommitMutation::SoftAppend { records, .. } => {
-                validate_records(records)?
-            }
+            CommitMutation::Append { records, .. } => validate_records(records)?,
             CommitMutation::Fork { records, .. } if !records.is_empty() => {
                 validate_records(records)?;
             }
@@ -556,37 +576,48 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     }
     validate_commit_size(request)?;
     if request
-        .conditions
-        .iter()
+        .conditions()
         .any(|condition| matches!(condition, CommitCondition::Head { expected: 0, .. }))
     {
         return Err(StreamError::InvalidArgument);
     }
-    for mutation in &mut request.mutations {
-        if let CommitMutation::Fork { exclude, .. } = mutation {
-            normalize_exclusions(exclude)?;
+    for effect in &mut request.effects {
+        for mutation in &mut effect.mutations {
+            if let CommitMutation::Fork { exclude, .. } = mutation {
+                normalize_exclusions(exclude)?;
+            }
+        }
+        effect.conditions.sort_unstable_by(|left, right| {
+            crate::CommitCondition::path(left).cmp(crate::CommitCondition::path(right))
+        });
+        effect.mutations.sort_unstable_by(|left, right| {
+            crate::CommitMutation::path(left).cmp(crate::CommitMutation::path(right))
+        });
+        if effect.conditions.windows(2).any(
+            |pair| matches!(pair, [left, right] if crate::CommitCondition::path(left) == crate::CommitCondition::path(right)),
+        ) || effect.mutations.windows(2).any(
+            |pair| matches!(pair, [left, right] if crate::CommitMutation::path(left) == crate::CommitMutation::path(right)),
+        ) {
+            return Err(StreamError::InvalidArgument);
         }
     }
-    request.conditions.sort_unstable_by(|left, right| {
-        condition_path(left)
-            .cmp(condition_path(right))
-            .then_with(|| {
-                matches!(left, CommitCondition::Absent { .. })
-                    .cmp(&matches!(right, CommitCondition::Absent { .. }))
+    // Each effect is canonical, so a path repeated across effects is found by
+    // searching every earlier effect, without a second copy.
+    for (index, effect) in request.effects.iter().enumerate() {
+        let earlier = &request.effects[..index];
+        if effect.mutations.iter().any(|mutation| {
+            earlier.iter().any(|other| {
+                other
+                    .mutations
+                    .binary_search_by(|other| {
+                        crate::CommitMutation::path(other)
+                            .cmp(crate::CommitMutation::path(mutation))
+                    })
+                    .is_ok()
             })
-    });
-    request.mutations.sort_unstable_by(|left, right| {
-        crate::CommitMutation::path(left).cmp(crate::CommitMutation::path(right))
-    });
-    if request
-        .conditions
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if condition_path(left) == condition_path(right)))
-        || request.mutations.windows(2).any(
-            |pair| matches!(pair, [left, right] if crate::CommitMutation::path(left) == crate::CommitMutation::path(right)),
-        )
-    {
-        return Err(StreamError::InvalidArgument);
+        }) {
+            return Err(StreamError::InvalidArgument);
+        }
     }
     Ok(())
 }
@@ -602,15 +633,25 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
 }
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
-    for mutation in &request.mutations {
-        if let CommitMutation::Fork {
-            source,
-            destination,
-            exclude,
-            ..
-        } = mutation
-            && (source == destination
-                || request.mutations.iter().any(|other| {
+    for effect in &request.effects {
+        for mutation in &effect.mutations {
+            // An append may ride on conditions over other paths.
+            let CommitMutation::Fork {
+                source,
+                destination,
+                exclude,
+                ..
+            } = mutation
+            else {
+                continue;
+            };
+            // A fork proves its destination absent within its own effect.
+            if source == destination
+                || !matches!(
+                    effect_condition(effect, destination),
+                    Some(CommitCondition::Absent { .. })
+                )
+                || request.mutations().any(|other| {
                     let path = crate::CommitMutation::path(other).as_str();
                     path.strip_prefix(destination.as_str())
                         .and_then(|suffix| suffix.strip_prefix('/'))
@@ -620,38 +661,10 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
                         .is_some_and(|relative| {
                             !exclude.iter().any(|excluded| relative == excluded.as_str())
                         })
-                }))
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        // An append may ride on conditions over other paths (a send guarded only
-        // by the recipient's closed marker). A fork must prove its destination
-        // absent. A soft append's own presence check decides it, so no condition
-        // names its path, and it rides on a commit that publishes something.
-        let condition = request
-            .conditions
-            .binary_search_by(|condition| {
-                condition_path(condition).cmp(crate::CommitMutation::path(mutation))
-            })
-            .ok()
-            .and_then(|index| request.conditions.get(index));
-        match mutation {
-            CommitMutation::Fork { .. }
-                if !matches!(condition, Some(CommitCondition::Absent { .. })) =>
+                })
             {
                 return Err(StreamError::InvalidArgument);
             }
-            CommitMutation::SoftAppend { path, closed, .. }
-                if condition.is_some()
-                    || closed.as_ref() == Some(path)
-                    || request
-                        .mutations
-                        .iter()
-                        .all(|other| matches!(other, CommitMutation::SoftAppend { .. })) =>
-            {
-                return Err(StreamError::InvalidArgument);
-            }
-            _ => {}
         }
     }
     Ok(())
@@ -672,11 +685,13 @@ mod tests {
         let mut request = CommitRequest {
             deadline_unix_millis: None,
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"body-binding"))?,
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![Bytes::from_static(b"original").into()],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![Bytes::from_static(b"original").into()],
+                }],
+            )],
         };
         let binding = commit_binding_with(&mut request, |_| Ok::<(), StreamError>(()))??;
         let crate::CommitOutcome::Committed(receipt) = provider.commit(request).await? else {
@@ -721,6 +736,42 @@ mod tests {
             return Err(StreamError::Unavailable);
         };
         assert_eq!(digest, request_digest);
+        Ok(())
+    }
+
+    #[test]
+    fn effect_boundaries_and_soft_flags_are_part_of_the_digest() -> Result<(), StreamError> {
+        let append = |name: &str| -> Result<CommitMutation, StreamError> {
+            Ok(CommitMutation::Append {
+                path: StreamPath::new(name)?,
+                records: vec![Bytes::from_static(b"x").into()],
+            })
+        };
+        let present = CommitCondition::Present {
+            path: StreamPath::new("to")?,
+        };
+        let request = |effects| -> Result<CommitRequest, StreamError> {
+            Ok(CommitRequest {
+                deadline_unix_millis: None,
+                effects,
+                idempotency_key: IdempotencyKey::new(Bytes::from_static(b"grouping"))?,
+            })
+        };
+        let together = request(vec![CommitEffect::hard(
+            vec![present.clone()],
+            vec![append("a")?, append("b")?],
+        )])?;
+        let split = request(vec![
+            CommitEffect::hard(vec![present.clone()], vec![append("a")?]),
+            CommitEffect::hard(Vec::new(), vec![append("b")?]),
+        ])?;
+        let mut soft = together.clone();
+        soft.effects[0].soft = true;
+        let digests = [together, split, soft]
+            .map(|mut request| commit_digest(&mut request))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(digests[0] != digests[1] && digests[0] != digests[2] && digests[1] != digests[2]);
         Ok(())
     }
 }

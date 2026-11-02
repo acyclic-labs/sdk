@@ -19,12 +19,13 @@ pub use sockets::Sockets;
 
 use crate::addressing::ActorReference;
 use crate::guest::{
-    AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
+    AlarmChange, Checkpoint, Composer, Composition, GuestError, Transition, Trigger,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
+    CommitRequest, ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamError, StreamPath,
+    StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -275,7 +276,7 @@ impl PreparedPublish {
             .next()
             .ok_or(Error::Invalid("receipt omits actor state"))?;
         let expected = self
-            .request
+            .hard()
             .conditions
             .iter()
             .find_map(|condition| match condition {
@@ -288,7 +289,7 @@ impl PreparedPublish {
                 _ => None,
             });
         let authored = self
-            .request
+            .hard()
             .mutations
             .iter()
             .find_map(|mutation| match mutation {
@@ -332,8 +333,7 @@ impl PreparedPublish {
             provenance: None,
             request: CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: Vec::new(),
+                effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
                 idempotency_key: key,
             },
         }
@@ -341,6 +341,11 @@ impl PreparedPublish {
     /// The request, including the actor's own Head/Absent condition.
     pub const fn request(&self) -> &CommitRequest {
         &self.request
+    }
+    /// The commit's hard effect: the actor's own writes and every joined hard
+    /// effect. It is always the first effect.
+    fn hard(&self) -> &CommitEffect {
+        &self.request.effects[0]
     }
     /// Join admission fences without manufacturing a companion mutation. The
     /// original state fence cannot be weakened, and disagreeing cuts are refused.
@@ -351,12 +356,13 @@ impl PreparedPublish {
             ));
         }
         for condition in required {
-            let path = condition_path(&condition);
+            let path = CommitCondition::path(&condition);
             if self.own.as_ref() == Some(path) {
                 return Err(Error::Invalid("condition targets actor state stream"));
             }
-            let conditions = &mut self.request.conditions;
-            match conditions.binary_search_by(|existing| condition_path(existing).cmp(path)) {
+            let conditions = &mut self.request.effects[0].conditions;
+            match conditions.binary_search_by(|existing| CommitCondition::path(existing).cmp(path))
+            {
                 Ok(index) if conditions.get(index) != Some(&condition) => {
                     return Err(Error::Invalid("effects disagree on one stream's cut"));
                 }
@@ -366,65 +372,71 @@ impl PreparedPublish {
         }
         Ok(())
     }
-    /// Add one participant, keeping conditions canonical (one per path, sorted)
-    /// and merging appends to the same path in order. The actor's own state
-    /// stream cannot be named; disagreeing cuts on one path are refused.
-    pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
+    /// Add one effect. A hard effect joins the commit's hard effect, keeping
+    /// conditions canonical (one per path, sorted) and merging appends to the
+    /// same path in order; disagreeing cuts on one path are refused. A soft
+    /// effect is appended as given, so it applies or is skipped on its own.
+    /// No effect may name the actor's own state stream, its journal or its
+    /// invocation reply.
+    pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
         if self.sealed {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
             ));
         }
-        if self
-            .journal
-            .as_ref()
-            .is_some_and(|journal| mutation_targets(&effect.mutation, journal))
-        {
-            return Err(Error::Invalid("effect changes the host's actor journal"));
+        for mutation in &effect.mutations {
+            if self
+                .journal
+                .as_ref()
+                .is_some_and(|journal| mutation_targets(mutation, journal))
+            {
+                return Err(Error::Invalid("effect changes the host's actor journal"));
+            }
+            if self
+                .reply
+                .as_ref()
+                .is_some_and(|reply| mutation_targets(mutation, reply))
+            {
+                return Err(Error::Invalid("effect changes the host's invocation reply"));
+            }
+            if self
+                .own
+                .as_ref()
+                .is_some_and(|own| CommitMutation::path(mutation) == own)
+            {
+                return Err(Error::Invalid("effect targets actor state stream"));
+            }
         }
-        if self
-            .reply
-            .as_ref()
-            .is_some_and(|reply| mutation_targets(&effect.mutation, reply))
-        {
-            return Err(Error::Invalid("effect changes the host's invocation reply"));
+        if effect.soft {
+            if self.own.as_ref().is_some_and(|own| {
+                effect
+                    .conditions
+                    .iter()
+                    .any(|condition| CommitCondition::path(condition) == own)
+            }) {
+                return Err(Error::Invalid("condition targets actor state stream"));
+            }
+            self.request.effects.push(effect);
+            return Ok(());
         }
         self.require(effect.conditions)?;
-        let Self { own, request, .. } = self;
-        let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
-        let mutations = &mut request.mutations;
-        match effect.mutation {
-            CommitMutation::Append { path, records } => {
-                if touches_own(&path) {
-                    return Err(Error::Invalid("effect targets actor state stream"));
+        let mutations = &mut self.request.effects[0].mutations;
+        for mutation in effect.mutations {
+            match mutation {
+                CommitMutation::Append { path, records } => {
+                    let existing = mutations.iter_mut().find_map(|mutation| match mutation {
+                        CommitMutation::Append {
+                            path: existing,
+                            records,
+                        } if existing == &path => Some(records),
+                        _ => None,
+                    });
+                    match existing {
+                        Some(existing) => existing.extend(records),
+                        None => mutations.push(CommitMutation::Append { path, records }),
+                    }
                 }
-                let existing = mutations.iter_mut().find_map(|mutation| match mutation {
-                    CommitMutation::Append {
-                        path: existing,
-                        records,
-                    } if existing == &path => Some(records),
-                    _ => None,
-                });
-                match existing {
-                    Some(existing) => existing.extend(records),
-                    None => mutations.push(CommitMutation::Append { path, records }),
-                }
-            }
-            soft @ CommitMutation::SoftAppend { .. } => {
-                if let CommitMutation::SoftAppend { path, .. } = &soft
-                    && touches_own(path)
-                {
-                    return Err(Error::Invalid("effect targets actor state stream"));
-                }
-                mutations.push(soft);
-            }
-            fork @ CommitMutation::Fork { .. } => {
-                if let CommitMutation::Fork { destination, .. } = &fork
-                    && touches_own(destination)
-                {
-                    return Err(Error::Invalid("effect targets actor state stream"));
-                }
-                mutations.push(fork);
+                fork @ CommitMutation::Fork { .. } => mutations.push(fork),
             }
         }
         Ok(())
@@ -500,15 +512,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// The activation-log append that rides in every state-creating commit.
     /// It is unconditioned, so concurrent creations never contend on it.
-    pub fn activation(&self, actor: &ActorReference) -> Effect {
+    pub fn activation(&self, actor: &ActorReference) -> CommitEffect {
         let (path, record) = self.activation_record(actor);
-        Effect {
-            conditions: Vec::new(),
-            mutation: CommitMutation::Append {
+        acyclic_stream::CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
                 path,
                 records: vec![record.into()],
-            },
-        }
+            }],
+        )
     }
 
     /// Original wake record for composition with a producer's delivery commit.
@@ -554,7 +566,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
         subscriptions: BTreeMap<String, Subscription>,
         checkpoint: Option<Checkpoint>,
-    ) -> Result<[Effect; 2], Error> {
+    ) -> Result<[CommitEffect; 2], Error> {
         let path = self.path(actor)?;
         if subscriptions.values().any(|value| value.path == path) {
             return Err(Error::Invalid("actor subscribes to its own state"));
@@ -569,13 +581,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             journal_tail: 0,
         };
         Ok([
-            Effect {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
                     path,
                     records: vec![state.encode().into()],
-                },
-            },
+                }],
+            ),
             self.activation(actor),
         ])
     }
@@ -593,7 +605,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         parent: &Snapshot,
         child: &ActorReference,
         subscriptions: BTreeMap<String, Subscription>,
-    ) -> Result<[Effect; 2], Error> {
+    ) -> Result<[CommitEffect; 2], Error> {
         let (Some(state), Some(commit_id)) = (&parent.state, parent.anchor) else {
             return Err(Error::Invalid("actor state was never created"));
         };
@@ -613,8 +625,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ..state.clone()
         };
         Ok([
-            Effect {
-                conditions: vec![
+            acyclic_stream::CommitEffect::hard(
+                vec![
                     CommitCondition::Head {
                         path: parent.path.clone(),
                         expected: parent.tail,
@@ -622,14 +634,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     },
                     CommitCondition::Absent { path: path.clone() },
                 ],
-                mutation: CommitMutation::Fork {
+                vec![CommitMutation::Fork {
                     exclude: Vec::new(),
                     source: parent.path.clone(),
                     destination: path,
                     at_tail: parent.tail,
                     records: vec![forked.encode().into()],
-                },
-            },
+                }],
+            ),
             self.activation(child),
         ])
     }
@@ -959,29 +971,22 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 error => Error::Handler(error),
                             },
                         )?;
-                        if !original
-                    .conditions
-                    .iter()
-                    .all(|entry| request.conditions.contains(entry))
-                    || !original
-                        .mutations
-                        .iter()
-                        .all(|entry| request.mutations.contains(entry))
+                        if !extends(original, &request)
                     || prepared.own.as_ref().is_some_and(|own| {
-                        request.mutations.iter().filter(|mutation| {
+                        request.mutations().filter(|mutation| {
                             matches!(mutation, CommitMutation::Append { path, .. } if path == own)
                         }).count() != 1
                     })
                     || prepared.reply.as_ref().is_some_and(|reply| {
-                        request.mutations.iter().filter(|mutation| {
+                        request.mutations().filter(|mutation| {
                             matches!(mutation, CommitMutation::Append { path, .. } if path == reply)
-                        }).count() != 1 || request.mutations.iter().any(|mutation| {
+                        }).count() != 1 || request.mutations().any(|mutation| {
                             matches!(mutation, CommitMutation::Fork { destination, .. } if covers(destination, reply))
                         })
                     })
                     || prepared.journal.as_ref().is_some_and(|journal| {
-                        request.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
-                            != original.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
+                        request.mutations().filter(|mutation| mutation_targets(mutation, journal)).count()
+                            != original.mutations().filter(|mutation| mutation_targets(mutation, journal)).count()
                     })
                 {
                     return Err(Error::Invalid("composition changed the actor publication"));
@@ -1062,7 +1067,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         previous: &Snapshot,
         state: State,
-        effects: Vec<Effect>,
+        effects: Vec<CommitEffect>,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         let (own, created) = match previous.anchor {
@@ -1093,11 +1098,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             provenance: previous.provenance.clone(),
             request: CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![own],
-                mutations: vec![CommitMutation::Append {
-                    path: previous.path.clone(),
-                    records: vec![encoded.into()],
-                }],
+                effects: vec![CommitEffect::hard(
+                    vec![own],
+                    vec![CommitMutation::Append {
+                        path: previous.path.clone(),
+                        records: vec![encoded.into()],
+                    }],
+                )],
                 idempotency_key: key,
             },
         };
@@ -1124,13 +1131,23 @@ fn mutation_targets(mutation: &CommitMutation, path: &StreamPath) -> bool {
     }
 }
 
-fn condition_path(condition: &CommitCondition) -> &StreamPath {
-    match condition {
-        CommitCondition::Head { path, .. }
-        | CommitCondition::Tail { path, .. }
-        | CommitCondition::Absent { path }
-        | CommitCondition::Present { path } => path,
-    }
+/// Whether a composed request keeps the original publication: every soft
+/// effect unchanged, and every hard condition and mutation in a hard effect.
+fn extends(original: &CommitRequest, composed: &CommitRequest) -> bool {
+    let hard = || composed.effects.iter().filter(|effect| !effect.soft);
+    original.effects.iter().all(|effect| {
+        if effect.soft {
+            return composed.effects.contains(effect);
+        }
+        effect
+            .conditions
+            .iter()
+            .all(|entry| hard().any(|hard| hard.conditions.contains(entry)))
+            && effect
+                .mutations
+                .iter()
+                .all(|entry| hard().any(|hard| hard.mutations.contains(entry)))
+    })
 }
 
 fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {

@@ -9,15 +9,17 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     for generation in 0..2 {
         let outcome = provider
             .commit(CommitRequest {
-                conditions: Vec::new(),
-                mutations: paths
-                    .iter()
-                    .enumerate()
-                    .map(|(index, path)| CommitMutation::Append {
-                        path: path.clone(),
-                        records: vec![vec![generation, index as u8].into()],
-                    })
-                    .collect(),
+                effects: vec![crate::CommitEffect::hard(
+                    Vec::new(),
+                    paths
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![vec![generation, index as u8].into()],
+                        })
+                        .collect(),
+                )],
                 idempotency_key: IdempotencyKey::new(Bytes::from(vec![b'v', generation]))?,
                 deadline_unix_millis: None,
             })
@@ -221,24 +223,26 @@ async fn selected_child_tails<P: StreamProvider + ?Sized>(provider: &P) -> Resul
         .await?;
     let outcome = provider
         .commit(CommitRequest {
-            conditions: Vec::new(),
-            mutations: vec![
-                CommitMutation::Append {
-                    path: path("selected-children/absent/anchor")?,
-                    records: vec![Bytes::from_static(b"anchor").into()],
-                },
-                CommitMutation::Append {
-                    path: selected[2].clone(),
-                    records: vec![
-                        Bytes::from_static(b"first").into(),
-                        Bytes::from_static(b"last").into(),
-                    ],
-                },
-                CommitMutation::Append {
-                    path: selected[3].clone(),
-                    records: vec![Bytes::from_static(b"single").into()],
-                },
-            ],
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![
+                    CommitMutation::Append {
+                        path: path("selected-children/absent/anchor")?,
+                        records: vec![Bytes::from_static(b"anchor").into()],
+                    },
+                    CommitMutation::Append {
+                        path: selected[2].clone(),
+                        records: vec![
+                            Bytes::from_static(b"first").into(),
+                            Bytes::from_static(b"last").into(),
+                        ],
+                    },
+                    CommitMutation::Append {
+                        path: selected[3].clone(),
+                        records: vec![Bytes::from_static(b"single").into()],
+                    },
+                ],
+            )],
             idempotency_key: key(b"selected-child-publication")?,
             deadline_unix_millis: None,
         })

@@ -6,8 +6,8 @@ use crate::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamPath,
-    StreamProvider,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, MemoryStream,
+    StreamPath, StreamProvider,
 };
 
 type PlacedFs = Fs<StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;
@@ -61,20 +61,22 @@ fn spawn_request(stream_fork_at: u64, state_absent: bool) -> Result<CommitReques
     });
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions,
-        mutations: vec![
-            CommitMutation::Append {
-                path: state,
-                records: vec![record(b"spawned")],
-            },
-            CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: StreamPath::new("harness/agents/root/log")?,
-                destination: log,
-                at_tail: stream_fork_at,
-                records: vec![record(b"adopted")],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            conditions,
+            vec![
+                CommitMutation::Append {
+                    path: state,
+                    records: vec![record(b"spawned")],
+                },
+                CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: StreamPath::new("harness/agents/root/log")?,
+                    destination: log,
+                    at_tail: stream_fork_at,
+                    records: vec![record(b"adopted")],
+                },
+            ],
+        )],
         idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(
             b"spawn-child",
         ))?,
@@ -88,11 +90,13 @@ async fn parent(fs: &PlacedFs, stream: &MemoryStream) -> Result<PlacedGeneration
     stream
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent { path: log.clone() }],
-            mutations: vec![CommitMutation::Append {
-                path: log,
-                records: vec![record(b"turn-1")],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent { path: log.clone() }],
+                vec![CommitMutation::Append {
+                    path: log,
+                    records: vec![record(b"turn-1")],
+                }],
+            )],
             idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(
                 b"root-log",
             ))?,
@@ -218,8 +222,7 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
     let original = parent(&fs, &stream).await?;
     let mut retention = FilesystemCommit::new(CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
         idempotency_key: acyclic_stream::IdempotencyKey::new(vec![0])?,
     });
     let saved = unbounded!(
@@ -256,14 +259,16 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
         };
         let mut commit = FilesystemCommit::new(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: marker.clone(),
-                expected: caller_tail,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: marker.clone(),
-                records: vec![record(b"cut-1")],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: marker.clone(),
+                    expected: caller_tail,
+                }],
+                vec![CommitMutation::Append {
+                    path: marker.clone(),
+                    records: vec![record(b"cut-1")],
+                }],
+            )],
             idempotency_key: acyclic_stream::IdempotencyKey::new(vec![attempt])?,
         });
         unbounded!(
@@ -338,14 +343,14 @@ async fn one_source_required_twice_adds_one_condition() -> Result<(), Box<dyn Er
     let source = parent(&fs, &stream).await?;
     let mut commit = compose(&fs, &source, true).await?;
     unbounded!(fs, require_head(&source, &mut commit))?;
-    let conditions = commit.request().conditions.len();
+    let conditions = commit.request().effects[0].conditions.len();
     unbounded!(fs, require_head(&source, &mut commit))?;
-    assert_eq!(commit.request().conditions.len(), conditions);
+    assert_eq!(commit.request().effects[0].conditions.len(), conditions);
     let parent = unbounded!(fs, open_workspace("root-project"))?;
     parent.write_text("/plan.md", "changed").await?;
     let advanced = unbounded!(parent, head())?;
     assert!(unbounded!(fs, require_head(&advanced, &mut commit)).is_err());
-    assert_eq!(commit.request().conditions.len(), conditions);
+    assert_eq!(commit.request().effects[0].conditions.len(), conditions);
     Ok(())
 }
 
@@ -458,8 +463,8 @@ async fn one_composition_cannot_create_a_volume_twice() -> Result<(), Box<dyn Er
     // Negative control for partial preparation: the first fork's two
     // creations were already in the commit when the second failed. They are
     // gone, so the caller's commit is exactly its own again and still usable.
-    assert_eq!(commit.request().conditions.len(), 2);
-    assert_eq!(commit.request().mutations.len(), 2);
+    assert_eq!(commit.request().effects[0].conditions.len(), 2);
+    assert_eq!(commit.request().effects[0].mutations.len(), 2);
     assert!(commit.authorities().is_empty());
     unbounded!(fs, prepare_fork_many(&forks(&source)?, &mut commit))?;
     let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
@@ -498,6 +503,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     commit
         .request_mut()
         .ok_or("an unsubmitted commit accepts caller entries")?
+        .effects[0]
         .mutations
         .truncate(1);
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
@@ -591,8 +597,7 @@ async fn distinct_placements_keep_separate_change_streams() -> Result<(), Box<dy
         }];
         let mut commit = FilesystemCommit::new(CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(key))?,
         });
         unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
@@ -679,8 +684,8 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
         // Dropped armed, as the outer batch future is when it times out
         // after its first part.
     }
-    assert_eq!(commit.request().conditions.len(), 2);
-    assert_eq!(commit.request().mutations.len(), 2);
+    assert_eq!(commit.request().effects[0].conditions.len(), 2);
+    assert_eq!(commit.request().effects[0].mutations.len(), 2);
     assert!(commit.authorities().is_empty());
     {
         let mut guard = commit.guard();

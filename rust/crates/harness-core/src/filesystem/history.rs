@@ -60,8 +60,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     let path = parent.path.conversation().map_err(guest)?;
-    let entries = commit
-        .request()
+    let entries = commit.request().effects[0]
         .mutations
         .iter()
         .find_map(|mutation| match mutation {
@@ -255,11 +254,9 @@ where
             let request = commit
                 .request_mut()
                 .ok_or_else(|| guest("history commit is sealed"))?;
-            match segment.and_then(|index| request.mutations.get_mut(index)) {
+            match segment.and_then(|index| request.effects[0].mutations.get_mut(index)) {
                 Some(
-                    CommitMutation::Fork { records, .. }
-                    | CommitMutation::Append { records, .. }
-                    | CommitMutation::SoftAppend { records, .. },
+                    CommitMutation::Fork { records, .. } | CommitMutation::Append { records, .. },
                 ) => {
                     records.push(append);
                 }
@@ -269,11 +266,11 @@ where
                         parent.path
                     ))
                     .map_err(guest)?;
-                    request.conditions.push(CommitCondition::Absent {
+                    request.effects[0].conditions.push(CommitCondition::Absent {
                         path: destination.clone(),
                     });
-                    segment = Some(request.mutations.len());
-                    request.mutations.push(if context.tail != 0 {
+                    segment = Some(request.effects[0].mutations.len());
+                    request.effects[0].mutations.push(if context.tail != 0 {
                         CommitMutation::Fork {
                             source: context.path,
                             destination: destination.clone(),
@@ -376,11 +373,11 @@ where
     let request = commit
         .request_mut()
         .ok_or_else(|| guest("history commit is sealed"))?;
-    request.conditions.push(CommitCondition::Tail {
+    request.effects[0].conditions.push(CommitCondition::Tail {
         path: history.clone(),
         expected: parent.conversation_tail,
     });
-    request.mutations.push(CommitMutation::Append {
+    request.effects[0].mutations.push(CommitMutation::Append {
         path: history,
         records,
     });

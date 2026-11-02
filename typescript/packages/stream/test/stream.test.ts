@@ -173,7 +173,7 @@ describe("website Stream contract", () => {
     const body = new Uint8Array(65_536);
     const conditions = Array.from({ length: 17 }, (_, index) => ({ path: `large/${index}`, ifAbsent: true as const }));
     const mutations = conditions.map(condition => ({ append: { stream: client.bytes(condition.path), values: [body] } }));
-    await expect(client.commit({ conditions, mutations }, { idempotencyKey: key("large") })).rejects.toThrow();
+    await expect(client.commit({ effects: [{ conditions: conditions, mutations: mutations, soft: false }] }, { idempotencyKey: key("large") })).rejects.toThrow();
     await expect(client.bytes("large/0").tail()).rejects.toMatchObject({ code: "stream_not_found" });
 
     let hostedCalls = 0;
@@ -183,7 +183,7 @@ describe("website Stream contract", () => {
     } });
     await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)))).rejects.toThrow();
     const hostedMutations = conditions.map(condition => ({ append: { path: condition.path, values: [body] } }));
-    await expect(hosted.commit({ conditions, mutations: hostedMutations }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
+    await expect(hosted.commit({ effects: [{ conditions: conditions, mutations: hostedMutations, soft: false }] }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
     expect(hostedCalls).toBe(0);
   });
 
@@ -211,42 +211,39 @@ describe("website Stream contract", () => {
     const client = StreamClient.memory();
     const first = client.bytes("coordinated/a");
     const second = client.bytes("coordinated/b");
-    await expect(client.commit({ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
+    await expect(client.commit({ effects: [{ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
       { append: { stream: second, values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
+    ], soft: false }] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
     const options = { idempotencyKey: key("ordered") };
     const conditions = [{ path: first.path, ifAbsent: true as const }, { path: second.path, ifAbsent: true as const }];
     const mutations = [
       { append: { stream: first, values: [new Uint8Array([1])] } },
       { append: { stream: second, values: [new Uint8Array([2])] } },
     ];
-    const accepted = await client.commit({ conditions, mutations }, options);
-    const replay = await client.commit({ conditions: [...conditions].reverse(), mutations: [...mutations].reverse() }, options);
+    const accepted = await client.commit({ effects: [{ conditions: conditions, mutations: mutations, soft: false }] }, options);
+    const replay = await client.commit({ effects: [{ conditions: [...conditions].reverse(), mutations: [...mutations].reverse(), soft: false }] }, options);
     expect(replay).toEqual(accepted);
     const withExtraProperties = await client.commit({
-      conditions: conditions.map(condition => ({ ...condition, incidental: "ignored" })),
-      mutations: mutations.map(mutation => ({ ...mutation, incidental: "ignored" })),
+      effects: [{ conditions: conditions.map(condition => ({ ...condition, incidental: "ignored" })), mutations: mutations.map(mutation => ({ ...mutation, incidental: "ignored" })), soft: false }]
     }, options);
     expect(withExtraProperties).toEqual(accepted);
-    await expect(client.provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [
+    await expect(client.provider.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [
       { append: { path: "forged", values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("forged") })).rejects.toMatchObject({ code: "invalid_argument" });
+    ], soft: false }] }, { idempotencyKey: key("forged") })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(client.bytes("forged").tail()).rejects.toMatchObject({ code: "stream_not_found" });
 
     await expect(client.provider.commit({
-      conditions: [{ path: "duplicate", ifAbsent: true }, { path: "duplicate", ifAbsent: true }],
-      mutations: [{ append: { path: "duplicate", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "duplicate", ifAbsent: true }, { path: "duplicate", ifAbsent: true }], mutations: [{ append: { path: "duplicate", values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("duplicate-condition") })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(client.provider.commit({
-      conditions: [{ path: "duplicate-mutation", ifAbsent: true }],
-      mutations: [
+      effects: [{ conditions: [{ path: "duplicate-mutation", ifAbsent: true }], mutations: [
         { append: { path: "duplicate-mutation", values: [new Uint8Array([1])] } },
         { append: { path: "duplicate-mutation", values: [new Uint8Array([2])] } },
-      ],
+      ], soft: false }]
     }, { idempotencyKey: key("duplicate-mutation") })).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }))
+    await expect(client.provider.commit({ effects: [{ conditions: null as never, mutations: [], soft: false }] }, { idempotencyKey: key("null-conditions") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }))
+    await expect(client.provider.commit({ effects: [{ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never], soft: false }] }, { idempotencyKey: key("null-mutation") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
   });
 
@@ -255,9 +252,9 @@ describe("website Stream contract", () => {
     const provider = { commit: async () => { dispatches += 1; throw new Error("provider must not be called"); } } as unknown as StreamProvider;
     const client = new StreamClient(provider);
     const mutation = { append: { path: "forged", values: [new Uint8Array([1])] } };
-    await expect(client.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-false") }))
+    await expect(client.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation], soft: false }] }, { idempotencyKey: key("client-forged-false") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.commit({ conditions: [{ path: "forged" } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-missing") }))
+    await expect(client.commit({ effects: [{ conditions: [{ path: "forged" } as never], mutations: [mutation], soft: false }] }, { idempotencyKey: key("client-forged-missing") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
     expect(dispatches).toBe(0);
   });
@@ -266,8 +263,7 @@ describe("website Stream contract", () => {
     const client = StreamClient.memory();
     const missing = client.bytes("missing");
     const outcome = await client.commit({
-      conditions: [{ stream: missing, ifTail: 0n }],
-      mutations: [{ append: { stream: missing, values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ stream: missing, ifTail: 0n }], mutations: [{ append: { stream: missing, values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("missing-zero") });
     expect(outcome.ok).toBe(true);
     expect(await missing.tail()).toBe(1n);
@@ -329,16 +325,15 @@ describe("website Stream contract", () => {
     await expect(jobs.append({ job: "different" }, { idempotencyKey: jobKey })).rejects.toMatchObject({ code: "idempotency_mismatch" });
     await workers.append({ worker: "idle" }, { idempotencyKey: key("stream.test-310") });
     const result = await client.commit({
-      conditions: [
+      effects: [{ conditions: [
         { stream: jobs, ifTail: 1n },
         { stream: workers, ifTail: 1n },
         { path: "runs/42/attempt-2", ifAbsent: true },
-      ],
-      mutations: [
+      ], mutations: [
         { append: { stream: jobs, values: [{ job: "two" }] } },
         { append: { stream: workers, values: [{ worker: "busy" }] } },
         { fork: { source: jobs, destination: "runs/42/attempt-2", atTail: 1n } },
-      ],
+      ], soft: false }]
     }, { idempotencyKey: key("assignment-1") });
     expect(result).toMatchObject({ ok: true, appends: [{ path: "runs/42/jobs", tail: 2n }, { path: "runs/42/workers", tail: 2n }], forks: [{ destination: "runs/42/attempt-2", tail: 1n }] });
     if (!result.ok) throw new Error("commit unexpectedly conflicted");
@@ -365,13 +360,11 @@ describe("website Stream contract", () => {
 
     const commitKey = key("projection-commit");
     const committed = await provider.commit({
-      conditions: [{ path: "projection/events", ifTail: 1n }],
-      mutations: [{ append: { path: "projection/events", values: [new Uint8Array([4])] } }],
+      effects: [{ conditions: [{ path: "projection/events", ifTail: 1n }], mutations: [{ append: { path: "projection/events", values: [new Uint8Array([4])] } }], soft: false }]
     }, { idempotencyKey: commitKey });
     expect(committed).toMatchObject({ ok: true, appends: [{ path: "projection/events", start: 1n, tail: 2n }], forks: [] });
     const commitConflict = await provider.commit({
-      conditions: [{ path: "projection/events", ifTail: 0n }],
-      mutations: [{ append: { path: "projection/events", values: [new Uint8Array([5])] } }],
+      effects: [{ conditions: [{ path: "projection/events", ifTail: 0n }], mutations: [{ append: { path: "projection/events", values: [new Uint8Array([5])] } }], soft: false }]
     }, { idempotencyKey: key("projection-conflict") });
     expect(commitConflict).toEqual({ ok: false, code: "conflict", conflicts: [{ path: "projection/events", expectedTail: 0n, actualTail: 2n }] });
 
@@ -459,8 +452,7 @@ describe("website Stream contract", () => {
   test("enforces Rust commit deadlines at the WASM boundary", async () => {
     const provider = new MemoryStreamProvider();
     await expect(provider.commit({
-      conditions: [{ path: "deadline", ifAbsent: true }],
-      mutations: [{ append: { path: "deadline", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "deadline", ifAbsent: true }], mutations: [{ append: { path: "deadline", values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("expired-deadline"), deadlineUnixMillis: 0n })).rejects.toMatchObject({ code: "deadline_elapsed" });
   });
 
@@ -540,18 +532,17 @@ describe("website Stream contract", () => {
     const client = new StreamClient(new MemoryStreamProvider());
     const source = client.bytes("source");
     await source.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-524") });
-    await expect(client.commit({ conditions: [{ stream: source, ifTail: 1n }, { path: "invalid", ifAbsent: true }], mutations: [
+    await expect(client.commit({ effects: [{ conditions: [{ stream: source, ifTail: 1n }, { path: "invalid", ifAbsent: true }], mutations: [
       { append: { stream: source, values: [new Uint8Array([2])] } },
       { fork: { source, destination: "invalid", atTail: 99n } },
-    ] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "invalid_argument" });
+    ], soft: false }] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await source.tail()).toBe(1n);
     expect(await client.inspectIdempotency(key("atomic"))).toBeUndefined();
   });
 
   test("retains a valid prototype-named tail in memory and hosted commit results", async () => {
     const request = {
-      conditions: [{ path: "__proto__", ifAbsent: true as const }],
-      mutations: [{ append: { path: "__proto__", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "__proto__", ifAbsent: true as const }], mutations: [{ append: { path: "__proto__", values: [new Uint8Array([1])] } }], soft: false }]
     };
     const local = await new MemoryStreamProvider().commit(request, { idempotencyKey: key("prototype-local") });
     if (!local.ok) throw new Error("local commit unexpectedly conflicted");
@@ -635,12 +626,11 @@ describe("website Stream contract", () => {
     expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
     expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
     const commit = create(CommitRequestSchema, {
-      conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })],
-      mutations: [create(CommitMutationSchema, { mutation: { case: "append", value: create(AppendMutationSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([9]) })] }) } })],
+      effects: [{ conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })], mutations: [create(CommitMutationSchema, { mutation: { case: "append", value: create(AppendMutationSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([9]) })] }) } })], soft: false }],
       idempotencyKey: retry,
     });
     const commitBody = encoded("commit", normalizeCommitRequest(toBinary(CommitRequestSchema, commit)));
-    expect(commitBody).toEqual({ request: { conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", records: [{ value: "CQ==", keys: [], attributes: [] }] } }] }, options: { idempotencyKey: retryWire } });
+    expect(commitBody).toEqual({ request: { effects: [{ conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", records: [{ value: "CQ==", keys: [], attributes: [] }] } }], soft: false }] }, options: { idempotencyKey: retryWire } });
     expect(encoded("commits/read", toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: new Uint8Array(32).fill(7) })))).toEqual({ commitId: encodedCommitId });
   });
 
@@ -685,12 +675,12 @@ describe("website Stream contract", () => {
     const client = new StreamClient(provider);
     const stream = client.bytes("events");
     const commitOptions = { idempotencyKey: key("public-commit") };
-    const commitRequest = { conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }] } as const;
+    const commitRequest = { effects: [{ conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }], soft: false }] } as const;
     const commitPending = client.commit(commitRequest, commitOptions);
-    (commitRequest.conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
+    (commitRequest.effects[0].conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
     commitOptions.idempotencyKey[0] = 9;
     await commitPending;
-    expect(seenCommitRequest).toMatchObject({ conditions: [{ path: "events", ifAbsent: true }] });
+    expect(seenCommitRequest).toMatchObject({ effects: [{ conditions: [{ path: "events", ifAbsent: true }] }] });
     expect((seenCommitOptions as { idempotencyKey: Uint8Array }).idempotencyKey).toEqual(key("public-commit"));
 
     const readOptions = { from: 0n, limit: 1 };
@@ -967,10 +957,10 @@ describe("website Stream contract", () => {
       () => provider.fork("source", "bad\\path"),
       () => provider.fork("same", "same"),
       () => provider.append("bad path", [new Uint8Array([1])]),
-      () => provider.commit({ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ fork: { source: "valid", destination: "unguarded", atTail: 0n } }] }, { idempotencyKey: key("invalid-commit") }),
-      () => provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("forged") }),
-      () => provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }),
-      () => provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ fork: { source: "valid", destination: "unguarded", atTail: 0n } }], soft: false }] }, { idempotencyKey: key("invalid-commit") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }], soft: false }] }, { idempotencyKey: key("forged") }),
+      () => provider.commit({ effects: [{ conditions: null as never, mutations: [], soft: false }] }, { idempotencyKey: key("null-conditions") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never], soft: false }] }, { idempotencyKey: key("null-mutation") }),
     ]) await expect(Promise.resolve().then(operation)).rejects.toThrow();
     await expect(provider.read("bad path", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });

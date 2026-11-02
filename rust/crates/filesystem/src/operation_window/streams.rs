@@ -185,8 +185,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
             .provider
             .commit(acyclic_stream::CommitRequest {
                 deadline_unix_millis: None,
-                conditions,
-                mutations,
+                effects: vec![acyclic_stream::CommitEffect::hard(conditions, mutations)],
                 idempotency_key: key,
             })
             .await?

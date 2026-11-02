@@ -33,9 +33,8 @@ async fn check(mode: u8) -> Result<()> {
         let mut records = Vec::new();
         request.1.reserve(1, &mut records)?;
         records.push(OwnedBytes::from_static(b"original immutable record").into());
-        request.1.reserve(1, &mut request.0.mutations)?;
-        request
-            .0
+        request.1.reserve(1, &mut request.0.effects[0].mutations)?;
+        request.0.effects[0]
             .mutations
             .push(CommitMutation::Append { path, records });
         request.0.deadline_unix_millis = Some(u64::MAX - 1);
