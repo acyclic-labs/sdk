@@ -1,10 +1,7 @@
 use std::{
     fs::File,
     io,
-    os::windows::{
-        ffi::OsStrExt as _,
-        io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
-    },
+    os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
     path::Path,
 };
 use windows::{
@@ -66,13 +63,7 @@ fn user(process: HANDLE, buffer: &mut [usize; 16]) -> windows::core::Result<PSID
 
 /// Creates a new file with a protected DACL granting only its current user access.
 pub(super) fn create(path: &Path) -> io::Result<File> {
-    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if name.strip_suffix(&[0]).is_none_or(|path| path.contains(&0)) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "NUL in credential path",
-        ));
-    }
+    let (name, _allocation) = crate::namespace::namespace_path(path, None)?;
     with_security(|attributes| {
         // SAFETY: the encoded path and protected security descriptor live through the call.
         let handle = unsafe {
@@ -92,10 +83,7 @@ pub(super) fn create(path: &Path) -> io::Result<File> {
 }
 
 pub(super) fn create_directory(path: &Path) -> io::Result<()> {
-    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if name.strip_suffix(&[0]).is_none_or(|path| path.contains(&0)) {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
+    let (name, _allocation) = crate::namespace::namespace_path(path, None)?;
     with_security(|attributes| {
         // SAFETY: encoded path and descriptor remain live through CreateDirectoryW.
         unsafe {
