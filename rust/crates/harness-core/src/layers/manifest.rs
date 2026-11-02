@@ -130,7 +130,10 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
                     }
                     result => self.io.sdk((result, recorded))?,
                 };
-                return Ok((!super::is_off(&bytes)).then_some(bytes));
+                if super::is_off(&bytes) {
+                    return Ok(None);
+                }
+                return self.io.retain_read_bytes(bytes).map(Some);
             }
             Ok(None)
         })
