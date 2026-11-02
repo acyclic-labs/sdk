@@ -93,6 +93,11 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
         .await?
         .0;
     let context_ref: FileRef = serde_json::from_value(cut["retained"].clone()).unwrap();
+    let (first, second): ([u8; 32], [u8; 32]) =
+        serde_json::from_value(cut["proof"].clone()).unwrap();
+    let mut signature = [0; 64];
+    signature[..32].copy_from_slice(&first);
+    signature[32..].copy_from_slice(&second);
     let expected = load_json::<crate::context::Context>(journal.as_ref(), &context_ref, None)
         .await?
         .0;
@@ -100,8 +105,8 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
     let mut budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
     let decode_io = PreparationIo::from_budget(budget, &cancellation)?;
     {
-        // Inventory the required reads/decodes and the caller's one borrowed
-        // reference. No output reconstruction is included in this allowance.
+        // Inventory the required reads/decodes, signature payload, retained
+        // validation and caller's reference. No output reconstruction is included.
         let scope = crate::filesystem::PreparationScope::new(Some(&decode_io))?;
         let cut = load_json::<crate::executor::working_tail::WorkingCut>(
             journal.as_ref(),
@@ -109,9 +114,21 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
             scope.io(),
         )
         .await?;
+        let digest = cut.0.payload_digest(scope.io())?;
+        with_history_io(scope.io(), |work| {
+            journal
+                .working_checkpoint_authority()
+                .unwrap()
+                .verify_working_checkpoint(digest, &signature, work)
+        })?;
         let context =
             load_json::<crate::context::Context>(journal.as_ref(), &context_ref, scope.io())
                 .await?;
+        crate::context::validate_projected_context(
+            &context.0,
+            fixture.executor.limits,
+            scope.io(),
+        )?;
         let reference = crate::model::clone_file(&fixture.reference, scope.io())?;
         drop(reference);
         drop(context);

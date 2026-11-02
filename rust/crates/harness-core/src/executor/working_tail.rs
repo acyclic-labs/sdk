@@ -19,7 +19,7 @@ pub(super) struct WorkingCut {
 }
 
 impl WorkingCut {
-    fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    pub(super) fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
         preparation_digest(
             &(
                 "working-context-cut/v2",
