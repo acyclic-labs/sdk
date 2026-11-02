@@ -61,10 +61,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         conflict: MergeConflict,
     ) -> Result<crate::ConflictView, WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         self.describe_conflict_contents(
             conflict,
             ConflictContents::Driver,
-            &CancellationToken::new(),
+            &mut accounting,
+            &cancellation,
         )
         .await
     }
@@ -72,10 +75,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn describe_conflict_file(
         &self,
         conflict: MergeConflict,
-        cancellation: &CancellationToken,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<crate::ConflictView, WorkspaceError> {
+        let cancellation = accounting.cancellation();
         let view = self
-            .describe_conflict_contents(conflict, ConflictContents::Files, cancellation)
+            .describe_conflict_contents(conflict, ConflictContents::Files, accounting, cancellation)
             .await?;
         cancellation.check()?;
         Ok(view)
@@ -85,6 +89,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         conflict: MergeConflict,
         contents: ConflictContents,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         cancellation.check()?;
@@ -103,7 +108,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             cancellation.check()?;
             return Ok(view);
         };
-        self.file_conflict_view(file_id, contents, cancellation)
+        self.file_conflict_view(file_id, contents, accounting, cancellation)
             .await
     }
 
@@ -112,10 +117,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         file_id: FileId,
         contents: ConflictContents,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         let path = self.conflict_path(file_id, cancellation).await?;
-        let records = self.conflict_records(file_id, cancellation).await?;
+        let records = self
+            .conflict_records(file_id, accounting, cancellation)
+            .await?;
         let [base, ours, theirs] = records;
         let fallback = |generation, record: Option<crate::kernel::FileRecord>| match record {
             Some(_) => ConflictValue::Record {
@@ -131,7 +139,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         else {
             if let Some(text) = path.as_deref()
                 && let Some(replaced) = self
-                    .replaced_file(file_id, text, records, cancellation)
+                    .replaced_file(file_id, text, records, accounting, cancellation)
                     .await?
                 && let Some(view) = self
                     .regular_conflict_view(
@@ -218,6 +226,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn conflict_records(
         &self,
         file_id: FileId,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<[Option<crate::kernel::FileRecord>; 3], WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
@@ -229,10 +238,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         {
             *slot = volume
                 .fs
-                .workspace_conflict_record_with_cancellation(
+                .workspace_merge_record_with_accounting(
                     volume,
                     generation,
-                    file_id,
+                    &MergeConflict::File(file_id),
+                    accounting,
                     cancellation,
                 )
                 .await?;

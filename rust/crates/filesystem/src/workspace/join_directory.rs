@@ -277,11 +277,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .limits
                 .maximum_component_bytes,
         )?;
-        let view = self
-            .preview
-            .plan()
-            .describe_conflict_file(conflict, &cancellation)
-            .await?;
+        let view = self.preview.describe_conflict_file(conflict).await?;
         if &view.key != key {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -460,8 +456,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             };
             let view = self
                 .preview
-                .plan()
-                .describe_conflict_file(row.value().clone(), cancellation)
+                .describe_conflict_file(row.value().clone())
                 .await?;
             let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {

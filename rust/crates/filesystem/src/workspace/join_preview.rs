@@ -444,6 +444,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     pub(super) fn cancellation(&mut self) -> CancellationToken {
         self.owner.borrow().1.cancellation().clone()
     }
+
+    /// Selected scalar record reads share preparation's original credit. A
+    /// refusal or withdrawn render leaves this preview terminal, like a cursor.
+    pub(super) async fn describe_conflict_file(
+        &mut self,
+        conflict: MergeConflict,
+    ) -> Result<crate::ConflictView, WorkspaceError> {
+        let (state, mut accounting) = self.owner.borrow();
+        if state.failed {
+            return Err(FsError::InvalidDiff.into());
+        }
+        state.failed = true;
+        accounting.check()?;
+        let view = state
+            .plan
+            .describe_conflict_file(conflict, &mut accounting)
+            .await?;
+        state.failed = false;
+        Ok(view)
+    }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinContent<'_, A, O> {

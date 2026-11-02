@@ -44,9 +44,9 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     view: &Generation<A, O>,
     directory: FileId,
     name: &LogicalName,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<FileRecord>, WorkspaceError> {
-    let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
     view.workspace
         .volume
         .fs
@@ -57,7 +57,7 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
                 directory_id: directory,
                 name: name.clone(),
             },
-            &mut accounting,
+            accounting,
             cancellation,
         )
         .await
@@ -92,6 +92,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
         path: &str,
         records: [Option<FileRecord>; 3],
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<ReplacedFile>, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
@@ -110,9 +111,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let Some((parent, _)) = path.rsplit_once('/') else {
             return Ok(None);
         };
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
+        let mut path_accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
         let parsed =
-            customer_path_with_accounting(path, volume.config, &mut accounting, cancellation)?;
+            customer_path_with_accounting(path, volume.config, &mut path_accounting, cancellation)?;
         let (_allocation, namespace) = (parsed.1, parsed.0);
         let (_, name) = namespace
             .split_last()
@@ -128,24 +129,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Ok(None);
         };
         if directory.kind != FileKind::Directory
-            || bound_in_directory(&base, directory.file_id, name, cancellation)
+            || bound_in_directory(&base, directory.file_id, name, accounting, cancellation)
                 .await?
                 .is_none_or(|record| record.file_id != file_id)
         {
             return Ok(None);
         }
         let Some(replacement) =
-            bound_in_directory(side, directory.file_id, name, cancellation).await?
+            bound_in_directory(side, directory.file_id, name, accounting, cancellation).await?
         else {
             return Ok(None);
         };
         if replacement.kind != FileKind::Regular
             || replacement.file_id == file_id
             || fs
-                .workspace_conflict_record_with_cancellation(
+                .workspace_merge_record_with_accounting(
                     volume,
                     self.base.id,
-                    replacement.file_id,
+                    &MergeConflict::File(replacement.file_id),
+                    accounting,
                     cancellation,
                 )
                 .await?
@@ -185,9 +187,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Ok(None);
         };
         let cancellation = CancellationToken::new();
-        let records = self.conflict_records(file_id, &cancellation).await?;
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let records = self
+            .conflict_records(file_id, &mut accounting, &cancellation)
+            .await?;
         let Some(replaced) = self
-            .replaced_file(file_id, path, records, &cancellation)
+            .replaced_file(file_id, path, records, &mut accounting, &cancellation)
             .await?
         else {
             return Ok(None);

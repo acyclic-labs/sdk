@@ -8,29 +8,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         file_id: FileId,
     ) -> Result<Option<FileRecord>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        self.workspace_conflict_record_with_cancellation(
-            workspace,
-            generation,
-            file_id,
-            &cancellation,
-        )
-        .await
-    }
-
-    pub(crate) async fn workspace_conflict_record_with_cancellation(
-        &self,
-        workspace: &Volume<A, O>,
-        generation: GenerationId,
-        file_id: FileId,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<FileRecord>, WorkspaceError> {
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         self.workspace_merge_record_with_accounting(
             workspace,
             generation,
             &MergeConflict::File(file_id),
             &mut accounting,
-            cancellation,
+            &cancellation,
         )
         .await
     }
