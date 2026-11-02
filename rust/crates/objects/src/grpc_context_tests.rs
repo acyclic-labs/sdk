@@ -100,8 +100,9 @@ async fn original_budget_covers_rpc_wait_and_has_no_hidden_relative_ceiling() ->
     let resolve: AccountResolver = {
         let replica = Arc::clone(&replica);
         Arc::new(move |metadata| {
-            let remaining =
-                grpc_timeout(metadata.get("grpc-timeout").unwrap().to_str().unwrap()).unwrap();
+            let remaining = acyclic_auth::grpc_timeout::read(metadata.as_ref())
+                .unwrap()
+                .unwrap();
             assert!(
                 remaining > Duration::from_secs(60),
                 "the 30-second default cannot cap an explicit budget"

@@ -175,6 +175,7 @@ dependencies = [
  "libfuzzer-sys",
  "prost",
  "syn 3.0.9",
+ "tonic",
 ]
 
 [[package]]

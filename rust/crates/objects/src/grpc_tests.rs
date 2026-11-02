@@ -523,16 +523,6 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
     Ok(())
 }
 
-#[test]
-fn grpc_timeouts_parse_exactly() {
-    assert_eq!(grpc_timeout("300m"), Some(Duration::from_millis(300)));
-    assert_eq!(grpc_timeout("2S"), Some(Duration::from_secs(2)));
-    assert_eq!(grpc_timeout("1H"), Some(Duration::from_secs(3600)));
-    for invalid in ["", "m", "123456789S", "1x", "-1S", "1.5S"] {
-        assert_eq!(grpc_timeout(invalid), None, "{invalid}");
-    }
-}
-
 #[tokio::test]
 async fn server_retains_the_transport_deadline_before_effects() -> TestResult {
     use wire::blobs_service_server::BlobsService as _;
@@ -572,6 +562,67 @@ async fn server_retains_the_transport_deadline_before_effects() -> TestResult {
     request.set_timeout(Duration::from_secs(60));
     server.put_blob(request).await?;
     assert_eq!(store.head(digest).await?.digest, digest);
+    Ok(())
+}
+
+#[tokio::test]
+async fn server_rejects_ambiguous_deadlines_before_account_admission() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wire::blobs_service_server::BlobsService as _;
+
+    let admissions = Arc::new(AtomicUsize::new(0));
+    let resolve: AccountResolver = {
+        let admissions = Arc::clone(&admissions);
+        Arc::new(move |_| {
+            admissions.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(MemoryObjects::memory()))
+        })
+    };
+    let server = BlobsServer::new(resolve);
+    for duplicate in [false, true] {
+        let mut request = Request::new(wire::UsageRequest {});
+        request.set_timeout(Duration::from_secs(60));
+        if duplicate {
+            request.metadata_mut().append("grpc-timeout", "1S".parse()?);
+        } else {
+            request
+                .metadata_mut()
+                .insert("grpc-timeout", "invalid".parse()?);
+        }
+        assert_eq!(
+            server.usage(request).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+    assert_eq!(admissions.load(Ordering::Relaxed), 0);
+    // No header imposes no deadline and still reaches the original account.
+    server.usage(Request::new(wire::UsageRequest {})).await?;
+    assert_eq!(admissions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn availability_delivery_keeps_its_original_deadline() -> TestResult {
+    use futures::{FutureExt as _, StreamExt as _};
+    use wire::blobs_service_server::BlobsService as _;
+
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"delivery-deadline")?);
+    let resolve: AccountResolver = Arc::new(move |_| Ok(account.clone()));
+    let server = BlobsServer::new(resolve);
+    let mut request = Request::new(wire::AvailabilityRequest {
+        digest: Some(Digest::of(b"awaiting publication").into()),
+    });
+    request.set_timeout(Duration::from_secs(60));
+    let mut frames = server.availability(request).await?.into_inner();
+    frames.next().await.unwrap()?;
+    let mut next = frames.next();
+    assert!((&mut next).now_or_never().is_none());
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert_eq!(
+        next.await.unwrap().unwrap_err().code(),
+        tonic::Code::DeadlineExceeded
+    );
     Ok(())
 }
 

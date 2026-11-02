@@ -6,6 +6,7 @@ use crate::{
     Retained, RootId, Usage, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
+use acyclic_auth::grpc_timeout::{Deadline, Elapsed};
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
 use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamError};
@@ -555,6 +556,8 @@ pub type AccountResolver = Arc<dyn Fn(&MetadataMap) -> Result<Arc<dyn Blobs>, Er
 
 /// Serves [`wire::blobs_service_server::BlobsService`] over any [`Blobs`]
 /// provider, one account per authenticated request.
+/// Retains an ingress [`Deadline`] or original `std::time::Instant` arrival
+/// extension through account resolution, execution and response disclosure.
 #[derive(Clone)]
 pub struct BlobsServer {
     resolve: AccountResolver,
@@ -582,8 +585,8 @@ impl BlobsServer {
 
 type Reply<T> = Result<tonic::Response<T>, tonic::Status>;
 
-/// Waits until `blobs` applies the request's minimum, bounded by its call
-/// deadline. A minimum the account cannot prove is foreign.
+/// Waits until `blobs` applies the request's minimum. The enclosing route owns
+/// its original deadline. A minimum the account cannot prove is foreign.
 async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error> {
     let minimum = cut_from_wire(
         metadata
@@ -607,48 +610,22 @@ async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error>
         .revisions()
         .await?
         .ok_or(Error::from(wire::ErrorCode::RevisionForeign))?;
-    let wait = std::pin::pin!(revisions.wait(&minimum));
-    let deadline = std::pin::pin!(deadline(metadata));
-    match futures::future::select(wait, deadline).await {
-        futures::future::Either::Left((Ok(_), _)) => Ok(()),
-        futures::future::Either::Left((Err(StreamError::RevisionForeign), _)) => {
-            Err(wire::ErrorCode::RevisionForeign.into())
-        }
-        futures::future::Either::Left((Err(_), _)) => Err(wire::ErrorCode::Unavailable.into()),
-        futures::future::Either::Right(((), _)) => Err(wire::ErrorCode::DeadlineElapsed.into()),
+    match revisions.wait(&minimum).await {
+        Ok(_) => Ok(()),
+        Err(StreamError::RevisionForeign) => Err(wire::ErrorCode::RevisionForeign.into()),
+        Err(_) => Err(wire::ErrorCode::Unavailable.into()),
     }
 }
 
-/// Resolves at the call's `grpc-timeout`; a call without one waits as long as
-/// its transport keeps it.
-async fn deadline(metadata: &MetadataMap) {
-    match metadata
-        .get("grpc-timeout")
-        .and_then(|value| value.to_str().ok())
-        .and_then(grpc_timeout)
-    {
-        // The remote caller explicitly chose this request's grpc-timeout deadline.
-        Some(timeout) => tokio::time::sleep(timeout).await,
-        None => std::future::pending().await,
-    }
+fn request_deadline<T>(request: &Request<T>) -> Result<Deadline, tonic::Status> {
+    let deadline = Deadline::from_parts(request.metadata().as_ref(), request.extensions())
+        .map_err(|_| status(wire::ErrorCode::InvalidArgument.into()))?;
+    deadline.check().map_err(deadline_status)?;
+    Ok(deadline)
 }
 
-/// Parses the gRPC `TimeoutValue TimeoutUnit` spelling.
-fn grpc_timeout(value: &str) -> Option<std::time::Duration> {
-    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
-    if amount.is_empty() || amount.len() > 8 || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let amount: u64 = amount.parse().ok()?;
-    Some(match unit {
-        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
-        "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
-        "S" => std::time::Duration::from_secs(amount),
-        "m" => std::time::Duration::from_millis(amount),
-        "u" => std::time::Duration::from_micros(amount),
-        "n" => std::time::Duration::from_nanos(amount),
-        _ => return None,
-    })
+fn deadline_status(_: Elapsed) -> tonic::Status {
+    status(wire::ErrorCode::DeadlineElapsed.into())
 }
 
 fn stamp(metadata: &mut MetadataMap, revision: Option<&Revision>) {
@@ -696,15 +673,18 @@ where
 
 macro_rules! serve {
     ($self:ident, $request:ident, $route:ident, $read:expr) => {{
+        let deadline = request_deadline(&$request)?;
         let blobs = $self.account(&$request)?;
         let (metadata, _, message) = $request.into_parts();
-        serve(
-            &*blobs,
-            &metadata,
-            $read,
-            crate::route::$route(&*blobs, message),
-        )
-        .await
+        deadline
+            .within(serve(
+                &*blobs,
+                &metadata,
+                $read,
+                crate::route::$route(&*blobs, message),
+            ))
+            .await
+            .map_err(deadline_status)?
     }};
 }
 
@@ -718,18 +698,31 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         request: Request<wire::AvailabilityRequest>,
     ) -> Reply<Self::AvailabilityStream> {
         use futures::StreamExt as _;
+        let deadline = request_deadline(&request)?;
         let blobs = self.account(&request)?;
         let (metadata, _, message) = request.into_parts();
-        let observation = crate::route::availability(&*blobs, message)
+        let observation = deadline
+            .within(crate::route::availability(&*blobs, message))
             .await
+            .map_err(deadline_status)?
             .map_err(status)?;
         let resolve = Arc::clone(&self.resolve);
-        let events = crate::route::availability_frames(observation).map(move |event| {
-            // The original verified account resolver also enforces current
-            // permission before each disclosure, including terminal frames.
+        let frames = crate::route::availability_frames(observation).map(move |event| {
+            // Recheck the original grant at every disclosure while the same
+            // admitted observation and absolute budget remain held.
             resolve(&metadata).map_err(status)?;
+            deadline.check().map_err(deadline_status)?;
             event.map_err(status)
         });
+        // One absolute timer also ends a pull whose producer never replies.
+        // Tonic ends the response at the first error, retaining the same source.
+        let expiry = futures::stream::once(async move {
+            deadline
+                .within(std::future::pending::<wire::AvailabilityCursor>())
+                .await
+                .map_err(deadline_status)
+        });
+        let events = futures::stream::select(frames, expiry);
         Ok(tonic::Response::new(Box::pin(events)))
     }
 
