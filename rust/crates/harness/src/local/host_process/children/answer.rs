@@ -1,6 +1,9 @@
 //! Native event decoding and completion from the host's original turn terminal.
 use super::{Outcome, Value};
 
+/// Byte bound of one native event line and of a retained answer's source.
+pub(super) const EVENT_LIMIT: usize = 65_536;
+
 /// Byte bound of a retained answer.
 pub(super) const ANSWER_LIMIT: usize = 4096;
 

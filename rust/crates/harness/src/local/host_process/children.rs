@@ -24,13 +24,11 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod answer;
-use answer::NativeAnswer;
+use answer::{EVENT_LIMIT, NativeAnswer};
 
 mod tools;
 pub use tools::serve;
 
-/// Byte bound of one native event line and of a retained answer's source.
-const EVENT_LIMIT: usize = 65_536;
 /// The saved log's line where framing or decoding dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
 
