@@ -826,6 +826,42 @@ mod tests {
                 drop(copied);
                 assert_eq!(work.live_allocation_bytes(), baseline);
 
+                let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+                let retained = work.live_allocation_bytes();
+                for _ in 0..2 {
+                    trial
+                        .lock()
+                        .tools
+                        .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                    let (outcome, custody) = trial
+                        .recorded_tool_result(operation, call_id, Some(&work))?
+                        .unwrap();
+                    let receipt = (outcome, io.hold_native_custody(custody.unwrap())?);
+                    assert_eq!(receipt.0, original);
+                    assert!(work.live_allocation_bytes() > retained);
+                    drop(receipt);
+                    assert_eq!(
+                        work.live_allocation_bytes(),
+                        retained,
+                        "result custody refunds while the preparation remains alive"
+                    );
+                }
+
+                // Absorbing the same custody into the preparation reproduces
+                // the old retention: dropping the payload cannot refund it.
+                trial
+                    .lock()
+                    .tools
+                    .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                let (outcome, custody) = trial
+                    .recorded_tool_result(operation, call_id, Some(&work))?
+                    .unwrap();
+                io.absorb_native_custody(custody.unwrap())?;
+                drop(outcome);
+                assert!(work.live_allocation_bytes() > retained);
+                drop(io);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+
                 // A plain clone allocates but charges none of the original
                 // work: this detects the previous unaccounted-copy path.
                 let before = work.receipt();

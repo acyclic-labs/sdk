@@ -547,6 +547,25 @@ impl PreparationIo {
         }
         Ok(reservation)
     }
+    /// Keeps an incoming original-ledger allocation with its owned value,
+    /// without merging it into the longer-lived preparation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn hold_native_custody(
+        &self,
+        custody: acyclic_fs::NativeAllocation,
+    ) -> Result<DecodeReservation<'_>> {
+        if !self
+            .original_native_work()
+            .is_some_and(|work| work.shares_ledger(custody.work()))
+        {
+            return Err(self.invalid("native content custody belongs to another ledger"));
+        }
+        Ok(DecodeReservation {
+            io: self,
+            bytes: 0,
+            custody: Some(custody),
+        })
+    }
     pub(crate) fn guard_bytes(
         &self,
         bytes: &acyclic_stream::OwnedBytes,

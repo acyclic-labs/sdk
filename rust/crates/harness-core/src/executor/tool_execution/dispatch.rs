@@ -65,10 +65,10 @@ impl<'io> StockExecution<'io> {
             ))
             .await?
         };
-        let replayed = match replayed {
+        let (replayed, hold) = match replayed {
             // A recorded failure settles again; an interruption also stops
             // the turn where the source's stopped.
-            Some(crate::model::RecordedToolOutcome::Failed { reason, cause }) => {
+            Some((crate::model::RecordedToolOutcome::Failed { reason, cause }, _hold)) => {
                 let content = self
                     .settle_tool_cause(
                         journal,
@@ -85,8 +85,10 @@ impl<'io> StockExecution<'io> {
                     ToolInvocationOutcome::Settled(content, None)
                 });
             }
-            Some(crate::model::RecordedToolOutcome::Completed(result)) => Some(result),
-            None => None,
+            Some((crate::model::RecordedToolOutcome::Completed(result), hold)) => {
+                (Some(result), hold)
+            }
+            None => (None, None),
         };
         #[cfg(not(target_arch = "wasm32"))]
         let composed = if tool.executor.is_code_mode() {
@@ -214,7 +216,7 @@ impl<'io> StockExecution<'io> {
             identity,
             invocation,
             tool,
-            result,
+            (result, hold),
             (_hook_context, completion),
         )
         .await
@@ -226,7 +228,7 @@ impl<'io> StockExecution<'io> {
         identity: (OperationId, u32),
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
-        result: ToolResult,
+        result: ToolReceipt<'io>,
         completion: (
             &mut Vec<ModelMessage>,
             crate::executor::phase::PreparedPhase<'_>,
@@ -234,7 +236,7 @@ impl<'io> StockExecution<'io> {
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (_hook_context, completion) = completion;
         let (projection, content) = match self
-            .project_tool_output(journal, identity, invocation, tool, &result)
+            .project_tool_output(journal, identity, invocation, tool, &result.0)
             .await?
         {
             Ok(projected) => projected,
@@ -247,7 +249,7 @@ impl<'io> StockExecution<'io> {
                     journal,
                     identity,
                     invocation,
-                    &result,
+                    &result.0,
                     &projection,
                     completion,
                 )
@@ -256,10 +258,7 @@ impl<'io> StockExecution<'io> {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,
                 Err(content) => return Ok(ToolInvocationOutcome::Settled(content, None)),
             }
-            Ok(ToolInvocationOutcome::Settled(
-                content,
-                Some((result, None)),
-            ))
+            Ok(ToolInvocationOutcome::Settled(content, Some(result)))
         }
         #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
         {
@@ -268,13 +267,13 @@ impl<'io> StockExecution<'io> {
                     journal,
                     identity,
                     &invocation.call_id,
-                    &result,
+                    &result.0,
                     &projection,
                     completion,
                 )
                 .await?;
             Ok(match publication {
-                Ok(()) => ToolInvocationOutcome::Settled(content, Some((result, None))),
+                Ok(()) => ToolInvocationOutcome::Settled(content, Some(result)),
                 Err(content) => ToolInvocationOutcome::Settled(content, None),
             })
         }
