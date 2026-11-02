@@ -40,7 +40,8 @@ pub struct ReaderPolicy {
     /// is served uncached while it is wanted. Zero keeps only wanted values.
     pub cache_bytes: usize,
     /// Streams whose tail/fork facts are retained between frames, beside the
-    /// byte budget; facts the current frame uses are never evicted.
+    /// byte budget; facts the current frame uses are never evicted. Zero
+    /// permits any unused fact to be replaced when admitting a new stream.
     pub streams: usize,
     /// Reads in flight, all priorities.
     pub requests: usize,
@@ -108,14 +109,13 @@ impl ReaderPolicy {
     /// # Errors
     /// `StreamError::LimitExceeded` names any out-of-range budget.
     pub fn validate(&self) -> Result<(), StreamError> {
-        let ok = (16..=65_536).contains(&self.streams)
-            && self.requests > 0
+        let ok = self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.listing_limit)
             && self.lag >= 1
-            && (1..=65_536).contains(&self.deliveries)
+            && self.deliveries > 0
             && self.timeout_ms > 0
             && self.backoff_min_ms > 0
             && self.backoff_min_ms <= self.backoff_max_ms

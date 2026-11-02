@@ -776,10 +776,13 @@ mod tests {
     fn every_busy_follow_progresses_across_delivery_frames() {
         use super::super::ReaderPolicy;
         futures::executor::block_on(async {
-            for (streams, deliveries, frames) in [(2, 1, 4), (513, 256, 3)] {
+            for (retained, streams, deliveries, frames) in
+                [(0, 2, 1, 4), (1, 513, 256, 3), (65_537, 2, 65_537, 1)]
+            {
                 let provider = Arc::new(MemoryStream::default());
                 let mut driver = Driver::new(Arc::clone(&provider));
                 let mut reader = Reader::new(ReaderPolicy {
+                    streams: retained,
                     deliveries,
                     ..ReaderPolicy::default()
                 })
@@ -815,10 +818,15 @@ mod tests {
                 for frame in 0..frames {
                     reader.begin_frame(frame);
                     driver.drain(&mut reader, frame, &mut cx);
-                    assert!(!reader.accepting());
+                    assert_eq!(
+                        reader.delivered,
+                        deliveries.min(streams * 4 - frame as usize * deliveries),
+                        "the frame must consume exactly its available delivery credit"
+                    );
+                    assert_eq!(reader.accepting(), reader.delivered < deliveries);
                 }
                 assert_eq!(driver.open_follows(), streams);
-                let minimum = if streams == 2 { 2 } else { 1 };
+                let minimum = (frames as usize * deliveries / streams).min(4) as u64;
                 let progressed = reader
                     .follows()
                     .filter(|(_, position)| *position >= minimum)
