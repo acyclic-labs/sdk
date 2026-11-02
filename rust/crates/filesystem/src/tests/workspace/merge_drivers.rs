@@ -248,6 +248,54 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ));
     }
 
+    // Calibrate the selected scalar records using the real retained reader.
+    // The original output allowance must also cover subsequent body reads,
+    // even when the selected binary returns only immutable references.
+    {
+        let conflict = MergeConflict::File(unbounded!(main, stat("/binary"))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        for side in [ConflictSide::Base, ConflictSide::Ours, ConflictSide::Theirs] {
+            let record = calibration
+                .conflict_record(&conflict, side)
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .ok_or("binary control lost an original record")?;
+            assert_eq!(record.kind, FileKind::Regular);
+        }
+        let record_output = calibration.work().output_bytes;
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut bounded = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    output_bytes: record_output,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        assert!(
+            matches!(
+                bounded.describe_conflict_file(conflict).await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "selected body reading minted another output allowance"
+        );
+        assert!(matches!(
+            bounded.next_conflict().map_err(|failure| failure.error),
+            Err(WorkspaceError::Filesystem(FsError::InvalidDiff))
+        ));
+    }
+
     // A foreign edit to plan.json cannot be silently overwritten by a later
     // page. Failure terminates the advanced cursor; no partial page appears.
     {
