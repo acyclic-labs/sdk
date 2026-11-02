@@ -288,6 +288,8 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
     state.conversation_tail += 1;
     state.status_tail += 1;
     Step {
+        #[cfg(feature = "research")]
+        resource_placement: None,
         outs: vec![
             Out::Conversation(b"c3".to_vec()),
             Out::Spawn {
@@ -404,6 +406,8 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
     let state = AgentState::adopted(parent.clone(), &adopted(id(1))).expect("adopts");
     let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
     let step = Step {
+        #[cfg(feature = "research")]
+        resource_placement: None,
         outs: vec![
             Out::Spawn {
                 profile: None,

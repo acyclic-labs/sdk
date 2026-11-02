@@ -170,6 +170,24 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         });
         builder.append(path, status.append_record()?);
     }
+    #[cfg(feature = "research")]
+    if let Some(resources) = state.resources {
+        let agent = state.path.id();
+        let path = super::resources::resource_stream(&agent)?;
+        // The actor checkpoint's original condition fences this append too.
+        let snapshot = super::resources::AgentResourceSnapshot {
+            version: 1,
+            agent: agent.to_bytes(),
+            inbox_cursor: cursor,
+            state: resources,
+            placement: step.resource_placement,
+        };
+        builder.append(
+            path,
+            serde_json::to_vec(&snapshot)
+                .map_err(|_| Error::Record("agent resource snapshot does not encode"))?,
+        );
+    }
     let mut mutations = builder.forks;
     mutations.extend(
         builder

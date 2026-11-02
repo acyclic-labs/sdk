@@ -371,11 +371,14 @@ where
             Some(cuts) => spawns.with_fork_cuts(cuts),
             None => spawns,
         });
-        let handler = Arc::new(
-            AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
-                .map_err(|_| Error::Record("agent handler manifest"))?
-                .with_spawn_volumes(spawns.clone()),
+        let handler = AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
+            .map_err(|_| Error::Record("agent handler manifest"))?
+            .with_spawn_volumes(spawns.clone());
+        #[cfg(feature = "research")]
+        let handler = handler.with_resource_placement(
+            crate::agent::resources::ResourcePlacement::filesystem(&volumes.provider),
         );
+        let handler = Arc::new(handler);
         let agents = AgentHost::hosting(
             stream,
             within.clone(),

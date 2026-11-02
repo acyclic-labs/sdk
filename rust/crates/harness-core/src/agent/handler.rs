@@ -39,6 +39,8 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
     closes: bool,
+    #[cfg(feature = "research")]
+    resource_placement: Option<super::resources::ObservedResourcePlacement>,
 }
 
 /// The agents' actor state under one store root: creation and observation,
@@ -73,6 +75,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             },
             volumes: None,
             closes: false,
+            #[cfg(feature = "research")]
+            resource_placement: None,
         })
     }
 
@@ -82,6 +86,25 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
     pub fn with_close(mut self) -> Self {
         self.closes = true;
         self
+    }
+
+    /// Observes the handler's placement in research builds. Hash once at binding;
+    /// each step publishes a fact only if its digest changes. Ordinary builds
+    /// perform no hashing and execution routing is unchanged.
+    #[must_use]
+    pub fn with_resource_placement(self, placement: super::resources::ResourcePlacement) -> Self {
+        #[cfg(feature = "research")]
+        {
+            let mut handler = self;
+            handler.resource_placement =
+                Some(super::resources::ObservedResourcePlacement::new(placement));
+            handler
+        }
+        #[cfg(not(feature = "research"))]
+        {
+            let _ = placement;
+            self
+        }
     }
 
     /// Creates spawned children's volumes through `volumes`, in each spawn's
@@ -332,9 +355,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
-        let mut prepared =
-            super::machine::prepare_step(&self.driver, &path, state, cursor, wake, cancellation)
-                .await?;
+        #[cfg(feature = "research")]
+        let resource_placement = self.resource_placement.as_ref();
+        #[cfg(not(feature = "research"))]
+        let resource_placement = None;
+        let mut prepared = super::machine::prepare_step(
+            &self.driver,
+            &path,
+            state,
+            cursor,
+            wake,
+            cancellation,
+            resource_placement,
+        )
+        .await?;
         let participant = match &self.volumes {
             Some(volumes) => {
                 let (state, outs) = prepared.state_and_outs();

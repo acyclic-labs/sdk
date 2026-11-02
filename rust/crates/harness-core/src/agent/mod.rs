@@ -39,6 +39,7 @@ mod notices;
 pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod reply;
+pub mod resources;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
 mod slots;

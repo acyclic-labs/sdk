@@ -40,7 +40,12 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            version: super::records::RECORD_VERSION.to_string(),
+            // Research state has its own persisted shape, without migration.
+            version: if crate::model::RESEARCH_CAPTURE_ENABLED {
+                format!("{}-research-1", super::records::RECORD_VERSION)
+            } else {
+                super::records::RECORD_VERSION.to_string()
+            },
         });
     &IDENTITY
 }
@@ -520,6 +525,15 @@ mod tests {
                 .collect();
             for outcome in outcomes() {
                 let state = AgentState {
+                    #[cfg(feature = "research")]
+                    resources: Some(super::super::resources::AgentResourceState {
+                        counters: super::super::resources::AgentResourceCounters {
+                            step_commits: u64::MAX,
+                            conversation_records: u64::MAX,
+                            conversation_bytes: u64::MAX,
+                        },
+                        placement: Some([u8::MAX; 32]),
+                    }),
                     profile: adopted.profile.clone(),
                     parent: path.parent(),
                     path: path.clone(),
