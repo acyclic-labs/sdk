@@ -1,17 +1,12 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { sha256File } from "./file-digest.mjs";
 
 export function bindingKey(moduleDigest, runnerIdentity, args, environment, script) {
   return createHash("sha256").update(JSON.stringify([moduleDigest, runnerIdentity, process.version, args, environment, script])).digest("hex");
-}
-
-async function digest(path) {
-  const hash = createHash("sha256");
-  for await (const bytes of createReadStream(path)) hash.update(bytes);
-  return hash.digest("hex");
 }
 
 export async function runnerIdentity(command) {
@@ -25,7 +20,7 @@ export async function runnerIdentity(command) {
         if (!statSync(candidate).isFile()) continue;
       } catch { continue; }
       const executable = realpathSync(candidate);
-      return {executable, digest:await digest(executable)};
+      return {executable, digest:await sha256File(executable)};
     }
   }
   throw new Error(`WASM runner unavailable: ${command}`);
@@ -46,7 +41,9 @@ export async function runNodeWasmTests(args, runner = process.env.ACYCLIC_WASM_T
   const module = resolve(args[0]);
   const identity = await runnerIdentity(runner);
   const environment = Object.entries(process.env).filter(([key]) => /^(WASM_BINDGEN_|NODE_|LLVM_PROFILE_FILE)/u.test(key)).sort();
-  const key = bindingKey(await digest(module), identity, [process.cwd(), ...args.slice(1)], environment, readFileSync(fileURLToPath(import.meta.url), "utf8"));
+  const source = [import.meta.url, new URL("./file-digest.mjs", import.meta.url)]
+    .map(url => readFileSync(fileURLToPath(url), "utf8"));
+  const key = bindingKey(await sha256File(module), identity, [process.cwd(), ...args.slice(1)], environment, source);
   const cache = join(dirname(module), ".node-wasm-tests", key);
   mkdirSync(cache, {recursive:true});
   const cached = cachedRunner(cache);

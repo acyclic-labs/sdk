@@ -1,12 +1,12 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import "./check-compatibility-digests.mjs";
 import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { sha256File } from "./file-digest.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -77,7 +77,7 @@ for (const [documentPath, schemaPath] of documents) {
 const provenance = await load("provenance/manifest.json");
 for (const item of provenance.imports) if (item.auditResult !== "approved") throw new Error(`unapproved import: ${item.destinationPath}`);
 
-const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
+const digest = async path => `sha256:${await sha256File(new URL(path, root))}`;
 const compatibility = await load("compatibility/manifest.json");
 const harnessVersion = compatibility.families.harness.version;
 const machinesVersion = compatibility.families.machines.version;

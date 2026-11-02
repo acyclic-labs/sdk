@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sha256File } from './file-digest.mjs';
 
 // Annotated tags retain an already-existing immutable object, so each step
 // advances through the actual ancestry rather than rechecking visibility.
@@ -27,12 +27,6 @@ export function assets(directory) {
     const file = path.join(directory, entry.name);
     return entry.isDirectory() ? assets(file) : entry.isFile() ? [file] : [];
   }).sort();
-}
-
-async function digest(file) {
-  const hash = createHash('sha256');
-  for await (const bytes of fs.createReadStream(file)) hash.update(bytes);
-  return `sha256:${hash.digest('hex')}`;
 }
 
 export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: Infinity }) } = {}) {
@@ -74,7 +68,7 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
     const name = path.basename(file);
     if (names.has(name)) throw new Error(`Duplicate release asset name ${name}`);
     names.add(name);
-    const expected = await digest(file);
+    const expected = `sha256:${await sha256File(file)}`;
     const existing = byName.get(name);
     if (existing) {
       let actual = existing.digest;
@@ -82,7 +76,7 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-release-'));
         try {
           gh('release', 'download', tag, '--repo', repository, '--pattern', name, '--dir', temp);
-          actual = await digest(path.join(temp, name));
+          actual = `sha256:${await sha256File(path.join(temp, name))}`;
         } finally {
           const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(temp));
           if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
