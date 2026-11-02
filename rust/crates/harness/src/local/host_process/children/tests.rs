@@ -85,73 +85,90 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof() -> Result {
     served("codex", |host, cwd| {
-        let (mut sessions, _) = children(host, cwd, "exit-output")?;
-        let (mut running, view) = claim(
-            &mut sessions,
-            cwd,
-            "captured",
-            SessionAction::Spawn {
-                prompt: "captured reply".into(),
-            },
-        )?;
-        let mut command = native_fixture(&view, "", "0");
-        running
-            .process
-            .spawn(&mut command, running.claim.operation)?;
-        let pid = shell_pid(&mut running)?;
-        let mut writer = fs::OpenOptions::new()
-            .write(true)
-            .open(format!("/proc/{pid}/fd/1"))?;
-        running.process.queue_stdin(b"exit\n".to_vec())?;
-        wait_exit(&mut running)?;
-        // Replay after direct-child exit. Derive one invalid UTF-8 frame from
-        // the captured start, between that start and its original reply, so
-        // framing loss cannot be reset by another turn-start. Keeping this
-        // writer proves settlement cannot require EOF.
         let captured = include_bytes!("../fixtures/codex-completed.jsonl");
-        let first = captured
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .ok_or("captured start absent")?
-            + 1;
-        let mut corrupted = captured[..first].to_vec();
-        corrupted[0] = 0xff;
-        writer.write_all(&captured[..first])?;
-        writer.write_all(&corrupted)?;
-        writer.write_all(&captured[first..])?;
-        sessions.children.insert("captured".into(), running);
-        sessions.ready.push("captured");
-        // Small scratch pages force both real output passes to spend all
-        // their credit while the captured terminal is still unread.
-        let mut page = [0; 8];
-        sessions.pump_output(&mut page)?;
-        assert!(sessions.children.contains_key("captured"));
-        assert!(
-            sessions.children["captured"].answer.outcome.is_none(),
-            "terminal remains unread after the full passes"
-        );
-        assert_eq!(
-            sessions
-                .ready
-                .queue()
-                .keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["captured"],
-            "actual output must schedule exactly its next bounded pass"
-        );
-        sessions.pump_output(&mut page)?;
-        assert!(!sessions.children.contains_key("captured"));
-        assert!(sessions.ready.queue().keys.is_empty());
-        let completed = sessions
-            .wait("captured")?
-            .ok_or("captured child is still running")?;
-        assert_eq!(
-            completed["results"][0]["outcome"]["Succeeded"]["text"],
-            "PAIRED_NATIVE_DONE"
-        );
-        drop(writer);
+        let mut events = captured.split_inclusive(|byte| *byte == b'\n');
+        let start = events.next().ok_or("captured start absent")?;
+        let preview = events.next().ok_or("captured preview absent")?;
+        for recovered in [true, false] {
+            let session = if recovered {
+                "exit-output"
+            } else {
+                "lost-preview"
+            };
+            let (mut sessions, _) = children(host, cwd, session)?;
+            let (mut running, view) = claim(
+                &mut sessions,
+                cwd,
+                "captured",
+                SessionAction::Spawn {
+                    prompt: "captured reply".into(),
+                },
+            )?;
+            let mut command = native_fixture(&view, "", "0");
+            running
+                .process
+                .spawn(&mut command, running.claim.operation)?;
+            let pid = shell_pid(&mut running)?;
+            let mut writer = fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/{pid}/fd/1"))?;
+            running.process.queue_stdin(b"exit\n".to_vec())?;
+            wait_exit(&mut running)?;
+            // Replay after direct-child exit, keeping the writer to withhold EOF.
+            // Derived negative inputs corrupt one original frame: invalid UTF-8
+            // before a fresh preview can recover, while malformed JSON after the
+            // preview must invalidate it before the original completed terminal.
+            let boundary = if recovered {
+                start.len()
+            } else {
+                start.len() + preview.len()
+            };
+            let mut corrupted = if recovered { start } else { preview }.to_vec();
+            corrupted[0] = if recovered { 0xff } else { b'!' };
+            writer.write_all(&captured[..boundary])?;
+            writer.write_all(&corrupted)?;
+            writer.write_all(&captured[boundary..])?;
+            sessions.children.insert("captured".into(), running);
+            sessions.ready.push("captured");
+            // Small scratch pages force both real output passes to spend all
+            // their credit while the captured terminal is still unread.
+            let mut page = [0; 8];
+            sessions.pump_output(&mut page)?;
+            assert!(sessions.children.contains_key("captured"));
+            assert!(
+                sessions.children["captured"].answer.outcome.is_none(),
+                "terminal remains unread after the full passes"
+            );
+            assert_eq!(
+                sessions
+                    .ready
+                    .queue()
+                    .keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["captured"],
+                "actual output must schedule exactly its next bounded pass"
+            );
+            sessions.pump_output(&mut page)?;
+            assert!(!sessions.children.contains_key("captured"));
+            assert!(sessions.ready.queue().keys.is_empty());
+            let completed = sessions
+                .wait("captured")?
+                .ok_or("captured child is still running")?;
+            if recovered {
+                assert_eq!(
+                    completed["results"][0]["outcome"]["Succeeded"]["text"],
+                    "PAIRED_NATIVE_DONE"
+                );
+            } else {
+                let failure = completed["results"][0]["outcome"]["Failed"]["message"]
+                    .as_str()
+                    .ok_or("malformed native event retained a stale successful reply")?;
+                assert!(failure.contains("malformed JSON"), "{failure}");
+            }
+            drop(writer);
+        }
         Ok(())
     })
     .await
