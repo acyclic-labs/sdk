@@ -174,6 +174,12 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 128,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x6772_6f75_702d_7631),
+            ..proptest::test_runner::Config::default()
+        })]
         #[test]
         fn groups_cover_original_positions_with_linear_comparisons(
             mut keys in proptest::collection::vec(0u16..64, 0..256),

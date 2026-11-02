@@ -387,7 +387,20 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
         create: impl FnOnce(&mut W) -> Result<V, W::Error>,
     ) -> Result<&mut V, W::Error> {
-        let (differing, depth) = self.differing_bit(key, accounting)?;
+        let selected = self.differing_bit(key, accounting)?;
+        self.selected_or_try_insert_with(key, selected, accounting, create)
+    }
+
+    // Reuses the original selection while this exclusively owned root remains
+    // unchanged. Compositions can inspect another index without searching this
+    // one again; all publication and funding still use this one implementation.
+    fn selected_or_try_insert_with<W: IndexWork<Allocation = A>>(
+        &mut self,
+        key: [u8; N],
+        (differing, depth): (Option<Option<Bit>>, u64),
+        accounting: &mut W,
+        create: impl FnOnce(&mut W) -> Result<V, W::Error>,
+    ) -> Result<&mut V, W::Error> {
         if differing == Some(None) {
             accounting.charge_items(depth)?;
             return Ok(Self::selected_value_mut(&mut self.root, key));

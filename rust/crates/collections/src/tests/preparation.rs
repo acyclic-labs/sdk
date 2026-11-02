@@ -6,6 +6,80 @@ struct Bounded<'a> {
     remaining: IndexInsertionBound,
 }
 
+#[test]
+fn recent_selection_preserves_both_windows_with_exact_work_and_refused_rotation()
+-> Result<(), &'static str> {
+    let mut original = Work::default();
+    let mut index = RecentIndex::<usize, _, 8, 1>::default();
+    index.get_or_try_insert_with([0; 8], &mut original, |_| Ok(1))?;
+    index.get_or_try_insert_with([255; 8], &mut original, |_| Ok(2))?;
+    assert!(index.complete());
+    let live = original.live.get();
+    let claims = original.claims;
+    for (key, expected, items) in [([255; 8], 2, 10), ([0; 8], 1, 19)] {
+        let before = original.items;
+        original.maximum_items = Some(before + items);
+        let value = index.get_or_try_insert_with(key, &mut original, |_| {
+            panic!("an existing fact must not construct or rotate")
+        })?;
+        assert_eq!(*value, expected);
+        *value += 10;
+        assert_eq!(original.items - before, items);
+        assert_eq!(original.live.get(), live);
+        assert_eq!(original.claims, claims);
+        // The old check-then-search path repeats a full key comparison. A
+        // further lookup cannot fit the very same original admission.
+        assert_eq!(index.get(key, &mut original).err(), Some("items refused"));
+        original.maximum_items = None;
+    }
+    for credit in 0..=20 {
+        original.maximum_items = Some(original.items + credit);
+        let called = Cell::new(false);
+        let result = index.get_or_try_insert_with([1; 8], &mut original, |_| {
+            called.set(true);
+            Err("constructor refused")
+        });
+        assert_eq!(
+            result.err(),
+            Some(if credit == 20 {
+                "constructor refused"
+            } else {
+                "items refused"
+            })
+        );
+        assert_eq!(called.get(), credit == 20);
+        original.maximum_items = None;
+        assert!(index.complete());
+        assert_eq!(original.live.get(), live);
+        assert_eq!(index.get([0; 8], &mut original)?, Some(&11));
+        assert_eq!(index.get([255; 8], &mut original)?, Some(&12));
+        assert_eq!(index.get([1; 8], &mut original)?, None);
+    }
+    let before = original.items;
+    original.maximum_items = Some(before + 20);
+    assert_eq!(
+        *index.get_or_try_insert_with([1; 8], &mut original, |_| Ok(3))?,
+        3
+    );
+    assert_eq!(original.items - before, 20);
+    original.maximum_items = None;
+    assert!(!index.complete());
+    assert_eq!(original.live.get(), live);
+    assert_eq!(index.get([0; 8], &mut original)?, None);
+    assert_eq!(index.get([255; 8], &mut original)?, Some(&12));
+    assert_eq!(index.get([1; 8], &mut original)?, Some(&3));
+    original.cancelled = true;
+    assert_eq!(
+        index
+            .get_or_try_insert_with([1; 8], &mut original, |_| panic!("cancelled constructor"))
+            .err(),
+        Some("cancelled")
+    );
+    drop(index);
+    assert_eq!(original.live.get(), 0);
+    Ok(())
+}
+
 impl IndexWork for Bounded<'_> {
     type Error = &'static str;
     type Allocation = Allocation;
