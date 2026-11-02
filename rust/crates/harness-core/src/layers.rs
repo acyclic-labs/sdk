@@ -54,8 +54,15 @@ impl Rule {
 /// Whether `bytes` disable the lower layers' copy of their path.
 #[must_use]
 pub fn is_off(bytes: &[u8]) -> bool {
-    bytes.trim_ascii() == b"off: true"
+    let mut marker = OffMarker::default();
+    marker.push(bytes);
+    marker.finish()
 }
+
+mod off;
+#[doc(hidden)]
+pub use off::OffMarker;
+pub(crate) use off::{MarkerChunk, off_from_prefix};
 
 /// The complete built-in skill at this path, when one exists. Old authored
 /// copies have no layer semantics of their own: only byte equality with the

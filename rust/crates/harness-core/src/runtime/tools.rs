@@ -912,7 +912,7 @@ impl ToolContext {
         std::borrow::Cow<'a, str>,
         Option<(crate::conversation::FilePathSelection, crate::NativeCustody)>,
     )> {
-        use crate::layers::{WHY_SUFFIX, is_off, layered};
+        use crate::layers::{WHY_SUFFIX, layered, off_from_prefix};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
             return Ok((std::borrow::Cow::Borrowed(path), None));
         };
@@ -990,7 +990,28 @@ impl ToolContext {
             let _ = retained;
             None
         };
-        if selected.byte_length <= probe.length && is_off(&bytes) {
+        let off = off_from_prefix(&bytes, selected.byte_length, io, |range| {
+            let home = &home;
+            let selected = &selected;
+            async move {
+                let (_, bytes, retained) = self
+                    .read_tool_path_range(home, Some(&selected.generation), range, io)
+                    .await?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let custody = {
+                    let _ = retained;
+                    None::<()>
+                };
+                Ok(crate::layers::MarkerChunk {
+                    bytes,
+                    _hold: custody,
+                })
+            }
+        })
+        .await?;
+        if off {
             drop(selected);
             drop(custody);
             return Err(missing());

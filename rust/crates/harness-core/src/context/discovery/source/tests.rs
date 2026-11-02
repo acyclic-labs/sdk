@@ -168,12 +168,7 @@ impl SkillReader for Pages {
         _: &'a str,
         _: &'a u8,
         _: u32,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (acyclic_stream::OwnedBytes, PinnedContextPath),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         panic!("non-file skill must be rejected before a prefix read")
     }
 }

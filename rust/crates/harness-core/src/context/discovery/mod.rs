@@ -50,8 +50,8 @@ pub use publication::{
 #[doc(hidden)]
 pub use source::{
     DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource, InstructionReader,
-    PROJECT_SKILL_ROOTS, SkillCatalog, SkillReader, VolumeDiscovery, capture_instructions,
-    discover_layered_skills, discover_skills_from,
+    PROJECT_SKILL_ROOTS, SkillCatalog, SkillPrefix, SkillReader, VolumeDiscovery,
+    capture_instructions, discover_layered_skills, discover_skills_from,
 };
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

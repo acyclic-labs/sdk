@@ -3,7 +3,7 @@
 use crate::context::native_discovery::LazyDiscovery;
 use crate::context::{
     ContextRoot, DiscoveryPage, DiscoverySource, DiscoveryWork, PROJECT_SKILL_ROOTS,
-    PinnedContextPath, SkillCatalog, SkillMetadata, SkillReader, discover_skills_from,
+    PinnedContextPath, SkillCatalog, SkillMetadata, SkillPrefix, SkillReader, discover_skills_from,
 };
 use crate::conversation::VolumeRef;
 use crate::{Error, Result};
@@ -589,12 +589,7 @@ impl SkillReader for ProjectCatalog<'_> {
         relative: &'a str,
         cut: &'a Self::Revision,
         maximum: u32,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (acyclic_stream::OwnedBytes, PinnedContextPath),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let path = format!("/{relative}");
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -650,7 +645,29 @@ impl SkillReader for ProjectCatalog<'_> {
                     &mut accounting,
                 )
                 .await?;
-            Ok((prefix.bytes, pinned))
+            let view = &self.directory.view;
+            let work = self.directory.work;
+            let path = &path;
+            let off =
+                crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
+                    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    };
+                    let (chunk, _) = view
+                        .read_at_snapshot(*cut, path, Some(range), range.length, &mut accounting)
+                        .await?;
+                    Ok(crate::layers::MarkerChunk {
+                        bytes: chunk.bytes,
+                        _hold: (),
+                    })
+                })
+                .await?;
+            Ok(SkillPrefix {
+                bytes: prefix.bytes,
+                pinned,
+                off,
+            })
         })
     }
 }
@@ -727,12 +744,7 @@ impl SkillReader for UserCatalogSource<'_> {
         path: &'a str,
         reference: &'a SourceReference,
         maximum: u32,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (acyclic_stream::OwnedBytes, PinnedContextPath),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -773,10 +785,37 @@ impl SkillReader for UserCatalogSource<'_> {
                 )
                 .await
                 .map_err(storage)?;
+            let source = self.source;
+            let work = self.work;
+            let parsed = &parsed;
+            let off =
+                crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
+                    let chunk = source
+                        .read_range(
+                            *reference,
+                            parsed,
+                            node.version,
+                            range.offset,
+                            range.length,
+                            work,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(storage)?;
+                    Ok(crate::layers::MarkerChunk {
+                        bytes: chunk.bytes,
+                        _hold: (),
+                    })
+                })
+                .await?;
             let pinned = self
                 .sources
                 .retain(self.records, self.source, self.root, &path, node)?;
-            Ok((prefix.bytes, pinned))
+            Ok(SkillPrefix {
+                bytes: prefix.bytes,
+                pinned,
+                off,
+            })
         })
     }
 }

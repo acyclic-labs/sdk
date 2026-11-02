@@ -16,6 +16,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "layer_off_marker"
+path = "fuzz_targets/layer_off_marker.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "local_state_directory"
 path = "fuzz_targets/local_state_directory.rs"
 required-features = ["runtime"]
