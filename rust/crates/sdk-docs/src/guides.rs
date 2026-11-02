@@ -116,20 +116,3 @@ pub(super) fn guide_title(markdown: &str, fallback: &str) -> String {
         .unwrap_or(fallback)
         .to_owned()
 }
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    hex_digest(
-        "",
-        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref(),
-    )
-}
-
-pub(super) fn hex_digest(prefix: &str, bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(prefix.len() + bytes.len() * 2);
-    result.push_str(prefix);
-    for &byte in bytes {
-        result.push(DIGITS[(byte >> 4) as usize] as char);
-        result.push(DIGITS[(byte & 0xf) as usize] as char);
-    }
-    result
-}

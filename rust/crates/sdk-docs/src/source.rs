@@ -100,7 +100,7 @@ pub(super) fn attest_generated_sources(
 }
 
 pub(super) fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
-    let raw = path.to_string_lossy().replace('\\', "/");
+    let raw = normalize_path(path);
     if raw.is_empty() || raw.contains(':') {
         return Err(Error::Invalid(format!(
             "generated source logical path must be relative: {raw:?}"

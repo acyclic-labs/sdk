@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [lib]
-path = "../../crates/sdk-docs/src/sync.rs"
+path = "../../crates/sdk-generation/tests/cli_regressions/cache.rs"
 
 [[test]]
 name = "fixture-model"

@@ -544,12 +544,16 @@ fn digest_files<'a>(
             Error::Invalid(format!("scenario source escapes root: {}", path.display()))
         })?;
         let bytes = std::fs::read(path).map_err(|error| Error::Io(error.to_string()))?;
-        hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        hasher.update(crate::normalize_path(relative).as_bytes());
         hasher.update(&[0]);
         hasher.update(&bytes);
         hasher.update(&[0]);
     }
-    Ok(crate::hex_digest("sha256:", hasher.finish().as_ref()))
+    Ok(crate::format_digest(
+        &["sha256:"],
+        hasher.finish().as_ref(),
+        "",
+    ))
 }
 
 #[cfg(test)]

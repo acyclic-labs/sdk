@@ -36,12 +36,13 @@ impl StagedArchive {
             return Err("registry archive compressed-byte limit exceeded".into());
         }
         let mut snapshot = tempfile::tempfile().map_err(|e| e.to_string())?;
-        let (digest, _) = transfer(
+        let (digest, _) = crate::copy_and_hash(
             &mut source,
             &mut snapshot,
             limits.compressed_bytes,
             "compressed-byte",
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
         if digest != format!("sha256:{}", release.checksum) {
             return Err("released registry archive checksum differs".into());
         }
@@ -60,7 +61,9 @@ impl StagedArchive {
                     .get_or_insert_with(|| fs::File::create(staged.storage.path().join("payload")))
                     .as_mut()
                     .map_err(|e| e.to_string())?;
-                let (sha256, length) = transfer(entry, output, limits.member_bytes, "member-byte")?;
+                let (sha256, length) =
+                    crate::copy_and_hash(entry, output, limits.member_bytes, "member-byte")
+                        .map_err(|e| e.to_string())?;
                 staged.files.insert(
                     name.to_owned(),
                     StagedMember {
@@ -91,12 +94,13 @@ impl StagedArchive {
 
     pub fn check_source(&self, release: &RegistryVersion, archive: &Path) -> Result<(), String> {
         let mut source = fs::File::open(archive).map_err(|e| e.to_string())?;
-        let (digest, _) = transfer(
+        let (digest, _) = crate::copy_and_hash(
             &mut source,
             &mut std::io::sink(),
             self.limits.compressed_bytes,
             "compressed-byte",
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
         if digest != format!("sha256:{}", release.checksum) {
             return Err("registry archive changed during import".into());
         }
@@ -176,35 +180,4 @@ impl StagedArchive {
         }
         Ok(())
     }
-}
-
-fn transfer<R: Read + ?Sized, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    limit: u64,
-    label: &str,
-) -> Result<(String, u64), String> {
-    let mut buffer = [0; 16 * 1024];
-    let mut remaining = limit;
-    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
-    loop {
-        let read = reader.read(&mut buffer).map_err(|e| e.to_string())?;
-        if read == 0 {
-            break;
-        }
-        if read as u64 > remaining {
-            return Err(format!("registry archive {label} limit exceeded"));
-        }
-        remaining -= read as u64;
-        digest.update(&buffer[..read]);
-        writer
-            .write_all(&buffer[..read])
-            .map_err(|e| e.to_string())?;
-    }
-    let mut result = String::from("sha256:");
-    for byte in digest.finish().as_ref() {
-        result.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
-        result.push(char::from(b"0123456789abcdef"[(byte & 15) as usize]));
-    }
-    Ok((result, limit - remaining))
 }
