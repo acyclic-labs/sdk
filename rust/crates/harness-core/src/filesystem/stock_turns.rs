@@ -7,12 +7,11 @@
 use super::{TurnAuthority, TurnExecutors};
 use crate::{
     Capabilities, Error, OperationId, Result,
-    agent::{AgentState, SpawnProfiles},
+    agent::AgentState,
     context::{CompactionPolicy, ContextPipeline},
     conversation::Limits,
     executor::{Executor, StockExecutor},
     model::{Model, ModelContent, ModelProvider},
-    profile::Profiles,
     runtime::{AgentHarness, RuntimeScope, TaskContext},
     tool::ToolRegistry,
 };
@@ -137,7 +136,7 @@ pub struct StockExecutors {
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
-    profiles: Option<Arc<Profiles>>,
+    templates: bool,
     context: Arc<dyn TurnContext>,
 }
 
@@ -159,7 +158,7 @@ impl StockExecutors {
             limits,
             compaction,
             agent_tools: Vec::new(),
-            profiles: None,
+            templates: false,
             context,
         }
     }
@@ -175,12 +174,10 @@ impl StockExecutors {
         self
     }
 
-    /// Runs each agent under its pinned role in `profiles`: roots are created
-    /// with the top-level role, spawns admit children by role, and each turn
-    /// carries its role's directive.
+    /// Reads creation templates through the original filesystem admission.
     #[must_use]
-    pub fn with_profiles(mut self, profiles: Arc<Profiles>) -> Self {
-        self.profiles = Some(profiles);
+    pub fn with_templates(mut self) -> Self {
+        self.templates = true;
         self
     }
 }
@@ -190,10 +187,8 @@ impl TurnExecutors for StockExecutors {
         Some(self.limits.render_bytes)
     }
 
-    fn profiles(&self) -> Option<Arc<dyn SpawnProfiles>> {
-        self.profiles
-            .clone()
-            .map(|profiles| profiles as Arc<dyn SpawnProfiles>)
+    fn templates(&self) -> bool {
+        self.templates
     }
 
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
@@ -240,12 +235,7 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (
-                        &self.agent_tools,
-                        self.profiles
-                            .clone()
-                            .map(|profiles| profiles as Arc<dyn SpawnProfiles>),
-                    ),
+                    (&self.agent_tools, authority.templates.clone()),
                 )?;
             }
             let executor = StockExecutor::new(
@@ -265,12 +255,21 @@ impl TurnExecutors for StockExecutors {
                 Some(native) => executor.with_native_tools(native)?,
                 None => executor,
             };
-            let executor = match (&self.profiles, &agent.profile) {
-                (Some(profiles), Some(pin)) => {
+            let executor = match (self.templates, &agent.profile) {
+                (true, Some(creation)) => {
+                    let digest = creation.template.as_ref().map_or_else(
+                        || {
+                            blake3::hash(include_bytes!("../seed/templates/orchestrator/AGENT.md"))
+                                .to_hex()
+                                .to_string()
+                        },
+                        |file| hex::encode(file.descriptor().sha256()),
+                    );
                     executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
-                        "role",
-                        blake3::Hash::from(pin.digest).to_hex().to_string(),
-                        profiles.directive(pin)?,
+                        "template",
+                        digest,
+                        crate::templates::directive(creation, authority.content.reader.as_ref())
+                            .await?,
                         crate::context::ContextPlacement::Prepend,
                     )))?
                 }

@@ -322,10 +322,11 @@ mod tests {
     /// volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
-            profile: Some(crate::agent::AgentProfilePin {
-                role: "orchestrator".into(),
-                digest: [u8::MAX; 32],
+            profile: Some(crate::agent::CreationConfig {
                 context: crate::agent::SpawnContext::TopLevel,
+                template: None,
+                may_spawn: Vec::new(),
+                allowed_tools: None,
             }),
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
@@ -383,10 +384,11 @@ mod tests {
                 attachments: None,
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
-                profile: crate::agent::AgentProfilePin {
-                    role: "orchestrator".into(),
-                    digest: [u8::MAX; 32],
+                profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
+                    template: None,
+                    may_spawn: Vec::new(),
+                    allowed_tools: None,
                 },
                 history: None,
                 by: from.clone(),

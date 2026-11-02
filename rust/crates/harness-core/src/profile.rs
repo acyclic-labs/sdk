@@ -16,9 +16,7 @@ pub use binding::{BoundTools, ToolBinding};
 mod native;
 pub use native::NativeToolProfile;
 
-mod runtime;
 pub use crate::agent::SpawnContext;
-pub use runtime::{Profiles, ROOT_ROLE};
 
 /// One capability's model-specific shape, in declaration order.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

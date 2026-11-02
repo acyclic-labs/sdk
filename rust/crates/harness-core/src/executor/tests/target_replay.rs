@@ -121,6 +121,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     };
     let journal = Arc::new(Journal::default());
     let authority = TurnAuthority {
+        templates: None,
         issuer: issuer.into(),
         scope,
         grants: grants.clone(),

@@ -31,8 +31,8 @@ impl TurnExecutors for Never {
         Box::pin(async { Err(crate::Error::Unsupported("no turns in this test".into())) })
     }
 
-    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
-        Some(crate::profile::Profiles::builtin())
+    fn templates(&self) -> bool {
+        true
     }
 }
 
