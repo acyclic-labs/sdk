@@ -98,8 +98,9 @@ export async function runCase(binary, login, root, name, signal) {
     env.CODEX_HOME = login;
     const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
     const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
-    await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: Object.fromEntries(
-      ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].map(event => [event, [{ hooks: [{ type: "command", command }] }]])) }));
+    await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
+      PostToolUse: [{ hooks: [{ type: "command", command }] }],
+    } }));
   };
   try {
     const receipt = await withOwnedCase({ processes, signal, origin: setupBegin, prepare,
