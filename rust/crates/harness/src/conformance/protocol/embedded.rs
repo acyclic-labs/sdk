@@ -109,7 +109,6 @@ pub async fn open<B: Backend + ?Sized>(
     let preset = Preset {
         tools: Vec::new(),
         web_tools: false,
-        max_steps: std::num::NonZeroUsize::new(4),
         max_children: None,
         approval_policy: policy,
     };
