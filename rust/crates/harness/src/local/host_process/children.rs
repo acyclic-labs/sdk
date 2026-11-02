@@ -49,6 +49,28 @@ struct Running {
 }
 
 impl Running {
+    /// Binds an originally funded process and claim to its owner's ready key.
+    fn new(
+        process: HostSessionProcess,
+        claim: TurnClaim,
+        reference: &str,
+        ready: &Arc<Ready>,
+    ) -> Self {
+        Self {
+            process,
+            claim,
+            failure: None,
+            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            answer: NativeAnswer::default(),
+            settlement: None,
+            wake: Waker::from(Arc::new(ChildWake {
+                key: reference.into(),
+                ready: Arc::clone(ready),
+            })),
+            armed: None,
+        }
+    }
+
     /// Consumes the same armed result before attempting another child pass.
     fn poll_readiness(&mut self) -> Poll<()> {
         let Some(wait) = self.armed.as_mut() else {
@@ -366,22 +388,12 @@ impl NativeChildren {
             .env("ACYCLIC_WORKSPACE", &view)
             .env("ACYCLIC_TASK", receipt.task().to_string());
         let process = lease.funded_process()?;
-        let wake = Waker::from(Arc::new(ChildWake {
-            key: reference.into(),
-            ready: Arc::clone(&self.ready),
-        }));
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.
-        let running = self.children.entry(reference.into()).or_insert(Running {
-            process,
-            claim,
-            failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-            answer: NativeAnswer::default(),
-            settlement: None,
-            wake,
-            armed: None,
-        });
+        let running = self
+            .children
+            .entry(reference.into())
+            .or_insert(Running::new(process, claim, reference, &self.ready));
         let claim = running.claim.operation;
         if let Err(error) = running
             .process
