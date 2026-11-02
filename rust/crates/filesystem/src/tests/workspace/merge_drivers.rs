@@ -1037,15 +1037,18 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         if native {
             assert_eq!(original.live_allocation_bytes(), baseline);
         }
-        assert!(
+        assert!(matches!(
             content
                 .read_range(crate::ByteRange {
                     offset: u64::MAX,
                     length: 1
                 })
                 .await
-                .is_err()
-        );
+                .map_err(|failure| failure.error),
+            Err(WorkspaceError::Filesystem(FsError::FileRead(
+                crate::kernel::FileRangeReadError::InvalidRange
+            )))
+        ));
         drop(content);
         if native {
             assert_eq!(

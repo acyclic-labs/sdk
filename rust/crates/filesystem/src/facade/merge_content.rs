@@ -141,7 +141,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         )
         .await
-        .map_err(WorkspaceError::engine);
+        .map_err(WorkspaceError::from);
         let retained = result.as_ref().map_or(0, |read| read.logical_owned_bytes);
         readonly_cleanup_standalone(&mut scope, before, retained)?;
         if result.is_ok() {
