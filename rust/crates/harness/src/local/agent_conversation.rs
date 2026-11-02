@@ -323,8 +323,15 @@ impl Conversation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The approval `request` that `agent` waits on, if it is still pending.
-    async fn pending_approval(&self, request: &IntentId) -> Result<Option<Interaction>> {
+    /// Original pending binding and waiting-status sequence. The request bytes
+    /// stay at that immutable status and are read separately in bounded chunks.
+    ///
+    /// # Errors
+    /// Original session, authorization or reply validation failure.
+    pub async fn pending_approval(
+        &self,
+        request: &IntentId,
+    ) -> Result<Option<acyclic_harness_client::PendingApproval>> {
         let AgentReply::Approvals { items, .. } = self
             .connection
             .execute(&AgentCommand::Approvals {
@@ -337,21 +344,29 @@ impl Conversation {
         };
         Ok(items
             .into_iter()
-            .find(|pending| &pending.id == request)
-            .map(|pending| pending.request)
-            .filter(|request| matches!(request, Interaction::Approval { .. })))
+            .next()
+            .filter(|pending| &pending.id == request))
     }
 
-    /// The explanation approval `request` shows its approver, or `None` once
-    /// it is no longer pending.
+    /// The explanation in the first request page, or an instruction to review
+    /// the full request when its explanation spans pages. `None` means it is no
+    /// longer pending. The request subject is never decoded for this preview.
     ///
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn approval_prompt(&self, request: &IntentId) -> Result<Option<String>> {
-        Ok(match self.pending_approval(request).await? {
-            Some(Interaction::Approval { prompt, .. }) => Some(prompt),
-            _ => None,
-        })
+        let Some(pending) = self.pending_approval(request).await? else {
+            return Ok(None);
+        };
+        let (bytes, length) = self.approval_request(pending.status, 0).await?;
+        match Interaction::approval_prompt_preview(&bytes)? {
+            Some(prompt) => Ok(Some(prompt)),
+            None if (bytes.len() as u64) < length => Ok(Some(
+                "Review the complete approval request before deciding; its explanation continues beyond this preview."
+                    .into(),
+            )),
+            None => Err(Error::Invalid("approval request has no explanation".into())),
+        }
     }
 
     /// The binding of `request`, which `agent` waits on.
@@ -368,17 +383,10 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn approval_binding(&self, request: &IntentId) -> Result<Option<ApprovalBinding>> {
-        Ok(match self.pending_approval(request).await? {
-            Some(Interaction::Approval {
-                operation_id,
-                action_digest,
-                ..
-            }) => Some(ApprovalBinding {
-                operation_id,
-                action_digest,
-            }),
-            _ => None,
-        })
+        Ok(self
+            .pending_approval(request)
+            .await?
+            .map(|pending| pending.binding))
     }
 
     /// The agent's current phase, from its latest status: a reconnecting

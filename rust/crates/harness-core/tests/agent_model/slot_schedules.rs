@@ -3,8 +3,18 @@
 use super::*;
 
 #[tokio::test]
-async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Result {
-    for host in [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()] {
+async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
+    let invalid = [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()]
+        .into_iter()
+        .map(Wait::Host)
+        .chain([Wait::Approval {
+            id: intent("invalid-action"),
+            binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+                action_digest: [0; 32],
+            }),
+        }]);
+    for wait in invalid {
         let (root, mut state) = one_below_the_child_limit()?;
         state.turn = Some(Progress {
             inbox: 0,
@@ -21,7 +31,7 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
                 brief: None,
                 volumes: vec![],
             }],
-            wait: Wait::Host(host),
+            wait,
             drops: None,
         }]);
         let result = step(
@@ -40,11 +50,11 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
                     outcome: AgentOutcome::Failed { .. }
                 }
             ),
-            "invalid host wait must settle as a bounded failure"
+            "invalid wait must settle as a bounded failure"
         );
         assert!(
             spawns(&result.outs).is_empty(),
-            "invalid host wait published unchecked effects"
+            "invalid wait published unchecked effects"
         );
         StatusRecord {
             phase: result.state.phase,
@@ -68,6 +78,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     });
     state.phase = Phase::WaitingApproval {
         id: intent("approval"),
+        binding: None,
     };
     state.reserved_children = 0; // Recorded spawn initially names an open child.
     let driver = script(vec![TurnStep {
@@ -174,7 +185,10 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                         checkpoint: Some(vec![1]),
                         reserved_children: recorded,
                         outs: vec![],
-                        wait: Wait::Approval(intent("approval")),
+                        wait: Wait::Approval {
+                            id: intent("approval"),
+                            binding: None,
+                        },
                         drops: None,
                     },
                     TurnStep {

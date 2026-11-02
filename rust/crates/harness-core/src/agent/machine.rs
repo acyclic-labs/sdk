@@ -392,7 +392,13 @@ pub enum Wait {
     /// Run the next turn step at once.
     Continue,
     /// Wait for the response to this approval request.
-    Approval(IntentId),
+    Approval {
+        /// Original request identity.
+        id: IntentId,
+        /// Exact action retained by its approval owner; absent for an external
+        /// host that does not publish an approval request.
+        binding: Option<crate::interaction::ApprovalBinding>,
+    },
     /// Wait for an event hook from this host, such as a native process
     /// claiming or settling the turn's input. Like an approval response, the
     /// hook is taken ahead of the input queued behind the turn.
@@ -918,6 +924,7 @@ async fn run<T: TurnDriver + ?Sized>(
     // the step's commit is always buildable.
     if !turn.outs.iter().all(admissible)
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+        || matches!(&turn.wait, Wait::Approval { binding: Some(binding), .. } if binding.validate().is_err())
     {
         turn = TurnStep {
             checkpoint: None,
@@ -940,9 +947,9 @@ async fn run<T: TurnDriver + ?Sized>(
     let mut awaiting = BTreeSet::new();
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
-        Wait::Approval(id) => (
+        Wait::Approval { id, binding } => (
             kernel::Wait::Approval,
-            Some(Phase::WaitingApproval { id }),
+            Some(Phase::WaitingApproval { id, binding }),
             None,
         ),
         Wait::Host(host) => (

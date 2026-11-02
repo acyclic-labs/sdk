@@ -2,7 +2,11 @@
 use super::{
     ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalReviewFile, Approver, RuleVerdict,
 };
-use crate::{Error, Result, agent::AgentId, interaction::ApprovalDecisionFile};
+use crate::{
+    Error, Result,
+    agent::AgentId,
+    interaction::{ApprovalBinding, ApprovalDecisionFile},
+};
 
 /// Active stage selected from the immutable request and retained review files.
 pub enum NextStage<'a> {
@@ -14,6 +18,9 @@ pub enum NextStage<'a> {
         expected: ApprovalReviewFile,
         /// Previously published review, after validating its complete binding.
         retained: Option<ApprovalReviewFile>,
+        /// Original action identity from the request already decoded by this
+        /// traversal. Waiting status publication retains it without another read.
+        binding: ApprovalBinding,
     },
     /// First decisive automatic review, or denial when escalation is exhausted.
     Decided(ApprovalReviewFile),
@@ -38,18 +45,32 @@ pub async fn next_stage<'a>(
     let interaction: crate::interaction::Interaction =
         crate::contract::json_from_slice(request.bytes())
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    let policy = match interaction {
+    let (policy, binding) = match interaction {
         crate::interaction::Interaction::Approval {
-            subject:
+            operation_id,
+            action_digest,
+            subject,
+            ..
+        } => (
+            if matches!(
+                subject,
                 crate::interaction::ApprovalSubject::Tool {
                     route: crate::interaction::ApprovalRoute::Human,
                     ..
-                },
-            ..
-        } => &*HUMAN_POLICY,
-        crate::interaction::Interaction::Approval { .. } => policy,
+                }
+            ) {
+                &*HUMAN_POLICY
+            } else {
+                policy
+            },
+            ApprovalBinding {
+                operation_id,
+                action_digest,
+            },
+        ),
         _ => return Err(Error::Invalid("not an approval request".into())),
     };
+    binding.validate()?;
     let hash = fingerprint(request.bytes())?;
     for (stage, approver) in policy.approvers.iter().enumerate().skip(start) {
         let principal = match approver {
@@ -101,6 +122,7 @@ pub async fn next_stage<'a>(
             approver,
             expected,
             retained,
+            binding,
         });
     }
     Ok(NextStage::Decided(ApprovalReviewFile {

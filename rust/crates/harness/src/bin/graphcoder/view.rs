@@ -126,7 +126,7 @@ impl View {
 
     fn approval(&self) -> Option<&IntentId> {
         match &self.phase {
-            Some(Phase::WaitingApproval { id }) => Some(id),
+            Some(Phase::WaitingApproval { id, .. }) => Some(id),
             _ => None,
         }
     }
@@ -192,7 +192,7 @@ impl View {
             Event::Status(status) => {
                 self.ended = None;
                 self.approval_prompt = match &status.phase {
-                    Phase::WaitingApproval { id } => conversation.approval_prompt(id).await?,
+                    Phase::WaitingApproval { id, .. } => conversation.approval_prompt(id).await?,
                     _ => None,
                 };
                 // A settled agent consumed every request before its cursor:
@@ -840,6 +840,7 @@ mod tests {
             Phase::Running,
             Phase::WaitingApproval {
                 id: IntentId::try_from("approval")?,
+                binding: None,
             },
             Phase::WaitingHost {
                 host: "host".into(),

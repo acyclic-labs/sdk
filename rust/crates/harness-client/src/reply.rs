@@ -6,7 +6,7 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
-    interaction::Interaction,
+    interaction::ApprovalBinding,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
 use base64::Engine as _;
@@ -33,16 +33,19 @@ pub struct ChildAgent {
     pub status: Option<StatusRecord>,
 }
 
-/// Authorized immutable request displayed to a human responder.
+/// Original pending action identity; the immutable request is read separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct PendingApproval {
     /// Identity used unchanged in the decision command.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub id: IntentId,
-    /// Canonical approval request read through the authorized host reader.
-    pub request: Interaction,
+    /// Original zero-based waiting-status record selecting the request bytes.
+    pub status: u64,
+    /// Exact action from that same actor/status publication.
+    pub binding: ApprovalBinding,
 }
 
 /// Successful replies are finite views or canonical commit receipts. A delivery
@@ -583,14 +586,11 @@ fn validate_reply(
             (items.len(), next, page)
         }
         (AgentReply::Approvals { items, next }, AgentCommand::Approvals { page, .. }) => {
-            let mut seen = std::collections::BTreeSet::new();
+            if items.len() > 1 || next.is_some() || (page.cursor().is_some() && !items.is_empty()) {
+                return Err(CommandError::Invalid);
+            }
             for item in items {
-                if !matches!(item.request, Interaction::Approval { .. }) || !seen.insert(&item.id) {
-                    return Err(CommandError::Invalid);
-                }
-                item.request
-                    .validate(&mut None)
-                    .map_err(|_| CommandError::Invalid)?;
+                item.binding.validate().map_err(|_| CommandError::Invalid)?;
             }
             (items.len(), next, page)
         }
