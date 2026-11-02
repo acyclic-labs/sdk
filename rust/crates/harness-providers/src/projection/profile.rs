@@ -1,8 +1,7 @@
 //! Projection accepts only the sealed result of the profile file resolver.
 use crate::{Adapter, invalid};
 use acyclic_harness_core::{Result, model::ModelProfileBinding};
-use acyclic_model_render::{Cache, Effort, Reasoning};
-use acyclic_model_render::{Field, Fields};
+use acyclic_model_render::{Cache, Effort, Field, Fields, Reasoning};
 use serde_json::{Value, json};
 
 fn prefix_cache_key(prefix: [u8; 32]) -> String {
