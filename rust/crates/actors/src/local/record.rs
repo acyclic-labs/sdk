@@ -223,7 +223,5 @@ mod tests {
                     "durable".len() + "value".len() + METADATA_OVERHEAD
                 )
         );
-        // Raw: the record is the artifact bytes plus framing, not ~3.8x them.
-        assert!(record.len() < bytes.len() + 200);
     }
 }

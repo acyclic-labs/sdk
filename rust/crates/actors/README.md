@@ -1,7 +1,10 @@
 # acyclic-actors
 
-Created and forked actors both start unplaced at epoch zero. A fork inherits its
-parent's state cut, then acquires its own placement fence. `local::Snapshot::provenance`
+Created actors start unplaced at epoch zero. A fork retains its parent's state
+cut and epoch; its first dispatch claims a newer epoch bound to the original
+Stream fork commit. A parent placement cannot authorize work in the child.
+Unchanged subscription bindings require no child state rewrite or actor scan.
+`local::Snapshot::provenance`
 returns the shared Streams `Provenance<StreamPath, ForkCut>` from the same head
 observation; later placements preserve that original ancestry.
 
