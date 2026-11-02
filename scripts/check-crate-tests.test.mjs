@@ -8,7 +8,7 @@ import test from "node:test";
 import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
 
 test("checks original default members alone in bounded worker targets", async () => {
-  // Capture the real workspace; fabricated metadata cannot establish Kani routing.
+  // Capture the real workspace to preserve its original default-member selection.
   const metadata = JSON.parse(execFileSync("cargo",
     ["metadata", "--locked", "--no-deps", "--format-version", "1"],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
@@ -18,7 +18,6 @@ test("checks original default members alone in bounded worker targets", async ()
   assert.ok(selected.includes("acyclic-harness-fuzz"));
   assert.ok(selected.includes("acyclic-fs-fuzz"));
   assert.ok(selected.includes("acyclic-sdk-fuzz"));
-  assert.ok(!selected.includes("agent-spawn-slot-proofs"));
   for (const mutate of [
     item => { delete item.workspace_default_members; },
     item => { item.workspace_default_members = []; },

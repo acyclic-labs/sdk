@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "bounded_component_proofs_passed",
+  "status": "source_updated_unexecuted",
   "qualification": {
     "local": "unqualified",
     "cloud": "unqualified"
@@ -9,7 +9,8 @@
     "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
     "Generate ExplicitStreamProvider from the same trait declaration; it removes all defaults and generates forwarding, so missing adapter methods fail compilation.",
     "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity.",
-    "Bound WaitingHost names introduced by main and fail invalid driver waits before effects are published."
+    "Bound WaitingHost names introduced by main and fail invalid driver waits before effects are published.",
+    "Retire the deleted slot-cap proof package while retaining its original captured receipts; child admission schedules now require acceptance beyond the former ceiling."
   ],
   "targets": [
     {
