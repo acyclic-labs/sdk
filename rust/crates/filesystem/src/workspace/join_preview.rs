@@ -426,6 +426,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinContent<'_, A, O> {
+    /// The authenticated record selected when this reader opened. Its length,
+    /// metadata and object references share the reader's original pinned hold;
+    /// inspecting them performs no second namespace lookup or body read.
+    pub fn record(&self) -> &crate::kernel::FileRecord {
+        &self.record
+    }
+
     /// Borrows one exact range; an empty range returns an empty slice. The
     /// next range replaces this single page after its borrow ends. No earlier
     /// page is accumulated, and no namespace lookup or new allowance occurs.

@@ -457,17 +457,13 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         .into_iter()
         .zip(&mut records)
         {
-            *record = pages
-                .conflict_record(row.value(), side)
-                .await
-                .map_err(|failure| failure.error)?
-                .value;
             let selected = pages
                 .open_conflict_content(row.value(), side)
                 .await
                 .map_err(|failure| failure.error)?;
             let mut page_work = selected.work;
             let mut content = selected.value;
+            *record = content.as_ref().map(|content| *content.record());
             if let Some(record) = record {
                 let content = content.as_mut().ok_or("selected body missing")?;
                 let FilePayload::InlineRegular(expected) = record.payload else {
