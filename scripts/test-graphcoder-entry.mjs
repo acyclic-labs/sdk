@@ -9,7 +9,6 @@ import { Processes, OutputWatch } from "./graphcoder-e2e/process.mjs";
 import { TerminalFrames } from "./graphcoder-e2e/frames.mjs";
 import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./graphcoder-e2e/suite.mjs";
-import { Terminal, screenText } from "./graphcoder-pty/screen.mjs";
 
 const recovery = "node scripts/test-graphcoder-entry.mjs ABSOLUTE_GRAPHCODER ABSOLUTE_ACYCLIC";
 const cancellation = commandCancellation();
@@ -18,6 +17,9 @@ try {
   const [graphcoder, acyclic, ...extra] = process.argv.slice(2);
   assert.ok(graphcoder && acyclic && !extra.length && isAbsolute(graphcoder) && isAbsolute(acyclic),
     "both shipping executable paths must be absolute");
+  const { Terminal, screenText } = await import("./graphcoder-pty/screen.mjs").catch(cause => {
+    throw new Error(`load terminal parser: ${cause.message}; recovery command: bun install --cwd scripts/graphcoder-pty --frozen-lockfile`, { cause });
+  });
   directory = scratchDirectory("graphcoder-entry-");
   for (const [name, binary, args, terminal] of [
     ["bare", graphcoder, [], true],

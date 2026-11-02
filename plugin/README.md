@@ -6,7 +6,10 @@ shared harness with `acyclic serve ADDRESS`, and reopens an existing agent with
 `acyclic run --help` lists execution, provider and output options.
 The thin `graphcoder` executable is `acyclic run --template graphcoder`: with
 terminal input and output it opens the same TUI as `acyclic attach`; with pipes
-it runs headless. It forwards options to the shared parser.
+it runs headless. It forwards options to the shared parser. Submit a headless task
+with `-p 'TASK'`, or use `acyclic exec --operation OPERATION` with JSONL input.
+With no task, closing stdin exits; unexpected text is refused with a recovery
+command. Text stdin otherwise answers pending approvals.
 `ACYCLIC_MODEL` selects the model when `--model` is absent. `ACYCLIC_LOG` enables
 diagnostics with explicit `--diagnostic-records` and `--diagnostic-record-bytes`
 storage; use `off` to disable text diagnostics. `--default-config` ignores the

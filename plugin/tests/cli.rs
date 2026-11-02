@@ -21,6 +21,11 @@ mod build_metadata {
         reason = "Cargo-provided executable metadata for this integration crate"
     )]
     pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_acyclic");
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "Cargo-provided executable metadata for this integration crate"
+    )]
+    pub(super) const GRAPHCODER: &str = env!("CARGO_BIN_EXE_graphcoder");
 }
 
 /// A loopback Responses endpoint; it records every generation request body.
@@ -142,7 +147,17 @@ fn fixture() -> Fixture {
 /// Runs the binary through the shared native capture, exit and physical-close
 /// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
-    let mut command = Command::new(acyclic_test_support::cargo_binary!("graphcoder"));
+    run_binary(build_metadata::EXECUTABLE, fixture, catalog, args, stdin).await
+}
+
+async fn run_binary(
+    executable: &str,
+    fixture: &Fixture,
+    catalog: &Path,
+    args: Vec<&str>,
+    stdin: &str,
+) -> Output {
+    let mut command = Command::new(executable);
     fixture.custody.configure(|key, value| {
         command.env(key, value);
     });
@@ -363,6 +378,50 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
     model.close().await;
+}
+
+#[tokio::test]
+async fn execution_text_stdin_retires_at_eof_or_refuses_an_unbound_task() {
+    for (executable, args) in [
+        (build_metadata::GRAPHCODER, vec![]),
+        (
+            build_metadata::EXECUTABLE,
+            vec!["run", "--template", "graphcoder"],
+        ),
+    ] {
+        let fixture = fixture();
+        // Configuration admits a provider, but no connection or fabricated
+        // provider response participates in this input/EOF control.
+        let catalog = fixture._directory.path().join("catalog.json");
+        std::fs::write(
+            &catalog,
+            serde_json::to_vec(&json!({"graphcoder-qual": {
+                "adapter": "responses", "authentication": "optional",
+                "base_url": "http://127.0.0.1:0",
+                "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
+                    "features": {"tools": true, "images": false}}},
+                "token_counter": {"path": "count", "adapter": "responses",
+                    "response_field": "input_tokens", "framing_tokens": 0}
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        for input in ["", " \n\n", "unbound task\n"] {
+            let output = run_binary(executable, &fixture, &catalog, args.clone(), input).await;
+            assert!(output.stdout.is_empty(), "{output:?}");
+            if input == "unbound task\n" {
+                assert!(!output.status.success(), "{output:?}");
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    error.contains("text input: no task or pending approval"),
+                    "{error}"
+                );
+                assert!(error.contains("recovery: use acyclic run"), "{error}");
+            } else {
+                succeeded(&output);
+            }
+        }
+    }
 }
 
 #[tokio::test]
