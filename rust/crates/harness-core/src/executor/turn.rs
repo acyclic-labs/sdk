@@ -8,6 +8,31 @@ pub(super) struct CollectedStep {
     pub(super) parts: bool,
 }
 
+#[cfg(feature = "filesystem")]
+impl CollectedStep {
+    fn retained_payload_bytes(&self) -> Result<u64> {
+        let slots = self
+            .calls
+            .capacity()
+            .checked_mul(std::mem::size_of::<(ToolInvocation, usize)>())
+            .ok_or_else(|| {
+                stock_boundary(
+                    None,
+                    crate::wire::ErrorCode::Invalid,
+                    "call storage overflows",
+                )
+            })? as u64;
+        let calls = self.calls.iter().try_fold(slots, |bytes, (call, _)| {
+            crate::core::owned_sum([bytes, call.retained_payload_bytes()?])
+        })?;
+        crate::core::owned_sum([
+            calls,
+            self.text.capacity() as u64,
+            json::json_value_retained_owned_bytes(&self.metadata)?,
+        ])
+    }
+}
+
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
         &self,
@@ -149,31 +174,45 @@ impl StockExecution<'_> {
         model_events: Vec<ModelEvent>,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<CollectedStep> {
-        let model_events = stock_events_into_iter(model_events, self.io)?;
-        let completed_message = self.has_completed_message(model_events.as_slice())?;
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::with_input(
+            self.io,
+            self.io
+                .map(|_| stock_events_payload_bytes(&model_events))
+                .transpose()?
+                .unwrap_or(0),
+        )?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        // Inputs and all unpublished outputs die before their shared custody.
+        let model_events = model_events;
+        let completed_message = self.has_completed_message(&model_events)?;
         let mut parts = false;
         let mut calls = Vec::new();
-        let mut text = StockText::adopt(String::new(), self.io)?;
+        let mut text = String::new();
         let mut completed = Value::Null;
-        for event in model_events {
-            match event? {
+        for event in stock_into_iter(model_events, io)? {
+            match event {
                 ModelEvent::Content { delta } if !completed_message => {
-                    let appended = text.push(
+                    stock_string_push(
+                        &mut text,
                         &delta,
                         self.stock.limits.file_bytes,
                         "assistant output exceeds file limit",
-                    );
-                    stock_retire_text(delta, self.io)?;
-                    appended?;
+                        io,
+                    )?;
+                    stock_retire_text(delta, io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    text = StockText::adopt(completed, self.io)?;
+                    stock_retire_text(text, io)?;
+                    text = completed;
                 }
                 ModelEvent::ToolCall(call) => {
                     if self.single_request {
-                        stock_retire_event(ModelEvent::ToolCall(call), self.io)?;
                         return Err(stock_boundary(
-                            self.io,
+                            io,
                             crate::wire::ErrorCode::Unauthorized,
                             "single inference request attempted a tool call",
                         ));
@@ -194,21 +233,34 @@ impl StockExecution<'_> {
                         self.native_work(),
                     )?;
                     let call = crate::model::ToolCall::new(
-                        stock_string_copy(&invocation.call_id, self.io)?,
-                        stock_string_copy(&invocation.name, self.io)?,
-                        crate::model::clone_value(&invocation.arguments, self.io)?,
+                        stock_string_copy(&invocation.call_id, io)?,
+                        stock_string_copy(&invocation.name, io)?,
+                        crate::model::clone_value(&invocation.arguments, io)?,
                     )
                     .with_metadata(metadata)
                     .with_native(native);
                     let index = prior_messages.len();
-                    self.append_assistant_part(prior_messages, ModelContentPart::ToolCall(call))?;
-                    stock_vec_push(&mut calls, (invocation, index), self.io)?;
+                    self.append_assistant_part(
+                        prior_messages,
+                        ModelContentPart::ToolCall(call),
+                        io,
+                    )?;
+                    stock_vec_push(&mut calls, (invocation, index), io)?;
                 }
-                ModelEvent::Completed { metadata } => completed = metadata,
+                ModelEvent::Completed { metadata } => {
+                    stock_retire_event(
+                        ModelEvent::Completed {
+                            metadata: completed,
+                        },
+                        io,
+                    )?;
+                    completed = metadata;
+                }
                 ModelEvent::ReasoningBlock { block } => {
                     self.append_assistant_part(
                         prior_messages,
                         ModelContentPart::Reasoning { block },
+                        io,
                     )?;
                 }
                 ModelEvent::TextPart { text, native } => {
@@ -216,19 +268,27 @@ impl StockExecution<'_> {
                     self.append_assistant_part(
                         prior_messages,
                         ModelContentPart::Text { text, native },
+                        io,
                     )?;
                 }
                 event @ (ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }) => {
-                    stock_retire_event(event, self.io)?;
+                    stock_retire_event(event, io)?;
                 }
             }
         }
-        Ok(CollectedStep {
+        let collected = CollectedStep {
             calls,
-            text: text.finish()?,
+            text,
             metadata: completed,
             parts,
-        })
+        };
+        #[cfg(feature = "filesystem")]
+        scope.finish(
+            io.map(|_| collected.retained_payload_bytes())
+                .transpose()?
+                .unwrap_or(0),
+        )?;
+        Ok(collected)
     }
 
     /// The surviving working tail and final reply, preceded by any steering
@@ -271,20 +331,20 @@ impl StockExecution<'_> {
         &self,
         messages: &mut Vec<ModelMessage>,
         part: ModelContentPart,
+        source: Option<&PreparationIo>,
     ) -> Result<()> {
         let content = ModelContent::Part(part);
         #[cfg(feature = "filesystem")]
-        let retained = self
-            .io
+        let retained = source
             .map(|_| content.retained_payload_bytes())
             .transpose()?
             .unwrap_or(0);
         #[cfg(feature = "filesystem")]
-        let scope = crate::filesystem::PreparationScope::with_input(self.io, retained)?;
+        let scope = crate::filesystem::PreparationScope::with_input(source, retained)?;
         #[cfg(feature = "filesystem")]
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
+        let io = source;
         // The incoming message dies before its custody if validation or storage
         // admission fails; existing history never moves into this scope.
         let message = ModelMessage {
@@ -296,7 +356,7 @@ impl StockExecution<'_> {
         })?;
         stock_vec_prepare_push(messages, self.io)?;
         #[cfg(feature = "filesystem")]
-        scope.finish(retained)?;
+        scope.finish_into(self.io, retained)?;
         // Storage and custody are admitted; insertion cannot fail or allocate.
         messages.push(message);
         Ok(())

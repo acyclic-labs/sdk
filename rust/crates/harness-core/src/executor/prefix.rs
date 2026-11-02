@@ -46,6 +46,7 @@ impl StockExecution<'_> {
                     self.append_assistant_part(
                         request.messages(),
                         ModelContentPart::Reasoning { block },
+                        self.io,
                     )?;
                     continue;
                 }
@@ -53,6 +54,7 @@ impl StockExecution<'_> {
                     self.append_assistant_part(
                         request.messages(),
                         ModelContentPart::Text { text, native },
+                        self.io,
                     )?;
                     continue;
                 }

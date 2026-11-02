@@ -17,6 +17,15 @@ pub struct ToolInvocation {
 }
 
 impl ToolInvocation {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
+        crate::core::owned_sum([
+            self.call_id.capacity() as u64,
+            self.name.capacity() as u64,
+            crate::executor::json::json_value_retained_owned_bytes(&self.arguments)?,
+        ])
+    }
+
     /// Binds a model call to one deterministic operation within its parent turn.
     pub fn for_model_call(
         parent: OperationId,
