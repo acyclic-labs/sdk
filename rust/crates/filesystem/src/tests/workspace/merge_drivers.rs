@@ -9,7 +9,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     main.write_text(&longest_conflict, "base\0").await?;
     for (path, content) in [
         ("/text", "base\n"),
-        ("/binary", "base\0"),
+        ("/binary", "base\n"),
         ("/deleted", "base"),
         ("/replaced", "base\0"),
     ] {
@@ -28,7 +28,9 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     .await?;
     main.write_text("/text", "ours\n").await?;
     agent.write_text("/text", "theirs\n").await?;
-    main.write_text("/binary", "ours\0").await?;
+    // Classify the last side as binary after two valid text bodies. Earlier
+    // text must not become a partial text proposal when this side is reached.
+    main.write_text("/binary", "ours\n").await?;
     agent.write_text("/binary", "theirs\0").await?;
     main.write_text(&longest_conflict, "ours\0").await?;
     agent.write_text(&longest_conflict, "theirs\0").await?;
