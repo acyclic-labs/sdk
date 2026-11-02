@@ -262,16 +262,12 @@ fn claim(
     let receipt = sessions.record(reference, &accepted)?.receipt.clone();
     let view = receipt.confirm(&claimed)?;
     let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
-    let running = Running {
-        process: lease.funded_process()?,
-        claim: serde_json::from_value(claimed["claim"].clone())?,
-        failure: None,
-        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-        answer: NativeAnswer::default(),
-        settlement: None,
-        wake: std::task::Waker::noop().clone(),
-        armed: None,
-    };
+    let running = Running::new(
+        lease.funded_process()?,
+        serde_json::from_value(claimed["claim"].clone())?,
+        reference,
+        &sessions.ready,
+    );
     Ok((running, view))
 }
 
@@ -493,14 +489,23 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     let writer = fs::OpenOptions::new()
         .write(true)
         .open(format!("/proc/{pid}/fd/2"))?;
+    // Reject a forged/noop control owner before parking on its real process.
+    running.wake.wake_by_ref();
+    assert_eq!(sessions.ready.take(), BTreeSet::from(["held".into()]));
+    running.process.take_output_progress();
+    sessions.arm("held", &mut running);
+    assert!(running.armed.is_some() || sessions.ready.queue().keys.contains("held"));
     running.process.queue_stdin(b"exit\n".to_vec())?;
-    wait_exit(&mut running)?;
-    assert!(
-        !running.process.drain_stderr()?,
-        "negative input must withhold stderr EOF"
-    );
+    assert!(running.process.pump_stdin()?);
+    sessions.children.insert("held".into(), running);
+    // The same owner registration and pump as the deployed coordination
+    // server. Every pass waits for the native producer or actual I/O progress.
+    while sessions.children.contains_key("held") {
+        futures::executor::block_on(std::future::poll_fn(|cx| sessions.ready.poll(cx)));
+        sessions.pump()?;
+    }
     let completed = sessions
-        .refresh("held", &mut running, &mut [0; 8192])?
+        .wait("held")?
         .ok_or("exited native session still waits for inherited stderr EOF")?;
     assert!(completed["next"].is_null(), "no further input was queued");
     assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
