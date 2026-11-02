@@ -13,6 +13,9 @@ mod encoding;
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {
+    /// Generate a summary from the context preceding the final user instruction.
+    /// Declarations stay in the header; the renderer disables invocation in the trailer.
+    pub summary: bool,
     /// Pinned model selection.
     pub model: Model,
     /// Ordered reconstructable context.
@@ -32,6 +35,25 @@ pub struct ModelRequest {
     pub max_output_tokens: Option<u32>,
 }
 impl ModelRequest {
+    /// Separates the transient summary instruction from its selected context.
+    /// Ordinary requests expose the whole conversation without an instruction.
+    pub fn split_summary_instruction(&self) -> Result<(&[ModelMessage], Option<&ModelContent>)> {
+        if !self.summary {
+            return Ok((&self.messages, None));
+        }
+        let Some((instruction, messages)) = self.messages.split_last() else {
+            return Err(Error::Invalid(
+                "summary request lacks its final user instruction".into(),
+            ));
+        };
+        if instruction.role != ModelRole::User {
+            return Err(Error::Invalid(
+                "summary request must end with its user instruction".into(),
+            ));
+        }
+        Ok((messages, Some(&instruction.content)))
+    }
+
     /// Native declarations sent to providers. Dynamic code capabilities retain
     /// their validation schemas here and are announced through tools.changed.
     pub fn model_tools(&self) -> impl Iterator<Item = &crate::tool::ToolDefinition> {
@@ -462,6 +484,7 @@ impl PreparedModelRequest {
             bytes_hold = io.guard_bytes(&bytes)?;
             let retained_payload = request.retained_payload_bytes()?;
             request_hold = io.reserve_decode(add(size_of::<Self>() as u64, retained_payload)?)?;
+            request.split_summary_instruction()?;
             let instruction_remaining =
                 request.validate_with_instruction_budget(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
@@ -521,6 +544,7 @@ impl PreparedModelRequest {
         instruction_remaining: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        request.split_summary_instruction()?;
         #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {

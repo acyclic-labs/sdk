@@ -219,6 +219,7 @@ fn prepare(
     let tools = matches!(scenario, Scenario::Tools);
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: provider.model().clone(),
             messages: vec![ModelMessage {

@@ -36,7 +36,7 @@ test("Rust model registry implements the public TS provider contract", async () 
   const provider: ModelProvider = selected;
   const model = selected.model;
   const request = { model, messages: [{ role: "user" as const, content: "hello" }], tools: [] };
-  const admitted = { ...request, serializedInput: prepareModelRequest(request, limits) };
+  const admitted = { ...request, serializedInput: prepareModelRequest({ ...request, summary: false }, limits) };
   expect(provider.contextCapacity(model)).toEqual({ contextTokens: 4096, outputTokens: 512 });
   using prepared = await provider.prepare(admitted);
   const count = await prepared.countTokens();

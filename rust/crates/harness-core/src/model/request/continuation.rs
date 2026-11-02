@@ -30,6 +30,11 @@ impl RequestContinuation {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<u64>> {
+        if self.prepared.request.summary && !self.suffix.is_empty() {
+            return Err(Error::Invalid(
+                "a summary instruction cannot become conversation history".into(),
+            ));
+        }
         let count = self
             .prepared
             .request
