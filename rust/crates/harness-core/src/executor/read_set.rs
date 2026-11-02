@@ -33,6 +33,14 @@ struct Admission<'a> {
     name: Cow<'a, str>,
 }
 
+// The executor persists RecordedInvocation, never a bare ToolInvocation.
+// Borrow its admission while skipping metadata and provider continuation data.
+#[derive(Deserialize)]
+struct RecordedAdmission<'a> {
+    #[serde(borrow)]
+    invocation: Admission<'a>,
+}
+
 #[derive(Deserialize)]
 struct ResultProjection {
     value: ReadReceipt,
@@ -170,7 +178,9 @@ pub async fn page(
         }
         let read = {
             let bytes = journal.load(invocation, None)?.await?;
-            let invocation: Admission<'_> = serde_json::from_slice(&bytes).map_err(export_error)?;
+            let invocation = serde_json::from_slice::<RecordedAdmission<'_>>(&bytes)
+                .map_err(export_error)?
+                .invocation;
             if invocation.call_id != call_id
                 || invocation.operation_id
                     != ToolInvocation::model_call_operation(operation, step, &call_id, None)?
@@ -440,11 +450,18 @@ mod tests {
                 name: tool.definition.name.clone(),
                 arguments: serde_json::json!({"path": file.path(), "version": serde_json::to_string(&file).map_err(export_error)?}),
             };
+            let bare = serde_json::to_vec(&invocation).map_err(export_error)?;
+            assert!(serde_json::from_slice::<RecordedAdmission<'_>>(&bare).is_err());
             let reference = crate::executor::stage_json(
                 journal.as_ref(),
                 operation,
                 &format!("invocation-{step}"),
-                &invocation,
+                &crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &serde_json::Value::Null,
+                    target: None,
+                    filesystem: None,
+                },
                 None,
             )
             .await?;
