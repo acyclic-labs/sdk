@@ -36,6 +36,7 @@ impl CompletionMenu {
             .transpose()?
             .unwrap_or_default();
         self.set_entries(path, bytes.is_some(), entries);
+        self.repair_selection();
         Ok(())
     }
 
@@ -58,6 +59,7 @@ impl CompletionMenu {
         for (path, present, entries) in decoded {
             self.set_entries(path, present, entries);
         }
+        self.repair_selection();
         Ok(())
     }
 
@@ -102,7 +104,6 @@ impl CompletionMenu {
         if present {
             self.files.insert(path.to_owned(), (order, entries));
         }
-        self.selected = self.selected.min(self.items.len().saturating_sub(1));
     }
 
     /// Replace a lost query's disposable fold before applying its new snapshot.
@@ -112,7 +113,7 @@ impl CompletionMenu {
         self.version = None;
         self.next_file = 0;
         self.items.clear();
-        self.selected = 0;
+        self.selected = None;
     }
 }
 

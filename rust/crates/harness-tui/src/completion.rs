@@ -2,7 +2,11 @@ use crate::buffer::slice;
 use crate::key_event::KeyEvent;
 use crate::{Action, DecodedKey, Editor, InputKeymap, Motion, decode_key};
 use caseless::Caseless;
-use std::{collections::BTreeMap, ops::Range, rc::Rc};
+use std::{
+    collections::BTreeMap,
+    ops::{Bound, Range},
+    rc::Rc,
+};
 mod files;
 use files::Entry;
 use unicode_segmentation::UnicodeSegmentation;
@@ -292,8 +296,7 @@ pub struct CompletionMenu {
     marks: Checkpoints,
     /// Cumulative bytes examined while locating tokens and candidates scored.
     pub work: CompletionWork,
-    /// Selected row, wrapping during navigation.
-    pub selected: usize,
+    selected: Option<Rank>,
     dismissed: Option<CompletionRequest>,
 }
 
@@ -378,7 +381,7 @@ impl CompletionMenu {
         if request == self.dismissed || request.is_none() {
             self.request = None;
             self.items.clear();
-            self.selected = 0;
+            self.selected = None;
             return;
         }
         self.dismissed = None;
@@ -391,7 +394,7 @@ impl CompletionMenu {
             .zip(request.as_ref())
             .is_some_and(|(old, new)| old.kind == new.kind && new.query.starts_with(&old.query));
         self.request = request;
-        self.selected = 0;
+        self.selected = None;
         if narrower {
             let old = std::mem::take(&mut self.items);
             for ((_, _, order, index), item) in old {
@@ -412,11 +415,53 @@ impl CompletionMenu {
                 }
             }
         }
+        self.repair_selection();
     }
 
     /// Ranked candidates borrowed by the popup; unchanged frames allocate nothing.
     pub fn items(&self) -> impl ExactSizeIterator<Item = &Completion> {
         self.items.values().map(Rc::as_ref)
+    }
+
+    /// Selected candidate, retained by its rank across other file changes.
+    pub fn selected(&self) -> Option<&Completion> {
+        self.items.get(self.selected.as_ref()?).map(Rc::as_ref)
+    }
+
+    /// Borrow at most `count` rows around the selection, marking the selected
+    /// candidate. Two tree seeks and at most twice `count` row visits avoid
+    /// traversing earlier matches. No rows or labels are copied.
+    pub fn window(&self, count: usize) -> impl Iterator<Item = (&Completion, bool)> {
+        let selected = self.selected;
+        let first = selected.and_then(|key| {
+            self.items
+                .range(..=key)
+                .rev()
+                .take(count)
+                .last()
+                .map(|(key, _)| *key)
+        });
+        self.items
+            .range((
+                first.map_or(Bound::Unbounded, Bound::Included),
+                Bound::Unbounded,
+            ))
+            .take(count)
+            .map(move |(key, item)| (item.as_ref(), Some(*key) == selected))
+    }
+
+    // If the selected file disappeared or no longer matches, prefer its next
+    // ranked neighbour, falling back to the last candidate at the end.
+    fn repair_selection(&mut self) {
+        self.selected = self
+            .items
+            .range((
+                self.selected.map_or(Bound::Unbounded, Bound::Included),
+                Bound::Unbounded,
+            ))
+            .next()
+            .or_else(|| self.items.last_key_value())
+            .map(|(key, _)| *key);
     }
 
     /// Whether results still belong to the current editor version.
@@ -431,16 +476,21 @@ impl CompletionMenu {
 
     /// Cycle candidates in either direction.
     pub fn cycle(&mut self, previous: bool) {
-        if self.items.is_empty() {
-            self.selected = 0;
+        let Some(key) = self.selected else {
             return;
-        }
-        let current = self.selected % self.items.len();
-        self.selected = if previous {
-            (current + self.items.len() - 1) % self.items.len()
-        } else {
-            (current + 1) % self.items.len()
         };
+        self.selected = if previous {
+            self.items
+                .range(..key)
+                .next_back()
+                .or_else(|| self.items.last_key_value())
+        } else {
+            self.items
+                .range((Bound::Excluded(key), Bound::Unbounded))
+                .next()
+                .or_else(|| self.items.first_key_value())
+        }
+        .map(|(key, _)| *key);
     }
 
     /// Close the popup until the current token changes.
@@ -450,7 +500,7 @@ impl CompletionMenu {
         self.marks.edited(0);
         self.request = None;
         self.items.clear();
-        self.selected = 0;
+        self.selected = None;
     }
 
     /// Apply one item as an undo step, retaining @ and safely quoting file names.
@@ -459,7 +509,7 @@ impl CompletionMenu {
             self.dismiss(editor);
             return false;
         }
-        let Some(item) = self.items().nth(self.selected) else {
+        let Some(item) = self.selected() else {
             return false;
         };
         let Some(request) = self.request.as_ref() else {

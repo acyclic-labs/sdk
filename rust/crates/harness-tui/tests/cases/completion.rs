@@ -243,7 +243,7 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
         &map,
         0
     ));
-    assert_eq!(menu.selected, 2);
+    assert_eq!(menu.selected().unwrap().value, "think");
     assert!(menu.key(
         &mut editor,
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
@@ -261,11 +261,11 @@ fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
     refresh_commands(&mut menu, &editor);
     assert!(menu.items().next().is_some_and(|item| item.tool));
     menu.cycle(true);
-    assert_eq!(menu.selected, 2);
+    assert_eq!(menu.selected().unwrap().value, "think");
     refresh_commands(&mut menu, &editor);
-    assert_eq!(menu.selected, 2);
+    assert_eq!(menu.selected().unwrap().value, "think");
     menu.cycle(false);
-    assert_eq!(menu.selected, 0);
+    assert_eq!(menu.selected().unwrap().value, "thread");
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), "/thread ");
     editor.undo();
@@ -274,6 +274,110 @@ fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
     refresh_commands(&mut menu, &theme);
     assert!(menu.accept(&mut theme, 1));
     assert_eq!(theme.text(), "/theme ");
+}
+
+#[test]
+fn keyed_selection_keeps_identity_and_visible_windows_across_file_changes() {
+    for count in [16, 1024] {
+        let mut editor = Editor::new("@file");
+        let mut menu = CompletionMenu::default();
+        for index in 0..count {
+            menu.set_file(&format!("workspace/file{index}.rs"), Some(b""))
+                .unwrap();
+        }
+        menu.refresh(&editor);
+        assert_eq!(menu.selected().unwrap().value, "file0.rs");
+        menu.cycle(true);
+        menu.cycle(true);
+        let expected = format!("file{}.rs", count - 2);
+        assert_eq!(menu.selected().unwrap().value, expected);
+
+        let values = menu
+            .items()
+            .map(|item| item.value.clone())
+            .collect::<Vec<_>>();
+        for height in [0, 1, 3, count + 1] {
+            let selected = count - 2;
+            let first = selected.saturating_sub(height.saturating_sub(1));
+            let actual = menu
+                .window(height)
+                .map(|(item, selected)| (item.value.as_str(), selected))
+                .collect::<Vec<_>>();
+            let oracle = values
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(height)
+                .map(|(index, value)| (value.as_str(), index == selected))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, oracle);
+        }
+        let borrowed = menu.selected().unwrap() as *const _;
+        let work = menu.work;
+        let measured = acyclic_test_support::measure(|| {
+            for _ in 0..32 {
+                for (item, selected) in menu.window(3) {
+                    std::hint::black_box((item, selected));
+                }
+                assert_eq!(menu.selected().unwrap() as *const _, borrowed);
+            }
+        });
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(menu.work, work);
+        let area = Rect::new(0, 0, 24, 5);
+        let mut buffer = Buffer::empty(area);
+        CompletionPopup::new(&menu, &editor).render(area, &mut buffer);
+        for row in 0..3 {
+            let text = (1..area.width - 1)
+                .map(|x| buffer[(x, row + 1)].symbol())
+                .collect::<String>();
+            assert!(text.starts_with(&format!("file{}.rs", count - 4 + usize::from(row))));
+        }
+
+        // A row index moves to a different file when an earlier row disappears.
+        // The original key must still name the exact candidate that was shown.
+        let old_index = count - 2;
+        menu.set_file("workspace/file0.rs", None).unwrap();
+        assert_ne!(menu.items().nth(old_index).unwrap().value, expected);
+        assert_eq!(menu.selected().unwrap() as *const _, borrowed);
+        assert_eq!(menu.selected().unwrap().value, expected);
+
+        // Repair once after an atomic publication: temporarily removing the
+        // successor too must not move selection backwards before it is restored.
+        let chosen = format!("workspace/{expected}");
+        let next = format!("workspace/file{}.rs", count - 1);
+        menu.set_files([
+            (next.as_str(), None),
+            (chosen.as_str(), None),
+            (next.as_str(), Some(b"".as_slice())),
+        ])
+        .unwrap();
+        assert_eq!(
+            menu.selected().unwrap().value,
+            format!("file{}.rs", count - 1)
+        );
+        menu.set_file(&next, None).unwrap();
+        assert_eq!(
+            menu.selected().unwrap().value,
+            format!("file{}.rs", count - 3)
+        );
+
+        // Navigation wraps in either direction; acceptance uses the same key.
+        menu.cycle(false);
+        assert_eq!(menu.selected().unwrap().value, "file1.rs");
+        menu.cycle(true);
+        let accepted = menu.selected().unwrap().value.clone();
+        assert!(menu.accept(&mut editor, 0));
+        assert_eq!(editor.text(), format!("@{accepted} "));
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "@file");
+        assert!(menu.selected().is_none());
+        menu.refresh(&editor);
+        menu.clear_files();
+        menu.cycle(true);
+        assert!(menu.selected().is_none());
+        assert_eq!(menu.window(3).count(), 0);
+    }
 }
 
 #[test]
