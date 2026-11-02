@@ -56,7 +56,7 @@ impl fmt::Display for DiagnosticConfigurationError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::StorageRequired => output.write_str(
-                "configured diagnostics require explicit text storage; configure --diagnostic-records N and --diagnostic-record-bytes B, pass owned text buffers to main_with, or set GRAPHCODER_LOG=off",
+                "configured diagnostics require explicit text storage; configure --diagnostic-records N and --diagnostic-record-bytes B, pass owned text buffers to main_with, or set ACYCLIC_LOG=off",
             ),
             Self::ConflictingStorage => output.write_str(
                 "diagnostic storage was supplied twice; use owned main_with buffers or the paired --diagnostic-records/--diagnostic-record-bytes reservation",
@@ -64,7 +64,7 @@ impl fmt::Display for DiagnosticConfigurationError {
             Self::Storage(error) => write!(output,
                 "diagnostic storage admission failed: {error}; reduce the explicit reservation or provide admitted owned buffers to main_with"),
             Self::Filter(error) => write!(output,
-                "diagnostic filter refused: {error}; set GRAPHCODER_LOG to a valid filter or off"),
+                "diagnostic filter refused: {error}; set ACYCLIC_LOG to a valid filter or off"),
         }
     }
 }

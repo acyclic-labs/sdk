@@ -24,7 +24,7 @@ function start(extra, input = "") {
     env: { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
       USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
       APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
-      OPENAI_API_KEY: "", GRAPHCODER_MODEL: "" },
+      OPENAI_API_KEY: "", ACYCLIC_MODEL: "" },
   });
   children.push(child);
   let stdout = "", stderr = "";
