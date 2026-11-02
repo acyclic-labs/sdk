@@ -268,27 +268,29 @@ where
         confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = crate::obs::obs_span!(
-                    "acyclic.harness.journal.append_if_tail",
-                    rev = expected_tail
-                );
-                crate::obs::traced_future(
-                    span,
-                    self.append_contributed(
-                        operation,
-                        Some(expected_tail),
-                        key,
-                        event,
-                        contributions,
-                        confirmation,
-                        None,
-                    ),
-                )
-                .await
-            });
-        }
+        self.append_projected(
+            operation,
+            Some(expected_tail),
+            key,
+            event,
+            contributions,
+            confirmation,
+            io,
+            |receipt| Ok(receipt.accepted),
+        )
+    }
+
+    pub(super) fn append_projected<'a, T: 'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: Option<u64>,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        contributions: &'a [indexed_publication::Contribution<'a>],
+        confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
+        io: Option<&'a PreparationIo>,
+        project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -296,7 +298,7 @@ where
                 let result = self
                     .append_contributed(
                         operation,
-                        Some(expected_tail),
+                        expected_tail,
                         key,
                         event,
                         contributions,
@@ -306,17 +308,19 @@ where
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
-                return result;
+                return result.and_then(project);
             }
-            let span = crate::obs::obs_span!(
-                "acyclic.harness.journal.append_if_tail",
-                rev = expected_tail
-            );
+            let span = match expected_tail {
+                Some(rev) => {
+                    crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev = rev)
+                }
+                None => crate::obs::obs_span!("acyclic.harness.journal.append"),
+            };
             crate::obs::traced_future(
                 span,
                 self.append_contributed(
                     operation,
-                    Some(expected_tail),
+                    expected_tail,
                     key,
                     event,
                     contributions,
@@ -325,6 +329,7 @@ where
                 ),
             )
             .await
+            .and_then(project)
         })
     }
 
@@ -369,18 +374,6 @@ where
         Ok(commit)
     }
 
-    pub(super) async fn append_validated(
-        &self,
-        operation_id: OperationId,
-        expected_tail: Option<u64>,
-        claim_id: &str,
-        event: &ExecutionEvent,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        self.append_contributed(operation_id, expected_tail, claim_id, event, &[], None, io)
-            .await
-    }
-
     pub(super) async fn append_contributed(
         &self,
         operation_id: OperationId,
@@ -390,7 +383,7 @@ where
         contributions: &[indexed_publication::Contribution<'_>],
         confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
         io: Option<&PreparationIo>,
-    ) -> Result<bool> {
+    ) -> Result<AppendObservation> {
         // Validation decoders and their scratch retire on success, refusal and
         // cancellation; the optional receipt is only a fixed-width identity.
         // authenticated caches retain their own independent ownership pools.
@@ -504,10 +497,14 @@ where
                             .await?,
                     );
                 }
-                return Ok(accepted);
+                return Ok(AppendObservation {
+                    accepted,
+                    #[cfg(feature = "research")]
+                    sequence: accepted.then_some(*sequence),
+                });
             }
             if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(false);
+                return Ok(AppendObservation::refused());
             }
             summary.validate_next(event, model.as_ref(), limits, io)?;
             let tail = summary.tail;
@@ -555,16 +552,36 @@ where
                 drop(body_hold);
                 drop(retry_digest);
                 drop(retry_hold);
-                return Ok(true);
+                return Ok(AppendObservation {
+                    accepted: true,
+                    #[cfg(feature = "research")]
+                    sequence: Some(sequence),
+                });
             }
             drop(edit);
             // A contributed fence can lose while the journal tail is unchanged.
             // Its original producer must settle that conditional refusal.
             if !contributions.is_empty() {
-                return Ok(false);
+                return Ok(AppendObservation::refused());
             }
         }
     }
 }
 
 use crate::executor::stock_boundary;
+
+pub(super) struct AppendObservation {
+    pub(super) accepted: bool,
+    #[cfg(feature = "research")]
+    pub(super) sequence: Option<u64>,
+}
+
+impl AppendObservation {
+    fn refused() -> Self {
+        Self {
+            accepted: false,
+            #[cfg(feature = "research")]
+            sequence: None,
+        }
+    }
+}

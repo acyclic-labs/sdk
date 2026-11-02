@@ -140,14 +140,10 @@ where
         if field == crate::executor::ExecutionPayloadField::AdmittedRequest {
             // Reconstructed and verified against its digest on each read;
             // paging re-reads the request's segments per page.
-            let request = crate::executor::load_model_request(
-                &journal,
-                reference,
-                crate::conversation::Limits::default(),
-                None,
-            )
-            .await
-            .map_err(turn)?;
+            let request =
+                crate::executor::ExecutionPayloadField::admitted_request(&journal, &record.event)
+                    .await
+                    .map_err(turn)?;
             let bytes = request.bytes();
             let page = usize::try_from(offset)
                 .ok()

@@ -74,6 +74,47 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
     for FilesystemContentPublisher<A, O>
 {
+    fn stage_stream_once<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        source: &'a mut dyn crate::conversation::ContentSource,
+        media: &'a str,
+        display: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(access.io, || async move {
+            let key = once_key(operation, access.io)?;
+            let _key_hold = access
+                .io
+                .map(|io| io.guard_owned(key.as_str().len() as u64))
+                .transpose()?;
+            let file = self
+                .host
+                .put_content_input(
+                    super::ContentPublication {
+                        volume: &self.volume,
+                        grant: &self.grant,
+                        path,
+                        media_type: media,
+                        display_name: display,
+                        maximum_bytes: self.maximum_bytes,
+                        idempotency_key: &key,
+                        internal_class: None,
+                        expected_generation: None,
+                        ceiling: access.ceiling,
+                        io: access.io,
+                    },
+                    super::PublicationInput::Stream(source),
+                )?
+                .await?;
+            let hold = access
+                .io
+                .map(|io| io.guard_owned(file.logical_owned_bytes()?))
+                .transpose()?;
+            Ok((file, hold))
+        })
+    }
     fn observe_changes<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,

@@ -1,5 +1,28 @@
 use super::*;
 
+#[cfg(feature = "research")]
+impl<P, A, O> crate::executor::SequencedExecutionJournal for FilesystemExecutionJournal<P, A, O>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn append_with_sequence<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
+        self.append_projected(operation, None, key, event, &[], None, io, move |receipt| {
+            receipt
+                .sequence
+                .filter(|sequence| *sequence > 0)
+                .ok_or(Error::Indeterminate(operation))
+        })
+    }
+}
+
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized,
@@ -209,36 +232,12 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.append");
-                crate::obs::traced_future(
-                    span,
-                    self.append_validated(operation, None, key, event, None),
-                )
-                .await
-                .map(|_| ())
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_validated(operation, None, key, event, Some(&local))
-                    .await;
-                let retained = local.owned_bytes()?;
-                drop(local.into_native_custody(retained)?);
-                return result.map(|_| ());
-            }
-            let span = obs_span!("acyclic.harness.journal.append");
-            traced(span, async move {
-                self.append_validated(operation, None, key, event, io)
-                    .await
-                    .map(|_| ())
-            })
-            .await
-        })
+        self.append_projected(operation, None, key, event, &[], None, io, |_| Ok(()))
+    }
+
+    #[cfg(feature = "research")]
+    fn sequenced_appends(&self) -> Option<&dyn crate::executor::SequencedExecutionJournal> {
+        Some(self)
     }
 
     fn append_if_tail<'a>(

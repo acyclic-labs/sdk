@@ -35,6 +35,25 @@ pub enum ExecutionPayloadField {
 }
 
 impl ExecutionPayloadField {
+    /// Reconstructs the original admitted request and verifies its binding to
+    /// this observation. The stored request may be a segment manifest; hashing
+    /// that manifest would identify its storage layout rather than its content.
+    pub async fn admitted_request(
+        journal: &dyn ExecutionJournal,
+        event: &ExecutionEvent,
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let reference = Self::AdmittedRequest.select(event).ok_or_else(|| {
+            Error::Invalid("admitted request selection failed: model admission required; recovery: select the original ModelStarted observation".into())
+        })?;
+        let request = load_model_request(journal, reference, Limits::default(), None).await?;
+        if !matches!(event, ExecutionEvent::ModelStarted { request_digest, .. }
+            if *request_digest == request.request_digest())
+        {
+            return Err(Error::Conflict("admitted request binding failed: digest differs; recovery: select the original immutable request and its admission".into()));
+        }
+        Ok(request)
+    }
+
     /// The finite payload fields of one observation, in stable export order.
     /// This walks eight field kinds, independent of payload or history size.
     pub fn fields(event: &ExecutionEvent) -> impl Iterator<Item = (Self, &FileRef)> {

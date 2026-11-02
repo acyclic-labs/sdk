@@ -72,10 +72,20 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             let output = result.expect("committed completion waited for transport closure")?;
             assert_eq!(output.text, "done");
             assert_eq!(output.steps, 2);
+            #[cfg(feature = "research")]
+            assert_eq!(
+                output.journal_cut, None,
+                "journal declines original receipts"
+            );
             let replay = executor
                 .execute(input, &journal)
                 .now_or_never()
                 .expect("settled replay waited")?;
+            #[cfg(feature = "research")]
+            assert_eq!(
+                replay.journal_cut, None,
+                "replay cannot upgrade unknown coverage"
+            );
             assert_eq!(replay, output);
         } else if closed {
             assert!(

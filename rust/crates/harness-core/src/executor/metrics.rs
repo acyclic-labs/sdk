@@ -17,6 +17,34 @@ pub use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
+/// Streaming W3C PROV-O projection over these same original observations.
+#[cfg(feature = "provenance-export")]
+pub mod provenance;
+
+/// Bounded read-receipt projection; coverage is explicit rather than inferred.
+#[cfg(feature = "research")]
+pub use super::read_set;
+
+#[cfg(feature = "research")]
+pub(super) fn read_observation(
+    agent: &str,
+    operation: OperationId,
+    observation: &super::read_set::Observation,
+) -> Result<Batch> {
+    let mut row = Row::new(
+        agent,
+        Some(operation),
+        observation.sequence,
+        "journal",
+        "file_read",
+    );
+    row.source = Some(serde_json::to_string(&observation.source).map_err(export_error)?);
+    row.source_type = Some("file_generation");
+    row.target = Some(agent.into());
+    row.target_type = Some("agent");
+    batch(Table::Edges, &[row])
+}
+
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -88,6 +116,7 @@ impl Table {
                 ("purpose", Utf8),
                 ("request_digest", Utf8),
                 ("provider", Utf8),
+                ("replay_key", Utf8),
                 ("model", Utf8),
                 ("sampling_known", Boolean),
                 ("temperature", Float64),
@@ -118,7 +147,12 @@ impl Table {
                 ("cache_messages", UInt64),
                 ("cache_savings_nano_units", DataType::Decimal128(38, 0)),
             ],
-            Self::ToolCalls => vec![("step", UInt32), ("call_id", Utf8), ("artifact", Utf8)],
+            Self::ToolCalls => vec![
+                ("step", UInt32),
+                ("call_id", Utf8),
+                ("artifact", Utf8),
+                ("replay_key", Utf8),
+            ],
             Self::Edges => vec![
                 ("source", Utf8),
                 ("source_type", Utf8),
@@ -214,7 +248,7 @@ columns! {
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
     }
-    strings => [parent, role, profile_digest, artifact, request_digest, provider, model, provider_request_id,
+    strings => [parent, role, profile_digest, artifact, request_digest, replay_key, provider, model, provider_request_id,
         system_fingerprint, price_revision, currency, call_id, source, target, credential_scope,
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest]
 }
@@ -278,8 +312,8 @@ fn digest(value: [u8; 32]) -> String {
     blake3::Hash::from(value).to_hex().to_string()
 }
 
-/// Reads one page exactly once. Only referenced usage files are loaded;
-/// requests, tool payloads and earlier pages are never reconstructed. Admissions
+/// Reads one page exactly once. Referenced usage and admitted requests are loaded;
+/// tool payloads and earlier journal pages are never reconstructed. Admissions
 /// retain call identity with unknown measurements until the terminal observation.
 /// `price` explicitly selects an immutable price for each call; it may select none.
 /// All waits are the journal's replay/load result, including its typed failures.
@@ -323,6 +357,7 @@ pub async fn journal_page<'price>(
         {
             row.kind = "admitted".into();
             row.model_identity(*step, *purpose, *request_digest);
+            row.replay_key = Some(admitted_replay_key(journal, &record.event).await?);
             row.completed = Some(false);
             models.push(row);
             continue;
@@ -338,6 +373,8 @@ pub async fn journal_page<'price>(
                 usage.cache,
                 &mut edges,
             );
+            row.replay_key =
+                step_replay_key(journal, operation, usage.dispatch.step, usage.purpose).await?;
             models.push(model_call(row, usage, selected)?);
             continue;
         }
@@ -355,6 +392,9 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "admitted".into();
                 row.step = Some(step);
+                row.replay_key =
+                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
+                        .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&invocation)?);
                 tools.push(row);
@@ -367,6 +407,9 @@ pub async fn journal_page<'price>(
             } => {
                 row.kind = "completed".into();
                 row.step = Some(step);
+                row.replay_key =
+                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
+                        .await?;
                 row.call_id = Some(call_id);
                 row.artifact = Some(artifact(&result)?);
                 tools.push(row);
@@ -385,6 +428,9 @@ pub async fn journal_page<'price>(
                         .unwrap_or("unknown")
                 );
                 row.step = Some(step);
+                row.replay_key =
+                    step_replay_key(journal, operation, step, super::ModelPurpose::Response)
+                        .await?;
                 row.call_id = Some(call_id);
                 tools.push(row);
             }
@@ -403,6 +449,65 @@ pub async fn journal_page<'price>(
         }
     }
     Ok(Page { batches, end, next })
+}
+
+async fn admitted_replay_key(
+    journal: &dyn ExecutionJournal,
+    event: &ExecutionEvent,
+) -> Result<String> {
+    let request = super::ExecutionPayloadField::admitted_request(journal, event).await?;
+    crate::model::replay_key(request.bytes()).map(digest)
+}
+
+// One original indexed admission, never a history search or retained run index.
+// Custom journals without this capability leave the join key unknown; their
+// ModelStarted row still supplies it for an offline join on the original step.
+async fn step_replay_key(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    step: u32,
+    purpose: super::ModelPurpose,
+) -> Result<Option<String>> {
+    let select = |event: &ExecutionEvent| {
+        matches!(event,
+        ExecutionEvent::ModelStarted { purpose: recorded, .. } if *recorded == purpose)
+    };
+    let Some(records) = journal.indexed_records(
+        super::ExecutionRecordQuery {
+            operation,
+            step,
+            call_id: None,
+            include_started: false,
+            maximum_step_records: super::ExecutionRecordQuery::step_bound(
+                crate::conversation::Limits::default(),
+            ),
+            maximum: 1,
+            select: &select,
+        },
+        None,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some((_, records)) = records.await? else {
+        return Ok(None);
+    };
+    if records.len() != 1 {
+        return Err(export_error(
+            "step replay key requires one original model admission",
+        ));
+    }
+    let record = &records[0];
+    if record.operation_id != operation
+        || !matches!(&record.event,
+        ExecutionEvent::ModelStarted { step: recorded, purpose: recorded_purpose, .. }
+        if *recorded == step && *recorded_purpose == purpose)
+    {
+        return Err(export_error(
+            "step replay key admission has a foreign binding",
+        ));
+    }
+    admitted_replay_key(journal, &record.event).await.map(Some)
 }
 
 fn model_call(
@@ -745,6 +850,11 @@ mod tests {
                 let mut bytes = Vec::new();
                 assert!(write(&foreign, &mut bytes, format).is_err());
                 assert!(bytes.is_empty(), "schema refusal must precede publication");
+                #[cfg(feature = "provenance-export")]
+                {
+                    assert!(provenance::write(&foreign, &mut bytes).is_err());
+                    assert!(bytes.is_empty());
+                }
             }
             for format in [Format::Arrow, Format::Parquet] {
                 assert!(
@@ -753,6 +863,10 @@ mod tests {
                 );
             }
         }
+        #[cfg(feature = "provenance-export")]
+        assert!(provenance::write(&batch(Table::Agents, &[row])?, Refused).is_err());
+        #[cfg(feature = "research")]
+        assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0).is_err());
         Ok(())
     }
 

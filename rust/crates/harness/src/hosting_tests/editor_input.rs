@@ -380,6 +380,8 @@ impl Executor for EditorTurn {
                 self.observed.store(true, Ordering::SeqCst);
             }
             Ok(crate::executor::TurnOutput {
+                #[cfg(feature = "research")]
+                journal_cut: None,
                 text: "settled".into(),
                 attachments: Vec::new(),
                 metadata: serde_json::Value::Null,

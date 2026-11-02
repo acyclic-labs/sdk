@@ -5,15 +5,22 @@ use acyclic_stream::OwnedBytes;
 // carry that ownership and can share their backing for the awaited publication.
 pub(super) trait ContentInput: AsRef<[u8]> + Sync {
     fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes>;
+    fn publication_input(&self) -> PublicationInput<'_>;
 }
 
 impl ContentInput for [u8] {
+    fn publication_input(&self) -> PublicationInput<'_> {
+        PublicationInput::Bytes(self)
+    }
     fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         bounded_io::clone_bytes(self, io)
     }
 }
 
 impl ContentInput for OwnedBytes {
+    fn publication_input(&self) -> PublicationInput<'_> {
+        PublicationInput::Owned(self)
+    }
     fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         if let Some(io) = io {
             io.check_cancellation()?;
@@ -32,6 +39,116 @@ impl ContentInput for OwnedBytes {
         // Ordinary Bytes can allocate a sharing header on their first clone.
         // Retain the existing funded copy outside original native custody.
         bounded_io::clone_bytes(self.as_ref(), io)
+    }
+}
+
+pub(super) enum PublicationInput<'a> {
+    Bytes(&'a [u8]),
+    Owned(&'a OwnedBytes),
+    Stream(&'a mut dyn crate::conversation::ContentSource),
+}
+
+pub(super) struct ContentPublication<'a> {
+    pub volume: &'a VolumeRef,
+    pub grant: &'a ContentGrant,
+    pub path: &'a str,
+    pub media_type: &'a str,
+    pub display_name: &'a str,
+    pub maximum_bytes: u64,
+    pub idempotency_key: &'a IdempotencyKey,
+    pub internal_class: Option<InternalContentClass>,
+    pub expected_generation: Option<&'a GenerationRef>,
+    pub ceiling: Option<&'a crate::Capabilities>,
+    pub io: Option<&'a PreparationIo>,
+}
+
+impl PublicationInput<'_> {
+    pub(super) fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes),
+            Self::Owned(bytes) => Some(bytes.as_ref()),
+            Self::Stream(_) => None,
+        }
+    }
+
+    pub(super) fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
+        match self {
+            Self::Bytes(bytes) => bytes.mutation_bytes(io),
+            Self::Owned(bytes) => bytes.mutation_bytes(io),
+            Self::Stream(_) => Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "stream content requires staged chunks; recovery: publish through stage_stream_once",
+            )),
+        }
+    }
+}
+
+/// Hash exactly the bytes consumed by the existing blob builder. No second
+/// content pass or retained full-file buffer is required.
+pub(super) struct HashedSource<'a> {
+    pub source: &'a mut dyn crate::conversation::ContentSource,
+    pub io: &'a PreparationIo,
+    pub hash: sha2::Sha256,
+    pub length: u64,
+}
+
+impl HashedSource<'_> {
+    pub(super) async fn read(
+        &mut self,
+        destination: &mut [u8],
+        maximum: u64,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::io::Result<usize> {
+        use futures::{FutureExt, io::AsyncReadExt};
+        use sha2::Digest;
+        let maximum = destination
+            .len()
+            .min(usize::try_from(maximum).unwrap_or(usize::MAX));
+        if maximum == 0 && !destination.is_empty() {
+            return Err(std::io::Error::other(
+                "content source read budget exhausted; recovery: supply sufficient source-byte credit",
+            ));
+        }
+        let read = self.source.read(&mut destination[..maximum]).fuse();
+        let cancelled = cancellation.cancelled().fuse();
+        futures::pin_mut!(read, cancelled);
+        let count = futures::select_biased! {
+            _ = cancelled => return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
+                "content source cancelled; recovery: start a new publication with a live cancellation token")),
+            result = read => result?,
+        };
+        if count > maximum {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "content source returned an invalid count; recovery: fix ContentSource::poll_read to respect its destination",
+            ));
+        }
+        self.length = self.length.checked_add(count as u64).ok_or_else(|| {
+            std::io::Error::other(
+                "content source length overflow; recovery: supply a representable finite source",
+            )
+        })?;
+        self.io
+            .charge(acyclic_fs::WorkCounters {
+                bytes_hashed: count as u64,
+                ..Default::default()
+            })
+            .map_err(std::io::Error::other)?;
+        self.hash.update(&destination[..count]);
+        Ok(count)
+    }
+}
+
+impl acyclic_fs::kernel::AsyncBlobSource for HashedSource<'_> {
+    async fn read<'a>(
+        &'a mut self,
+        destination: &'a mut [u8],
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> std::io::Result<usize> {
+        self.read(destination, budget.source_bytes_read, cancellation)
+            .await
     }
 }
 

@@ -91,6 +91,68 @@ fn events() -> Vec<ModelEvent> {
     ]
 }
 
+#[cfg(feature = "research")]
+#[tokio::test]
+async fn append_receipts_preserve_original_sequence_after_later_publication() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    initialize(&journal, operation).await?;
+    let event = ModelEvent::Completed {
+        metadata: serde_json::Value::Null,
+    };
+    let terminal = crate::executor::append_model_event(
+        &journal,
+        operation,
+        "terminal",
+        (0, ModelPurpose::Response),
+        &event,
+        None,
+        None,
+    )
+    .await?;
+    let terminal_cut = terminal.journal_cut.expect("original terminal receipt");
+    assert_eq!(terminal_cut.operation, operation);
+    assert_eq!(terminal_cut.sequence, 3);
+    let started = ExecutionEvent::Started {
+        request_digest: [1; 32],
+    };
+    let sequenced = journal
+        .sequenced_appends()
+        .expect("original receipt capability");
+    let original = sequenced
+        .append_with_sequence(operation, "started", &started, None)?
+        .await?;
+    assert_eq!(original, 1);
+    assert_ne!(
+        original, terminal_cut.sequence,
+        "current tail would certify a different observation"
+    );
+    let foreign = ExecutionEvent::Started {
+        request_digest: [2; 32],
+    };
+    assert!(
+        sequenced
+            .append_with_sequence(operation, "started", &foreign, None)?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "terminal",
+            (0, ModelPurpose::Response),
+            &event,
+            None,
+            None,
+        )
+        .await?
+        .journal_cut,
+        Some(terminal_cut)
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn private_payload_ranges_preserve_original_authority_and_bounded_residency() -> Result<()> {
