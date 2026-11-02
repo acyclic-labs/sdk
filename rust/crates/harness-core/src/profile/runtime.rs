@@ -33,6 +33,12 @@ pub struct Profiles {
 }
 
 impl Profiles {
+    /// Immutable role files in this epoch, for admission of population-wide
+    /// policies before any model work begins. Ordering is unspecified.
+    pub fn roles(&self) -> impl Iterator<Item = (&AgentProfilePin, &RoleFile)> {
+        self.roles.values().map(|role| (&role.pin, &role.file))
+    }
+
     /// The built-in orchestrator, advisor, worker and reviewer roles, admitted
     /// once per process and shared by every stock host.
     #[must_use]
