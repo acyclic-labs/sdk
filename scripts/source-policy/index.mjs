@@ -5,7 +5,7 @@ import ts from 'typescript-parser';
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
 // Case-insensitive candidates cover PowerShell in both sources and child programs.
-const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_(?:for|until|timeout(?:_while|_ms)?)|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/i;
+const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_(?:for|until|timeout(?:_while|_ms)?)|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil|PeriodicReader|with_batch_exporter|with_scheduled_delay|(?:http2_)?keep_?alive_interval|set_tcp_keepalive)$/i;
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
@@ -51,11 +51,8 @@ function escapedSpelling(source) {
   });
 }
 
-export function sourceInScope(file) {
- // This declarative file is validated as exact dispositions, never executed.
- if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)/.test(file)
-  && (cFamily.test(file) || /\.(?:rs|[cm]?[jt]s|[jt]sx|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file));
+export function supportedSource(file) {
+ return cFamily.test(file) || /\.(?:rs|[cm]?[jt]s|[jt]sx|py|sh|bash|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
@@ -126,14 +123,14 @@ function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const python = file.endsWith('.py');
  const powershell = file.endsWith('.ps1');
- const shell = file.endsWith('.sh');
+ const shell = /\.(?:sh|bash)$/.test(file);
  const yaml = /\.ya?ml$/.test(file);
  const whitespace = yaml ? /^[ \t\r\n]+/ : /^\s+/;
  const wordComments = powershell || shell;
  const escape = powershell ? '`' : shell ? '\\' : undefined;
  const continuation = powershell ? '`\n' : '\\\n';
  const separator = powershell ? /^[;|&(){},]$/ : /^[;|&()<>]$/;
- const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
+ const hashComments = /\.(?:py|sh|bash|ps1|toml|ya?ml)$/.test(file);
  const escapedIdentifiers = cFamily.test(file);
  const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
  const blockOpen = powershell ? '<#' : '/*';
@@ -309,13 +306,13 @@ export function pollingSites(file, source) {
  return pollingUnit(file, source).sites;
 }
 
-export function validateDispositions(dispositions) {
+export function validateDispositions(dispositions, {inScope = supportedSource} = {}) {
  if (!Array.isArray(dispositions)) throw new Error('no-polling dispositions must be an array');
  const seen = new Set();
  const fields = new Set(['file', 'fingerprint', 'classification', 'producer', 'terminal', 'negativeControl']);
  for (const item of dispositions) {
   if (!item || typeof item !== 'object' || Object.keys(item).length !== fields.size || Object.keys(item).some(key => !fields.has(key))
-   || typeof item.file !== 'string' || !sourceInScope(item.file) || /[\r\n]/.test(item.file)
+   || typeof item.file !== 'string' || !inScope(item.file) || /[\r\n]/.test(item.file)
    || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !classes.has(item.classification)
    || typeof item.producer !== 'string' || !item.producer.trim()
    || typeof item.terminal !== 'string' || !item.terminal.trim()
@@ -328,8 +325,8 @@ export function validateDispositions(dispositions) {
  }
 }
 
-export function newPollingSites(file, before, after, dispositions = []) {
- validateDispositions(dispositions);
+export function newPollingSites(file, before, after, dispositions = [], policy = {}) {
+ validateDispositions(dispositions, policy);
  const retained = new Map();
  for (const site of pollingSites(file, before)) retained.set(site.fingerprint, (retained.get(site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) {

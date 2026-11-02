@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import ts from 'typescript-parser';
-import {pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} from './no-polling.mjs';
+import {pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
 
 /** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
@@ -308,8 +308,8 @@ export function projectPollingSites(sources, {historical = false} = {}) {
 }
 
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
-export function newProjectPollingSites(before, after, dispositions = []) {
- validateDispositions(dispositions);
+export function newProjectPollingSites(before, after, dispositions = [], policy = {}) {
+ validateDispositions(dispositions, policy);
  const retained = new Map();
  for (const site of projectPollingSites(before, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) retained.set(item.file + ':' + item.fingerprint, Math.max(1, retained.get(item.file + ':' + item.fingerprint) ?? 0));

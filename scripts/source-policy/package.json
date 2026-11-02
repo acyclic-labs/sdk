@@ -1,0 +1,15 @@
+{
+  "name": "@acyclic-labs/source-policy",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared temporal source analysis and exact producer dispositions",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./index.mjs",
+    "./project": "./project.mjs"
+  },
+  "files": ["index.mjs", "project.mjs", "README.md"],
+  "dependencies": {
+    "typescript-parser": "npm:typescript@6.0.3"
+  }
+}
