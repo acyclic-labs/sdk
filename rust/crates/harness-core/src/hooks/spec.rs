@@ -169,14 +169,18 @@ pub enum HookRun {
 
 /// A plugin hook's `matcher` for one event: every named field must match.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "hooks", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct RequestMatch {
     /// Normalized actions (`exec`, `read`, `write`, `edit`, `search`, `web`,
     /// `mcp`, `other`); empty matches every action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action: Vec<String>,
     /// A regular expression over an `exec` request's command.
+    #[cfg_attr(feature = "hooks", ts(optional))]
     pub command: Option<String>,
     /// A regular expression over a `read`, `write` or `edit` request's path.
+    #[cfg_attr(feature = "hooks", ts(optional))]
     pub path: Option<String>,
 }
 
@@ -241,7 +245,9 @@ impl HookSpec {
                     .ok_or_else(|| Error::Invalid("a plugin hook has a script".into()))?;
                 (
                     script,
-                    sh.iter().chain(ps1).all(|script| !script.contains('\0')),
+                    sh.iter()
+                        .chain(ps1)
+                        .all(|script| !script.trim().is_empty() && !script.contains('\0')),
                 )
             }
         };

@@ -29,6 +29,7 @@ pub(crate) struct BoundHooks {
     pub(crate) manifest: [u8; 32],
 }
 
+#[derive(Debug)]
 struct Binding {
     event: HookEvent,
     matcher: Option<Matcher>,
@@ -36,6 +37,7 @@ struct Binding {
 }
 
 /// A compiled [`RequestMatch`].
+#[derive(Debug)]
 struct Requests {
     actions: Vec<String>,
     command: Option<Regex>,
@@ -73,6 +75,7 @@ impl Requests {
     }
 }
 
+#[derive(Debug)]
 enum Matcher {
     Exact(String),
     Pattern(Regex),
@@ -88,13 +91,14 @@ impl Matcher {
 }
 
 /// Validated hooks, with matchers compiled once during configuration loading.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Hooks {
-    bindings: Vec<Binding>,
+    bindings: Vec<Arc<Binding>>,
 }
 
 impl Hooks {
-    pub(crate) fn append(&mut self, other: Self) {
+    /// Appends already validated rules in authority order, sharing their compiled matchers.
+    pub fn append(&mut self, other: Self) {
         self.bindings.extend(other.bindings);
     }
 
@@ -178,11 +182,11 @@ impl Hooks {
                 };
                 commands.push((Arc::new(hook), requests));
             }
-            bindings.push(Binding {
+            bindings.push(Arc::new(Binding {
                 event,
                 matcher,
                 commands,
-            });
+            }));
         }
         self.bindings.extend(bindings);
         Ok(())

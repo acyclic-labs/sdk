@@ -109,18 +109,21 @@ impl LocalHarness {
                 ));
             }
             #[cfg(any(test, feature = "hooks"))]
-            let hook_configuration = match &self.settings {
-                Some(settings) => {
-                    let hooks =
+            let hook_configuration = {
+                // The user's imported host hooks rank above every plugin.
+                let mut hooks = match &self.settings {
+                    Some(settings) => {
                         crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings))
-                            .await?;
-                    if hooks.is_empty() {
-                        None
-                    } else {
-                        Some(hooks.publish(publisher, self.limits).await?)
+                            .await?
                     }
+                    None => crate::hooks::Hooks::default(),
+                };
+                hooks.append(self.plugin_hooks.clone());
+                if hooks.is_empty() {
+                    None
+                } else {
+                    Some(hooks.publish(publisher, self.limits).await?)
                 }
-                None => None,
             };
             let policy = ContextDiscoveryPolicy::default();
             let limits = ContextDiscoveryLimits::default();

@@ -32,9 +32,22 @@ pub(super) struct Volumes<'a> {
 struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
+    generation: crate::resources::GenerationRef,
 }
 
 impl Tree<'_> {
+    // Only the selected settings entry may fall back to the seed on an
+    // invalid file. Enabled plugin files and imports retain their read errors.
+    async fn entry(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
+        match self.home(path).await {
+            Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            }) => Ok(None),
+            result => result,
+        }
+    }
+
     async fn home(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
         match self
             .volumes
@@ -43,7 +56,7 @@ impl Tree<'_> {
                 self.volumes.home,
                 &self.read,
                 path,
-                None,
+                Some(&self.generation),
                 self.volumes.maximum_bytes,
                 ContentAccess::default(),
             )
@@ -93,31 +106,13 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree {
-        volumes,
-        read: ContentGrant::verify_directory_read(
-            volumes.verifier,
-            volumes.signed,
-            volumes.home,
-            "",
-            &mut None,
-        )?,
-    };
+    let tree = Tree::new(volumes).await?;
     let seed = Layer {
         name: "seed",
         generation: "",
         bytes: crate::seed::file(config::AGENT),
     };
-    let home = match tree.home(config::AGENT).await {
-        Ok(home) => home,
-        // Selected-path refusal is invalid user settings. Storage, authority,
-        // cancellation and metadata failures keep their original errors.
-        Err(Error::ToolRejected {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        }) => None,
-        Err(error) => return Err(error),
-    };
+    let home = tree.entry(config::AGENT).await?;
     let Some((version, bytes)) = home else {
         return settle(&[seed], &tree, started, resolve, compaction)
             .await
@@ -143,16 +138,58 @@ pub(super) async fn admit(
                 Some(error),
             ),
         };
+    record(
+        volumes,
+        agent,
+        (config::AGENT, &version),
+        (status, error),
+        clock,
+    )
+    .await?;
+    Ok(settings)
+}
+
+impl<'a> Tree<'a> {
+    async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+        let read = ContentGrant::verify_directory_read(
+            volumes.verifier,
+            volumes.signed,
+            volumes.home,
+            "",
+            &mut None,
+        )?;
+        let workspace = crate::filesystem::workspace_ref(
+            volumes.home.provider().clone(),
+            &volumes.home.storage_name(&mut None)?,
+        )?;
+        let generation = volumes.files.resolve(&workspace, None).await?.generation;
+        Ok(Self {
+            volumes,
+            read,
+            generation,
+        })
+    }
+}
+
+/// Records the outcome of the home's `path` at `version` in the journal,
+/// once per version.
+async fn record(
+    volumes: &Volumes<'_>,
+    agent: AgentId,
+    (path, version): (&str, &str),
+    (status, error): (AdmissionStatus, Option<String>),
+    clock: &dyn acyclic_stream::UnixMillisClock,
+) -> Result<()> {
     let admission = Admission {
-        path: config::AGENT.to_owned(),
-        version: version.clone(),
+        path: path.to_owned(),
+        version: version.to_owned(),
         status,
         error,
         at: config::utc(clock.now_unix_millis()),
     };
     let bytes =
         serde_json::to_vec(&admission).map_err(|error| Error::Invalid(error.to_string()))?;
-    let path = format!("live/agents/{agent}/admissions/{version}.json");
+    let record = format!("live/agents/{agent}/admissions/{path}/{version}.json");
     volumes
         .files
         .put_content(
@@ -165,20 +202,69 @@ pub(super) async fn admit(
                 u64::MAX,
                 &mut None,
             )?,
-            &path,
+            &record,
             &bytes,
             "application/json",
             "admission",
             volumes.maximum_bytes,
             &crate::IdempotencyKey::new(format!(
-                "admission:{agent}:{version}:{}",
+                "admission:{agent}:{path}:{version}:{}",
                 blake3::hash(&bytes)
             ))?,
             None,
             ContentAccess::default(),
         )
         .await?;
-    Ok(settings)
+    Ok(())
+}
+
+/// The before-hook rules of the plugins `plugins.ts` enables, read as the
+/// session starts, recording the home module's admission. An invalid home
+/// `plugins.ts` leaves the seed's set in force.
+#[cfg(any(test, feature = "hooks"))]
+pub(super) async fn plugins(
+    volumes: &Volumes<'_>,
+    agent: AgentId,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+) -> Result<crate::hooks::Hooks> {
+    use crate::plugins::{MANIFEST, load};
+    let tree = Tree::new(volumes).await?;
+    let enabler = agent.to_string();
+    let seed = Layer {
+        name: "seed",
+        generation: "",
+        bytes: crate::seed::file(MANIFEST),
+    };
+    let seeded = |error: Error| match error {
+        Error::Invalid(reason) => {
+            Error::Invalid(format!("the seed's plugins are not admissible: {reason}"))
+        }
+        error => error,
+    };
+    let Some((version, bytes)) = tree.entry(MANIFEST).await? else {
+        return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
+    };
+    let layers = [
+        seed,
+        Layer {
+            name: "home",
+            generation: &version,
+            bytes: Some(&bytes),
+        },
+    ];
+    let (rules, outcome) = match load(&tree, &layers, &enabler).await {
+        Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
+        Err(Error::Invalid(reason)) => (
+            load(&tree, &layers[..1], &enabler)
+                .await
+                .map_err(seeded)?
+                .rules,
+            (AdmissionStatus::Invalid, Some(reason)),
+        ),
+        Err(error) => return Err(error),
+    };
+    record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
+    Ok(rules)
 }
 
 /// Only configuration refusals permit fallback. Operation failures retain their
@@ -381,16 +467,14 @@ mod tests {
         }];
         let disabled = crate::context::CompactionPolicy::Disabled;
         for prefix in ["", "allowed"] {
-            let tree = Tree {
-                volumes: &volumes,
-                read: ContentGrant::verify_directory_read(
-                    &harness.verifier,
-                    &harness.signed,
-                    &harness.scratch,
-                    prefix,
-                    &mut None,
-                )?,
-            };
+            let mut tree = Tree::new(&volumes).await?;
+            tree.read = ContentGrant::verify_directory_read(
+                &harness.verifier,
+                &harness.signed,
+                &harness.scratch,
+                prefix,
+                &mut None,
+            )?;
             let result = settle(
                 &layers,
                 &tree,
@@ -416,6 +500,69 @@ mod tests {
                 (_, Ok(_)) => panic!("{prefix}: imported settings escaped their read boundary"),
             }
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "hooks")]
+    #[tokio::test]
+    async fn a_settings_tree_keeps_one_generation_across_concurrent_home_edits() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let project = volume(directory.path()).await?;
+        let harness = LocalHarness::open(
+            volume_config(directory.path(), project, text())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?;
+        for (path, source) in [
+            (
+                "plugins.ts",
+                "import {enabled} from './switch.ts'; export default {guard: {enabled}};",
+            ),
+            ("switch.ts", "export const enabled = true;"),
+            (
+                "plugins/guard/plugin.ts",
+                "export default {name: 'guard', description: 'Guard every tool'};",
+            ),
+            (
+                "plugins/guard/hooks/before-tool.sh",
+                "printf '%s' '{\"decision\":\"deny\"}'",
+            ),
+        ] {
+            crate::local::tests::settings::write(&harness, path, source).await?;
+        }
+        let volumes = Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: u64::MAX,
+        };
+        let original = Tree::new(&volumes).await?;
+        for (path, source) in [
+            ("switch.ts", "export const enabled = false;"),
+            (
+                "plugins/guard/plugin.ts",
+                "export default {name: 'changed', description: 'Changed'};",
+            ),
+            ("plugins/guard/hooks/before-tool.sh", "\0"),
+        ] {
+            crate::local::tests::settings::write(&harness, path, source).await?;
+        }
+        let enabler = harness.root.to_string();
+        let (version, bytes) = original.entry(crate::plugins::MANIFEST).await?.unwrap();
+        let layers = [Layer {
+            name: "home",
+            generation: &version,
+            bytes: Some(&bytes),
+        }];
+        let enabled = crate::plugins::load(&original, &layers, &enabler).await?;
+        assert_eq!(enabled.names, ["guard"]);
+        assert!(!enabled.rules.is_empty());
+        let current = Tree::new(&volumes).await?;
+        let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
+        assert!(disabled.names.is_empty());
+        assert!(disabled.rules.is_empty());
         Ok(())
     }
 }
