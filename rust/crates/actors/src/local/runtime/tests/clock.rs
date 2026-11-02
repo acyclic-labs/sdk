@@ -109,9 +109,17 @@ async fn clock_schedule(
         None
     };
 
-    if let Some(replacement) = &replacement {
-        // The replacement's original activation reports the stale epoch before
-        // time advances. Older activation entries cannot re-place it afterwards.
+    // Both an installed waiter and a not-yet-observed future retain the same
+    // original advance. Neither owns the clock producer.
+    let mut reached = clock.sleep_until(110);
+    if observed_before_advance {
+        assert!(reached.as_mut().poll(&mut context).is_pending());
+    }
+    control.advance_to(110)?;
+    reached.await?;
+    if let Some(replacement) = replacement {
+        // Placement alone appends no activation. The original due alarm wakes
+        // this stale owner; the retained report is the refusal's event.
         observe_while_running(serving.as_mut(), async {
             failures
                 .next()
@@ -129,17 +137,6 @@ async fn clock_schedule(
         assert_eq!(state.cursor("inbox"), Some(1));
         assert_eq!(state.alarm().deadline_unix_ms, Some(110));
         assert_eq!(state.alarm().delivered_generation, None);
-    }
-
-    // Both an installed waiter and a not-yet-observed future retain the same
-    // original advance. Neither owns the clock producer.
-    let mut reached = clock.sleep_until(110);
-    if observed_before_advance {
-        assert!(reached.as_mut().poll(&mut context).is_pending());
-    }
-    control.advance_to(110)?;
-    reached.await?;
-    if replacement.is_some() {
         // Only this explicit placement may claim epoch 3 and deliver the
         // still-committed alarm; the stale dispatcher may not publish it.
         runtime.track(first.clone())?;
