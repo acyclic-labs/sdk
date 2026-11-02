@@ -4,6 +4,7 @@ use super::*;
 use crate::local::{LocalHarness, LocalHarnessConfig};
 use acyclic_native_runtime::ProcessStdio;
 use notify::Watcher;
+use std::io::Write as _;
 use std::{fs, sync::Arc};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -65,7 +66,91 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
             "the external writer withholds stdout EOF"
         );
         wait_exit(&mut running)?;
-        assert!(sessions.refresh("closed", &mut running)?.is_some());
+        let completed = sessions
+            .refresh("closed", &mut running, &mut [0; 8192])?
+            .ok_or("exited child did not settle")?;
+        let failure = completed["results"][0]["outcome"]["Failed"]["message"]
+            .as_str()
+            .ok_or("missing reply was reported successful")?;
+        assert!(
+            failure.contains("process exited without a completed native reply"),
+            "{failure}"
+        );
+        drop(writer);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof() -> Result {
+    served("codex", |host, cwd| {
+        let (mut sessions, _) = children(host, cwd, "exit-output")?;
+        let (mut running, view) = claim(
+            &mut sessions,
+            cwd,
+            "captured",
+            SessionAction::Spawn {
+                prompt: "captured reply".into(),
+            },
+        )?;
+        let mut command = native_fixture(&view, "", "0");
+        running
+            .process
+            .spawn(&mut command, running.claim.operation)?;
+        let pid = shell_pid(&mut running)?;
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{pid}/fd/1"))?;
+        running.process.queue_stdin(b"exit\n".to_vec())?;
+        wait_exit(&mut running)?;
+        // Replay after direct-child exit. Derive one invalid UTF-8 frame from
+        // the captured start, between that start and its original reply, so
+        // framing loss cannot be reset by another turn-start. Keeping this
+        // writer proves settlement cannot require EOF.
+        let captured = include_bytes!("../fixtures/codex-completed.jsonl");
+        let first = captured
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("captured start absent")?
+            + 1;
+        let mut corrupted = captured[..first].to_vec();
+        corrupted[0] = 0xff;
+        writer.write_all(&captured[..first])?;
+        writer.write_all(&corrupted)?;
+        writer.write_all(&captured[first..])?;
+        sessions.children.insert("captured".into(), running);
+        sessions.ready.push("captured");
+        // Small scratch pages force both real output passes to spend all
+        // their credit while the captured terminal is still unread.
+        let mut page = [0; 8];
+        sessions.pump_output(&mut page)?;
+        assert!(sessions.children.contains_key("captured"));
+        assert!(
+            sessions.children["captured"].answer.outcome.is_none(),
+            "terminal remains unread after the full passes"
+        );
+        assert_eq!(
+            sessions
+                .ready
+                .queue()
+                .keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["captured"],
+            "actual output must schedule exactly its next bounded pass"
+        );
+        sessions.pump_output(&mut page)?;
+        assert!(!sessions.children.contains_key("captured"));
+        assert!(sessions.ready.queue().keys.is_empty());
+        let completed = sessions
+            .wait("captured")?
+            .ok_or("captured child is still running")?;
+        assert_eq!(
+            completed["results"][0]["outcome"]["Succeeded"]["text"],
+            "PAIRED_NATIVE_DONE"
+        );
         drop(writer);
         Ok(())
     })
@@ -174,7 +259,7 @@ fn claim(
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
         events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-        answer: Outcome::Succeeded(String::new()),
+        answer: NativeAnswer::default(),
         settlement: None,
         wake: std::task::Waker::noop().clone(),
         armed: None,
@@ -199,8 +284,13 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
         let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
         command
-            .args(["-c", "printf turn > \"turn-$1\"", "fixture"])
+            .args([
+                "-c",
+                "printf turn > \"turn-$1\"; printf '%s' \"$2\"",
+                "fixture",
+            ])
             .arg(turn.to_string())
+            .arg(include_str!("../fixtures/codex-completed.jsonl"))
             .current_dir(&view)
             .stdin(ProcessStdio::null())
             .stdout(ProcessStdio::piped())
@@ -209,7 +299,7 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
         running.process.spawn(&mut command, operation)?;
         wait_exit(&mut running)?;
         let completed = sessions
-            .refresh("idle", &mut running)?
+            .refresh("idle", &mut running, &mut [0; 8192])?
             .ok_or_else(|| failed("settle idle child", "exited turn did not settle"))?;
         assert!(completed["next"].is_null(), "turn {turn} queued nothing");
         assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
@@ -217,9 +307,9 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             .as_array()
             .ok_or("settled results absent")?;
         assert!(
-            results
-                .last()
-                .is_some_and(|result| result["outcome"].get("Succeeded").is_some()),
+            results.last().is_some_and(
+                |result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"
+            ),
             "turn {turn} recorded its reply: {results:?}"
         );
     }
@@ -239,10 +329,12 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
 /// Direct-child exit owns this wait; another stderr writer cannot delay it.
 fn wait_exit(running: &mut Running) -> Result {
     running.process.take_output_progress();
+    let mut page = [0; 8192];
     loop {
         running.process.pump_stdin()?;
-        output(running)?;
+        output(running, &mut page)?;
         if running.process.try_wait()?.is_some() {
+            running.process.take_output_progress();
             return Ok(());
         }
         if !running.process.take_output_progress() {
@@ -330,7 +422,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
         "negative input must withhold stderr EOF"
     );
     let completed = sessions
-        .refresh("held", &mut running)?
+        .refresh("held", &mut running, &mut [0; 8192])?
         .ok_or("exited native session still waits for inherited stderr EOF")?;
     assert!(completed["next"].is_null(), "no further input was queued");
     assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
