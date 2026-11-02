@@ -32,11 +32,12 @@ export class SourceSyntaxError extends Error {
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
 
 // Host identifiers and quoted child programs can spell the same operation with
-// Unicode escapes. Conservatively decode escapes across wrapper quoting: a
+// Unicode or PowerShell escapes. Conservatively decode across wrapper quoting: a
 // wrapper must not turn a readiness timer into an approved ordinary identifier.
 function escapedSpelling(source) {
- return source.replace(/\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2}))/g,
-  (escape, braced, short, long, byte) => {
+ return source.replace(/`(.)|\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2}))/g,
+  (escape, powershell, braced, short, long, byte) => {
+   if (powershell !== undefined) return powershell;
    const point = Number.parseInt((braced ?? short ?? long ?? byte).replaceAll('_', ''), 16);
    return point <= 0x10ffff ? String.fromCodePoint(point) : escape;
   });
@@ -122,6 +123,7 @@ function nativeTokens(source, file) {
  const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
  const wordPattern = escapedIdentifiers
   ? /^(?:[A-Za-z_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[A-Za-z0-9_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/
+  : powershell ? /^`?[A-Za-z_$](?:`?[A-Za-z0-9_$])*/
   : /^[A-Za-z_$][A-Za-z0-9_$]*/;
  const out = [];
  let at = 0;
@@ -185,8 +187,12 @@ function nativeTokens(source, file) {
    emit(end + 1, 'literal'); continue;
   }
   const word = tail.match(wordPattern);
-  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation',
-   word && (powershell || escapedIdentifiers) ? (powershell ? word[0].toLowerCase() : escapedSpelling(word[0])) : undefined);
+  let spelling;
+  if (word && (powershell || escapedIdentifiers)) {
+   spelling = escapedSpelling(word[0]);
+   if (powershell) spelling = spelling.toLowerCase();
+  }
+  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation', spelling);
  }
  return out;
 }

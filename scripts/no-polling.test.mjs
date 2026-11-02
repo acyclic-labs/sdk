@@ -47,18 +47,19 @@ test('PowerShell here-strings retain embedded child waits without consuming late
 test('PowerShell casing preserves wait, loop and alias review', () => {
  // Deliberately bad source edits; no external PowerShell output is fabricated.
  const file = 'scripts/control.ps1';
- for (const source of ['START-SLEEP -Seconds 1', 'WHILE (-not $ready) { Step }']) {
+ for (const source of ['START-SLEEP -Seconds 1', 'Start-S`leep -Seconds 1', 'Start-`Sleep -Seconds 1', 'WHILE (-not $ready) { Step }']) {
   assert.ok(newPollingSites(file, '', source).length, source);
  }
- const source = '$Pause = [System.Threading.Thread]::Sleep; $PAUSE.Invoke(1)';
+ const original = '$Pause = [System.Threading.Thread]::Sleep';
+ const source = original + '; $PAUSE.Invoke(1)';
  assert.deepEqual(pollingSites(file, source).filter(site => site.kind === 'timer-or-readiness').map(site => site.start),
   ['$Pause', 'Sleep', '$PAUSE'].map(spelling => source.indexOf(spelling)));
- const original = '$Pause = [System.Threading.Thread]::Sleep';
  const accepted = pollingSites(file, original).map(site => disposition(site, 'caller-deadline',
   'original caller deadline', 'original caller cancellation', 'remove the caller deadline'));
  assert.ok(newPollingSites(file, original, source, accepted).length);
- assert.ok(pollingSites(script, 'runHost("START-SLEEP -Seconds 1")')
-  .some(site => site.kind === 'embedded-timer-or-retry'));
+ for (const source of ['runHost("START-SLEEP -Seconds 1")', 'runHost("Start-S`leep -Seconds 1")']) {
+  assert.ok(pollingSites(script, source).some(site => site.kind === 'embedded-timer-or-retry'), source);
+ }
  assert.deepEqual(pollingSites(file, '# START-SLEEP 1\nWrite-Output "ordinary"'), []);
 });
 
