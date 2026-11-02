@@ -14,14 +14,37 @@ impl Client {
         credential: u32,
         maximum_reply_bytes: usize,
     ) -> Result<Bytes, StreamError> {
-        if invocation.is_empty()
-            || invocation.len() > crate::MAX_COMMAND_BYTES
-            || maximum_reply_bytes == 0
-            || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
-        {
-            return Err(StreamError::InvalidArgument);
-        }
+        validate_call(invocation, maximum_reply_bytes)?;
         self.reply(
+            Kind::ActorCall(invocation.clone()),
+            credential,
+            maximum_reply_bytes,
+        )
+        .await
+    }
+
+    /// Opens the same one-shot invocation and returns original reply fragments.
+    ///
+    /// Each item pairs the immutable total encoded reply length with its next
+    /// fragment. Holding a fragment retains its original session receive credit;
+    /// dropping the stream cancels its original interest. Source loss or an
+    /// incomplete reply is a typed error, never a successful end. The request is
+    /// still one complete invocation; this does not stream its input body.
+    pub async fn actor_call_chunks(
+        &self,
+        invocation: &Bytes,
+        credential: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<
+        impl futures::Stream<
+            Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
+        >
+        + 'static
+        + use<>,
+        StreamError,
+    > {
+        validate_call(invocation, maximum_reply_bytes)?;
+        self.reply_chunks(
             Kind::ActorCall(invocation.clone()),
             credential,
             maximum_reply_bytes,
@@ -83,39 +106,88 @@ impl Client {
         credential: u32,
         maximum_reply_bytes: usize,
     ) -> Result<Bytes, StreamError> {
-        // No acknowledgement/resume cursor is useful for a one-shot reply.
-        // Dropping this cursor still returns all queued frame credit and removes
-        // the interest through the same cancellation owner as a follow.
         let source = self
-            .open_subscription(kind, cursor(0), false, false, None, credential)
+            .reply_chunks(kind, credential, maximum_reply_bytes)
             .await?;
         futures::pin_mut!(source);
         let mut reply = Vec::new();
         let mut total = None;
         while let Some(item) = source.next().await {
-            let data = item?
-                .into_data()
-                .map_err(|_| StreamError::InvalidResponse)?;
-            let length = wire_codec::session::actor_call_total(&data)?;
-            if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
-                return Err(StreamError::InvalidResponse);
-            }
+            let (length, chunk) = item?;
             if total.is_none() {
                 reply
                     .try_reserve_exact(length)
                     .map_err(|_| StreamError::Capacity)?;
                 total = Some(length);
             }
-            let chunk = wire_codec::session::reply_chunk(data.item.as_ref())
-                .ok_or(StreamError::InvalidResponse)?;
-            if chunk.len() > length - reply.len() {
-                return Err(StreamError::InvalidResponse);
-            }
-            reply.extend_from_slice(chunk);
+            reply.extend_from_slice(chunk.as_ref());
             if reply.len() == length {
                 return Ok(reply.into());
             }
         }
         Err(StreamError::Unavailable)
     }
+
+    async fn reply_chunks(
+        &self,
+        kind: Kind,
+        credential: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<
+        impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
+        + 'static
+        + use<>,
+        StreamError,
+    > {
+        // Use the original cursor directly: the generic subscription projection
+        // returns delivery credit before yielding its frame.
+        let cursor = self
+            .open_cursor(kind, cursor(0), false, false, None, credential)
+            .await?;
+        let operation = cursor.observation.operation.clone();
+        Ok(operation.scope(stream::try_unfold(
+            (cursor, None, 0_usize, false),
+            move |(mut cursor, total, received, complete)| async move {
+                if complete {
+                    return Ok(None);
+                }
+                let (data, credit) = cursor
+                    .receive_data()
+                    .await?
+                    .ok_or(StreamError::Unavailable)?;
+                let length = wire_codec::session::actor_call_total(&data)?;
+                if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+                    return Err(StreamError::InvalidResponse);
+                }
+                let bytes = match data.item {
+                    Some(
+                        wire::session_data::Item::ActorCall(bytes)
+                        | wire::session_data::Item::ChildrenPage(bytes)
+                        | wire::session_data::Item::Heads(bytes),
+                    ) => bytes,
+                    _ => return Err(StreamError::InvalidResponse),
+                };
+                let received = received
+                    .checked_add(bytes.len())
+                    .filter(|received| *received <= length)
+                    .ok_or(StreamError::InvalidResponse)?;
+                let chunk = crate::body::BodyChunk::new(bytes, credit);
+                Ok(Some((
+                    (length, chunk),
+                    (cursor, Some(length), received, received == length),
+                )))
+            },
+        )))
+    }
+}
+
+fn validate_call(invocation: &Bytes, maximum_reply_bytes: usize) -> Result<(), StreamError> {
+    if invocation.is_empty()
+        || invocation.len() > crate::MAX_COMMAND_BYTES
+        || maximum_reply_bytes == 0
+        || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
 }
