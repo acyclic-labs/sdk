@@ -31,8 +31,8 @@ test('workspace startup cancellation and early exit settle the original watch an
    launched(events);
    return child;
   };
-  const owner={startOwned(_binary,_args,options){return retained(scope.start(process.execPath,['-e',program],options));},
-   async startReportedOwned(_binary,_args,options){return retained(await scope.startReported(process.execPath,['-e',program],options));}};
+  const owner={async startReportedOwned(_binary,_args,options){
+   return retained(await scope.startReported(process.execPath,['-e',program],options));}};
   try{
    if(mode==='cancel-before')cancellation.abort(failure);
    if(mode.startsWith('ready')||mode==='descriptor-without-ready'){
