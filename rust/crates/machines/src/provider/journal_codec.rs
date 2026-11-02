@@ -99,27 +99,27 @@ pub mod codec_fuzz {
             provider.fork_machine(machine.id, count, fork_key).await?;
             let forked = provider.recover(fork_key).await?;
             Ok(vec![
-                ("machine", encode(machine)?),
+                ("simulator-v1-machine", encode(machine)?),
                 (
-                    "result-observation",
+                    "simulator-v1-result-observation",
                     crate::results::record(machine)?.value.to_vec(),
                 ),
-                ("pending", encode(&Intent { digest })?),
+                ("simulator-v1-pending", encode(&Intent { digest })?),
                 (
-                    "settled",
+                    "simulator-v1-settled",
                     encode(&Completed {
                         digest,
                         outcome: created,
                     })?,
                 ),
                 (
-                    "fork-pending",
+                    "simulator-v1-fork-pending",
                     encode(&Intent {
                         digest: fork_digest,
                     })?,
                 ),
                 (
-                    "fork-settled",
+                    "simulator-v1-fork-settled",
                     encode(&Completed {
                         digest: fork_digest,
                         outcome: forked,

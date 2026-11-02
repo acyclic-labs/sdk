@@ -25,6 +25,27 @@ pub fn check(bytes: &[u8]) {
     }
 }
 
+/// Require a positive check with the original producer envelope. Unlike an
+/// arbitrary fuzz input, a captured plan or binding must actually be admitted.
+pub fn check_record(target: &str, record: &acyclic_stream::Record) {
+    let foreign = if target.is_empty() { "foreign" } else { "" };
+    let accepted = match record.sequence {
+        0 => {
+            assert!(ProvisionPlan::decode(foreign, record).is_err());
+            admitted(record, |record| ProvisionPlan::decode(target, record))
+        }
+        1 => {
+            assert!(MachineBinding::decode(foreign, record).is_err());
+            admitted(record, |record| MachineBinding::decode(target, record))
+        }
+        _ => false,
+    };
+    assert!(
+        accepted,
+        "original Machine producer record was not admitted"
+    );
+}
+
 fn admitted<T: Serialize>(
     record: &acyclic_stream::Record,
     decode: impl Fn(&acyclic_stream::Record) -> Result<T>,

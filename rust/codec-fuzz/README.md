@@ -37,6 +37,17 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
+Refresh only the original simulator's Machine create/fork/recovery writers with:
+
+```sh
+cargo run --locked --example capture -- --only-machines --extend-goldens
+```
+
+These `machine_journal/simulator-v1-` captures retain the original returned
+observations and paged fork cut. They qualify process-local simulation codecs;
+native guests and deployed service wire remain separate capture boundaries.
+Earlier Machine captures keep their original bytes and provenance.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

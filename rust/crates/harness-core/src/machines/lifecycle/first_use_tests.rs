@@ -147,7 +147,12 @@ async fn original_binding_positions_precede_allocation_and_recovery() -> TestRes
             key: None,
         })
         .await?;
-    while let Some(record) = futures::TryStreamExt::try_next(&mut records).await? {
+    for sequence in 0..2 {
+        let record = futures::TryStreamExt::try_next(&mut records)
+            .await?
+            .ok_or("original Machine plan or binding capture is missing")?;
+        assert_eq!(record.sequence, sequence);
+        codec_fuzz::check_record("machine", &record);
         codec_fuzz::check(&record.value);
         println!(
             "harness_codecs/machine-record-{}\tbase64:{}",

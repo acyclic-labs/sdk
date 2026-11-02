@@ -174,6 +174,16 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-machines") {
+        let prefix = "machine_journal/simulator-v1-";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_machines(&mut manifest)?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -352,6 +362,8 @@ fn capture() -> Result<(), Box<dyn Error>> {
         .lines()
         .filter(|line| {
             (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
+                || (line.starts_with("machine_journal/")
+                    && !line.starts_with("machine_journal/simulator-v1-"))
                 || matches!(
                     line.split('\t').next(),
                     Some(
@@ -497,15 +509,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "WindowsUsnCheckpoint::to_bytes",
         &mut manifest,
     )?;
-    for (name, bytes) in acyclic_machines::codec_fuzz::seeds()? {
-        save(
-            "machine_journal",
-            name,
-            &bytes,
-            "SimulatedMachines public create/fork_machine/recover -> production journal/results encoder; ProcessLocalSimulation only, not physical guest or deployed wire evidence",
-            &mut manifest,
-        )?;
-    }
+    capture_machines(&mut manifest)?;
     for (name, bytes) in acyclic_codec_fuzz::filesystem_pages::seeds()? {
         save(
             "filesystem_pages",
@@ -742,6 +746,19 @@ fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
             &name,
             &bytes,
             "Manifest::encode and complete GenerationId::to_bytes with explicit mutation/flush/compaction, fault, original-site selector and torn-prefix configuration; original LocalMedium operation and Schedule oracle",
+            manifest,
+        )?;
+    }
+    Ok(())
+}
+
+fn capture_machines(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_machines::codec_fuzz::seeds()? {
+        save(
+            "machine_journal",
+            name,
+            &bytes,
+            "SimulatedMachines public create/fork_machine/recover -> production journal/results encoder; ProcessLocalSimulation only, not physical guest or deployed wire evidence",
             manifest,
         )?;
     }
