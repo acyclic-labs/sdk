@@ -146,6 +146,12 @@ mod tests {
         for (_, bytes) in seeds {
             assert!(codec_fuzz::check(&bytes));
             if let Ok(terminal) = decode::<Completed>(&bytes) {
+                for end in 0..bytes.len() {
+                    assert!(
+                        decode::<Completed>(&bytes[..end]).is_err(),
+                        "partial original terminal at {end} was accepted"
+                    );
+                }
                 match terminal.outcome {
                     MutationOutcome::Created(_) => created = true,
                     MutationOutcome::Forked { results, .. } => {
