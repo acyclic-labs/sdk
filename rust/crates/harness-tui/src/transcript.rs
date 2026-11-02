@@ -1,6 +1,6 @@
 //! Bounded transcript storage and incremental display-width wrapping.
 
-use crate::{Editor, Layout};
+use crate::Layout;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -190,7 +190,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
         crate::markdown::render(text, columns)
     };
     let mut style_at = crate::styled_cells::ordered_styles(styles);
-    let layout = Layout::new(&Editor::new(&text), columns);
+    let layout = Layout::from_text(&text, columns);
     let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
     if first > 0 {
