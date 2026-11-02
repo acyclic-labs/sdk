@@ -1,7 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{Error, ModelTransportFailure, NativeFutureBundle, wire::ErrorCode};
-use futures::FutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn work() -> NativeMaterializationWork {
@@ -12,11 +11,12 @@ fn work() -> NativeMaterializationWork {
     .unwrap_or_else(|_| panic!("fixture work"))
 }
 
-struct FailingTransport(
-    ModelTransportFailure,
-    AtomicUsize,
-    futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
-);
+struct FailingTransport {
+    failure: ModelTransportFailure,
+    requests: AtomicUsize,
+    completion: futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
+    entered: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
+}
 
 impl HttpTransport for FailingTransport {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -34,9 +34,16 @@ impl HttpTransport for FailingTransport {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
-            self.1.fetch_add(1, Ordering::SeqCst);
-            let failure = match self.2.clone().await {
-                Ok(()) => self.0,
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            self.entered
+                .lock()
+                .expect("endpoint admission lock")
+                .take()
+                .expect("one refresh request")
+                .send(())
+                .expect("refresh request observer remains live");
+            let failure = match self.completion.clone().await {
+                Ok(()) => self.failure,
                 Err(_) => ModelTransportFailure::Interrupted,
             };
             Err(crate::transport_failure(true, failure, "endpoint failure"))
@@ -56,7 +63,13 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
             let (_root, login, _) = fixture(&jwt(0), 200)?;
             let fresh = login.fresh();
             let (release, completion) = futures::channel::oneshot::channel();
-            let transport = FailingTransport(failure, AtomicUsize::new(0), completion.shared());
+            let (entered, entering) = futures::channel::oneshot::channel();
+            let transport = FailingTransport {
+                failure,
+                requests: AtomicUsize::new(0),
+                completion: completion.shared(),
+                entered: Mutex::new(Some(entered)),
+            };
             let leader_work = work();
             let follower_work = work();
             {
@@ -68,9 +81,19 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
                     None,
                     native_follower.then_some(&mut follower)
                 ));
-                assert!(left.as_mut().now_or_never().is_none());
+                // Credential IO completes on its physical producer. Drive the
+                // original caller until the endpoint admits its one request;
+                // an earlier failure or lost producer must end this wait.
+                match futures::future::select(entering, left.as_mut()).await {
+                    futures::future::Either::Left((entered, _)) => {
+                        entered.expect("refresh endpoint admitted its original request");
+                    }
+                    futures::future::Either::Right((result, _)) => {
+                        panic!("refresh ended before endpoint admission: {result:?}");
+                    }
+                }
                 assert!(right.as_mut().now_or_never().is_none());
-                assert_eq!(transport.1.load(Ordering::SeqCst), 1);
+                assert_eq!(transport.requests.load(Ordering::SeqCst), 1);
                 if producer_lost {
                     drop(release);
                 } else {
@@ -95,7 +118,7 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
                 assert!(
                     matches!(&right, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
                 );
-                assert_eq!(transport.1.load(Ordering::SeqCst), 1);
+                assert_eq!(transport.requests.load(Ordering::SeqCst), 1);
             }
             assert_eq!(
                 leader_work.live_allocation_bytes(),

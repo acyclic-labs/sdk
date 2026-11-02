@@ -131,7 +131,7 @@ pub(crate) fn finish(
     if !state.terminal {
         // The body ended early: the connection was cut off, not the protocol violated.
         return Err(crate::transport_failure(
-            false,
+            state.budget.is_native(),
             acyclic_harness_core::ModelTransportFailure::Interrupted,
             "model stream ended without a terminal marker",
         ));
