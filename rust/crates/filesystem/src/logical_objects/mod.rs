@@ -78,26 +78,10 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
     }
 }
 
-fn accounting<'a>(
-    context: &'a mut AuthorityWork<'_>,
-) -> Result<KernelAccounting<'a>, ObjectStoreError> {
-    if !context.is_native() {
-        context.read_budget()?;
-    }
-    let standing = context.read_observation.map_or(0, |(_, standing)| standing);
-    let mut accounting = context.accounting();
-    if let KernelAccounting::BorrowedStandalone { budget, .. } = &mut accounting {
-        budget.peak_allocation_bytes = budget
-            .peak_allocation_bytes
-            .checked_sub(standing)
-            .ok_or(WorkError::Overflow)?;
-    }
-    Ok(accounting)
-}
 macro_rules! operate {
     ($context:ident, $work:ident, $body:expr) => {{ operate!($context, $work, false, $body) }};
     ($context:ident, $work:ident, $keep_output:expr, $body:expr) => {{
-        let mut accounting = accounting($context)?;
+        let mut accounting = $context.read_accounting()?;
         let mut $work = accounting
             .allocation_scope()
             .map_err(crate::async_storage::object_error)?;

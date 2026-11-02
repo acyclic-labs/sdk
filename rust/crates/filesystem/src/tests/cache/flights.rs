@@ -47,7 +47,7 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         .await
         .err()
         .ok_or("empty cache batch succeeded")?;
-    assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(empty.error, ObjectStoreError::EmptyReadBatch));
     assert_eq!(*empty.work, WorkCounters::default());
     Ok(())
 }

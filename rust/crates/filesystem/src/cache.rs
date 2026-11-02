@@ -9,8 +9,8 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::kernel::Owned;
 use crate::kernel::allocation::retained::RetainedArc;
-use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
 use crate::performance::WorkCounters;
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
