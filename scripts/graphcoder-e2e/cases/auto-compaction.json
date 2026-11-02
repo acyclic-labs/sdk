@@ -69,7 +69,7 @@
           "when": {
             "contains": [
               "AUTO_E2E_DONE",
-              "\u00c3\u00a2\u00e2\u20ac\u201d\u00e2\u20ac\u00b9"
+              "\u25cb"
             ]
           },
           "send": "\u0004"
