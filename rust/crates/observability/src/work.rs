@@ -3,6 +3,8 @@ use tracing::field::{Field, Visit};
 
 /// The producer's latest declared totals before terminal completion.
 /// Missing fields remain unknown, including a producer that records no totals.
+/// A later value outside the unsigned 64-bit contract replaces an earlier total
+/// with unknown; it cannot preserve a stale count or be parsed from text.
 /// These semantic units do not establish OS-wide or physical-call coverage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WorkSummary {
@@ -14,15 +16,27 @@ pub struct WorkSummary {
     pub durability: Option<u64>,
 }
 
+impl WorkSummary {
+    fn field(&mut self, field: &Field) -> Option<&mut Option<u64>> {
+        match field.name() {
+            "work.items" => Some(&mut self.items),
+            "work.bytes" => Some(&mut self.bytes),
+            "work.durability" => Some(&mut self.durability),
+            _ => None,
+        }
+    }
+}
+
 impl Visit for WorkSummary {
     fn record_u64(&mut self, field: &Field, value: u64) {
-        match field.name() {
-            "work.items" => self.items = Some(value),
-            "work.bytes" => self.bytes = Some(value),
-            "work.durability" => self.durability = Some(value),
-            _ => {}
+        if let Some(total) = self.field(field) {
+            *total = Some(value);
         }
     }
 
-    fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &Field, _: &dyn std::fmt::Debug) {
+        if let Some(total) = self.field(field) {
+            *total = None;
+        }
+    }
 }

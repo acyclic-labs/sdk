@@ -176,9 +176,10 @@ Do not add a second set of counters.
   - `work.items`: `items_examined`
   - `work.bytes`: `object_bytes_read + object_bytes_written + authority_bytes_written`
   - `work.durability`: `durability_operations`
-  These are diagnostic summaries. The byte sum saturates on overflow; use the
-  original receipt's individual fields for exact accounting. Unrecorded fields
-  are unknown. There is no separate `acyclic.work` event ledger.
+  These are diagnostic summaries. An overflowing byte sum replaces any earlier
+  byte summary with unknown; use the original receipt's individual fields for
+  exact accounting. Unrecorded fields are unknown. There is no separate
+  `acyclic.work` event ledger.
 - Kernel, native capture, materialization and other nested spans can summarize
   work already included in their caller's receipt. Do not add those summaries
   together or infer a physical syscall count from logical provider requests.

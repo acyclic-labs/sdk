@@ -42,6 +42,98 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn work_totals_replace_stale_values_before_original_terminal()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Export, Outcome, WorkSummary};
+    use std::{fmt, sync::Arc};
+    use tokio::sync::Semaphore;
+
+    struct NeverFormat;
+    impl fmt::Debug for NeverFormat {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            panic!("unknown evidence must not invoke user formatting");
+        }
+    }
+    let debug = tracing::field::debug(NeverFormat);
+    let overflow = u128::from(u64::MAX) + 1;
+    let unsupported: [&dyn tracing::field::Value; 7] = [
+        &false, &-1_i64, &1_i64, &0.0_f64, &overflow, &"unknown", &debug,
+    ];
+    for detailed in [false, true] {
+        let credit = Arc::new(Semaphore::new(1));
+        let (export, mut records) = Export::channel(credit.clone(), detailed);
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
+        for invalid in unsupported {
+            for restore in [false, true] {
+                for abandon in [false, true] {
+                    tracing::dispatcher::with_default(&dispatch, || {
+                        // Creation and deferred records use the same projection.
+                        let span = tracing::info_span!(
+                            "acyclic.test.work_totals",
+                            outcome = tracing::field::Empty,
+                            work.items = invalid,
+                            work.bytes = invalid,
+                            work.durability = invalid,
+                        );
+                        let known = || {
+                            span.record("work.items", 0_u64)
+                                .record("work.bytes", u64::MAX)
+                                .record("work.durability", 2_u64);
+                        };
+                        known();
+                        let cost = acyclic_test_support::measure(|| {
+                            span.record("work.items", invalid)
+                                .record("work.bytes", invalid)
+                                .record("work.durability", invalid);
+                        });
+                        assert_eq!(cost.count_total, 0, "invalidation allocated scratch");
+                        if restore {
+                            known();
+                        }
+                        if !abandon {
+                            span.record("outcome", "ok");
+                            // The original terminal freezes both known and
+                            // unknown evidence, despite retained span handles.
+                            known();
+                            span.record("work.bytes", invalid);
+                        }
+                    });
+                    let record = ready(records.recv())?.ok_or("original work terminal absent")?;
+                    assert_eq!(
+                        record.sample().work,
+                        detailed.then_some(if restore {
+                            WorkSummary {
+                                items: Some(0),
+                                bytes: Some(u64::MAX),
+                                durability: Some(2),
+                            }
+                        } else {
+                            WorkSummary::default()
+                        }),
+                        "unsupported evidence retained a stale total"
+                    );
+                    assert_eq!(
+                        record.sample().outcome,
+                        if abandon {
+                            Outcome::Incomplete
+                        } else {
+                            Outcome::Ok
+                        }
+                    );
+                    assert_eq!(credit.available_permits(), 0);
+                    drop(record);
+                    assert_eq!(credit.available_permits(), 1);
+                }
+            }
+        }
+        drop(dispatch);
+        assert!(ready(records.recv())?.is_none(), "duplicate terminal");
+    }
+    Ok(())
+}
+
+#[test]
 fn named_operation_keeps_fields_and_context_through_completion_and_drop()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome};

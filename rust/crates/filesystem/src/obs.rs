@@ -151,6 +151,8 @@ fn record_work(span: &tracing::Span, work: &WorkCounters) {
             .record("work.durability", work.durability_operations);
         if let Some(bytes) = bytes {
             span.record("work.bytes", bytes);
+        } else {
+            span.record("work.bytes", "unknown");
         }
     }
 }
@@ -267,6 +269,9 @@ mod worker_context_tests {
                     work.bytes = tracing::field::Empty,
                     work.durability = tracing::field::Empty
                 );
+                // A prior representable observation must not survive a later
+                // overflow in the original receipt's combined byte total.
+                span.record("work.bytes", 7_u64);
                 let receipt = OperationReceipt {
                     value: (),
                     work: WorkCounters {

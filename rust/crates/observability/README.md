@@ -101,6 +101,9 @@ record these fields before their terminal outcome. Missing and unrepresentable
 totals remain unknown. These semantic units do not count hidden copies, locks,
 quorum requests, OS syscalls or device drains. No measurement can treat their
 absence as zero physical work.
+Only unsigned 64-bit field values declare exact totals. A subsequent value of
+another type clears that field to unknown without formatting or parsing it;
+a later valid total can replace it before the first terminal freezes evidence.
 
 Provider request budgets use the existing Stream `Requests` delta. Declare the
 original operation's requested class with `auxiliary(Some(RequestClass::List))`,
