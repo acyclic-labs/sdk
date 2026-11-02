@@ -144,8 +144,8 @@ impl Options {
                 _ => return Err(format!("unknown option {argument}").into()),
             }
         }
-        if !proofs && samples < 100 {
-            return Err("p99 requires at least 100 observations".into());
+        if !proofs && samples == 0 {
+            return Err("measurement requires at least one observation".into());
         }
         // Report growth checks require increasing cohorts. Normalize before
         // calibration or any population preparation can consume resources.

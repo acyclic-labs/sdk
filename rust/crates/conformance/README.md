@@ -54,6 +54,9 @@ resolution is checked against the modeled floor itself, without multiplying
 it by an acceptance threshold.
 Each operation cohort requires identical floor terms across all its samples;
 a sample with different required work refuses before changing that cohort.
+`--samples` accepts any positive count and defaults to 200. Each reported
+quantile includes its actual sample count; below 100 observations, nearest-rank
+p99 is the sample maximum, without an independently established tail guarantee.
 Run the same quantile and cohort admission controls without calibration, storage
 setup or model calls:
 
