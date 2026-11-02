@@ -76,3 +76,50 @@ inside the exporter.
 
 Compile this optional surface with
 `cargo check -p acyclic-harness-core --features metrics-export,research`.
+
+`provenance-export` adds `metrics::provenance::write(&batch, writer)`, a streaming
+[W3C PROV-O](https://www.w3.org/TR/prov-o/) projection in
+[RDF N-Triples](https://www.w3.org/TR/n-triples/). It consumes the same metrics
+batches, without another journal reader or capture mechanism. Each row produces
+a fixed number of triples. Source-derived, domain-separated identifiers make
+independent shards joinable; concatenate their triples and let RDF's graph set
+semantics handle repeated assertions. No growing deduplication index is kept.
+
+Turns and calls are activities associated with their agent. Original request
+identities and artifact references are entities; observed messages, forks,
+notices and child completion express influence. A notice's unknown producer
+stays unknown. An artifact reference alone does not attest who generated that
+file or that a model read it; this exporter makes neither inference. Observation
+entities have one generating activity, even when a call belongs to a turn.
+Preserve the original producer's agent path, operation, source stream and cursor
+when exporting inherited history. Do not relabel inherited observations as
+new observations of the child.
+
+Only inline identifiers and scalar references are retained while writing a row.
+The RDF codec handles literal escaping. The writer is neither flushed nor
+synced; the caller publishes only after success with its existing volume commit.
+This projection is independent of per-turn file-read coverage: completeness
+requires observations from the original authenticated read producer, including
+native reads satisfied from the OS cache.
+
+`metrics::read_set::page(journal, agent, operation, after, cut)` projects original
+successful builtin read-tool receipts. It retains the result's `FileReadSource`
+and optional returned interval. An authored selection keeps its original volume,
+path and generation; it does not invent a full-file digest. Absent intervals do
+not imply a full-file read. The original indexed tool admission binds each
+completion; adapters without this index refuse instead of rescanning history.
+Each page visits up to 32 journal records and retains only that page's receipts.
+
+Supply `cut` from the settled turn's consumed-input fence. Use one
+`read_set::Writer` across the pages, then call `finish` and publish its bytes once
+as the turn's immutable read-set `FileRef`. Its version-1 JSONL header declares
+`committed_read_tool_results_only` coverage, agent, original operation and cut;
+the footer certifies that every source position through that cut was visited.
+Gaps, repeated pages, foreign bindings and failed writes prevent successful
+finish. It performs no flush or publication itself. A short source page is an
+incomplete pinned prefix, never evidence of completion.
+
+`read_set::project` maps each receipt into the existing edges table, and PROV
+exports the original turn's `prov:used` relation to that generation. Shell,
+context, hook, search and failed-read coverage remains unknown. These functions
+reuse committed results and add no work to execution or read operations.
