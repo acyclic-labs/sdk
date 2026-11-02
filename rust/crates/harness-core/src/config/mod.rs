@@ -18,7 +18,7 @@ mod types;
 
 pub use provider::{
     CacheBreakpoint, CacheTtl, Compaction, NativeTool, ProviderCache, ProviderEffort,
-    ProviderEntry, ProviderProfile, ProviderSampling, SummaryHeader,
+    ProviderEntry, ProviderProfile, ProviderSampling, ProviderSettings, SummaryHeader,
 };
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,

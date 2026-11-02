@@ -3,7 +3,7 @@
 //! its sampling. Each home version's outcome is recorded as an
 //! [`Admission`](crate::config::Admission) in the journal.
 use super::*;
-use crate::config::{self, Admission, AdmissionStatus, AgentConfig, Sampling};
+use crate::config::{self, Admission, AdmissionStatus, AgentConfig, ProviderSettings, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
 use crate::layers::{Layer, is_off};
 
@@ -51,13 +51,6 @@ pub(super) struct Source {
     pin: Pin,
     stack: [u8; 32],
     generation_label: String,
-}
-
-/// The provider module's result, retaining its original source association.
-pub(super) struct ProviderSettings {
-    pub(super) profile: config::ProviderProfile,
-    pub(super) links: Vec<config::Link>,
-    pub(super) stack: [u8; 32],
 }
 
 impl Pin {

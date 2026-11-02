@@ -33,6 +33,19 @@ impl ProviderEntry {
     }
 }
 
+/// Evaluated provider data and its original settings-source association.
+/// The execution owner retains these together at its existing revision boundary;
+/// this value creates no epoch, authority or separate persistence format.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderSettings {
+    /// The admitted result of the original provider-module fold.
+    pub profile: ProviderProfile,
+    /// Original module links from that same evaluation.
+    pub links: Vec<super::Link>,
+    /// Identity of the admitted source stack used for the evaluation.
+    pub stack: [u8; 32],
+}
+
 /// The result of folding `plugins/<provider>/provider.ts` over its base.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
