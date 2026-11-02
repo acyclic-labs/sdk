@@ -845,7 +845,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                 }
                             }
                         }
-                        _ => None,
+                        _ => super::goal::Settlement::default(),
                     };
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
@@ -857,7 +857,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .await
                     .map_err(host_error)?;
                     let run = super::goal::continuing(&agent.path, &input)
-                        .or_else(|| goal.as_ref().map(|_| turn));
+                        .or_else(|| goal.continuation.as_ref().map(|_| turn));
                     let entry = ConversationEntry {
                         inbox,
                         input,
@@ -869,12 +869,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         notices: notices.clone(),
                     };
                     // The tools' recorded effects commit with the turn's settlement.
-                    let mut outs = if goal.is_some() {
+                    let mut outs = if goal.continuation.is_some() {
                         appended(&entry, open.roster.as_ref())?
                     } else {
                         settled(&entry, open.roster.as_ref())?
                     };
-                    outs.extend(goal);
+                    outs.extend(goal.continuation);
+                    outs.extend(goal.notice);
                     // Every agent waits for input once its turn settles: a child
                     // stays open to its parent's messages until archived, and a
                     // parent observes its answer through `wait`.

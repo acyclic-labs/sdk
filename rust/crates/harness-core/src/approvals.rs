@@ -44,14 +44,24 @@ pub struct ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
+    /// One rules approver, `principal`, that refuses every action.
+    #[must_use]
+    pub fn deny_all(principal: impl Into<String>) -> Self {
+        Self::uniform(principal.into(), RuleVerdict::Deny)
+    }
+
     /// One rules approver, `principal`, that accepts every action.
     #[must_use]
     pub fn accept_all(principal: impl Into<String>) -> Self {
+        Self::uniform(principal.into(), RuleVerdict::Allow)
+    }
+
+    fn uniform(principal: String, fallback: RuleVerdict) -> Self {
         Self {
             approvers: vec![Approver::Rules {
-                principal: principal.into(),
+                principal,
                 rules: Vec::new(),
-                fallback: RuleVerdict::Allow,
+                fallback,
             }],
         }
     }

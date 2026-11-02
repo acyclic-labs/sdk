@@ -76,6 +76,7 @@ impl Fixture {
         let executors = Arc::new(Executors(AtomicUsize::new(0)));
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             self.provider.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"conformance", b"agents", b"host")?,
             self.filesystem.clone(),
             root,
             admission,

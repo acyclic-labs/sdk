@@ -259,7 +259,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
 
     /// Settlement and continuation from the same original actor observation.
     /// Consumption alone may retain a paused turn, queued or overflowed input.
-    pub(crate) async fn input_progress(
+    pub async fn input_progress(
         &self,
         agent: &AgentPath,
         input: u64,

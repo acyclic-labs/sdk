@@ -1017,6 +1017,8 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 forwarded(&root, &caller, context, false, None, held)?;
             let turn_host = FilesystemTurnHost::new(
                 Arc::new(acyclic_stream::MemoryStream::default()),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
                 Arc::clone(&host),
                 RuntimeAuthority::admitted(port, OperationId::from_bytes([196; 16])),
                 TurnAdmission::Admitted {

@@ -53,6 +53,59 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
+    use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
+    use futures::TryStreamExt as _;
+    let provider = Arc::new(MemoryStream::default());
+    let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let host = AgentHost::new(
+        provider.clone(),
+        super::script(
+            (0..3)
+                .map(|_| TurnStep {
+                    reserved_children: 0,
+                    checkpoint: None,
+                    outs: vec![Out::Conversation(b"answer".to_vec())],
+                    wait: Wait::Input,
+                    drops: None,
+                })
+                .collect(),
+        ),
+        within.clone(),
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    for n in 0..3 {
+        let record = InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: root.child(&id(2))?,
+            id: intent(&format!("request-{n}")),
+        });
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
+            return Err("input was refused".into());
+        };
+        let (ready, cut) = host.input_progress(&root, inbox).await?;
+        assert!(!ready);
+        assert_eq!(settled(&provider, &within, &root).await?, None);
+        let mut changes = acyclic_stream::records_only(provider.follow(cut).await?);
+        assert!(host.runtime().drain().await.is_empty());
+        assert!(changes.try_next().await?.is_some());
+        assert!(host.input_progress(&root, inbox).await?.0);
+        assert_eq!(settled(&provider, &within, &root).await?, Some(Phase::Idle));
+        let statuses = values(&provider, root.status()?).await?;
+        assert_eq!(statuses.len(), 1);
+        let stale = StatusRecord::decode(&statuses[0])?;
+        assert!(
+            stale.cursor <= inbox,
+            "the former status-only observer cannot settle this input"
+        );
+    }
+    assert_eq!(host.state(&root).await?.conversation_tail, 3);
+    Ok(())
+}
+
+#[tokio::test]
 async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn() -> Result {
     struct Calls {
         count: Arc<AtomicUsize>,

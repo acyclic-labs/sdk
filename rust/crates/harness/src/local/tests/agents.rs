@@ -208,38 +208,22 @@ pub(super) async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Ve
     let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
         .await
         .map_err(agent)?;
-    let mut statuses = acyclic_stream::records_only(
-        agents
-            .provider()
-            .follow(acyclic_stream::FollowRequest::new(
-                root.status().map_err(agent)?,
-                0,
-            ))
+    loop {
+        let (settled, cut) = agents
+            .input_progress(root, inbox.saturating_sub(1))
             .await
-            .map_err(agent)?,
-    );
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        while let Some(record) = statuses.try_next().await.map_err(agent)? {
-            let status = StatusRecord::decode(&record.value).map_err(agent)?;
-            match status.phase {
-                crate::agent::Phase::Idle if status.cursor >= inbox => {
-                    return records(&**agents.provider(), root.conversation().map_err(agent)?)
-                        .await;
-                }
-                crate::agent::Phase::Done { outcome } => {
-                    return Err(Error::Conflict(format!(
-                        "agent ended before settlement: {outcome:?}"
-                    )));
-                }
-                _ => {}
-            }
+            .map_err(agent)?;
+        if settled {
+            return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
         }
-        Err(Error::Storage(
-            "agent status follow ended before settlement".into(),
-        ))
-    })
-    .await
-    .map_err(|_| Error::Conflict("agent did not publish settlement".into()))?
+        let mut changes =
+            acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
+        changes
+            .try_next()
+            .await
+            .map_err(agent)?
+            .ok_or_else(|| Error::Storage("agent state follow ended before settlement".into()))?;
+    }
 }
 
 #[tokio::test]

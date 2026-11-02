@@ -89,17 +89,12 @@ where
             {
                 Ok(file) => file,
                 Err(Error::NotFound(_)) => return Ok(None),
-                // An unusable goal (over the byte bound, or malformed) is no
-                // goal: the turn settles as without one.
-                Err(error) if error.code() == crate::wire::ErrorCode::Invalid => return Ok(None),
+                Err(error) if error.code() == crate::wire::ErrorCode::Invalid => {
+                    return Err(Error::Invalid(error.to_string()));
+                }
                 Err(error) => return Err(error),
             };
-            // A malformed goal is no goal: the turn settles as without one.
-            match GoalView::from_file(source, &bytes, self.maximum_bytes) {
-                Ok(goal) => Ok(Some(goal)),
-                Err(Error::Invalid(_)) => Ok(None),
-                Err(error) => Err(error),
-            }
+            GoalView::from_file(source, &bytes, self.maximum_bytes).map(Some)
         })
     }
 

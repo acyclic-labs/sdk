@@ -1,8 +1,7 @@
 //! Headless conversations: one `-p` prompt, or JSONL requests on stdin.
 //! Every prompt settles through the conversation's committed reply, read
-//! after subscribing and again at each committed status, which every
-//! conversation entry commits with; the frontend keeps only its outstanding
-//! prompts.
+//! after subscribing and at the original conversation or phase-change event;
+//! the frontend keeps only its outstanding prompts and active goal runs.
 use acyclic_harness::OperationId;
 use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply, TurnOutcome};
 use acyclic_harness::interaction::ApprovalBinding;
@@ -12,7 +11,10 @@ use acyclic_harness::local::{
 };
 use acyclic_native_runtime::{InheritedOutput, lines::AsyncLines};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::client::ExecutionPosition;
@@ -528,7 +530,7 @@ pub(super) async fn prompt(
     // Stdin is read only once an approval asks for an answer.
     let mut answers = None;
     let mut diagnostics = None;
-    // Subscribed first, so a reply committed after this read wakes a status.
+    // Subscribed first, so a committed reply cannot lose its original event.
     let mut status = None;
     loop {
         match conversation.reply(operation, inbox).await? {
@@ -571,8 +573,10 @@ pub(super) async fn prompt(
             }
         }
         status = loop {
-            if let Event::Status(next) = events.next().await? {
-                break Some(next);
+            match events.next().await? {
+                Event::Status(next) => break Some(next),
+                Event::Turn(_) => break None,
+                Event::Output => {}
             }
         };
     }
@@ -770,6 +774,8 @@ struct Outstanding {
     events_operation: Option<String>,
     /// Accepted prompts by inbox sequence: message id and display id.
     pending: BTreeMap<u64, (String, String)>,
+    /// Active goal run to its original outstanding prompt, retired at its reply.
+    goals: HashMap<OperationId, u64>,
     /// Largest accepted input cut from this invocation, including exact replays.
     accepted_tail: u64,
     /// Prompts whose send outcome is unknown (message id, display id and
@@ -783,6 +789,35 @@ struct Outstanding {
 }
 
 impl Outstanding {
+    async fn settle(
+        &mut self,
+        conversation: &Conversation,
+        output: &mut EventOutput<'_>,
+        inbox: u64,
+        (message, id): (String, String),
+        ended: Option<&str>,
+    ) -> Result<bool, Failure> {
+        let reply = conversation.reply(&message, inbox).await?;
+        let line = match (ended, reply) {
+            (Some(reason), Reply::Pending | Reply::Dropped) => {
+                Some(json!({"id": id, "inbox": inbox, "error": reason}))
+            }
+            (_, reply) => settled(conversation, &id, inbox, reply).await?,
+        };
+        match line {
+            Some(line) => {
+                self.failed |= line.get("error").is_some();
+                let line = final_value(line, self.schema.as_ref(), self.final_output.as_deref())?;
+                emit(output, &line, self.events_operation.as_deref()).await?;
+                Ok(true)
+            }
+            None => {
+                self.pending.insert(inbox, (message, id));
+                Ok(false)
+            }
+        }
+    }
+
     /// Sends `prompt` as `message`. Only a refusal is settled at once; an
     /// unknown outcome may have committed, so it stays outstanding under
     /// the same message id.
@@ -1148,41 +1183,41 @@ pub(super) async fn jsonl(
         };
         match event {
             None => {}
-            // Each entry commits with a status, which settles it below.
-            Some(Event::Turn(_)) | Some(Event::Output) => {}
-            Some(Event::Status(status)) => {
-                let ended = ended(&status);
-                // Prompts the agent consumed settle from its committed reply.
-                let pending = &mut outstanding.pending;
-                let later = pending.split_off(&status.cursor);
-                for (inbox, (message, id)) in std::mem::replace(pending, later) {
-                    let reply = conversation.reply(&message, inbox).await?;
-                    let line = match (&ended, reply) {
-                        (Some(reason), Reply::Pending | Reply::Dropped) => {
-                            Some(json!({"id": id, "inbox": inbox, "error": reason}))
-                        }
-                        (_, reply) => settled(conversation, &id, inbox, reply).await?,
-                    };
-                    match line {
-                        Some(line) => {
-                            outstanding.failed |= line.get("error").is_some();
-                            let line = final_value(
-                                line,
-                                outstanding.schema.as_ref(),
-                                outstanding.final_output.as_deref(),
-                            )?;
-                            emit(output, &line, event_operation).await?;
-                        }
-                        None => {
-                            pending.insert(inbox, (message, id));
+            Some(Event::Output) => {}
+            Some(Event::Turn(entry)) => {
+                let inbox = entry
+                    .goal
+                    .and_then(|run| outstanding.goals.get(&run).copied())
+                    .unwrap_or(entry.inbox);
+                if let Some(request) = outstanding.pending.remove(&inbox) {
+                    let complete = outstanding
+                        .settle(conversation, output, inbox, request, None)
+                        .await?;
+                    if let Some(run) = entry.goal {
+                        if complete {
+                            outstanding.goals.remove(&run);
+                        } else {
+                            outstanding.goals.insert(run, inbox);
                         }
                     }
+                } else if let Some(run) = entry.goal {
+                    outstanding.goals.remove(&run);
+                }
+                outstanding.resend(conversation, output).await?;
+            }
+            Some(Event::Status(status)) => {
+                let ended = ended(&status);
+                let later = outstanding.pending.split_off(&status.cursor);
+                for (inbox, request) in std::mem::replace(&mut outstanding.pending, later) {
+                    outstanding
+                        .settle(conversation, output, inbox, request, ended.as_deref())
+                        .await?;
                 }
                 // An ended agent answers every outstanding prompt with
                 // its reason; each is a record, so the stream goes on
                 // until stdin closes.
                 if let Some(reason) = ended {
-                    for (inbox, (_, id)) in std::mem::take(pending) {
+                    for (inbox, (_, id)) in std::mem::take(&mut outstanding.pending) {
                         outstanding.failed = true;
                         emit(
                             output,
@@ -1191,6 +1226,7 @@ pub(super) async fn jsonl(
                         )
                         .await?;
                     }
+                    outstanding.goals.clear();
                     outstanding.finished = Some(reason);
                 }
                 if !matches!(status.phase, Phase::WaitingApproval { .. }) {
