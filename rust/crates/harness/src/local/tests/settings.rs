@@ -220,14 +220,14 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         json!({"path": note}),
     )
     .await?;
-    let selected: FileReadSource = serde_json::from_value(before.value["file"].clone())
+    let home_source: FileReadSource = serde_json::from_value(before.value["file"].clone())
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let FileReadSource::Authored(selected) = selected else {
+    let FileReadSource::Authored(home_selected) = home_source else {
         panic!("authored home")
     };
     let version = format!(
         "authored-file-v1:{}",
-        serde_json::to_string(&selected).map_err(|error| Error::Invalid(error.to_string()))?
+        serde_json::to_string(&home_selected).map_err(|error| Error::Invalid(error.to_string()))?
     );
     write(&harness, "notes.txt", "off: true").await?;
     let reread = run(
