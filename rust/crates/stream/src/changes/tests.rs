@@ -213,7 +213,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
     )
     .unwrap();
     assert_eq!(validate(&empty_key.value, &empty_key.headers), Ok(()));
-    // Any other claimed change format is refused, not read as opaque.
+    // A claimed change format must contain a valid value, never opaque bytes.
     let stale = RecordHeaders::new(
         vec![],
         vec![Attribute {
@@ -222,7 +222,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
         }],
     )
     .unwrap();
-    assert_eq!(validate(b"", &stale), Err(StreamError::Unsupported));
+    assert_eq!(validate(b"", &stale), Err(StreamError::InvalidArgument));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

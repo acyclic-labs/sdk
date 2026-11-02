@@ -134,16 +134,14 @@ impl FollowFilter {
 
     /// Returns whether opaque record headers satisfy the full intersection.
     pub fn matches(&self, headers: &RecordHeaders) -> bool {
-        if crate::changes::unknown(headers) {
-            return false;
-        }
-        if crate::changes::marked(headers) {
-            return headers
+        match crate::changes::marked(headers) {
+            Err(_) => false,
+            Ok(true) => headers
                 .keys()
                 .iter()
-                .any(|key| self.matches_entry(key, headers));
+                .any(|key| self.matches_entry(key, headers)),
+            Ok(false) => self.clauses().iter().all(|clause| clause.matches(headers)),
         }
-        self.clauses().iter().all(|clause| clause.matches(headers))
     }
 
     fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
@@ -159,7 +157,7 @@ impl FollowFilter {
     /// and no projected value is constructed.
     pub fn preserves(&self, record: &crate::Record) -> Result<bool, StreamError> {
         crate::changes::validate(&record.value, &record.headers)?;
-        Ok(if crate::changes::marked(&record.headers) {
+        Ok(if crate::changes::marked(&record.headers)? {
             record
                 .headers
                 .keys()
@@ -177,7 +175,7 @@ impl FollowFilter {
         if !self.matches(&record.headers) {
             return Ok(None);
         }
-        if crate::changes::marked(&record.headers) {
+        if crate::changes::marked(&record.headers)? {
             let headers = record.headers.clone();
             let body = crate::AppendRecord {
                 value: record.value,
@@ -629,7 +627,7 @@ mod tests {
             let expected = original.project(record.clone()).unwrap();
             assert_eq!(transferred.project(record.clone()).unwrap(), expected);
             assert_eq!(forwarded.project(record.clone()).unwrap(), expected);
-            if crate::changes::marked(&record.headers) {
+            if crate::changes::marked(&record.headers).unwrap() {
                 let projected = expected.unwrap();
                 assert_eq!(projected.headers.keys().len(), 1);
                 assert_eq!(projected.headers.keys()[0].as_ref(), b"b");

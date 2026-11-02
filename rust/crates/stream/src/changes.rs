@@ -26,6 +26,7 @@ mod tests;
 #[cfg(test)]
 std::thread_local! {
     static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MARKER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -57,34 +58,34 @@ pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
 const FORMAT: &[u8] = WRITER_FORMAT;
 const V1: &[u8] = b"changes/v1";
 
-fn marks(name: &str, value: &OwnedBytes) -> bool {
-    name == ATTRIBUTE && READER_FORMATS.contains(&value.as_ref())
+fn marker(headers: &RecordHeaders) -> Option<&OwnedBytes> {
+    headers
+        .attributes()
+        .iter()
+        .find(|attribute| {
+            #[cfg(test)]
+            MARKER_PROBES.with(|count| count.set(count.get() + 1));
+            attribute.name == ATTRIBUTE
+        })
+        .map(|attribute| attribute.value)
 }
 
 fn compact(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
+    marker(headers).is_some_and(|value| value.as_ref() == FORMAT)
 }
 
-pub(crate) fn unknown(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| attribute.name == ATTRIBUTE && !marks(attribute.name, attribute.value))
-}
-
-pub(crate) fn marked(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| marks(attribute.name, attribute.value))
+/// Classifies the reserved marker in one pass; an unknown claim is never opaque.
+pub(crate) fn marked(headers: &RecordHeaders) -> Result<bool, StreamError> {
+    match marker(headers) {
+        None => Ok(false),
+        Some(value) if READER_FORMATS.contains(&value.as_ref()) => Ok(true),
+        Some(_) => Err(StreamError::InvalidArgument),
+    }
 }
 
 /// Whether `headers` belong to a change record.
 pub fn is_changes(headers: &RecordHeaders) -> bool {
-    marked(headers)
+    marked(headers) == Ok(true)
 }
 
 /// V2 derives its index from the compact value. V1 retains its original wire
@@ -399,16 +400,9 @@ pub(crate) fn decode(
 }
 
 /// Rejects a change value whose keys differ from its in-memory headers, and
-/// any record claiming a change format other than this one.
+/// any record claiming a change format outside the supported readers.
 pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), StreamError> {
-    if !marked(headers) {
-        if headers
-            .attributes()
-            .iter()
-            .any(|attribute| attribute.name == ATTRIBUTE)
-        {
-            return Err(StreamError::InvalidArgument);
-        }
+    if !marked(headers)? {
         return Ok(());
     }
     if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
