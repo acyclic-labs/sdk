@@ -22,6 +22,10 @@ pub struct MergeDirectoryPlan {
     pub conflicts: u64,
     /// Conflict files exposed so far.
     pub exposed_conflicts: u64,
+    /// The clean cursor reached EOF; the clean count is final.
+    pub clean_complete: bool,
+    /// The conflict cursor reached EOF.
+    pub conflicts_complete: bool,
     /// Both retained cursors reached EOF.
     pub complete: bool,
 }
@@ -66,6 +70,55 @@ pub enum MergeConflictFileKind {
     Mode,
 }
 
+/// A directory page selects one independently advancing cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeDirectorySection {
+    /// Clean paths; conflicting rows consume steps without becoming files.
+    Clean,
+    /// Conflicts; reading these never drains the clean cursor first.
+    Conflicts,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum ResolutionFile {
+    Take { take: ResolutionSide },
+    Remove { remove: bool },
+    Content { content: String },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ResolutionSide {
+    Ours,
+    Theirs,
+}
+
+impl ResolutionFile {
+    fn resolve(self, conflict: &crate::ConflictView) -> Result<MergeResolution, DrivenJoinError> {
+        match self {
+            Self::Take { take } => Ok(MergeResolution::Select(match take {
+                ResolutionSide::Ours => ConflictSide::Ours,
+                ResolutionSide::Theirs => ConflictSide::Theirs,
+            })),
+            Self::Remove { remove: true } => match conflict.key {
+                ConflictKey::Binding { .. } => Ok(MergeResolution::Binding(None)),
+                _ if matches!(conflict.ours, ConflictValue::Absent) => {
+                    Ok(MergeResolution::Select(ConflictSide::Ours))
+                }
+                _ if matches!(conflict.theirs, ConflictValue::Absent) => {
+                    Ok(MergeResolution::Select(ConflictSide::Theirs))
+                }
+                _ => Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone())),
+            },
+            Self::Content { content } if !crate::text_merge::has_conflict_markers(&content) => {
+                Ok(MergeResolution::Text(content))
+            }
+            _ => Err(WorkspaceError::InvalidMergeResolution.into()),
+        }
+    }
+}
+
 /// A filesystem projection that owns the original preview and its cancellation,
 /// closure hold and cumulative read credit. A page publishes only staging files,
 /// never a source or destination work tree. Failure is terminal: replanning is
@@ -76,7 +129,6 @@ pub struct MergeDirectory<A: 'static, O: 'static> {
     path: String,
     plan: MergeDirectoryPlan,
     plan_condition: FileCondition,
-    clean_done: bool,
     failed: bool,
 }
 
@@ -110,16 +162,77 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
                 clean: 0,
                 conflicts,
                 exposed_conflicts: 0,
+                clean_complete: false,
+                conflicts_complete: false,
                 complete: false,
             },
             plan_condition: FileCondition::Absent,
-            clean_done: false,
             failed: false,
         })
     }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirectory<A, O> {
+    /// Reads one selected resolution from one pinned staging generation. The
+    /// caller supplies an original conflict key; filenames and edited JSON
+    /// cannot substitute a different key or generation. The existing publisher
+    /// still validates the complete candidate and all publication preconditions.
+    pub async fn resolution(
+        &mut self,
+        generation: &Generation<A, O>,
+        key: &ConflictKey,
+        cancellation: &CancellationToken,
+    ) -> Result<MergeResolution, DrivenJoinError> {
+        if self.failed || !self.plan.complete || generation.workspace.id() != self.staging.id() {
+            return Err(DrivenJoinError::StaleCandidate);
+        }
+        let conflict = kernel_conflict(
+            key,
+            self.preview
+                .plan()
+                .target()
+                .volume
+                .config
+                .limits
+                .maximum_component_bytes,
+        )?;
+        let view = self.preview.plan().describe_conflict(conflict).await?;
+        if &view.key != key {
+            return Err(DrivenJoinError::StaleCandidate);
+        }
+        let path = view
+            .path
+            .as_deref()
+            .ok_or_else(|| WorkspaceError::path("merge conflict has no portable path"))?;
+        let path = format!("{}/conflicts/{}", self.path, encode_path(path));
+        let text = view.kind == ConflictKind::Text;
+        let path = if text {
+            path
+        } else {
+            format!("{path}.resolve.json")
+        };
+        let bytes = generation
+            .read(
+                &path,
+                self.staging.volume.config.limits.maximum_read_bytes,
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let resolution = if text {
+            ResolutionFile::Content {
+                content: std::str::from_utf8(&bytes)
+                    .map_err(WorkspaceError::engine)?
+                    .to_owned(),
+            }
+        } else {
+            serde_json::from_slice::<ResolutionFile>(&bytes).map_err(WorkspaceError::engine)?
+        };
+        resolution.resolve(&view)
+    }
+
     /// The original join, for the existing publication coordinator. Directory
     /// files are proposals; only the original publisher can admit their effects.
     pub fn join(&mut self) -> &JoinPlan<A, O> {
@@ -143,6 +256,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// page whose entire allowance was consumed by excluded conflicts.
     pub async fn write_page(
         &mut self,
+        section: MergeDirectorySection,
         steps: NonZeroU32,
         permit: crate::PublicationPermit,
         cancellation: &CancellationToken,
@@ -150,11 +264,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         if self.failed {
             return Err(WorkspaceError::InvalidMergeResolution);
         }
-        if self.plan.complete {
+        if match section {
+            MergeDirectorySection::Clean => self.plan.clean_complete,
+            MergeDirectorySection::Conflicts => self.plan.conflicts_complete,
+        } {
             return Ok(&self.plan);
         }
         self.failed = true;
-        let result = self.write_page_inner(steps, permit, cancellation).await;
+        let result = self
+            .write_page_inner(section, steps, permit, cancellation)
+            .await;
         if result.is_ok() {
             self.failed = false;
         }
@@ -164,6 +283,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
 
     async fn write_page_inner(
         &mut self,
+        section: MergeDirectorySection,
         steps: NonZeroU32,
         permit: crate::PublicationPermit,
         cancellation: &CancellationToken,
@@ -175,18 +295,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             .map_err(|failure| failure.error)?
             .value;
         let mut next = self.plan.clone();
-        for name in ["clean", "conflicts"] {
-            transaction
-                .create_dir_all(
-                    &format!("{}/{name}", self.path),
-                    WorkBudget::UNBOUNDED,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.error)?;
+        if matches!(self.plan_condition, FileCondition::Absent) {
+            for name in ["clean", "conflicts"] {
+                transaction
+                    .create_dir_all(
+                        &format!("{}/{name}", self.path),
+                        WorkBudget::UNBOUNDED,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?;
+            }
         }
         for _ in 0..steps.get() {
-            if !self.clean_done {
+            if section == MergeDirectorySection::Clean {
                 match self
                     .preview
                     .clean_step()
@@ -203,11 +325,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                         };
                         let path = format!("{}/clean/{}.json", self.path, encode_path(&file.path));
                         write_file(&mut transaction, &path, json(&file)?, cancellation).await?;
-                        next.clean += 1;
+                        next.clean = next
+                            .clean
+                            .checked_add(1)
+                            .ok_or(WorkspaceError::ContentLengthOverflow)?;
                     }
                     JoinCleanStep::Excluded => {}
                     JoinCleanStep::Done => {
-                        self.clean_done = true;
+                        next.clean_complete = true;
+                        break;
                     }
                 }
                 continue;
@@ -218,7 +344,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .map_err(|failure| failure.error)?
                 .value
             else {
-                next.complete = true;
+                next.conflicts_complete = true;
                 break;
             };
             let view = self
@@ -284,8 +410,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 )
             };
             write_file(&mut transaction, &path, bytes, cancellation).await?;
-            next.exposed_conflicts += 1;
+            next.exposed_conflicts = next
+                .exposed_conflicts
+                .checked_add(1)
+                .ok_or(WorkspaceError::ContentLengthOverflow)?;
         }
+        next.complete = next.clean_complete && next.conflicts_complete;
         let bytes = json(&next)?;
         let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
         transaction
@@ -329,9 +459,20 @@ fn json(value: &impl Serialize) -> Result<Vec<u8>, WorkspaceError> {
 // Reserve the suffix namespace without losing legitimate names such as a%2Eb,
 // a.conflict.json, or a.resolve.json. Slash remains the directory separator.
 fn encode_path(path: &str) -> String {
-    path.trim_start_matches('/')
-        .replace('%', "%25")
-        .replace('.', "%2E")
+    let path = path.trim_start_matches('/');
+    let escaped = path
+        .bytes()
+        .filter(|&byte| matches!(byte, b'%' | b'.'))
+        .count();
+    let mut encoded = String::with_capacity(path.len() + 2 * escaped);
+    for character in path.chars() {
+        match character {
+            '%' => encoded.push_str("%25"),
+            '.' => encoded.push_str("%2E"),
+            character => encoded.push(character),
+        }
+    }
+    encoded
 }
 
 async fn write_file<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(

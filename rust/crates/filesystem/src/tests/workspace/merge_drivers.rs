@@ -29,7 +29,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             .write_text(&format!("/clean-{index}"), "clean")
             .await?;
     }
-    let join = unbounded!(agent.join_into(&main), plan())?;
+    let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
     let pins = (
         join.common_ancestor(),
         join.target_head(),
@@ -50,9 +50,28 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let mut pages = 0;
     while !directory.plan().complete {
         let before = directory.plan().clean + directory.plan().exposed_conflicts;
+        let section = if directory.plan().conflicts_complete {
+            MergeDirectorySection::Clean
+        } else {
+            MergeDirectorySection::Conflicts
+        };
         directory
-            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+            .write_page(
+                section,
+                step,
+                crate::PublicationPermit::Unrestricted,
+                &cancellation,
+            )
             .await?;
+        if pages == 0 {
+            assert_eq!(
+                directory.plan().clean,
+                0,
+                "conflict discovery drained clean paths"
+            );
+            assert_eq!(directory.plan().exposed_conflicts, 1);
+            assert!(!directory.plan().clean_complete);
+        }
         let after = directory.plan().clean + directory.plan().exposed_conflicts;
         assert!(
             after - before <= 1,
@@ -101,35 +120,150 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
 
     // A foreign edit to plan.json cannot be silently overwritten by a later
     // page. Failure terminates the advanced cursor; no partial page appears.
-    let join = unbounded!(agent.join_into(&main), plan())?;
-    let options = ApplyOptions {
-        if_target: join.target_head(),
-        idempotency_key: IdempotencyKey::new(),
-    };
-    let preview = value!(
-        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-    )?;
-    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
-    directory
-        .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+    {
+        let join = unbounded!(agent.join_into(&main), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        directory
+            .write_page(
+                MergeDirectorySection::Clean,
+                step,
+                crate::PublicationPermit::Unrestricted,
+                &cancellation,
+            )
+            .await?;
+        let plan_path = format!("{}/plan.json", directory.path());
+        staging.write_text(&plan_path, "foreign").await?;
+        let before = unbounded!(staging, head())?.id();
+        assert!(matches!(
+            directory
+                .write_page(
+                    MergeDirectorySection::Clean,
+                    step,
+                    crate::PublicationPermit::Unrestricted,
+                    &cancellation
+                )
+                .await,
+            Err(WorkspaceError::StaleIdentity)
+        ));
+        assert_eq!(unbounded!(staging, head())?.id(), before);
+        assert!(matches!(
+            directory
+                .write_page(
+                    MergeDirectorySection::Clean,
+                    step,
+                    crate::PublicationPermit::Unrestricted,
+                    &cancellation
+                )
+                .await,
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
+
+    // Read each proposal from one immutable staging head, then use the same
+    // domain candidate and atomic publisher as every other workspace join.
+    staging
+        .write_text(&format!("{root}/conflicts/text"), "resolved\n")
         .await?;
-    let plan_path = format!("{}/plan.json", directory.path());
-    staging.write_text(&plan_path, "foreign").await?;
-    let before = unbounded!(staging, head())?.id();
+    staging
+        .write_text(
+            &format!("{root}/conflicts/binary.resolve.json"),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/deleted.resolve.json"),
+            r#"{"remove":true}"#,
+        )
+        .await?;
+    let staged = unbounded!(staging, head())?;
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = directory
+        .join()
+        .apply(
+            options,
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?
+    else {
+        return Err("expected retained original conflicts".into());
+    };
+    let typed = directory
+        .join()
+        .describe_conflicts(conflicts, truncated)
+        .await?;
+    let mut resolutions = BTreeMap::new();
+    for view in &typed.conflicts {
+        resolutions.insert(
+            view.key.clone(),
+            directory
+                .resolution(&staged, &view.key, &cancellation)
+                .await?,
+        );
+    }
+    let candidate = crate::UnpublishedMergeCandidate {
+        plan: typed,
+        resolutions,
+    };
+    let mut foreign = candidate.clone();
+    foreign.plan.theirs = pins.0;
+    let before_publish = unbounded!(main, head())?.id();
     assert!(matches!(
         directory
-            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+            .join()
+            .apply_candidate(options, &foreign, crate::PublicationPermit::Unrestricted)
             .await,
-        Err(WorkspaceError::StaleIdentity)
+        Err(DrivenJoinError::StaleCandidate)
     ));
-    assert_eq!(unbounded!(staging, head())?.id(), before);
+    assert_eq!(unbounded!(main, head())?.id(), before_publish);
     assert!(matches!(
         directory
-            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
-            .await,
-        Err(WorkspaceError::InvalidMergeResolution)
+            .join()
+            .apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted)
+            .await?,
+        JoinOutcome::Applied(_)
     ));
+    assert_eq!(
+        unbounded!(main, read("/text", 1024))?.as_ref(),
+        b"resolved\n"
+    );
+    assert_eq!(
+        unbounded!(main, read("/binary", 1024))?.as_ref(),
+        b"theirs\0"
+    );
+    assert!(matches!(
+        unbounded!(main, stat("/deleted")),
+        Err(WorkspaceError::NotFound)
+    ));
+    assert_eq!(unbounded!(agent, head())?.id(), pins.2);
+    let published = unbounded!(main, head())?.id();
+    assert!(matches!(
+        directory
+            .join()
+            .apply_candidate(
+                ApplyOptions {
+                    if_target: pins.1,
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                &candidate,
+                crate::PublicationPermit::Unrestricted
+            )
+            .await?,
+        JoinOutcome::StaleTarget(_)
+    ));
+    assert_eq!(unbounded!(main, head())?.id(), published);
     Ok(())
 }
 

@@ -96,6 +96,7 @@ pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
 pub use join_directory::{
     MergeCleanFile, MergeConflictFile, MergeConflictFileKind, MergeDirectory, MergeDirectoryPlan,
+    MergeDirectorySection,
 };
 use join_helpers::{
     binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,

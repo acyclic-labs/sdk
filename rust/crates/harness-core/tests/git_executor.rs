@@ -385,7 +385,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             )
             .await?;
     }
-    let plan = acyclic_harness_core::filesystem::plan_agent_merge(
+    let (plan, join) = acyclic_harness_core::filesystem::plan_agent_merge(
         &fs,
         &store,
         &child,
@@ -393,6 +393,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         repo,
     )
     .await?;
+    assert_eq!(join.source_head(), plan.source_generation);
+    assert_eq!(join.target_head(), plan.target_generation);
+    assert_eq!(join.common_ancestor(), plan.base_generation);
     assert!(
         plan.child_wins_bindings
             .contains(&"/ignored/child.txt".to_owned())
