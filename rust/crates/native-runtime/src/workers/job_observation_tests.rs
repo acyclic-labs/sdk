@@ -132,6 +132,24 @@ impl<S: tracing::Subscriber> Layer<S> for Probe {
             panic!("original subscriber control: {}", failure.field);
         }
     }
+    fn on_close(&self, id: tracing::Id, context: LayerContext<'_, S>) {
+        if let Some(failure) = &self.failure
+            && failure.field.strip_prefix("close.").is_some_and(|name| {
+                context.metadata(&id).is_some_and(|metadata| {
+                    metadata
+                        .name()
+                        .strip_prefix("acyclic.runtime.")
+                        .unwrap_or(metadata.name())
+                        == name
+                })
+            })
+            && failure.worker == (std::thread::current().id() != self.sender)
+            && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
+        {
+            failure.panics.fetch_add(1, Ordering::SeqCst);
+            panic!("original subscriber control: {}", failure.field);
+        }
+    }
 }
 
 #[test]
@@ -479,6 +497,9 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
         ("error.os", true, 1),
         ("outcome", true, 1),
         ("stage", true, 2),
+        ("close.persistence", true, 1),
+        ("close.waiting", true, 1),
+        ("close.persistence", false, 1),
     ] {
         for outcome in 0..3 {
             if field == "error.os" && outcome != 1 {
@@ -501,11 +522,12 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                 delay: Arc::default(),
                 failure: Some(Arc::clone(&failure)),
             };
-            let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(probe));
+            let dispatch =
+                tracing::Dispatch::new(tracing_subscriber::registry().with(probe.clone()));
             tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
                 let waiting =
                     obs::waiting("persistence-completion", 9, std::future::pending::<()>());
-                let _entered = waiting.context().enter();
+                let entered = waiting.context().enter();
                 let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
                     .err()
                     .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
@@ -520,6 +542,10 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                         _ => panic!("original operation panic remains distinct"),
                     }
                 })?;
+                // Release the caller's span references so only the SAME
+                // accepted producer can close them during physical retirement.
+                drop(entered);
+                drop(waiting);
                 let wake = Arc::new(CountWake(AtomicUsize::new(0)));
                 let waker = Waker::from(Arc::clone(&wake));
                 let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
@@ -534,17 +560,33 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                 if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
                     *completion = Some(Arc::clone(&fence));
                 }
-                assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
                 let receiver = crate::sync::Mutex::new(receiver);
-                let job = crate::workers::receive_job(&receiver, &workers.admission)
-                    .ok_or(io::ErrorKind::BrokenPipe)?;
-                std::thread::spawn(move || {
-                    if let Some(waker) = job.run() {
-                        waker.wake();
+                let sender_closes = field == "close.persistence" && !worker;
+                let (done, finished) = mpsc::channel();
+                if sender_closes {
+                    // The original acceptance callback stays entered until the
+                    // worker retires. Its retained span is then the last owner.
+                    *probe.delay.lock().unwrap_or_else(PoisonError::into_inner) = Some(finished);
+                } else {
+                    assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
+                }
+                std::thread::scope(|scope| -> io::Result<()> {
+                    let worker = scope.spawn(|| {
+                        let job = crate::workers::receive_job(&receiver, &workers.admission)
+                            .expect("accepted original job");
+                        if let Some(waker) = job.run() {
+                            waker.wake();
+                        }
+                        let _ = done.send(());
+                    });
+                    if sender_closes {
+                        assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
                     }
-                })
-                .join()
-                .map_err(|_| io::Error::other("original worker panicked"))?;
+                    worker
+                        .join()
+                        .map_err(|_| io::Error::other("original worker panicked"))?;
+                    Ok(())
+                })?;
 
                 // Joining the physical worker makes each oracle synchronous;
                 // a missing terminal or lost wake fails without waiting again.

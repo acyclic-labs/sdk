@@ -244,8 +244,9 @@ pub(crate) fn poll_submission_with(
             let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
             if let Some(observation) = observation {
-                obs::project(|| {
+                obs::project(move || {
                     observation.record("native.queued", true);
+                    drop(observation);
                 });
             }
             drop(prepaid);

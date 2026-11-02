@@ -287,7 +287,6 @@ fn run_task(
         // This shared owner retains the state's charge until it is released,
         // including when the observer has already taken the result.
         crate::sync::release(terminal);
-        obs::project(|| drop(progress));
         waker
     };
     #[cfg(feature = "test-support")]
@@ -296,7 +295,7 @@ fn run_task(
         None => run(),
     };
     let waker = run();
-    obs::project(|| drop((turn, observation)));
+    obs::project(|| drop((turn, progress, observation)));
     waker
 }
 
