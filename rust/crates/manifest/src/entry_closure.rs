@@ -187,12 +187,11 @@ impl EntryClosure {
         &self,
         code: &acyclic_actors::domain::CodeSha256,
     ) -> Result<(), ManifestError> {
-        let mut expected = [0; 32];
-        hex::decode_to_slice(
+        let expected = crate::validation::decode_sha256(
             &selected(&self.record.manifest)?.1.artifact_sha256,
-            &mut expected,
-        )
-        .map_err(|_| invalid("artifact-digest"))?;
+            "entryClosure",
+            "artifact-digest",
+        )?;
         if &expected != code.as_bytes() {
             return Err(invalid("artifact-digest"));
         }

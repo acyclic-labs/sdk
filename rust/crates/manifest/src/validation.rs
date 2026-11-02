@@ -675,14 +675,19 @@ pub fn verify_artifact(
     require(supplied.len() == declared.len(), "assets", "missing-asset")
 }
 
+pub(crate) fn decode_sha256(
+    encoded: &str,
+    path: &str,
+    rule: &str,
+) -> Result<[u8; 32], ManifestError> {
+    let mut expected = [0; 32];
+    hex::decode_to_slice(encoded, &mut expected).map_err(|_| ManifestError::invalid(path, rule))?;
+    Ok(expected)
+}
+
 fn verify_sha256(bytes: &[u8], encoded: &str, path: &str, rule: &str) -> Result<(), ManifestError> {
     use sha2::Digest as _;
-    let mut expected = [0; 32];
-    require(
-        hex::decode_to_slice(encoded, &mut expected).is_ok(),
-        path,
-        rule,
-    )?;
+    let expected = decode_sha256(encoded, path, rule)?;
     let actual: [u8; 32] = sha2::Sha256::digest(bytes).into();
     require(actual == expected, path, rule)
 }
@@ -784,19 +789,7 @@ fn deployment_parts(
     bindings: &HashMap<&str, &Contract<Binding>>,
     entry: &Entry,
 ) -> Result<(acyclic_actors::domain::CodeSha256, Vec<Binding>), ManifestError> {
-    let bytes = entry
-        .artifact_sha256
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| {
-            let text = std::str::from_utf8(pair)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?;
-            u8::from_str_radix(text, 16)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let bytes = decode_sha256(&entry.artifact_sha256, "artifactSha256", "digest")?;
     let selected = entry
         .bindings
         .iter()
