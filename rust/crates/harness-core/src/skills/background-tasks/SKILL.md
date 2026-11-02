@@ -5,7 +5,7 @@ description: Keep independent work moving while a long-running call executes, th
 
 Use a background call when useful work can continue without its result. Await a call directly when the next action depends on it. Keep the task within the user's authority and budget; background execution grants neither extra permissions nor extra capacity.
 
-Start the ordinary call without awaiting it. Retain its call identity, caller-owned reply path `calls/<id>`, purpose, and the action that needs its result. Use the native tool's background option when exposed. Keep one call owner rather than detaching another shell process or creating a separate task registry.
+When the host admits non-awaited calls, start the ordinary call without awaiting it. Retain its call identity, caller-owned reply path `calls/<id>`, purpose, and the action that needs its result. Use the native tool's background option only when its host admits it. Keep one call owner rather than detaching another shell process or creating a separate task registry.
 
 Continue independent work. When a dependency is needed, read or watch that call's reply path using the shared call interface. Consume ordered output within admitted credit and wait for its terminal record; do not repeatedly list tasks or probe for readiness. An output chunk or accepted request is not completion.
 
