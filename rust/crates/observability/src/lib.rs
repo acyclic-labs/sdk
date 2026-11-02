@@ -8,6 +8,13 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]
+fn record_os_error(slot: &mut Option<i32>, name: &str, value: impl TryInto<i32>) {
+    if name == "error.os" && slot.is_none() {
+        *slot = value.try_into().ok();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 mod capture_retirement;
 #[cfg(not(target_arch = "wasm32"))]
 pub use capture_retirement::CaptureRetirement;

@@ -73,15 +73,13 @@ impl Visit for DurabilityAttempt {
     fn record_u64(&mut self, field: &Field, value: u64) {
         if field.name() == "descriptor" && self.descriptor.is_none() {
             self.descriptor = Some(value);
-        } else if field.name() == "error.os" && self.os_error.is_none() {
-            self.os_error = i32::try_from(value).ok();
+        } else {
+            crate::record_os_error(&mut self.os_error, field.name(), value);
         }
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        if field.name() == "error.os" && self.os_error.is_none() {
-            self.os_error = i32::try_from(value).ok();
-        }
+        crate::record_os_error(&mut self.os_error, field.name(), value);
     }
 
     fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
