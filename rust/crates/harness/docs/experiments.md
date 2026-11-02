@@ -140,10 +140,12 @@ invocation, makes one control exchange, and follows one status stream. It copies
 the input brief once into the command and returns one result identity and arm
 name. It adds zero direct syscalls, durability barriers, extra commits or model
 calls. The shared fork owner retains its existing staging and commit costs.
-The snapshot precondition adds one fixed-width comparison and one 32-byte
-identity to each trial command: zero extra allocations, I/O, round trips or
-waits. Existing fixed-width role pins bind the full epoch without growing the
-adopted record. A failed precondition performs zero provider operations.
+The snapshot precondition copies one 32-byte identity into each trial command,
+serialized in its existing JSON exchange. Its field adds 85–149 JSON bytes,
+depending on the digest's decimal digits. The host performs one fixed-width
+comparison with zero allocations, I/O, round trips or waits. Existing fixed-width
+role pins bind the full epoch without growing the adopted record. A failed
+precondition performs zero provider operations.
 Using ordinary full agent observation would open two follows and transfer
 conversation records; lifecycle-only observation opens one and transfers zero
 conversation records.
