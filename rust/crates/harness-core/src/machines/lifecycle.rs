@@ -2,7 +2,7 @@
 //!
 //! The target table is the tree's (every agent reads the root's `targets`),
 //! but each agent runs a provisioned target on a Machine of its own, bound by
-//! one v1 [`MachineBinding`] at [`AgentPath::machine`]. No child inherits
+//! one [`MachineBinding`] at [`AgentPath::machine`]. No child inherits
 //! that binding, so the lifecycle follows the agent and never a timer:
 //!
 //! - **First exec** creates the agent's Machine, or forks its parent's when
@@ -31,9 +31,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 /// The persisted format of [`MachineBinding`].
-pub const MACHINE_BINDING_VERSION: u32 = 1;
+pub const MACHINE_BINDING_VERSION: u32 = 2;
 
-/// One agent's own Machine on one provisioned target (v1).
+/// One agent's own Machine on one provisioned target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineBinding {
@@ -41,10 +41,10 @@ pub struct MachineBinding {
     pub version: u32,
     /// The provisioned target's name.
     pub target: String,
-    /// The Machine, as its canonical id.
-    pub machine: String,
+    /// The original provider-owned Machine reference, independent of later configuration.
+    pub machine: SandboxRef,
     /// The parent's Machine it was forked from; `None` when created.
-    pub forked_from: Option<String>,
+    pub forked_from: Option<MachineId>,
 }
 
 /// First record at the binding path: choose before allocating. The second
@@ -54,6 +54,7 @@ pub struct MachineBinding {
 struct ProvisionPlan {
     version: u32,
     target: String,
+    provider: ProviderRef,
     source: Option<MachineBinding>,
 }
 
@@ -138,7 +139,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// `agent`'s binding on `target`, `None` before its first use.
     ///
     /// # Errors
-    /// When the binding cannot be read or is not a v1 binding of `target`.
+    /// When the binding cannot be read or its format or target differs.
     pub async fn binding(&self, agent: &AgentPath, target: &str) -> Result<Option<MachineBinding>> {
         let Some(record) = self.binding_record(agent, target, 1).await? else {
             return Ok(None);
@@ -147,7 +148,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .map_err(|error| Error::Storage(format!("Machine binding does not decode: {error}")))?;
         if binding.version != MACHINE_BINDING_VERSION || binding.target != target {
             return Err(Error::Storage(
-                "Machine binding is not a v1 binding of its target".into(),
+                "Machine binding has an unsupported version or a different target".into(),
             ));
         }
         Ok(Some(binding))
@@ -178,18 +179,19 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     async fn original_plan(
         &self,
         agent: &AgentPath,
-        target: &str,
+        target: &ProvisionedTarget,
     ) -> Result<Option<ProvisionPlan>> {
-        let Some(record) = self.binding_record(agent, target, 0).await? else {
+        let Some(record) = self.binding_record(agent, &target.name, 0).await? else {
             return Ok(None);
         };
         let plan: ProvisionPlan = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
-        if plan.version != MACHINE_BINDING_VERSION || plan.target != target {
+        if plan.version != MACHINE_BINDING_VERSION || plan.target != target.name {
             return Err(Error::Storage(
-                "Machine plan is not a v1 plan of its target".into(),
+                "Machine plan has an unsupported version or a different target".into(),
             ));
         }
+        ensure_provider(target, &plan.provider)?;
         Ok(Some(plan))
     }
 
@@ -211,7 +213,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         provisioned: &ProvisionedTarget,
     ) -> Result<SandboxRef> {
         if let Some(binding) = self.binding(agent, &provisioned.name).await? {
-            return sandbox(provisioned, &binding);
+            return sandbox(provisioned, binding);
         }
         let plan = self.plan(agent, provisioned).await?;
         let binding = match plan.source {
@@ -222,7 +224,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     async fn plan(&self, agent: &AgentPath, target: &ProvisionedTarget) -> Result<ProvisionPlan> {
-        if let Some(plan) = self.original_plan(agent, &target.name).await? {
+        if let Some(plan) = self.original_plan(agent, target).await? {
             return Ok(plan);
         }
         let parent = match agent.parent() {
@@ -230,7 +232,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             None => None,
         };
         let source = if let Some(parent) = parent {
-            let observed = target.host.inspect(&sandbox(target, &parent)?).await?;
+            ensure_provider(target, parent.machine.provider())?;
+            let observed = target.host.inspect(&parent.machine).await?;
             (observed.contract.fork_fidelity().is_some()
                 && matches!(
                     observed.state,
@@ -243,6 +246,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let plan = ProvisionPlan {
             version: MACHINE_BINDING_VERSION,
             target: target.name.clone(),
+            provider: target.host.provider_ref.clone(),
             source,
         };
         let (_, key) = intent("provision", agent, &target.name)?;
@@ -271,7 +275,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         {
             crate::agent::Submitted::Committed(_) => Ok(plan),
             _ => self
-                .original_plan(agent, &target.name)
+                .original_plan(agent, target)
                 .await?
                 .ok_or_else(|| Error::Storage("Machine provisioning choice is missing".into())),
         }
@@ -283,11 +287,11 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         agent: &AgentPath,
         parent: &MachineBinding,
     ) -> Result<MachineBinding> {
-        let source = sandbox(target, parent)?;
+        ensure_provider(target, parent.machine.provider())?;
         let (operation, key) = intent("fork", agent, &target.name)?;
         let (_, children) = target
             .host
-            .fork_machine(operation, &key, &source, std::num::NonZeroU32::MIN)
+            .fork_machine(operation, &key, &parent.machine, std::num::NonZeroU32::MIN)
             .await?;
         let child = children
             .into_iter()
@@ -296,8 +300,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         Ok(MachineBinding {
             version: MACHINE_BINDING_VERSION,
             target: target.name.clone(),
-            machine: target.host.machine_id(&child)?.to_string(),
-            forked_from: Some(parent.machine.clone()),
+            machine: child,
+            forked_from: Some(target.host.machine_id(&parent.machine)?),
         })
     }
 
@@ -321,7 +325,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         Ok(MachineBinding {
             version: MACHINE_BINDING_VERSION,
             target: target.name.clone(),
-            machine: target.host.machine_id(&created)?.to_string(),
+            machine: created,
             forked_from: None,
         })
     }
@@ -358,9 +362,9 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
         {
-            crate::agent::Submitted::Committed(_) => sandbox(target, &binding),
+            crate::agent::Submitted::Committed(_) => sandbox(target, binding),
             _ => match self.binding(agent, &binding.target).await? {
-                Some(winner) if winner.machine == binding.machine => sandbox(target, &winner),
+                Some(winner) if winner.machine == binding.machine => sandbox(target, winner),
                 _ => Err(Error::Storage(
                     "a concurrent first use bound another Machine".into(),
                 )),
@@ -378,7 +382,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         if let Some(binding) = self.binding(agent, &target.name).await? {
             return Ok(Some(binding));
         }
-        if self.original_plan(agent, &target.name).await?.is_none() {
+        if self.original_plan(agent, target).await?.is_none() {
             return Ok(None);
         }
         self.machine_on(agent, target).await?;
@@ -454,7 +458,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             ))?;
             target
                 .host
-                .suspend(pause, &key, &sandbox(target, &binding)?)
+                .suspend(pause, &key, &sandbox(target, binding)?)
                 .await?;
         }
         Ok(())
@@ -491,12 +495,12 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
                 let Some(parent) = holder.parent() else {
                     break;
                 };
-                let source = match &binding.forked_from {
-                    Some(source) if self.closed(&parent).await? => source.clone(),
+                let source = match binding.forked_from {
+                    Some(source) if self.closed(&parent).await? => source,
                     _ => break,
                 };
                 match self.binding(&parent, &target.name).await? {
-                    Some(held) if held.machine == source => binding = held,
+                    Some(held) if held.machine.key() == source.as_bytes() => binding = held,
                     _ => break,
                 }
                 holder = parent;
@@ -513,12 +517,9 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         holder: &AgentPath,
         binding: &MachineBinding,
     ) -> Result<bool> {
+        ensure_provider(target, binding.machine.provider())?;
         let (operation, key) = intent("destroy", holder, &target.name)?;
-        match target
-            .host
-            .destroy(operation, &key, &sandbox(target, binding)?)
-            .await
-        {
+        match target.host.destroy(operation, &key, &binding.machine).await {
             Ok(()) => Ok(true),
             Err(Error::Machines(acyclic_machines::ProviderError::FailedPrecondition(
                 acyclic_machines::Precondition::LiveForks,
@@ -685,7 +686,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
                         .binding(&self.agent, &target.name)
                         .await?
                         .ok_or(Error::Indeterminate(invocation.operation_id))?;
-                    self.bind(target, sandbox(target, &binding)?).await?
+                    self.bind(target, sandbox(target, binding)?).await?
                 }
             };
             executor.authorize(None, context.as_ref(), &invocation, None)?;
@@ -694,10 +695,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
     }
 }
 
-fn sandbox(target: &ProvisionedTarget, binding: &MachineBinding) -> Result<SandboxRef> {
-    let id =
-        MachineId::parse(&binding.machine).map_err(|error| Error::Invalid(error.to_string()))?;
-    SandboxRef::new(target.host.provider_ref.clone(), id.as_bytes().into(), None)
+fn sandbox(target: &ProvisionedTarget, binding: MachineBinding) -> Result<SandboxRef> {
+    ensure_provider(target, binding.machine.provider())?;
+    Ok(binding.machine)
+}
+
+fn ensure_provider(target: &ProvisionedTarget, original: &ProviderRef) -> Result<()> {
+    if original != &target.host.provider_ref {
+        return Err(Error::Invalid(format!(
+            "Machine target '{}' changed provider; restore its original provider configuration before retrying",
+            target.name
+        )));
+    }
+    Ok(())
 }
 
 /// The operation and key of `verb` for (agent, target): the same on every retry.

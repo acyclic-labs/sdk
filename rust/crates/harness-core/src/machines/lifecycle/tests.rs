@@ -31,6 +31,120 @@ fn manager<P: crate::store::JournalProvider>(
 }
 
 #[tokio::test]
+async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResult {
+    for (namespace, version) in [("replacement", "1"), ("example", "2")] {
+        let stream = Arc::new(Counted::new(MemoryStream::default()));
+        let provider = SimulatedMachines::default();
+        let machines = manager(stream.clone(), provider.clone())?;
+        let target = machines.target(TARGET)?;
+        let mut replacement = target.clone();
+        replacement.host = MachinesHost::new(
+            Arc::new(provider.clone()),
+            ProviderRef::new(
+                namespace.into(),
+                "machines".into(),
+                version.into(),
+                &mut None,
+            )?,
+        )?;
+        replacement.artifact = None;
+        let changed = AgentMachines::new(stream.clone(), vec![replacement])?;
+        let parent = AgentPath::root(&AgentId::from_bytes([12; 16]));
+        let child = parent.child(&AgentId::from_bytes([13; 16]))?;
+
+        // Persist the production plan but lose the caller before allocation.
+        // A changed provider must not adopt even this unbound original plan.
+        machines.plan(&parent, target).await?;
+        let before = stream.requests();
+        assert!(matches!(
+            changed.machine(&parent, TARGET).await,
+            Err(Error::Invalid(_))
+        ));
+        let refused = stream.requests().since(before);
+        assert_eq!(refused.data(), 2);
+        assert_eq!(refused.control(), 0);
+        assert!(provider.list_machines(None, 1).await?.machines.is_empty());
+
+        // Restoring the provider completes that same plan. The replacement
+        // deliberately shares its simulator: without the identity fence its
+        // UUID resolves and lifecycle actions mutate the original Machine.
+        let sandbox = machines.machine(&parent, TARGET).await?;
+        let binding = changed
+            .binding(&parent, TARGET)
+            .await?
+            .ok_or("binding lost")?;
+        assert_eq!(binding.machine.provider(), &target.host.provider_ref);
+        let owned = binding.clone();
+        let moved = acyclic_test_support::measure(|| {
+            assert!(std::hint::black_box(super::sandbox(target, owned)).is_ok());
+        });
+        assert_eq!(moved.count_total, 0);
+        let reconstructed = acyclic_test_support::measure(|| {
+            assert!(
+                std::hint::black_box(SandboxRef::new(
+                    target.host.provider_ref.clone(),
+                    binding.machine.key().to_vec(),
+                    None,
+                ))
+                .is_ok()
+            );
+        });
+        assert_eq!(reconstructed.count_total, 4);
+        for destroy in [false, true] {
+            let before = stream.requests();
+            let result = if destroy {
+                changed.destroy(&parent).await
+            } else {
+                changed.suspend(&parent).await
+            };
+            assert!(matches!(result, Err(Error::Invalid(_))));
+            let refused = stream.requests().since(before);
+            assert_eq!(refused.data(), 1);
+            assert_eq!(refused.control(), 1);
+            assert_eq!(
+                target.host.inspect(&sandbox).await?.state,
+                MachineState::Running
+            );
+        }
+        let before = stream.requests();
+        assert!(matches!(
+            changed.machine(&parent, TARGET).await,
+            Err(Error::Invalid(_))
+        ));
+        let refused = stream.requests().since(before);
+        assert_eq!(refused.data(), 1);
+        assert_eq!(refused.control(), 0);
+
+        // A fresh child cannot inspect/fork an original parent through a
+        // replacement provider or publish a plan that adopts its identity.
+        let before = stream.requests();
+        assert!(matches!(
+            changed.machine(&child, TARGET).await,
+            Err(Error::Invalid(_))
+        ));
+        let refused = stream.requests().since(before);
+        assert_eq!(refused.data(), 3);
+        assert_eq!(refused.control(), 0);
+        assert!(machines.original_plan(&child, target).await?.is_none());
+        assert_eq!(machines.machine(&parent, TARGET).await?, sandbox);
+        machines.machine(&child, TARGET).await?;
+        let fork = machines.binding(&child, TARGET).await?.ok_or("fork lost")?;
+        assert_eq!(fork.machine.provider(), binding.machine.provider());
+        assert_eq!(
+            fork.forked_from,
+            Some(target.host.machine_id(&binding.machine)?)
+        );
+        machines.destroy(&child).await?;
+        machines.destroy(&parent).await?;
+        assert_eq!(
+            target.host.inspect(&sandbox).await?.state,
+            MachineState::Destroyed
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
     for target_count in [1, 100_000] {
         let stream = Arc::new(Counted::new(MemoryStream::default()));
@@ -62,7 +176,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
         // The original plan is the index even when no binding survived.
         machines.plan(&agent, &target).await?;
         let allocated = machines.create(&target, &agent).await?;
-        let sandbox = sandbox(&target, &allocated)?;
+        let sandbox = allocated.machine.clone();
         let reopened = AgentMachines::new(stream.clone(), machines.targets.clone())?;
         drop(machines);
         reopened.suspend(&agent).await?;
@@ -140,11 +254,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
             .await?
             .ok_or("binding lost")?;
         assert_eq!(
-            target
-                .host
-                .inspect(&sandbox(target, &binding)?)
-                .await?
-                .state,
+            target.host.inspect(&binding.machine).await?.state,
             MachineState::Destroyed
         );
     }
@@ -208,7 +318,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
         machines.machine(&child, TARGET),
     )?;
     assert_eq!(one, two);
-    assert_eq!(one, sandbox(target, &allocated)?);
+    assert_eq!(one, allocated.machine.clone());
     assert_eq!(reopened.binding(&child, TARGET).await?, Some(allocated));
 
     // A chosen fork also survives parent state changes and waiter loss.
@@ -219,7 +329,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     machines.suspend(&parent).await?;
     assert_eq!(
         reopened.machine(&fork, TARGET).await?,
-        sandbox(target, &allocated)?
+        allocated.machine.clone()
     );
     assert_eq!(reopened.binding(&fork, TARGET).await?, Some(allocated));
 
@@ -229,11 +339,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     let allocated = machines.create(target, &pending).await?;
     reopened.suspend(&pending).await?;
     assert_eq!(
-        target
-            .host
-            .inspect(&sandbox(target, &allocated)?)
-            .await?
-            .state,
+        target.host.inspect(&allocated.machine.clone()).await?.state,
         MachineState::Suspended
     );
     assert_eq!(reopened.binding(&pending, TARGET).await?, Some(allocated));
