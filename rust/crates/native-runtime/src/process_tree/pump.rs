@@ -7,9 +7,13 @@
 //! control signal or the caller's deadline. A synchronous caller parks on that
 //! wait; an async caller awaits it, holding no thread while the child runs.
 
+#[cfg(unix)]
+use super::events::OwnedSource as OutputPipe;
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
+#[cfg(windows)]
+type OutputPipe<T> = T;
 
 /// The original caller's timing policy, fixed before submission.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -194,8 +198,8 @@ pub(super) struct Pump<'a> {
     remaining: usize,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
+    stdout: Option<OutputPipe<ChildStdout>>,
+    stderr: Option<OutputPipe<ChildStderr>>,
     #[cfg(windows)]
     readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,

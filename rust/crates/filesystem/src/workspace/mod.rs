@@ -97,7 +97,7 @@ use join_helpers::{
     binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,
     namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
 };
-pub use join_preview::{JoinConflictEntry, JoinPathEntry, JoinPreview};
+pub use join_preview::{JoinConflictEntry, JoinContent, JoinPathEntry, JoinPreview};
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
 pub(crate) use namespace_view::NamespaceView;
 pub use outcomes::{

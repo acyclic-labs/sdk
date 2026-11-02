@@ -344,16 +344,28 @@ impl StreamProvider for PostgresStream {
                 self.check()?;
                 let revisions = &self.inner.core.revisions;
                 let floor = revisions.floor(&request.at_least)?;
-                if !request.paths.is_empty()
+                let current = !request.paths.is_empty()
                     || request.children.is_some()
-                    || floor.is_some_and(|floor| floor > revisions.current().index)
-                {
+                    || floor.is_some_and(|floor| floor > revisions.current().index);
+                if current {
                     // Named observations refresh their snapshot. A covered revision
                     // wait needs no unrelated journal read or server clock request.
                     self.refresh().await?;
                 }
                 self.inner.core.revisions.wait(&request.at_least).await?;
-                self.inner.core.capture_heads(&request, true).await
+                let view = self.inner.core.capture_heads(&request, true).await?;
+                if !current
+                    && view
+                        .retained
+                        .iter()
+                        .any(|selected| selected.record.is_none())
+                {
+                    // Immutable hits need no current observation. A missing
+                    // publication or position still needs the journal's cut.
+                    self.refresh().await?;
+                    return self.inner.core.capture_heads(&request, true).await;
+                }
+                Ok(view)
             }
         )
     }

@@ -348,8 +348,9 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         fn count_tokens<'a>(
             &'a self,
             request: &'a PreparedModelRequest,
+            ceiling: u64,
         ) -> BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
-            self.counts.count_tokens(request)
+            self.counts.count_tokens(request, ceiling)
         }
         fn generate<'a>(
             &'a self,

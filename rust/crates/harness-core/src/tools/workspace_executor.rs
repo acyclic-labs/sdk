@@ -95,16 +95,19 @@ struct WorkspaceExecutor {
 
 impl ToolExecutor for WorkspaceExecutor {
     #[cfg(not(target_arch = "wasm32"))]
-    fn authorize_execution_grant(
-        &self,
-        invocation: &ToolInvocation,
-        context: &ToolContext,
-        grant: &acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'_>,
-    ) -> Result<()> {
-        target(context, invocation, work)?
-            .executor()
-            .authorize_execution_grant(invocation, context, grant, work)
+    fn authorize_execution_grant<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        context: &'a ToolContext,
+        grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'a>,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            target(context, invocation, work)?
+                .executor()
+                .authorize_execution_grant(invocation, context, grant, work)
+                .await
+        })
     }
 
     fn authorize_replay<'a>(

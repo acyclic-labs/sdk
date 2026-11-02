@@ -8,19 +8,13 @@
     "steps": [
       {
         "when": {
-          "path": "count",
+          "path": "responses",
           "user": "resume marker"
         },
-        "json": {
-          "input_tokens": 64
-        },
-        "hold": true
-      },
-      {
-        "when": {},
         "text": [
-          "resumed"
-        ]
+          "interrupted"
+        ],
+        "hold": true
       }
     ]
   },
@@ -29,14 +23,18 @@
       "mode": "headless",
       "text": "resume marker",
       "kill_on": {
-        "path": "count",
+        "path": "responses",
         "step": 0
       }
     },
     {
       "mode": "headless",
       "text": "resume marker",
-      "answer": "resumed"
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "connection interrupted"
+      }
     }
   ],
   "assert": {

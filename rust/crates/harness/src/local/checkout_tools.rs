@@ -295,25 +295,28 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
-    fn authorize_execution_grant(
-        &self,
-        invocation: &ToolInvocation,
-        _context: &ToolContext,
-        grant: &acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'_>,
-    ) -> Result<()> {
-        if invocation.name != crate::tools::shell::PLATFORM.name {
-            return Err(Error::Unsupported(
+    fn authorize_execution_grant<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        _context: &'a ToolContext,
+        grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'a>,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if invocation.name != crate::tools::shell::PLATFORM.name {
+                return Err(Error::Unsupported(
                 "checkout physical grants apply to shell execution; recovery: authorize file operations through their filesystem grants".into(),
             ));
-        }
-        if let Some(ceiling) = &self.execution_grant {
-            let meter = work.map(acyclic_fs::NativeMaterializationWork::runtime_meter);
-            ceiling
-                .check_attenuation_controlled(grant, meter.as_deref())
-                .map_err(Error::process_io)?;
-        }
-        Ok(())
+            }
+            if let Some(ceiling) = &self.execution_grant {
+                let meter = work.map(acyclic_fs::NativeMaterializationWork::runtime_meter);
+                ceiling
+                    .check_attenuation_async(grant, meter)
+                    .await
+                    .map_err(Error::process_io)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_path<'a>(

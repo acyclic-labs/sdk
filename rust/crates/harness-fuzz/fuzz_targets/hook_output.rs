@@ -2,19 +2,16 @@
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
+use acyclic_harness_core::HeapLayout;
 #[cfg(test)]
-use acyclic_harness::OperationId;
-use acyclic_harness::{Error, ProcessError, Result};
-// The included production records derive `crate::HeapLayout`, which names
-// its crate by the core package path that `acyclic_harness` re-exports.
-extern crate acyclic_harness as acyclic_harness_core;
-use acyclic_harness::HeapLayout;
-use acyclic_harness::{TaskId, tool};
+use acyclic_harness_core::OperationId;
+use acyclic_harness_core::{Error, ProcessError, Result};
+use acyclic_harness_core::{TaskId, tool};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
-// Include the production pure decoder and normalized types. No native runner,
-// model provider, process, or public testing API is needed by this target.
+// Keep the production decoder coverage alongside the shared chain oracle.
+// Neither path invokes a native runner, model provider or external process.
 #[path = "../../harness-core/src/hooks/spec.rs"]
 mod spec;
 use spec::{HookEvent, HookFailure, HookSpec};
@@ -35,7 +32,9 @@ fn apply(
     policy: HookFailure,
     result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
 ) {
-    let mut ledger = budget::Budget::existing(65_536, output).unwrap();
+    // Compare decoding semantics without an aggregate-output fallback changing
+    // the retained approval. The bounded fold is exercised separately below.
+    let mut ledger = budget::Budget::existing(u64::MAX, output).unwrap();
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
@@ -44,12 +43,10 @@ mod input;
 use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
-    if bytes.len() > 4096 {
-        return;
-    }
+    futures::executor::block_on(acyclic_harness_core::hooks::chain_model::check(bytes)).unwrap();
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {
-            operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+            operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
             call_id: "fuzz-call".into(),
             name: "fuzz-tool".into(),
             arguments: fields.clone(),

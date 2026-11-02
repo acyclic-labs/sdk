@@ -89,8 +89,9 @@ fn put_settings(body: &mut Vec<u8>) -> io::Result<()> {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        // SAFETY: writable limit storage; reads this process's limit.
-        if unsafe { libc::getrlimit(resource, &raw mut limit) } != 0 {
+        // SAFETY: writable limit storage; reads this process's limit. The
+        // fixed 0..16 IDs fit GNU's unsigned and musl's signed resource type.
+        if unsafe { libc::getrlimit(resource as _, &raw mut limit) } != 0 {
             return Err(io::Error::last_os_error());
         }
         body.extend_from_slice(&limit.rlim_cur.to_ne_bytes());

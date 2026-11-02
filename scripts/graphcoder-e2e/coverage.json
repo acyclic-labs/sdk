@@ -56,6 +56,7 @@
       "owner": "recovery",
       "cases": [
         "kill-and-resume",
+        "kill-during-count",
         "pty-kill-and-resume",
         "orphan-fencing"
       ]
@@ -206,6 +207,7 @@
       "owner": "b-substrate",
       "cases": [
         "kill-and-resume",
+        "kill-during-count",
         "jsonl-reopen"
       ],
       "gaps": [

@@ -467,6 +467,34 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
         assert!(reused.check(&old).is_err());
         assert!(!reused.reject(&old).unwrap());
     }
+
+    let (send, receive) = oneshot::channel::<()>();
+    let gate = receive.shared();
+    let cache = CredentialCache::new(
+        move |_| {
+            let gate = gate.clone();
+            async move {
+                gate.await.unwrap();
+                Ok(snapshot("published", 1, 100))
+            }
+        },
+        || CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some(revision(1)),
+        },
+    );
+    let mut first = Box::pin(cache.resolve());
+    let mut second = Box::pin(cache.resolve());
+    pending(first.as_mut());
+    pending(second.as_mut());
+    send.send(()).unwrap();
+    let published = first.now_or_never().unwrap().unwrap();
+    assert!(cache.reject(&published).unwrap());
+    assert!(matches!(
+        second.now_or_never(),
+        Some(Err(CredentialCacheError::Stale))
+    ));
+    assert!(cache.check(&published).is_err());
 }
 
 #[test]

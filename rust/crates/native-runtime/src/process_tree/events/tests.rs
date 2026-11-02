@@ -102,18 +102,188 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
 
 #[cfg(unix)]
 #[test]
-fn a_pipe_fires_when_its_data_arrives_and_not_before() -> io::Result<()> {
+fn descriptor_readiness_keeps_the_original_owner_through_data_and_peer_loss() -> io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::AsFd as _;
+
+    let (mut reader, mut writer) = std::os::unix::net::UnixStream::pair()?;
+    reader.set_nonblocking(true)?;
+    writer.set_nonblocking(true)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    runtime.block_on(async {
+        descriptor_readiness(writer.as_fd(), DescriptorInterest::Writable)?
+            .await
+            .into_result()?;
+        let mut byte = [0];
+        assert_eq!(
+            reader.read(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let mut wait = descriptor_readiness(reader.as_fd(), DescriptorInterest::Readable)?;
+        assert!(
+            Pin::new(&mut wait)
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        // Opposite-direction registration must not overwrite this descriptor's
+        // original token. Readiness still belongs to its original operation.
+        let conflict = descriptor_readiness(reader.as_fd(), DescriptorInterest::Writable)
+            .err()
+            .expect("a live descriptor observation cannot be replaced");
+        assert_eq!(conflict.kind(), io::ErrorKind::AlreadyExists);
+        writer.write_all(b"x")?;
+        wait.await.into_result()?;
+        assert_eq!(reader.read(&mut byte)?, 1);
+        assert_eq!(byte, [b'x']);
+
+        // Dropping the original producer wakes the same descriptor future;
+        // EOF is observed by the original read, without a readiness probe.
+        let wait = descriptor_readiness(reader.as_fd(), DescriptorInterest::Readable)?;
+        drop(writer);
+        wait.await.into_result()?;
+        assert_eq!(reader.read(&mut byte)?, 0);
+        Ok(())
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn descriptor_readiness_retires_with_its_original_source() -> io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let mut command = crate::ProcessCommand::new("cat");
+    command
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::piped())
+        .stderr(crate::ProcessStdio::null());
+    let mut tree = super::super::ProcessTree::spawn(&mut command)?;
+    let mut original = tree.readiness()?;
+    assert!(
+        Pin::new(&mut original)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+
+    // Transfer the actual descriptor, keeping its exact number occupied.
+    // The original wait must retire before the new owner can arm that source.
+    let mut reader = tree.take_stdout().expect("original piped stdout");
+    let descriptor = reader.as_raw_fd();
+    assert!(matches!(
+        Pin::new(&mut original).poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(ProcessWaitOutcome::Cancelled)
+    ));
+    let successor = arm(&[Source::Readable(reader.as_fd())], None)?;
+    drop(original);
+    assert_eq!(
+        arm(&[Source::Readable(reader.as_fd())], None)
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::AlreadyExists,
+        "an old wait cannot remove its successor's source claim"
+    );
+    let mut writer = tree.take_stdin().expect("original piped stdin");
+    writer.write_all(b"x")?;
+    successor.block().into_result()?;
+    let mut byte = [0];
+    assert_eq!(reader.read(&mut byte)?, 1);
+    assert_eq!(byte, [b'x']);
+
+    // Closing the source also settles and releases it before its number can
+    // be reused. Keeping the old future alive must not keep a dead claim.
+    let reader = OwnedSource::new(reader);
+    let mut original = arm(&[Source::Readable(reader.as_fd())], None)?;
+    drop(reader);
+    assert!(matches!(
+        Pin::new(&mut original).poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(ProcessWaitOutcome::Cancelled)
+    ));
+    assert_ne!(
+        hub()?
+            .registry()
+            .sources
+            .get(&SourceKey::Descriptor(descriptor)),
+        Some(&original.token),
+        "a closed source cannot retain its original claim"
+    );
+    tree.terminate(None)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn descriptor_readiness_rolls_back_only_its_own_partial_native_admission() -> io::Result<()> {
     use std::io::Write as _;
     use std::os::fd::AsFd as _;
+
+    let hub = Hub {
+        poller: platform::Poller::new()?,
+        registry: Mutex::new(Registry::default()),
+    };
     let (reader, mut writer) = std::io::pipe()?;
-    let wait = arm(&[Source::Readable(reader.as_fd())], None)?;
-    assert!(!wait.fired(), "an empty pipe is not readable");
+    let (other, mut other_writer) = std::io::pipe()?;
+    let first = arm_on(&hub, &[Source::Readable(reader.as_fd())], None)?;
+    let sources = [
+        Source::Readable(other.as_fd()),
+        Source::Readable(reader.as_fd()),
+    ];
+    assert_eq!(
+        arm_on(&hub, &sources, None)
+            .err()
+            .expect("second source is already held")
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    // Rollback retires the partially installed native interest without
+    // deleting the pre-existing owner's claim or consuming either input.
+    let second = arm_on(&hub, &[Source::Readable(other.as_fd())], None)?;
     writer.write_all(b"x")?;
-    wait.block().into_result()?;
-    // A writable pipe with room is ready at once.
-    arm(&[Source::Writable(writer.as_fd())], None)?
-        .block()
-        .into_result()?;
+    other_writer.write_all(b"y")?;
+    let mut ready = Vec::new();
+    // Both writes precede this actual OS wait. Separate packets may arrive
+    // in separate batches; each next wait is driven by retained readable data.
+    while !first.fired() || !second.fired() {
+        hub.poller.wait(None, &mut ready)?;
+        hub.dispatch(&mut ready, Instant::now());
+    }
+    first.block().into_result()?;
+    second.block().into_result()?;
+    assert!(hub.registry().sources.is_empty());
+
+    // An ambiguous multi-direction request refuses before replacing its own
+    // earlier native token, and releases that partial claim on return too.
+    let sources = [
+        Source::Readable(reader.as_fd()),
+        Source::Writable(reader.as_fd()),
+    ];
+    assert_eq!(
+        arm_on(&hub, &sources, None)
+            .err()
+            .expect("one descriptor has one native owner")
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert!(hub.registry().sources.is_empty());
+    let mut retained = arm_on(&hub, &[Source::Readable(reader.as_fd())], None)?;
+    // The same producer retirement path settles a claimed descriptor and
+    // preserves its first cause while the original guard still owns it.
+    drop(Retirement(&hub));
+    let mut context = Context::from_waker(Waker::noop());
+    let Poll::Ready(ProcessWaitOutcome::ServiceFailed(first_cause)) =
+        Pin::new(&mut retained).poll(&mut context)
+    else {
+        panic!("lost native producer must settle its original descriptor waiter")
+    };
+    hub.fail(io::ErrorKind::Other.into());
+    let Poll::Ready(ProcessWaitOutcome::ServiceFailed(cause)) =
+        Pin::new(&mut retained).poll(&mut context)
+    else {
+        panic!("original producer loss must remain terminal")
+    };
+    assert!(Arc::ptr_eq(&first_cause, &cause));
+    drop(retained);
+    assert!(hub.registry().sources.is_empty());
     Ok(())
 }
 
@@ -228,6 +398,7 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
         assert!(arm_on(&hub, &[Source::Readable(reader.as_fd())], None).is_err());
         assert!(hub.registry().armed.is_empty());
         assert!(hub.registry().positions.is_empty());
+        assert!(hub.registry().sources.is_empty());
     }
     let mut pending = arm_on(&hub, &[], None)?;
     let blocked = arm_on(&hub, &[], None)?;

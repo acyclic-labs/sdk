@@ -29,17 +29,7 @@ impl TokenEstimator {
     }
 
     pub(crate) fn observe(&self, bytes: usize, metadata: &Value) {
-        let usage = &metadata["usage"];
-        let input = match self.adapter {
-            Adapter::Chat => usage["prompt_tokens"].as_u64(),
-            Adapter::Gemini => usage["promptTokenCount"].as_u64(),
-            Adapter::Responses => usage["input_tokens"].as_u64(),
-            Adapter::Anthropic => usage["input_tokens"].as_u64().and_then(|input| {
-                input
-                    .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?
-                    .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))
-            }),
-        };
+        let input = input_tokens(self.adapter, metadata);
         if let Some(input) = input.filter(|input| *input != 0) {
             // Leave ten percent headroom around observed tokenizer/framing behavior.
             let ratio = bytes as f64 / input as f64 * 0.9;
@@ -50,5 +40,21 @@ impl TokenEstimator {
                     .fetch_min(ratio.to_bits(), Ordering::Relaxed);
             }
         }
+    }
+}
+
+/// The provider's complete reported input for one generation, in each dialect.
+/// Anthropic reports cache reads and writes beside uncached input.
+pub(crate) fn input_tokens(adapter: Adapter, metadata: &Value) -> Option<u64> {
+    let usage = &metadata["usage"];
+    match adapter {
+        Adapter::Chat => usage["prompt_tokens"].as_u64(),
+        Adapter::Gemini => usage["promptTokenCount"].as_u64(),
+        Adapter::Responses => usage["input_tokens"].as_u64(),
+        Adapter::Anthropic => usage["input_tokens"].as_u64().and_then(|input| {
+            input
+                .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?
+                .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))
+        }),
     }
 }

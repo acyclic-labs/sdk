@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,49 @@ import { fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs"
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
+const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
 import { answer, requireTools, runCase } from "./live.mjs";
+
+test("reply-only cases reject recorded tool failure despite successful native completion", {
+  skip: process.platform === "win32" && "the protocol child uses an executable POSIX script",
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "live-reply-tools-"));
+  try {
+    for (const captured of [undefined, ...shellResults]) {
+      const name = captured?.status ?? "no-tools", directory = join(root, name);
+      await mkdir(directory);
+      const program = join(directory, "reply.mjs");
+      // This native child speaks only the driver's text protocol. Tool events
+      // are original shipping captures, replayed through the real recorder.
+      await writeFile(program, `#!${process.execPath}
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+const settings = process.argv[process.argv.indexOf("--settings-root") + 1];
+const event = ${JSON.stringify(captured?.event ?? null)};
+if (event) {
+  const { hooks: { PostToolUse: [{ hooks: [hook] }] } } = JSON.parse(readFileSync(join(settings, ".claude/settings.json"), "utf8"));
+  const recorded = spawnSync(hook.command, hook.args, { input: JSON.stringify(event), encoding: "utf8" });
+  if (recorded.error) throw recorded.error;
+  if (recorded.status !== 0) throw new Error(recorded.stderr);
+}
+const prompt = process.argv[process.argv.indexOf("-p") + 1];
+process.stdout.write(prompt.match(/LIVE_[a-f0-9]+/)[0] + "\\n");
+`);
+      await chmod(program, 0o700);
+      const result = await runCase(program, root, directory, "session", new AbortController().signal);
+      assert.equal(result.captures.length, 1);
+      assert.equal(result.captures[0].code, 0, result.captures[0].stderr);
+      assert.equal(result.captures[0].signal, null);
+      assert.equal(result.status, captured?.status === "fail" ? "fail" : "pass", result.error);
+      if (captured?.status === "fail") {
+        assert.deepEqual(result.hooks, [captured.event]);
+        assert.match(result.failure.error, /unexpected tool error.*exit_code=1/);
+      }
+      assert.deepEqual([result.phases.at(-1).phase, result.phases.at(-1).outcome], ["retired", "completed"]);
+    }
+  } finally { await rm(root, { recursive: true }); }
+});
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
   const result = stdout => ({ code: 0, signal: null, stdout, stderr: "" });

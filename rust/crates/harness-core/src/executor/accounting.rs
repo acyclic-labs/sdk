@@ -48,9 +48,12 @@ pub(super) fn stock_context_capacity(
     provider.context_capacity(model)
 }
 
+/// `ceiling` is the most input that changes no decision; a locally proven
+/// bound within it spares the provider count request on the turn's critical path.
 pub(super) async fn stock_count_tokens(
     provider: &dyn ModelProvider,
     request: &crate::model::PreparedModelRequest,
+    ceiling: u64,
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelTokenCount> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -64,7 +67,7 @@ pub(super) async fn stock_count_tokens(
         })?;
         io.check_cancellation()?;
         let (count, custody) = provider
-            .count_tokens_with_native_work(request, work)?
+            .count_tokens_with_native_work(request, ceiling, work)?
             .await?;
         io.absorb_native_custody(custody)?;
         return Ok(count);
@@ -77,7 +80,7 @@ pub(super) async fn stock_count_tokens(
             "native stock token accounting is unavailable",
         ));
     }
-    provider.count_tokens(request).await
+    provider.count_tokens(request, ceiling).await
 }
 
 pub(super) fn stock_json_bound<T: Serialize>(
@@ -130,6 +133,23 @@ impl StockExecution<'_> {
         }
     }
 
+    /// The most input this execution admits without compacting or refusing.
+    pub(super) fn input_ceiling(
+        &self,
+        capacity: crate::context::ModelContextCapacity,
+    ) -> Result<u64> {
+        if self.single_request {
+            let output = capacity.output_reservation(self.output_tokens())?;
+            return Ok(u64::from(capacity.context_tokens - output));
+        }
+        match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Threshold(policy) => {
+                policy.input_ceiling(capacity, self.output_tokens())
+            }
+            crate::context::CompactionPolicy::Disabled => Ok(0),
+        }
+    }
+
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
         self.stock
             .resolved_sampling
@@ -178,9 +198,11 @@ impl StockExecution<'_> {
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
+        let ceiling = u64::from(capacity.context_tokens - output);
+        let count =
+            stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io).await?;
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
-        if count + u64::from(output) > u64::from(capacity.context_tokens) {
+        if count > ceiling {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

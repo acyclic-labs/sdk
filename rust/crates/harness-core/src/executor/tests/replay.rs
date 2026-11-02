@@ -638,7 +638,7 @@ mod prepared_request_reuse_properties {
             digest[0] ^= 1;
         }
         if matches!(fault, Fault::Recount) {
-            stock_count_tokens(provider.as_ref(), &cold, None)
+            stock_count_tokens(provider.as_ref(), &cold, 0, None)
                 .await
                 .unwrap();
         }

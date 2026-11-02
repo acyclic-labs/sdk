@@ -1,4 +1,78 @@
 use super::*;
+
+#[tokio::test]
+async fn directory_link_projection_has_no_target_sized_conversion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
+    let mut reads = costs;
+    for (index, units) in [1, 1024].into_iter().enumerate() {
+        let work = setup_work()?;
+        let source = windows_checkout_source().await?;
+        let path = windows_path("link");
+        let target = [b'x', 0].repeat(units);
+        let lookup = source.create_symbolic_link(
+            &path,
+            setup_chunk(&target, &work)?,
+            FileMetadata {
+                windows_attributes: MetadataField::Value(FILE_ATTRIBUTE_NORMAL.0),
+                ..FileMetadata::default()
+            },
+            &work,
+        )?;
+        let root = tempfile::tempdir()?;
+        let runtime = callback_runtime(source, root.path(), &work)?;
+        let projection = Projection {
+            runtime: &runtime,
+            work: &work,
+            context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT::default(),
+            starting: false,
+        };
+        let directory = MountPath::root();
+        drop(runtime.source.read_link(&path, &work)?);
+        for (control, restore_conversion) in [false, true].into_iter().enumerate() {
+            let mut read = None;
+            reads[index][control] = acyclic_test_support::measure(|| {
+                read = Some(runtime.source.read_link(&path, &work));
+            });
+            let read = read.ok_or("missing source read")??;
+            assert_eq!(read.bytes.as_ref(), target);
+            drop(read);
+            let component = owned_component(projection, &windows_name("link"))?;
+            let mut result = Ok(None);
+            costs[index][control] = acyclic_test_support::measure(|| {
+                result = projected_entry(projection, &directory, component, lookup, None);
+                if restore_conversion && let Ok(Some(entry)) = &result {
+                    // Reintroduce the discarded conversion as the negative control.
+                    let target = entry.symlink_target.as_ref().expect("symbolic link");
+                    std::hint::black_box(HSTRING::from_wide(
+                        &decode_utf16_name(&target.bytes).expect("aligned target"),
+                    ));
+                }
+            });
+            let entry = result?.ok_or("missing projected link")?;
+            assert_eq!(
+                entry.symlink_target.as_ref().unwrap().bytes.as_ref(),
+                target
+            );
+            assert_eq!(entry.facts.lookup, lookup);
+            assert!(!entry.directory_link);
+        }
+    }
+    // Subtract the same source's required read storage before comparing conversion.
+    let overhead_count = |index: usize| {
+        i128::from(costs[index][0].count_total) - i128::from(reads[index][0].count_total)
+    };
+    let overhead_bytes = |index: usize, control: usize| {
+        i128::from(costs[index][control].bytes_total)
+            - i128::from(reads[index][control].bytes_total)
+    };
+    assert_eq!(overhead_count(0), overhead_count(1));
+    assert_eq!(overhead_bytes(0, 0), overhead_bytes(1, 0));
+    let conversion_bytes = |index| overhead_bytes(index, 1) - overhead_bytes(index, 0);
+    assert!(conversion_bytes(0) > 0);
+    assert!(conversion_bytes(1) > conversion_bytes(0));
+    Ok(())
+}
 use crate::kernel::KernelAccounting;
 #[test]
 fn projfs_name_order_differs_from_sdk_cursor_order() {

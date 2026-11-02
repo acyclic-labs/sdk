@@ -110,7 +110,7 @@ async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);
     let (request, dispatch) = request()?;
     let expected = request.request().clone();
-    let count = provider.count_tokens(&request).await?;
+    let count = provider.count_tokens(&request, 0).await?;
     assert_eq!(count.request_digest, request.request_digest());
     assert_eq!(count.message_tokens.len(), 2);
     let events = provider
@@ -429,7 +429,7 @@ fn capacity_and_token_accounting_are_configurable() -> Result<()> {
         provider.context_capacity(&request.request().model)?,
         capacity
     );
-    let count = futures::executor::block_on(provider.count_tokens(&request))?;
+    let count = futures::executor::block_on(provider.count_tokens(&request, 0))?;
     assert_eq!(count.request_digest, request.request_digest());
     assert_eq!(count.fixed_tokens, 7);
     assert_eq!(count.message_tokens, vec![3, 3]);
@@ -532,12 +532,12 @@ fn token_counter_can_capture_configuration_without_changing_the_request() -> Res
     });
     let (request, _) = request()?;
     assert_eq!(
-        futures::executor::block_on(provider.count_tokens(&request))?.fixed_tokens,
+        futures::executor::block_on(provider.count_tokens(&request, 0))?.fixed_tokens,
         7
     );
     tokens.store(11, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
-        futures::executor::block_on(provider.count_tokens(&request))?.fixed_tokens,
+        futures::executor::block_on(provider.count_tokens(&request, 0))?.fixed_tokens,
         11
     );
     Ok(())
@@ -552,7 +552,7 @@ async fn unavailable_accounting_still_records_and_replays_generation() -> Result
         matches!(provider.context_capacity(&request.request().model),
         Err(crate::Error::Unsupported(message)) if message == "selected model context capacity is unavailable")
     );
-    assert!(matches!(provider.count_tokens(&request).await,
+    assert!(matches!(provider.count_tokens(&request, 0).await,
         Err(crate::Error::Unsupported(message)) if message == "selected model token counting is unavailable"));
     let events = provider
         .generate(&request, dispatch)

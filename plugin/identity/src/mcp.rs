@@ -70,7 +70,7 @@ impl Server {
                     Err(error) => {
                         if !error.status.is_some_and(|status| status.is_server_error())
                             && !matches!(
-                                error.code.as_str(),
+                                error.code,
                                 "request_cancelled"
                                     | "transport_error"
                                     | "server_error"
@@ -100,21 +100,7 @@ impl Server {
                 self.pending = None;
                 Ok(result)
             }
-            "identity_refresh" => {
-                if store
-                    .at_endpoint(&self.identity.endpoint, Store::credentials)
-                    .await?
-                    .session
-                    .is_none()
-                {
-                    return self.identity.renew_agent(&store).await;
-                }
-                let session = store
-                    .at_endpoint(&self.identity.endpoint, Store::read)
-                    .await?;
-                let session = self.identity.refresh(&store, &session).await?;
-                Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
-            }
+            "identity_refresh" => self.identity.refresh_stored(&store).await,
             _ => Err(Error::new("unknown_tool", "unknown identity tool")),
         }
     }
