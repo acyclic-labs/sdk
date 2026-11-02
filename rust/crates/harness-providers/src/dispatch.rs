@@ -33,7 +33,7 @@ pub(crate) fn generate_encoded<'a>(
     request: &'a PreparedModelRequest,
     dispatch: ModelDispatch,
     body: bytes::Bytes,
-    cache: acyclic_harness_core::executor::ModelCacheObservation,
+    cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
     auth: (Option<Cow<'a, str>>, Option<String>),
     names: crate::tool_names::Names<'a>,
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
@@ -45,10 +45,10 @@ pub(crate) fn generate_encoded<'a>(
         let response = attempt.exchange(provider, &body, dispatch, &mut auth, response,
             #[cfg(not(target_arch = "wasm32"))] None, None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let cache = acyclic_harness_core::executor::ModelCacheObservation {
+        let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
             credential_scope: origin.credential_scope,
             ..cache
-        };
+        });
         let events = crate::stream::events_named(provider.config.adapter, response.body,
             provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
         futures::pin_mut!(events);
@@ -148,12 +148,7 @@ pub(crate) async fn encode(
 ) -> Result<projection::cache::Encoded> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
-    projection::cache::encode(
-        &body,
-        provider.config.adapter,
-        provider.profile_binding(),
-        origin,
-    )
+    projection::cache::encode(&body, provider, origin)
 }
 
 pub(crate) fn request_headers(

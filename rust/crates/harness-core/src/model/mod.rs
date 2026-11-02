@@ -27,6 +27,10 @@ mod profile;
 mod provider;
 mod reasoning;
 mod request;
+/// Explicit research-build opt-in. Provider adapters use this same setting so
+/// feature unification cannot enable only part of a capture path. Disabled
+/// branches are constant-folded out of ordinary builds.
+pub const RESEARCH_CAPTURE_ENABLED: bool = cfg!(feature = "research");
 #[cfg(any(feature = "filesystem", feature = "tui"))]
 mod usage;
 #[cfg(any(feature = "filesystem", feature = "tui"))]

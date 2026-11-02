@@ -15,14 +15,15 @@ pub enum ModelCacheTtl {
     },
 }
 
-/// A digest at the final input cut in the original projected HTTP request.
+/// A digest at the final input cut in the original projected HTTP request,
+/// bound to its resolved provider family, endpoint base and model.
 /// Generation settings preceding the input are included conservatively: equality
 /// proves equal projected prefixes, but inequality does not prove a cache miss.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelCacheBreakpoint {
-    /// Domain-separated BLAKE3 through the final projected message.
+    /// Domain-separated BLAKE3 of the resolved identity and projected prefix.
     pub digest: [u8; 32],
     /// Same hash immediately before that message, forming a sparse prefix tree.
     pub parent_digest: [u8; 32],
@@ -73,7 +74,7 @@ impl ModelCacheObservation {
 pub struct ModelCacheKey {
     /// Original nonsecret account/endpoint digest.
     pub credential_scope: [u8; 32],
-    /// Original projected prefix digest.
+    /// Original prefix digest, including resolved provider, endpoint and model.
     pub prefix_digest: [u8; 32],
 }
 
