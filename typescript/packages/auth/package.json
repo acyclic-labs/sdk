@@ -18,6 +18,10 @@
       "types": "./dist/addressing.d.ts",
       "default": "./dist/addressing.js"
     },
+    "./owned-bytes": {
+      "types": "./dist/owned-bytes.d.ts",
+      "default": "./dist/owned-bytes.js"
+    },
     ".": "./dist/index.js",
     "./holder": {
       "types": "./dist/holder.d.ts",
