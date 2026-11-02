@@ -16,7 +16,7 @@
 //! when needed; retained messages, system prompts and tool schemas stay fixed.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 #[cfg(not(test))]
 type RosterHasher = std::collections::hash_map::RandomState;
@@ -154,18 +154,20 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 /// hashes only the selected name or owner and performs an expected constant
 /// table lookup; the home position needs neither. Refusal output still visits
 /// the online roster entries it must describe.
+/// Cloning retains the immutable admitted storage without copying records or
+/// allocating; changing a target requires a new admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(try_from = "RosterWire")]
 pub struct Roster {
-    home: String,
-    targets: Vec<TargetRecord>,
+    home: Arc<str>,
+    targets: Arc<[TargetRecord]>,
     #[serde(skip)]
     home_position: usize,
     #[serde(skip)]
-    positions: std::sync::Arc<RosterPositions>,
+    positions: Arc<RosterPositions>,
     #[serde(skip)]
-    canonical: std::sync::Arc<[u8]>,
+    canonical: Arc<[u8]>,
     #[serde(skip)]
     digest: [u8; 32],
 }
@@ -272,10 +274,10 @@ impl Roster {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
         hasher.update(&bytes);
         Ok(Self {
-            home: wire.home,
-            targets: wire.targets,
+            home: wire.home.into(),
+            targets: wire.targets.into(),
             home_position,
-            positions: std::sync::Arc::new(RosterPositions { names, owners }),
+            positions: Arc::new(RosterPositions { names, owners }),
             canonical: bytes.into(),
             digest: *hasher.finalize().as_bytes(),
         })
@@ -327,7 +329,7 @@ impl Roster {
     /// The position in this admitted roster, shared with its executor table.
     pub(crate) fn select_position(&self, target: Option<&str>) -> Result<usize, TargetRefusal> {
         let named = target.unwrap_or(&self.home);
-        let found = if named == self.home {
+        let found = if named == self.home.as_ref() {
             Some(self.home_position)
         } else {
             match named.strip_prefix(USER_PREFIX) {
@@ -494,11 +496,38 @@ mod tests {
         );
         let decoded: Roster = serde_json::from_slice(bytes).expect("admit original records");
         assert_eq!(decoded.canonical(), (bytes, digest));
-        for count in [1, 100, 1000] {
-            for _ in 0..count {
-                assert!(std::ptr::eq(bytes, roster.canonical().0));
-                assert!(std::ptr::eq(bytes, roster.clone().canonical().0));
-            }
+        for count in [1, 100_000] {
+            let original = Roster::new(
+                "host-0",
+                (0..count)
+                    .map(|position| device(&format!("host-{position}"), "ana", TargetState::Online))
+                    .collect(),
+            )
+            .expect("admit original snapshot");
+            let before = crate::test_support::hash_calls();
+            let retained = original.clone();
+            assert_eq!(crate::test_support::hash_calls(), before);
+            assert!(std::ptr::eq(original.home_name(), retained.home_name()));
+            assert!(std::ptr::eq(original.targets(), retained.targets()));
+            assert!(Arc::ptr_eq(&original.positions, &retained.positions));
+            assert!(std::ptr::eq(original.canonical().0, retained.canonical().0));
+            assert_eq!(Arc::strong_count(&original.targets), 2);
+            // Negative control: the former value clone copies every record
+            // and its string buffers, even though the snapshot cannot change.
+            let copied = original.targets().to_vec();
+            let last = count - 1;
+            assert_ne!(copied.as_ptr(), original.targets().as_ptr());
+            assert_ne!(
+                copied[last].name.as_ptr(),
+                original.targets()[last].name.as_ptr()
+            );
+            drop(original);
+            assert_eq!(retained.select(None).expect("retained home").name, "host-0");
+            assert_eq!(Arc::strong_count(&retained.targets), 1);
+            assert_eq!(
+                crate::contract::canonical_json_bytes(&retained).expect("same wire"),
+                retained.canonical().0,
+            );
         }
         // An announced roster is not announced again; any other one is.
         let first = roster.announcement(None).expect("announced");
