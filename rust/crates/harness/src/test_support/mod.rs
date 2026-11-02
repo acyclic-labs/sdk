@@ -67,27 +67,38 @@ pub async fn prompt_settled(
         crate::local::agent_conversation::Conversation::open(harness.connect().await?)?;
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(id, prompt).await?;
+    let mut phase = None;
     let entry = loop {
-        match conversation.reply(id, inbox).await? {
+        let dropped = match conversation.reply(id, inbox).await? {
             Reply::Answered { entry, .. } => break entry,
-            Reply::Dropped => {
-                return Err(crate::Error::Conflict(format!("prompt {id} was cancelled")));
+            Reply::Dropped => true,
+            Reply::Pending | Reply::Continuing { .. } => false,
+        };
+        if dropped {
+            // A failure may already have committed before the reply query.
+            phase = Some(conversation.phase().await?);
+        }
+        match phase.take() {
+            Some(Phase::Done {
+                outcome: AgentOutcome::Failed { message },
+            }) => return Ok(PromptOutcome::Failed(message)),
+            Some(Phase::Done { outcome }) => {
+                return Err(crate::Error::Conflict(format!(
+                    "root agent ended before its prompt settled: {outcome:?}"
+                )));
             }
-            Reply::Pending | Reply::Continuing { .. } => {}
+            _ => {}
+        }
+        if dropped {
+            return Err(crate::Error::Conflict(format!("prompt {id} was cancelled")));
         }
         loop {
             match events.next().await? {
-                Event::Status(status) => match status.phase {
-                    Phase::Done {
-                        outcome: AgentOutcome::Failed { message },
-                    } => return Ok(PromptOutcome::Failed(message)),
-                    Phase::Done { outcome } => {
-                        return Err(crate::Error::Conflict(format!(
-                            "root agent ended before its prompt settled: {outcome:?}"
-                        )));
-                    }
-                    _ => break,
-                },
+                Event::Status(status) => {
+                    // The original reply wins over a later terminal event.
+                    phase = Some(status.phase);
+                    break;
+                }
                 Event::Turn(_) => break,
                 Event::Output => {}
             }
