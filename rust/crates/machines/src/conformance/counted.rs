@@ -163,6 +163,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().events(machine, after_sequence, limit).await
     }
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().follow_events(machine, after_sequence).await
+    }
     async fn usage(
         &self,
         machine: MachineId,

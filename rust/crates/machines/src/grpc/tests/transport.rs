@@ -44,6 +44,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     observe!(inspect_checkpoint, InspectCheckpointRequest);
     observe!(list_machines, ListMachinesRequest);
     observe!(events, EventsRequest);
+    observe!(follow_events, FollowEventsRequest);
     observe!(usage, UsageRequest);
     observe!(cancel, OperationRequest);
     observe!(inspect_operation, OperationRequest);

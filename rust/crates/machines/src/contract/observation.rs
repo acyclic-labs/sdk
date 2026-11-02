@@ -84,6 +84,12 @@ pub struct EventPage {
     pub next_sequence: Option<u64>,
 }
 
+/// Gapless events after an exclusive sequence cursor, followed by live events.
+/// Destroyed is the terminal event. Losing the producer before that event is
+/// a typed failure; dropping interest never changes the Machine.
+pub type EventStream =
+    acyclic_stream::BoxProviderStream<'static, Result<MachineEvent, ProviderError>>;
+
 /// Immutable usage receipt over one half-open interval.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UsageReceipt {

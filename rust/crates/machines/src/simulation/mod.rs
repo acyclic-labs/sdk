@@ -24,7 +24,7 @@ struct MemoryState {
     now: u64,
     machines: BTreeMap<MachineId, MachineObservation>,
     checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
-    events: BTreeMap<MachineId, Vec<MachineEvent>>,
+    events: BTreeMap<MachineId, tokio::sync::watch::Sender<Vec<MachineEvent>>>,
     replays: BTreeMap<IdempotencyKey, Replay>,
 }
 
@@ -226,15 +226,20 @@ fn event(
     fact: EventFact,
     observed_at: u64,
 ) -> Result<(), ProviderError> {
-    let values = state.events.entry(machine).or_default();
-    let sequence = u64::try_from(values.len())
+    let values = state
+        .events
+        .entry(machine)
+        .or_insert_with(|| tokio::sync::watch::Sender::new(Vec::new()));
+    let sequence = u64::try_from(values.borrow().len())
         .map_err(|_| ProviderError::Rejected("simulation event limit reached".into()))?
         + 1;
-    values.push(MachineEvent {
-        machine,
-        sequence,
-        observed_at_unix_ms: observed_at,
-        fact,
+    values.send_modify(|values| {
+        values.push(MachineEvent {
+            machine,
+            sequence,
+            observed_at_unix_ms: observed_at,
+            fact,
+        })
     });
     Ok(())
 }
