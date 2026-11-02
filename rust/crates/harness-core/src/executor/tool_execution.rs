@@ -699,26 +699,34 @@ impl<'io> StockExecution<'io> {
                     let context = context.ok_or_else(|| Error::Unauthorized(
                         "physical admission requires the original task context; recovery: bind the task before dispatch".into(),
                     ))?;
-                    if let Some(proof) = tool.executor.authorize_execution_grant(
+                    let proof = tool.executor.authorize_execution_grant(
                         invocation, context, &grant, self.native_work(),
-                    )? {
+                    )?;
+                    let waited = proof.is_some();
+                    if let Some(proof) = proof {
                         proof.offloaded().await.map_err(Error::process_io)?;
-                        if !identity_matches()? {
-                            return Err(Error::Conflict(
-                                "stock policy changed during native grant proof".into(),
-                            ));
-                        }
+                    }
+                    return Ok(Some((context, grant, waited)));
+                }
+                Ok(None)
+            }.await;
+            match admitted {
+                Ok(Some((context, grant, waited))) => {
+                    if waited && !identity_matches()? {
+                        return Err(Error::Conflict(
+                            "stock policy changed during native grant proof".into(),
+                        ));
                     }
                     context.execution_grant = Some(grant);
                 }
-                Ok(())
-            }.await;
-            if let Err(error) = admitted {
-                return if error.is_tool_failure() {
-                    Ok(Some(PolicyStop::Failed(error)))
-                } else {
-                    Err(error)
-                };
+                Ok(None) => {}
+                Err(error) => {
+                    return if error.is_tool_failure() {
+                        Ok(Some(PolicyStop::Failed(error)))
+                    } else {
+                        Err(error)
+                    };
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
