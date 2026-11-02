@@ -14,6 +14,19 @@ pub(crate) struct FixedIndex<V, const N: usize = 16>(
     acyclic_collections::FixedIndex<V, RetainedAllocation, N>,
 );
 
+pub(crate) struct Entries<V, const N: usize, F: FnMut(u64)>(
+    acyclic_collections::ExtractedEntries<V, RetainedAllocation, N, F>,
+);
+
+impl<V, const N: usize, F: FnMut(u64)> Entries<V, N, F> {
+    pub(crate) fn try_next(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<acyclic_collections::Entry<V, RetainedAllocation, N>>, FsError> {
+        self.0.try_next(&mut IndexAccounting(accounting))
+    }
+}
+
 impl<V, const N: usize> Default for FixedIndex<V, N> {
     fn default() -> Self {
         Self(Default::default())
@@ -39,6 +52,14 @@ impl acyclic_collections::IndexWork for IndexAccounting<'_, '_> {
 }
 
 impl<V, const N: usize> FixedIndex<V, N> {
+    pub(crate) fn into_entries(mut self) -> Entries<V, N, impl FnMut(u64)> {
+        let extracted = self
+            .0
+            .extract_prefix(&[], |_| {})
+            .unwrap_or_else(|_| unreachable!("empty prefix fits every key width"));
+        Entries(extracted.into_entries(|_| {}))
+    }
+
     pub(crate) fn first(
         &self,
         accounting: &mut KernelAccounting<'_>,

@@ -590,30 +590,51 @@ fn take_first_leaf<V, A, const N: usize>(
     cursor: &mut Link<V, A, N>,
     visit: &mut impl FnMut(u64),
 ) -> Option<Node<V, A, N>> {
-    while let Some(mut node) = cursor.take() {
-        visit(1);
+    match try_take_first_leaf(cursor, &mut |items| {
+        visit(items);
+        Ok::<(), std::convert::Infallible>(())
+    }) {
+        Ok(leaf) => leaf,
+        Err(impossible) => match impossible {},
+    }
+}
+
+fn try_take_first_leaf<V, A, E, const N: usize>(
+    cursor: &mut Link<V, A, N>,
+    visit: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<Option<Node<V, A, N>>, E> {
+    while cursor.is_some() {
+        visit(1)?;
+        if matches!(
+            cursor.as_ref().map(|node| node.kind.as_ref()),
+            Some(Kind::Branch { low: Some(_), .. })
+        ) {
+            // Both admissions precede unlinking. Refusal therefore leaves the
+            // complete remaining cursor owned, including earlier rotations.
+            visit(1)?;
+        }
+        let mut node = cursor
+            .take()
+            .unwrap_or_else(|| unreachable!("existing cursor"));
         match node.kind.as_mut() {
-            Kind::Leaf { .. } => return Some(node),
+            Kind::Leaf { .. } => return Ok(Some(node)),
             Kind::Branch { low, high, .. } => match low.take() {
                 None => *cursor = high.take(),
-                Some(mut lower) => {
-                    visit(1);
-                    match lower.kind.as_mut() {
-                        Kind::Leaf { .. } => {
-                            *cursor = Some(node);
-                            return Some(lower);
-                        }
-                        Kind::Branch { high: middle, .. } => {
-                            *low = middle.take();
-                            *middle = Some(node);
-                            *cursor = Some(lower);
-                        }
+                Some(mut lower) => match lower.kind.as_mut() {
+                    Kind::Leaf { .. } => {
+                        *cursor = Some(node);
+                        return Ok(Some(lower));
                     }
-                }
+                    Kind::Branch { high: middle, .. } => {
+                        *low = middle.take();
+                        *middle = Some(node);
+                        *cursor = Some(lower);
+                    }
+                },
             },
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]

@@ -254,7 +254,73 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
     result?;
     assert_eq!(measured.bytes_current, 0);
     assert!(!work.early_refund.get());
+    let required = verify_admitted_drain(None)?;
+    // Every original admission boundary, including immediately before a lower
+    // child visit, must preserve the exact remaining values and their funding.
+    for allowance in 0..required {
+        verify_admitted_drain(Some(allowance))?;
+    }
     Ok(())
+}
+
+fn verify_admitted_drain(allowance: Option<u64>) -> Result<u64, &'static str> {
+    let mut work = Work::default();
+    let mut index = FixedIndex::<usize, _, 4>::default();
+    let mut expected = BTreeMap::new();
+    index.get_or_try_insert_with([0; 4], &mut work, |_| Ok(0))?;
+    expected.insert([0; 4], 0);
+    for bit in (0..32).rev() {
+        let key = (1_u32 << bit).to_be_bytes();
+        index.get_or_try_insert_with(key, &mut work, |_| Ok(bit + 1))?;
+        expected.insert(key, bit + 1);
+    }
+    let claims = work.claims;
+    let before = work.items;
+    work.maximum_items = allowance.map(|allowance| before + allowance);
+    let mut entries = index
+        .extract_prefix(&[], |_| {})
+        .unwrap()
+        .into_entries(|_| {});
+    let mut remaining = expected.iter();
+    let mut refused = false;
+    loop {
+        match entries.try_next(&mut work) {
+            Ok(Some(entry)) => {
+                let (key, value) = remaining.next().ok_or("unexpected drained entry")?;
+                assert_eq!(entry.key(), key);
+                assert_eq!(entry.value(), value);
+            }
+            Ok(None) => {
+                assert!(remaining.next().is_none());
+                break;
+            }
+            Err(error) => {
+                assert_eq!(error, "items refused");
+                assert!(allowance.is_some());
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert_eq!(refused, allowance.is_some());
+    let examined = work.items - before;
+    if let Some(allowance) = allowance {
+        assert!(examined <= allowance);
+    }
+    work.cancelled = true;
+    assert_eq!(entries.try_next(&mut work).err(), Some("cancelled"));
+    work.cancelled = false;
+    work.maximum_items = None;
+    while let Some(entry) = entries.try_next(&mut work)? {
+        let (key, value) = remaining.next().ok_or("unexpected resumed entry")?;
+        assert_eq!(entry.key(), key);
+        assert_eq!(entry.value(), value);
+    }
+    assert!(remaining.next().is_none());
+    assert_eq!(work.claims, claims);
+    drop((entries, index));
+    assert_eq!(work.live.get(), 0);
+    Ok(examined)
 }
 
 fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static str> {
