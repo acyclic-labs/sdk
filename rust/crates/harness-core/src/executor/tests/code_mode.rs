@@ -345,7 +345,16 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         };
         let mut context = crate::context::Context::default();
         let initial = io.remaining()?;
-        execution.code_tools_notice(&mut context, &before[0].tools)?;
+        let (notice, codec) =
+            acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
+                || (),
+                |()| execution.code_tools_notice(&mut context, &before[0].tools),
+            );
+        notice?;
+        use json::CodecOperation::{DecodeBytes, Serialize};
+        // Framing count, document encoding, then the typed notice decode.
+        let expected = [Serialize, Serialize, DecodeBytes];
+        assert_eq!(codec, expected);
         let remaining = io.remaining()?;
         assert_eq!(context.messages.len(), 1);
         let encoded = initial.bytes_encoded - remaining.bytes_encoded;
@@ -357,7 +366,13 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         let mut larger = before[0].tools.clone();
         larger[0].description.push_str(&"schema".repeat(16_384));
         let mut larger_context = crate::context::Context::default();
-        execution.code_tools_notice(&mut larger_context, &larger)?;
+        let (notice, larger_codec) =
+            acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
+                || (),
+                |()| execution.code_tools_notice(&mut larger_context, &larger),
+            );
+        notice?;
+        assert_eq!(larger_codec, expected);
         let larger_remaining = io.remaining()?;
         assert_eq!(
             remaining.bytes_encoded - larger_remaining.bytes_encoded,
@@ -376,7 +391,16 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             examined
         );
         // Restoring even the first full-table encoding violates this oracle.
-        let redundant = io.encode(&larger, u64::MAX, false)?;
+        let (redundant, extra_codec) = acyclic_test_support::differential::observe::<
+            _,
+            _,
+            json::CodecOperation,
+        >(|| (), |()| io.encode(&larger, u64::MAX, false));
+        let redundant = redundant?;
+        assert_ne!(
+            codec.into_iter().chain(extra_codec).collect::<Vec<_>>(),
+            expected
+        );
         assert!(larger_remaining.bytes_encoded - io.remaining()?.bytes_encoded > encoded);
         drop(redundant);
         cancellation.cancel();
