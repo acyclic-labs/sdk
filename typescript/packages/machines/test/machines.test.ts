@@ -113,7 +113,7 @@ describe("Machines simulation", () => {
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);
     const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-full"));
-    if (forked.kind !== "created") throw new Error("wrong fork outcome");
+    if (forked.kind !== "forked") throw new Error("wrong fork outcome");
     expect((await provider.listMachines(null, 256)).machines).toHaveLength(3);
     expect(await provider.recover(idempotencyKey("fork-full"))).toEqual(forked);
     const usage = await provider.usage(id, 1, 2);
@@ -145,12 +145,21 @@ describe("Machines simulation", () => {
     expect(none).toEqual([]);
 
     const forked = await provider.forkMachine(created, 1025, idempotencyKey("high-level-fork"));
-    if (forked.kind !== "machine-forked") throw new Error("wrong live fork outcome");
+    if (forked.kind !== "forked") throw new Error("wrong live fork outcome");
     const all = new Set<string>();
     for await (const machine of listMachines(provider)) all.add(machine);
     expect(all.size).toBe(1026);
     expect(all.has(created)).toBe(true);
-    for (const child of forked.children) expect(all.has(child.id)).toBe(true);
+    let cursor: import("../src/index.js").ResultCursor | null = { cut: forked.results, from: "0" };
+    let selected = 0;
+    while (cursor !== null) {
+      const page = await provider.readResults(cursor, 3);
+      expect(page.machines.length).toBeLessThanOrEqual(3);
+      for (const child of page.machines) expect(all.has(child.id)).toBe(true);
+      selected += page.machines.length;
+      cursor = page.next;
+    }
+    expect(selected).toBe(1025);
     const bounded: string[] = [];
     for await (const machine of listMachines(provider, { maximum: 1 })) bounded.push(machine);
     expect(bounded).toHaveLength(1);
@@ -274,19 +283,20 @@ describe("Machines simulation", () => {
     const captured = await provider.checkpoint(created.machines[0]!.id, "checkpoint-1");
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-1"));
-    if (forked.kind !== "created") throw new Error("wrong fork outcome");
+    if (forked.kind !== "forked") throw new Error("wrong fork outcome");
     expect(forked.provenance).toEqual({ source: { kind: "checkpoint", checkpointId: captured.checkpoint.id }, fidelity: "memory-and-disk" });
-    expect(new Set(forked.machines.map((machine) => machine.id)).size).toBe(2);
+    const children = (await provider.readResults({ cut: forked.results, from: "0" }, 2)).machines;
+    expect(new Set(children.map((machine) => machine.id)).size).toBe(2);
     // A fork child is an ordinary machine: every read names its checkpoint image.
     const listed = (await provider.listMachines(null, 256)).machines;
-    for (const child of forked.machines) {
+    for (const child of children) {
       expect(child.contract.image).toEqual({ kind: "checkpoint", checkpointId: captured.checkpoint.id });
       expect(await provider.inspectMachine(child.id)).toEqual(child);
       expect(listed).toContainEqual(child);
     }
     await provider.destroyCheckpoint(captured.checkpoint.id, "checkpoint-destroy-1");
     expect((await provider.inspectMachine(created.machines[0]!.id)).state).toBe("running");
-    expect((await provider.inspectMachine(forked.machines[0]!.id)).state).toBe("running");
+    expect((await provider.inspectMachine(children[0]!.id)).state).toBe("running");
   });
 
   test("managed images cannot be constructed from mutable OCI tags", async () => {

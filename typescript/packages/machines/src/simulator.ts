@@ -3,14 +3,14 @@ import { ownedStream } from "./owned-stream.js";
 import { WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
   CheckpointOut, EventsOut, MutationOut, ObservationOut, OperationOut, PageOut,
-  QualificationOut, UsageOut,
+  QualificationOut, UsageOut, ResultPageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import "./wasm-runtime.js";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineId, MachineObservation, MachinesProvider,
   MachineEventPage, MachinePage, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy,
-  UsageReceipt,
+  UsageReceipt, ResultCursor, ResultPage,
 } from "./index.js";
 import { machineId, operationId } from "./index.js";
 
@@ -62,6 +62,7 @@ export class SimulatedMachines implements MachinesProvider {
   destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, idempotencyKey }, (inner, authored) => inner.destroyCheckpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
   async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs: u64Number(startUnixMs, "startUnixMs"), endUnixMs: u64Number(endUnixMs, "endUnixMs") }, (inner, authored) => inner.usage(authored)).then(usageOut); }
+  readResults(cursor: ResultCursor, credit: number): Promise<ResultPage> { return this.#run({ cursor, credit }, (inner, authored) => inner.readResults(authored)).then(asPublic<ResultPageOut, ResultPage>); }
   recover(key: IdempotencyKey): Promise<MutationOutcome> { return this.#run(key, (inner, authored) => inner.recover(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored)).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored)).then(asPublic<OperationOut, OperationObservation>); }

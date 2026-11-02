@@ -670,6 +670,13 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         self.journal.follow_events(after).await
     }
 
+    async fn read_results(
+        &self,
+        _: crate::results::ResultCursor,
+        _: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        Err(unsupported("read results of an unsupported native fork"))
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         acyclic_observability::async_operation!(
             "acyclic.machines.recover",

@@ -829,12 +829,16 @@ pub(crate) fn operation_out(value: OperationObservation) -> OperationOut {
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MutationOut {
-    /// Create, fork and machine fork: the admitted machines in index order.
+    /// One newly created machine.
     Created {
         #[tsify(type = "readonly ObservationOut[]")]
         machines: Vec<ObservationOut>,
         #[tsify(type = "ProvenanceOut | null")]
         provenance: Option<ProvenanceOut>,
+    },
+    Forked {
+        provenance: ProvenanceOut,
+        results: ResultCutOut,
     },
     VolumeAttached {
         machine: ObservationOut,
@@ -881,10 +885,10 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
         },
         MutationOutcome::Forked {
             provenance,
-            machines,
-        } => MutationOut::Created {
-            machines: machines.into_iter().map(observation_out).collect(),
-            provenance: Some(provenance_out(provenance)),
+            results,
+        } => MutationOut::Forked {
+            results: result_cut_out(results),
+            provenance: provenance_out(provenance),
         },
         MutationOutcome::Suspended(v) => MutationOut::Suspended {
             machine_id: v.to_string(),
@@ -902,6 +906,110 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
         MutationOutcome::CheckpointDestroyed(v) => MutationOut::CheckpointDestroyed {
             checkpoint_id: v.to_string(),
         },
+    }
+}
+
+/// Decimal strings preserve the full original u64 extent and revision in JS.
+#[derive(Serialize, Deserialize, Tsify)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SettlementOut {
+    Streams { commit: String },
+    Native { revision: String },
+}
+
+#[derive(Serialize, Deserialize, Tsify)]
+pub struct ResultCutOut {
+    operation: String,
+    settlement: SettlementOut,
+    count: String,
+}
+
+#[derive(Serialize, Deserialize, Tsify)]
+pub struct ResultCursorOut {
+    cut: ResultCutOut,
+    from: String,
+}
+
+#[derive(Serialize, Tsify)]
+pub struct ResultPageOut {
+    cursor: ResultCursorOut,
+    #[tsify(type = "readonly ObservationOut[]")]
+    machines: Vec<ObservationOut>,
+    #[tsify(type = "ResultCursorOut | null")]
+    next: Option<ResultCursorOut>,
+}
+
+#[derive(Deserialize, Tsify)]
+pub struct ReadResultsIn {
+    cursor: ResultCursorOut,
+    credit: u32,
+}
+
+fn result_cut_out(value: acyclic_machines::results::ResultCut) -> ResultCutOut {
+    use acyclic_machines::results::Settlement;
+    ResultCutOut {
+        operation: value.operation.to_string(),
+        count: value.count.to_string(),
+        settlement: match value.settlement {
+            Settlement::Streams(commit) => SettlementOut::Streams {
+                commit: encode(commit.as_bytes()),
+            },
+            Settlement::NativeController(revision) => SettlementOut::Native {
+                revision: revision.to_string(),
+            },
+        },
+    }
+}
+
+fn result_cursor_out(value: acyclic_machines::results::ResultCursor) -> ResultCursorOut {
+    ResultCursorOut {
+        cut: result_cut_out(value.cut),
+        from: value.from.to_string(),
+    }
+}
+
+fn result_cursor_in(
+    value: ResultCursorOut,
+) -> Result<acyclic_machines::results::ResultCursor, JsValue> {
+    use acyclic_machines::results::{ResultCursor, ResultCut, Settlement};
+    let settlement = match value.cut.settlement {
+        SettlementOut::Streams { commit } => {
+            Settlement::Streams(acyclic_stream::CommitId::from_bytes(
+                decode(commit)
+                    .map_err(|_| err("result commit is invalid"))?
+                    .try_into()
+                    .map_err(|_| err("result commit width is invalid"))?,
+            ))
+        }
+        SettlementOut::Native { revision } => Settlement::NativeController(
+            revision
+                .parse::<std::num::NonZeroU64>()
+                .map_err(|_| err("result revision is invalid"))?,
+        ),
+    };
+    Ok(ResultCursor {
+        cut: ResultCut {
+            operation: OperationId::parse(&value.cut.operation)
+                .map_err(|_| err("result operation is invalid"))?,
+            settlement,
+            count: value
+                .cut
+                .count
+                .parse()
+                .map_err(|_| err("result count is invalid"))?,
+        },
+        from: value
+            .from
+            .parse()
+            .map_err(|_| err("result cursor is invalid"))?,
+    })
+}
+
+fn result_page_out(value: acyclic_machines::results::ResultPage) -> ResultPageOut {
+    ResultPageOut {
+        cursor: result_cursor_out(value.cursor),
+        machines: value.machines.into_iter().map(observation_out).collect(),
+        next: value.next.map(result_cursor_out),
     }
 }
 
@@ -1102,6 +1210,15 @@ pub async fn dispatch<P: MachinesProvider>(
                     input.end_unix_ms.0
                 ),
                 usage_out
+            )
+        }
+        "readResults" => {
+            let input: ReadResultsIn = from_js(payload)?;
+            let credit = NonZeroU32::new(input.credit)
+                .ok_or_else(|| err("result credit must be nonzero"))?;
+            call!(
+                provider.read_results(result_cursor_in(input.cursor)?, credit),
+                result_page_out
             )
         }
         "recover" => {

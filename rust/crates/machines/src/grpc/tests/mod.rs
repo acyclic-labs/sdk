@@ -71,6 +71,7 @@ operation_service! {
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
+    (read_results, ReadResultsRequest, ResultPage),
     (usage, UsageRequest, UsageReceipt);
     async fn create(&self, request: Request<wire::CreateMachineRequest>)
         -> Result<Response<wire::MachineAdmission>, Status> {
@@ -520,6 +521,7 @@ fn recovered_suspend(
 mod codecs;
 mod operations;
 mod recovery;
+mod result_pages;
 mod transport;
 
 mod event_follow;

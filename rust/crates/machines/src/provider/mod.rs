@@ -73,6 +73,13 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
+    /// Reads credited observations from the SAME original successful fork.
+    /// The cursor is metadata, not authority. Never reconstruct from inspections.
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError>;
     /// Forks a running or suspended machine into `count` fresh running children without an
     /// intermediate checkpoint, idempotently under `key`. A suspended source is its own
     /// checkpoint and stays suspended. Destroying a source refuses with

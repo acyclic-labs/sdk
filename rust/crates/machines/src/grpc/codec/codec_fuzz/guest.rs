@@ -168,18 +168,35 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             }
         }
         "acyclic.machines.v1.MachineAdmissions" => {
-            if let Some((operation, _, _)) = project::<wire::MachineAdmissions, _>(bytes, |value| {
+            if project::<wire::MachineAdmissions, _>(bytes, |value| {
                 recovery::decode_fork_admissions(&value)
-                    .map(|value| (value.operation, value.provenance, value.children))
-            }) {
+                    .map(|value| (value.operation, value.provenance, value.count))
+            })
+            .is_some()
+            {
                 let mut value = wire::MachineAdmissions::decode(bytes).unwrap();
-                let foreign = if operation == OperationId::from_digest([9; 32]) {
-                    OperationId::from_digest([8; 32])
-                } else {
-                    OperationId::from_digest([9; 32])
-                };
-                value.operation = operation_request(foreign).operation;
+                value.operation = None;
                 assert!(recovery::decode_fork_admissions(&value).is_err());
+            }
+        }
+        "acyclic.machines.v1.ResultCut" => {
+            if let Some(cut) =
+                project::<wire::ResultCut, _>(bytes, |value| decode_result_cut(Some(&value)))
+            {
+                assert_eq!(decode_result_cut(Some(&cut.into())), Ok(cut));
+                let mut value = wire::ResultCut::from(cut);
+                value.settlement = None;
+                assert!(decode_result_cut(Some(&value)).is_err());
+            }
+        }
+        "acyclic.machines.v1.ResultCursor" => {
+            if let Some(cursor) =
+                project::<wire::ResultCursor, _>(bytes, |value| decode_result_cursor(Some(&value)))
+            {
+                assert_eq!(decode_result_cursor(Some(&cursor.into())), Ok(cursor));
+                let mut value = wire::ResultCursor::from(cursor);
+                value.cut = None;
+                assert!(decode_result_cursor(Some(&value)).is_err());
             }
         }
         _ => {}

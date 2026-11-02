@@ -14,6 +14,9 @@ import type {
   FactOut as RustFactOut,
   ImageOut as RustImageOut,
   MutationOut as RustMutationOut,
+  ResultCutOut as RustResultCut,
+  ResultCursorOut as RustResultCursor,
+  ResultPageOut as RustResultPage,
   ObservationOut as RustObservationOut,
   OperationOut as RustOperationOut,
   PageOut as RustPageOut,
@@ -121,12 +124,21 @@ type PublicMutation<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "machine" ? MachineObservation
       : Key extends "checkpoint" ? CheckpointObservation
       : Key extends "machines" ? readonly MachineObservation[]
-      : Key extends "provenance" ? Provenance | null
+      : Key extends "results" ? ResultCut
+      : Key extends "provenance" ? null extends Value[Key] ? Provenance | null : Provenance
       : Key extends "machineId" ? MachineId
       : Key extends "checkpointId" ? CheckpointId
       : Key extends "policy" ? SuspensionPolicy
       : Value[Key] }
   : never;
+export type ResultCut = ReadonlyGenerated<RustResultCut>;
+export type ResultCursor = Omit<ReadonlyGenerated<RustResultCursor>, "cut"> & { readonly cut: ResultCut };
+export type ResultPage = Omit<ReadonlyGenerated<RustResultPage>, "cursor" | "machines" | "next"> & {
+  readonly cursor: ResultCursor;
+  readonly machines: readonly MachineObservation[];
+  readonly next: ResultCursor | null;
+};
+
 export type MutationOutcome = PublicMutation<ReadonlyGenerated<RustMutationOut>>;
 
 export type MachinePage = Omit<ReadonlyGenerated<RustPageOut>, "machines" | "next"> & {
@@ -155,6 +167,7 @@ export interface MachinesProvider {
   destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey): Promise<MutationOutcome>;
   events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage>;
   usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt>;
+  readResults(cursor: ResultCursor, credit: number): Promise<ResultPage>;
   recover(key: IdempotencyKey): Promise<MutationOutcome>;
   recoverOperation(key: IdempotencyKey): Promise<OperationId>;
   inspectOperation(operationId: OperationId): Promise<OperationObservation>;

@@ -138,10 +138,11 @@ pub enum MutationOutcome {
     VolumeAttached(MachineObservation),
     Checkpointed(CheckpointObservation),
     /// Outcome of [`MachinesProvider::fork`] and [`MachinesProvider::fork_machine`]:
-    /// the children in index order, each the same resource a create yields.
+    /// a retained result cut. Credited pages preserve the original index order;
+    /// each child is the same resource a create yields.
     Forked {
         provenance: Provenance<ForkSource, ForkFidelity>,
-        machines: Vec<MachineObservation>,
+        results: crate::results::ResultCut,
     },
     Suspended(MachineId),
     Woken(MachineId),

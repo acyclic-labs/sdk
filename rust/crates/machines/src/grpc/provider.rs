@@ -559,6 +559,20 @@ machine_mutations! {
         })
     }
 
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        obs::operation!("acyclic.machines.read_results", observation, async {
+            let credit = NonZeroU32::new(credit.get().min(MAX_PAGE_SIZE)).unwrap_or(NonZeroU32::MIN);
+            cursor.interval(cursor.cut, credit)?;
+            let value = self.client().await?.read_results(wire::ReadResultsRequest {
+                protocol: Some(protocol()), cursor: Some(cursor.into()), credit: credit.get(),
+            }).await.map_err(|error| { obs::failed_rpc(&observation, &error); read_error(&error) })?.into_inner();
+            decode_result_page(value, cursor, credit)
+        })
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.recover", observation, async {
             let (operation, value) = recovered_admission(self, key, &observation).await?;

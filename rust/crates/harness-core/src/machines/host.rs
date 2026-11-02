@@ -191,14 +191,14 @@ impl MachinesHost {
         }
     }
 
-    /// Forks a live machine and returns the provider's fidelity and children.
+    /// Forks a live machine and returns fidelity and its original result cut.
     pub async fn fork_machine(
         &self,
         operation_id: OperationId,
         idempotency_key: &IdempotencyKey,
         sandbox: &SandboxRef,
         count: NonZeroU32,
-    ) -> Result<(ForkFidelity, Vec<SandboxRef>)> {
+    ) -> Result<(ForkFidelity, acyclic_machines::results::ResultCut)> {
         let machine = self.machine_id(sandbox)?;
         match self
             .provider
@@ -212,16 +212,8 @@ impl MachinesHost {
                         source: ForkSource::Machine(source),
                         inherited: fidelity,
                     },
-                machines: children,
-            } if source == machine && children.len() == count.get() as usize => Ok((
-                fidelity,
-                children
-                    .into_iter()
-                    .map(|child| {
-                        SandboxRef::new(self.provider_ref.clone(), child.id.as_bytes().into(), None)
-                    })
-                    .collect::<Result<_>>()?,
-            )),
+                results,
+            } if source == machine && results.count == u64::from(count.get()) => Ok((fidelity, results)),
             _ => Err(Error::Storage(
                 "Machines substituted the live fork result; recovery: recover the original operation".into(),
             )),
@@ -279,14 +271,14 @@ impl MachinesHost {
             .map_err(|error| map_error(error, None))
     }
 
-    /// Forks a checkpoint and returns provider-owned sandbox references.
+    /// Forks a checkpoint and returns its original result cut.
     pub async fn fork(
         &self,
         operation_id: OperationId,
         idempotency_key: &IdempotencyKey,
         checkpoint: &CheckpointRef,
         count: NonZeroU32,
-    ) -> Result<Vec<SandboxRef>> {
+    ) -> Result<acyclic_machines::results::ResultCut> {
         let checkpoint_id = self.checkpoint_id(checkpoint)?;
         match self
             .provider
@@ -300,17 +292,37 @@ impl MachinesHost {
                         source: ForkSource::Checkpoint(source),
                         ..
                     },
-                machines: values,
-            } if source == checkpoint_id => values
-                .into_iter()
-                .map(|value| {
-                    SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes().into(), None)
-                })
-                .collect(),
+                results,
+            } if source == checkpoint_id && results.count == u64::from(count.get()) => Ok(results),
             _ => Err(Error::Storage(
                 "Machines returned the wrong fork outcome".into(),
             )),
         }
+    }
+
+    /// Reads only the selected original fork page under the SAME provider.
+    pub async fn read_results(
+        &self,
+        cursor: acyclic_machines::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<acyclic_machines::results::ResultPage<Vec<SandboxRef>>> {
+        let page = self
+            .provider
+            .read_results(cursor, credit)
+            .await
+            .map_err(|error| map_error(error, None))?;
+        let machines = page
+            .machines
+            .into_iter()
+            .map(|child| {
+                SandboxRef::new(self.provider_ref.clone(), child.id.as_bytes().into(), None)
+            })
+            .collect::<Result<_>>()?;
+        Ok(acyclic_machines::results::ResultPage {
+            cursor: page.cursor,
+            machines,
+            next: page.next,
+        })
     }
 
     /// Cancels a provider operation identified by the Machines admission contract.

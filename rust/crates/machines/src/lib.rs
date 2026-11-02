@@ -52,7 +52,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
-pub const PROTOCOL_MINOR: u32 = 6;
+pub const PROTOCOL_MINOR: u32 = 7;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
