@@ -70,7 +70,7 @@ impl Server {
                     Err(error) => {
                         if !error.status.is_some_and(|status| status.is_server_error())
                             && !matches!(
-                                error.code.as_str(),
+                                error.code,
                                 "request_cancelled"
                                     | "transport_error"
                                     | "server_error"

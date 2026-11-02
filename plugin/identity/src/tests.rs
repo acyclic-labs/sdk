@@ -628,6 +628,81 @@ async fn explicit_refresh_retains_one_admission_and_detects_a_redundant_read() {
     );
     assert_eq!(store.reads.load(Ordering::Relaxed), 4);
     fake.done();
+
+    let document =
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+            .expect("agent key");
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(document.as_ref()).expect("agent key");
+    let challenge = "c".repeat(43);
+    let signature = URL_SAFE_NO_PAD.encode(
+        key.sign(format!("acyclic-agent-renew-v1\norg\nkey\n{challenge}").as_bytes())
+            .as_ref(),
+    );
+    let requests = Arc::new(AtomicUsize::new(0));
+    let challenge_requests = requests.clone();
+    let renewal_requests = requests.clone();
+    let expected = json!({"org_id": "org", "key_id": "key", "challenge": challenge,
+        "signature": signature});
+    let renewal = json!({"org_id": "org", "key_id": "key", "certificate": "renewed",
+        "birth": "renewed-birth", "expires_at": 1800});
+    let reply = renewal.clone();
+    let router = Router::new()
+        .route(
+            "/v1/identity/signup/challenge",
+            axum::routing::get(move || async move {
+                challenge_requests.fetch_add(1, Ordering::Relaxed);
+                axum::Json(json!({"challenge": "c".repeat(43), "difficulty": 0,
+                    "expires_at": u64::MAX}))
+            }),
+        )
+        .route(
+            "/v1/identity/signup/renew",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| async move {
+                renewal_requests.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(body, expected);
+                axum::Json(reply)
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let identity = Identity::new(&format!(
+        "http://{}",
+        listener.local_addr().expect("address")
+    ))
+    .expect("identity");
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+    let directory = tempfile::tempdir().expect("agent directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("agent store");
+    let mut credentials = agent_credentials(&identity.endpoint);
+    credentials.session = None;
+    let private_key = URL_SAFE_NO_PAD.encode(document.as_ref());
+    if let Some(agent::Agent::Active {
+        private_key: saved, ..
+    }) = &mut credentials.agent
+    {
+        saved.clone_from(&private_key);
+    }
+    store.save(&credentials).expect("agent credentials");
+    store.reads.store(0, Ordering::Relaxed);
+    assert_eq!(
+        identity
+            .refresh_stored(&store)
+            .await
+            .expect("agent renewal"),
+        renewal
+    );
+    assert_eq!(store.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(requests.load(Ordering::Relaxed), 2);
+    let saved = store
+        .credentials(&identity.endpoint)
+        .expect("renewed credentials");
+    assert!(saved.session.is_none());
+    let saved = serde_json::to_value(saved.agent).expect("agent");
+    assert_eq!(saved["private_key"], private_key);
+    assert_eq!(saved["registration"]["certificate"], "renewed");
+    assert_eq!(store.reads.load(Ordering::Relaxed), 2);
+    server.abort();
 }
 
 #[tokio::test]
@@ -661,33 +736,44 @@ async fn unauthorized_access_refreshes_once() {
 
 #[tokio::test]
 async fn refused_refresh_clears_family_and_redacts_server_description() {
-    let mut refused = Expected::token(
-        refresh_fields("secret"),
-        json!({"error": "invalid_grant", "error_description": "secret"}),
-    );
-    refused.status = StatusCode::BAD_REQUEST;
-    let fake = Fake::start(vec![refused]).await;
-    let directory = tempfile::tempdir().expect("directory");
-    let store = Store::open(&directory.path().join("identity.json")).expect("store");
-    let session = store
-        .write(&fake.identity.endpoint, session("access", "secret", 0))
-        .expect("write");
-    let error = fake
-        .identity
-        .refresh(&store, &session)
-        .await
-        .map(|_| ())
-        .expect_err("refused");
-    assert!(!error.json().to_string().contains("secret"));
-    assert_eq!(
-        store
-            .read(&fake.identity.endpoint)
-            .err()
-            .expect("cleared")
-            .code,
-        "login_required"
-    );
-    fake.done();
+    for (code, expected) in [
+        ("invalid_grant", "invalid_grant"),
+        ("secret", "identity_error"),
+        ("invalid_grant: secret", "identity_error"),
+        ("authorization_pendingsecret", "identity_error"),
+    ] {
+        let mut refused = Expected::token(
+            refresh_fields("secret"),
+            json!({"error": code, "error_description": "secret"}),
+        );
+        refused.status = StatusCode::BAD_REQUEST;
+        let fake = Fake::start(vec![refused]).await;
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(&directory.path().join("identity.json")).expect("store");
+        let session = store
+            .write(&fake.identity.endpoint, session("access", "secret", 0))
+            .expect("write");
+        let error = fake
+            .identity
+            .refresh(&store, &session)
+            .await
+            .map(|_| ())
+            .expect_err("refused");
+        assert_eq!(error.code, expected);
+        assert_eq!(error.status, Some(StatusCode::BAD_REQUEST));
+        assert!(!error.json().to_string().contains("secret"));
+        assert!(!error.to_string().contains("secret"));
+        assert!(!format!("{error:?}").contains("secret"));
+        assert_eq!(
+            store
+                .read(&fake.identity.endpoint)
+                .err()
+                .expect("cleared")
+                .code,
+            "login_required"
+        );
+        fake.done();
+    }
 }
 
 #[tokio::test]
