@@ -892,6 +892,23 @@ pub(super) async fn jsonl(
         Some(projection) => conversation.replay(&projection.state)?,
         None => conversation.observe(conversation.settled().await?).await?,
     };
+    // The original bounded query admits the saved position before any prompt
+    // is dispatched. Retain its page for export rather than validating twice.
+    let mut execution = if let Some(projection) = &mut projection {
+        let position = projection.state.execution_position(conversation.path())?;
+        let query = conversation
+            .execution_page(position.input, position.after, false)
+            .await?;
+        let mut export = ExecutionExport {
+            position,
+            cut: query.inbox_tail,
+            batch: None,
+        };
+        export.load(query);
+        Some(export)
+    } else {
+        None
+    };
     let mut lines = stdin_lines()?;
     let mut open = true;
     let mut sent = 0_u64;
@@ -929,21 +946,6 @@ pub(super) async fn jsonl(
             )
             .await?;
     }
-    let mut execution = if let Some(projection) = &mut projection {
-        let position = projection.state.execution_position(conversation.path())?;
-        let query = conversation
-            .execution_page(position.input, position.after, false)
-            .await?;
-        let mut export = ExecutionExport {
-            position,
-            cut: query.inbox_tail,
-            batch: None,
-        };
-        export.load(query);
-        Some(export)
-    } else {
-        None
-    };
     // Keep this exact source future pinned across unrelated stdin/follow events.
     // It needs no allocation, task or repeated control exchange while quiet.
     let mut execution_wait = std::pin::pin!(None);

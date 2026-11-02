@@ -186,6 +186,62 @@ fn succeeded(output: &Output) -> String {
     stdout
 }
 
+fn verify_execution_payloads(lines: &[Value]) {
+    // Reconstruct only captured binary output, never a hand-authored
+    // provider fixture. Every referenced field must have exact bytes.
+    let mut payloads = std::collections::BTreeMap::new();
+    for line in lines.iter().filter(|line| line["kind"] == "execution") {
+        let record: acyclic_harness::executor::ExecutionRecord =
+            serde_json::from_value(line["record"].clone()).unwrap();
+        for (field, reference) in
+            acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
+        {
+            let key = (
+                record.operation_id.to_string(),
+                record.sequence,
+                serde_json::to_string(&field).unwrap(),
+            );
+            assert!(
+                payloads
+                    .insert(key, (reference.clone(), Vec::new()))
+                    .is_none()
+            );
+        }
+    }
+    for line in lines
+        .iter()
+        .filter(|line| line["kind"] == "execution_payload")
+    {
+        let turn: acyclic_harness::OperationId =
+            serde_json::from_value(line["turn"].clone()).unwrap();
+        let key = (
+            turn.to_string(),
+            line["sequence"].as_u64().unwrap(),
+            serde_json::to_string(&line["field"]).unwrap(),
+        );
+        let (reference, body) = payloads
+            .get_mut(&key)
+            .expect("chunk has no original observation");
+        let original: acyclic_harness::conversation::FileRef =
+            serde_json::from_value(line["file"].clone()).unwrap();
+        assert_eq!(&original, reference);
+        assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
+        let (bytes, _) = acyclic_harness::client::AgentReply::Content {
+            data: line["data"].as_str().unwrap().into(),
+            length: reference.descriptor().byte_length(),
+        }
+        .content()
+        .unwrap();
+        assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
+        assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
+        body.extend_from_slice(&bytes);
+    }
+    assert!(!payloads.is_empty());
+    for (_, (reference, bytes)) in payloads {
+        reference.descriptor().verify(&bytes, &mut None).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let fixture = fixture();
@@ -340,27 +396,60 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
 async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
-    for args in [
-        vec!["exec"],
-        vec!["--output-format", "jsonl"],
-        vec!["--output-format", "jsonl", "sessions"],
-        vec!["--output-schema", "missing.json", "exec", "hello"],
-        vec!["--output-format", "jsonl", "--output", "-", "exec", "hello"],
-        vec![
-            "--output-format",
-            "jsonl",
-            "--output",
-            "shared.json",
-            "--event-cursor",
-            "shared.json",
-            "exec",
-            "hello",
-        ],
+    for (args, diagnostic) in [
+        (vec!["exec"], "recovery: graphcoder"),
+        (vec!["--output-format", "jsonl"], "no task or JSONL input"),
+        (
+            vec!["--event-cursor", "cursor.json", "exec", "hello"],
+            "--operation",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "sessions",
+            ],
+            "requires an execution",
+        ),
+        (
+            vec!["--output-schema", "missing.json", "exec", "hello"],
+            "requires JSONL output",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "--output",
+                "-",
+                "exec",
+                "hello",
+            ],
+            "stdout is reserved for events",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "--output",
+                "shared.json",
+                "--event-cursor",
+                "shared.json",
+                "exec",
+                "hello",
+            ],
+            "must name distinct files",
+        ),
     ] {
         let refused = graphcoder(&fixture, &model.catalog, args, "").await;
         assert!(!refused.status.success());
         assert!(
-            String::from_utf8_lossy(&refused.stderr).contains("recovery: graphcoder"),
+            String::from_utf8_lossy(&refused.stderr).contains(diagnostic),
             "{}",
             String::from_utf8_lossy(&refused.stderr)
         );
@@ -547,59 +636,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
                     .count(),
                 2
             );
-            // Reconstruct only captured binary output, never a hand-authored
-            // provider fixture. Every referenced field must have exact bytes.
-            let mut payloads = std::collections::BTreeMap::new();
-            for line in &execution {
-                let record: acyclic_harness::executor::ExecutionRecord =
-                    serde_json::from_value(line["record"].clone()).unwrap();
-                for (field, reference) in
-                    acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
-                {
-                    let key = (
-                        record.operation_id.to_string(),
-                        record.sequence,
-                        serde_json::to_string(&field).unwrap(),
-                    );
-                    assert!(
-                        payloads
-                            .insert(key, (reference.clone(), Vec::new()))
-                            .is_none()
-                    );
-                }
-            }
-            for line in lines
-                .iter()
-                .filter(|line| line["kind"] == "execution_payload")
-            {
-                let turn: acyclic_harness::OperationId =
-                    serde_json::from_value(line["turn"].clone()).unwrap();
-                let key = (
-                    turn.to_string(),
-                    line["sequence"].as_u64().unwrap(),
-                    serde_json::to_string(&line["field"]).unwrap(),
-                );
-                let (reference, body) = payloads
-                    .get_mut(&key)
-                    .expect("chunk has no original observation");
-                let original: acyclic_harness::conversation::FileRef =
-                    serde_json::from_value(line["file"].clone()).unwrap();
-                assert_eq!(&original, reference);
-                assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
-                let (bytes, _) = acyclic_harness::client::AgentReply::Content {
-                    data: line["data"].as_str().unwrap().into(),
-                    length: reference.descriptor().byte_length(),
-                }
-                .content()
-                .unwrap();
-                assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
-                assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
-                body.extend_from_slice(&bytes);
-            }
-            assert!(!payloads.is_empty());
-            for (_, (reference, bytes)) in payloads {
-                reference.descriptor().verify(&bytes, &mut None).unwrap();
-            }
+            verify_execution_payloads(&lines);
         }
         assert!(cursor.exists());
         let checkpoint: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
@@ -654,6 +691,86 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         model.generated(),
         2,
         "schema projection dispatched model work"
+    );
+    // Mutate only the real export's saved continuation. A refused resume must
+    // leave its input identity unused, even if model dispatch would race exit.
+    let checkpoint = std::fs::read(&cursor).unwrap();
+    for (field, value) in [("input", u64::MAX), ("after", 1)] {
+        let mut invalid: Value = serde_json::from_slice(&checkpoint).unwrap();
+        invalid["execution"]["position"][field] = json!(value);
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        std::fs::write(&cursor, &bytes).unwrap();
+        let refused = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--operation",
+                "jsonl",
+                "--output-format",
+                "jsonl",
+                "--event-cursor",
+                cursor.to_str().unwrap(),
+                "exec",
+                "unadmitted prompt",
+            ],
+            "",
+        )
+        .await;
+        assert!(!refused.status.success());
+        let failure: Value = serde_json::from_str(
+            String::from_utf8_lossy(&refused.stdout)
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(failure["kind"], "error");
+        assert_eq!(failure["step"], "execute");
+        assert_eq!(std::fs::read(&cursor).unwrap(), bytes);
+        assert_eq!(model.generated(), 2, "refused resume dispatched model work");
+    }
+    std::fs::write(&cursor, &checkpoint).unwrap();
+    let admitted = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--operation",
+            "jsonl",
+            "--output-format",
+            "jsonl",
+            "--event-cursor",
+            cursor.to_str().unwrap(),
+            "exec",
+            "admitted after cursor correction",
+        ],
+        "",
+    )
+    .await;
+    let lines = succeeded(&admitted)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.last().unwrap()["kind"], "completed");
+    assert_eq!(lines.last().unwrap()["success"], true);
+    let inbox = lines.iter().find(|line| line["kind"] == "result").unwrap()["inbox"]
+        .as_u64()
+        .unwrap();
+    let execution = lines.iter().filter(|line| line["kind"] == "execution");
+    assert!(execution.clone().all(|line| line["input"] == inbox));
+    assert_eq!(
+        execution
+            .filter(|line| line["record"]["event"]["kind"] == "model_started")
+            .count(),
+        1
+    );
+    verify_execution_payloads(&lines);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
+    assert_eq!(saved["execution"]["position"]["input"], inbox + 1);
+    assert_eq!(saved["execution"]["position"]["after"], 0);
+    assert_eq!(
+        model.generated(),
+        3,
+        "corrected cursor did not admit its input"
     );
     model.close().await;
 }
