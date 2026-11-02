@@ -60,9 +60,9 @@ const READY: &str = "ready";
 /// A producer failure, on the same pipe as the readiness response.
 const FAILED: &str = "failed ";
 const FAILURE_KINDS: [(&str, io::ErrorKind); 3] = [
-    ("invalid-data ", io::ErrorKind::InvalidData),
-    ("broken-pipe ", io::ErrorKind::BrokenPipe),
-    ("other ", io::ErrorKind::Other),
+    ("invalid-data", io::ErrorKind::InvalidData),
+    ("broken-pipe", io::ErrorKind::BrokenPipe),
+    ("other", io::ErrorKind::Other),
 ];
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
@@ -242,13 +242,15 @@ fn startup_response(custodian: &mut Child) -> io::Result<(String, Health)> {
 }
 
 /// Native failures retain their original numeric startup representation. The
-/// reader's non-native failures retain both kind and message on that same pipe.
+/// reader's non-native failures retain their kind. Arbitrary cause text cannot
+/// be written before exit because the observer reads only after that exit.
 fn failure_response(code: &str) -> io::Result<io::Error> {
-    for (prefix, kind) in FAILURE_KINDS {
-        if let Some(message) = code.strip_prefix(prefix) {
-            let message: String =
-                serde_json::from_str(message).map_err(|_| io::ErrorKind::InvalidData)?;
-            return Ok(io::Error::new(kind, message));
+    for (name, kind) in FAILURE_KINDS {
+        if code == name {
+            return Ok(io::Error::new(
+                kind,
+                "process custodian producer failed; original detail unavailable",
+            ));
         }
     }
     let code = code
@@ -663,6 +665,17 @@ enum Response {
     Ready,
 }
 
+fn write_failure(output: &mut impl io::Write, error: &io::Error) -> io::Result<()> {
+    if let Some(code) = error.raw_os_error() {
+        writeln!(output, "{FAILED}{code}")?;
+    } else if let Some((name, _)) = FAILURE_KINDS.iter().find(|(_, kind)| *kind == error.kind()) {
+        // At most 20 bytes, independent of arbitrary diagnostic text. The
+        // original pipe carries READY plus this one fixed terminal only.
+        writeln!(output, "{FAILED}{name}")?;
+    }
+    output.flush()
+}
+
 /// Watches each tree's Job, kills every tree when the owner exits, and exits
 /// once the owner has and no member of any tree remains, or on producer failure.
 fn serve() -> io::Result<()> {
@@ -674,18 +687,7 @@ fn serve() -> io::Result<()> {
         // The same pipe carries startup refusal or the running producer's
         // original native failure. A partial READY cannot acquire a suffix.
         // No response means incomplete observation, never inferred retirement.
-        let mut output = io::stdout();
-        if let Some(code) = error.raw_os_error() {
-            writeln!(output, "{FAILED}{code}")?;
-            output.flush()?;
-        } else if let Some((prefix, _)) =
-            FAILURE_KINDS.iter().find(|(_, kind)| *kind == error.kind())
-        {
-            write!(output, "{FAILED}{prefix}")?;
-            serde_json::to_writer(&mut output, &error.to_string())?;
-            writeln!(output)?;
-            output.flush()?;
-        }
+        write_failure(&mut io::stdout(), error)?;
     }
     result
 }
@@ -1095,7 +1097,70 @@ mod handoff_tests {
         ERROR_ACCESS_DENIED, ERROR_INVALID_DATA, GetHandleInformation,
     };
     use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
-    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Pipes::{
+        GetNamedPipeInfo, PIPE_NOWAIT, SetNamedPipeHandleState,
+    };
+
+    #[test]
+    fn failure_response_does_not_wait_for_diagnostic_pipe_credit() -> io::Result<()> {
+        let (read, mut write) = io::pipe()?;
+        let mode = PIPE_NOWAIT;
+        // SAFETY: the original writable pipe and a valid mode. This control
+        // makes excess output fail immediately, rather than hang a test whose
+        // observer deliberately cannot read until its producer exits.
+        if unsafe {
+            SetNamedPipeHandleState(
+                write.as_raw_handle(),
+                &mode,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut capacity = 0;
+        // SAFETY: the same retained pipe and one writable size output.
+        if unsafe {
+            GetNamedPipeInfo(
+                write.as_raw_handle(),
+                std::ptr::null_mut(),
+                &mut capacity,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        assert_ne!(capacity, 0);
+        let error = io::Error::other("x".repeat(usize::try_from(capacity).unwrap() + 1));
+        writeln!(write, "{READY}")?;
+        // Retaining arbitrary error text here would exhaust the real pipe
+        // before this producer could exit and enable its original observer.
+        write_failure(&mut write, &error)?;
+        drop(write);
+        let mut read = BufReader::new(read);
+        let mut response = String::new();
+        read.read_line(&mut response)?;
+        assert_eq!(response.trim_end(), READY);
+        response.clear();
+        read.read_line(&mut response)?;
+        let retained = failure_response(response.trim_end().strip_prefix(FAILED).unwrap())?;
+        assert_eq!(retained.kind(), error.kind());
+        assert_eq!(retained.raw_os_error(), None);
+        assert!(retained.to_string().contains("original detail unavailable"));
+
+        let (read, mut write) = io::pipe()?;
+        drop(read);
+        // The original physical sink loss still fails the write; a fixed
+        // response is not evidence of delivery when the observer is gone.
+        assert_eq!(
+            write_failure(&mut write, &error).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        Ok(())
+    }
 
     #[test]
     fn startup_preserves_the_original_native_wait_refusal() -> io::Result<()> {
@@ -1379,18 +1444,8 @@ mod handoff_tests {
         }
         assert_closed(copied);
 
-        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
-        // SAFETY: writable outputs for a real anonymous pipe; close its only
-        // reader so the original handover write receives an actual OS error.
-        unsafe {
-            assert_ne!(
-                CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0),
-                0
-            );
-            assert_ne!(CloseHandle(read), 0);
-        }
-        // SAFETY: CreatePipe transferred this writable handle.
-        let mut output = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(write) });
+        let (read, mut output) = io::pipe().expect("handover pipe");
+        drop(read);
         let mut handoff = Handoff::new(target);
         for _ in 0..4 {
             handoff
