@@ -632,6 +632,8 @@ async fn terminal_reasons() -> Result<(), String> {
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     super::codec_fuzz::seeds();
+    check(&[])?;
+    check(&[0, 1, 1, 1, 6, 4, 3])?;
     assert_eq!(explore(Fault::None).await?, 0);
     terminal_sessions().await?;
     terminal_reasons().await?;
@@ -669,7 +671,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     // multiple chunks, settlement and a later replay/cancel/fence all use the
     // same generated entry point as arbitrary fuzz inputs.
     for terminal in [6, 13, 20, 27] {
-        check(&[terminal, 0, 1, 5, 1, 1, 6, 3, 4]).await?;
+        check(&[terminal, 0, 1, 5, 1, 1, 6, 3, 4])?;
     }
     Ok(())
 }
@@ -904,7 +906,11 @@ async fn source_bound_claims() -> Result<(), String> {
 /// Runs arbitrary caller/executor/recovery schedules through the original
 /// builders, provider and fold. Each committed record is folded once.
 /// A final cancellation supplies a terminal even when no executor accepted.
-pub async fn check(bytes: &[u8]) -> Result<(), String> {
+pub fn check(bytes: &[u8]) -> Result<(), String> {
+    futures::executor::block_on(check_schedule(bytes))
+}
+
+async fn check_schedule(bytes: &[u8]) -> Result<(), String> {
     let result = match bytes.first().copied().unwrap_or_default() % 4 {
         0 => Outcome::Ok(OwnedBytes::from(&b"done"[..])),
         1 => Outcome::Error("refused".into()),
