@@ -259,7 +259,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                 }],
             )
             .unwrap();
-            let agent = crate::agent::AgentPath::root(&crate::AgentId::from_bytes([14; 16]));
+            let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([14; 16]));
             let sandbox = machines.machine(&agent, "generated-target").await.unwrap();
             let path = agent.machine("generated-target").unwrap();
             let record = read(&provider, &path, 1).await;
