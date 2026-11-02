@@ -128,9 +128,11 @@ fn decode_resolution(
     bytes: &[u8],
     conflict: &crate::ConflictView,
 ) -> Result<MergeResolution, DrivenJoinError> {
-    serde_json::from_slice::<ResolutionFile>(bytes)
-        .map_err(WorkspaceError::engine)?
-        .resolve(conflict)
+    parse_resolution(bytes)?.resolve(conflict)
+}
+
+fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
+    serde_json::from_slice(bytes).map_err(WorkspaceError::engine)
 }
 
 /// Exercises the shipped resolution decoder and admission against arbitrary
@@ -138,20 +140,28 @@ fn decode_resolution(
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
 #[doc(hidden)]
 pub fn check_merge_directory_resolution(data: &[u8]) {
+    // Every raw input reaches the shipped syntax boundary, even when it is not
+    // a structured producer-view seed. Those seeds additionally exercise the
+    // original conflict's semantic admission below.
+    check_resolution_roundtrip(data);
     let Ok((conflict, bytes)) = serde_json::from_slice::<(crate::ConflictView, Vec<u8>)>(data)
     else {
         return;
     };
     let result = decode_resolution(&bytes, &conflict);
-    if let Ok(decoded) = serde_json::from_slice::<ResolutionFile>(&bytes) {
-        let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
-        let restored: ResolutionFile =
-            serde_json::from_slice(&canonical).expect("canonical resolution");
-        assert_eq!(decoded, restored);
-    }
+    check_resolution_roundtrip(&bytes);
     if let Ok(MergeResolution::Text(text)) = result {
         assert_eq!(conflict.kind, ConflictKind::Text);
         assert!(!crate::text_merge::has_conflict_markers(&text));
+    }
+}
+
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+fn check_resolution_roundtrip(bytes: &[u8]) {
+    if let Ok(decoded) = parse_resolution(bytes) {
+        let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
+        let restored = parse_resolution(&canonical).expect("canonical resolution");
+        assert_eq!(decoded, restored);
     }
 }
 
