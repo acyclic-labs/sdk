@@ -171,6 +171,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     use crate::ProcessTree;
     use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
     let root = tempfile::tempdir().unwrap();
+    retained_policy_preparation(root.path());
     let workspace = root.path().join("workspace");
     let external = root.path().join("external");
     std::fs::create_dir(&workspace).unwrap();
@@ -184,9 +185,10 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     let mut admitted = 0;
     let mut unsupported = 0;
-    for (access, custody) in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly]
+    for (access, custody, compiled) in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly]
         .into_iter()
         .flat_map(|access| [None, Some(&custody)].map(|custody| (access, custody)))
+        .flat_map(|(access, custody)| [false, true].map(|compiled| (access, custody, compiled)))
     {
         let grant = ExecutionGrant::new(
             &workspace,
@@ -203,6 +205,19 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
                 readonly
             }
             ExecutionAccess::WorkspaceWrite => grant,
+        };
+        let grant = if compiled {
+            match grant.compile_native() {
+                Ok(grant) => grant,
+                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                    unsupported += 1;
+                    continue;
+                }
+                Err(error) => panic!("native policy compilation: {error}"),
+            }
+        } else {
+            grant
         };
         let make_command = || {
             let mut command = Command::new("/bin/sh");
@@ -357,6 +372,77 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
     eprintln!("execution boundary cases: admitted={admitted}, unsupported={unsupported}");
     // Enforcement must affect only the child, never the launching host thread.
     std::fs::write(&sentinel, "host").unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn retained_policy_preparation(root: &Path) {
+    use std::sync::atomic::Ordering::Acquire;
+    let workspace = root.join("retained");
+    let nested = workspace.join("nested");
+    let read = root.join("retained-read");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(&read, "original read root").unwrap();
+    let original = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [read.clone()],
+        ExecutionNetwork::TcpPorts(BTreeSet::from([443, 8443])),
+    )
+    .unwrap();
+    let compiled = match original.clone().compile_native() {
+        Ok(grant) => grant,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("retained policy compilation: {error}"),
+    };
+    for cwd in [None, Some(nested.as_path())] {
+        // The original cold compiler is a real-kernel cost negative control.
+        let cold = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        drop(original.prepare_launch(cwd, Some(&cold)).unwrap());
+        assert!(cold.write_attempts.load(Acquire) > 0);
+        let operations = 4 + u64::from(cwd.is_some());
+        let limits = (0..=operations).map(|limit| (limit, None));
+        let late = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
+        for (limit, failure) in limits.chain(late) {
+            let mut warm = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+            warm.fail_recorded_operation = failure;
+            let result = compiled.prepare_launch(cwd, Some(&warm));
+            if limit == operations && failure.is_none() {
+                drop(result.unwrap());
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+            }
+            assert_eq!(warm.used_operations.load(Acquire), failure.unwrap_or(limit));
+            assert_eq!(warm.write_attempts.load(Acquire), 0);
+            assert_eq!(warm.memory.load(Acquire), 0);
+        }
+        eprintln!(
+            "retained policy preparation: operations {} -> {operations}, writes {} -> 0",
+            cold.used_operations.load(Acquire),
+            cold.write_attempts.load(Acquire),
+        );
+    }
+    // A view retaining a writable cache must use the ordinary narrower
+    // compiler, never that cache. Recompiling the view enables warm reuse.
+    let readonly = compiled.clone().into_read_only();
+    let narrow = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    drop(readonly.prepare_launch(None, Some(&narrow)).unwrap());
+    assert!(narrow.write_attempts.load(Acquire) > 0);
+    let readonly = readonly.compile_native().unwrap();
+    let warm = crate::tests::ReadBudgetMeter::new(4, 0);
+    drop(readonly.prepare_launch(None, Some(&warm)).unwrap());
+    assert_eq!(warm.write_attempts.load(Acquire), 0);
+    // Both cached root classes retain replacement fences. Native policies
+    // keep the old inode alive, but cannot authorize its replacement at a path.
+    for path in [&read, &workspace] {
+        std::fs::rename(path, path.with_extension("previous")).unwrap();
+        if path == &read {
+            std::fs::write(path, "replacement").unwrap();
+        } else {
+            std::fs::create_dir(path).unwrap();
+        }
+        let error = compiled.prepare().unwrap_err();
+        assert!(error.to_string().contains("root was replaced"));
+    }
 }
 
 #[cfg(target_os = "linux")]

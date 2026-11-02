@@ -55,6 +55,8 @@ impl ExecutionNetwork {
 pub struct ExecutionGrant {
     policy: Arc<Grant>,
     access: ExecutionAccess,
+    #[cfg(target_os = "linux")]
+    compiled: Option<Arc<linux::Policy>>,
 }
 
 /// A definitive refusal before guest execution. The ordinary tool result
@@ -253,7 +255,40 @@ impl ExecutionGrant {
                 filter,
             }),
             access,
+            #[cfg(target_os = "linux")]
+            compiled: None,
         })
+    }
+
+    /// Retains native policy for repeated launches of this authorized grant.
+    /// Compilation binds the original roots once; each launch still verifies
+    /// their paths and resolves its working directory. No authority is issued.
+    /// Clones share the immutable policy without locks or a lazy initializer.
+    /// A later read-only view never uses a compiled writable policy: compile
+    /// that view separately to retain its narrower native policy.
+    /// Like grant construction, this explicit host operation is unmetered.
+    /// Per-launch root and cwd work keeps its original invocation meter.
+    pub fn compile_native(self) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            if self
+                .compiled
+                .as_ref()
+                .is_some_and(|policy| policy.access() == self.access)
+            {
+                return Ok(self);
+            }
+            let workspace = self.policy.workspace.bind_controlled(None)?;
+            let policy = linux::Policy::new(&self.policy, self.access, &workspace, None)?;
+            Ok(Self {
+                compiled: Some(Arc::new(policy)),
+                ..self
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(unavailable(
+            "native execution boundary is unavailable on this platform",
+        ))
     }
 
     /// Removes workspace mutation authority while retaining the original
@@ -407,7 +442,14 @@ impl ExecutionGrant {
         #[cfg(target_os = "linux")]
         let workspace = self.policy.workspace.bind_controlled(_meter)?;
         #[cfg(target_os = "linux")]
-        let platform = linux::Prepared::new(&self.policy, self.access, workspace, _cwd, _meter)?;
+        let platform = linux::Prepared::new(
+            &self.policy,
+            self.access,
+            self.compiled.as_ref(),
+            workspace,
+            _cwd,
+            _meter,
+        )?;
         #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",

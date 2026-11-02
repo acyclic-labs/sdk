@@ -25,6 +25,7 @@ use std::{
     },
     path::Path,
     process::Command,
+    sync::Arc,
 };
 
 mod entry;
@@ -166,46 +167,21 @@ fn computation_device(
     Ok(root)
 }
 
-pub(super) struct Prepared {
+#[derive(Debug)]
+pub(super) struct Policy {
     ruleset: OwnedFd,
-    cwd: File,
+    access: ExecutionAccess,
 }
 
-impl Prepared {
-    pub(super) fn working_directory(&self) -> &File {
-        &self.cwd
-    }
-
-    pub(super) fn encode(
-        &self,
-        filter: &[Instruction],
-        body: &mut Vec<u8>,
-    ) -> io::Result<std::os::fd::RawFd> {
-        // The original request carries one extra descriptor and its native
-        // BPF bytes. Both images share Instruction; the child borrows these
-        // bytes after decoding, with no policy allocation or translation.
-        body.extend_from_slice(
-            &u32::try_from(filter.len())
-                .map_err(|_| refused("invalid execution filter length"))?
-                .to_ne_bytes(),
-        );
-        // SAFETY: Instruction is repr(C), and its eight-byte size assertion
-        // equals the sum of its integer fields, so it has no padding. Every
-        // byte is initialized; this immutable native-endian view borrows the
-        // same live slice and cannot outlive it. The decoder uses that same
-        // native layout, so one copy replaces field-by-field serialization.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(filter.as_ptr().cast::<u8>(), std::mem::size_of_val(filter))
-        };
-        body.extend_from_slice(bytes);
-        Ok(self.ruleset.as_raw_fd())
+impl Policy {
+    pub(super) fn access(&self) -> ExecutionAccess {
+        self.access
     }
 
     pub(super) fn new(
         grant: &Grant,
         access: ExecutionAccess,
-        root: File,
-        cwd: Option<&Path>,
+        root: &File,
         meter: Option<&dyn NativeReadMeter>,
     ) -> io::Result<Self> {
         // ABI 6 supplies signal and abstract-UNIX scoping; earlier ABIs cannot
@@ -257,41 +233,15 @@ impl Prepared {
             // Acquire RAII ownership before checking a late recording failure.
             Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
         })?;
-        // Resolve the selected directory beneath the original verified root,
-        // rather than trusting the earlier canonical path at child launch.
-        // The root itself needs no additional open or duplicate descriptor.
-        let relative = cwd
-            .unwrap_or(&grant.workspace)
-            .strip_prefix(&grant.workspace.path)
-            .map_err(|_| refused("execution working directory escapes the granted workspace"))?;
-        let directory = if relative.as_os_str().is_empty() {
-            None
-        } else {
-            Some(open_beneath_with_flags(
-                &root,
-                relative,
-                libc::O_DIRECTORY,
-                meter,
-            )?)
-        };
-        let prepared = Self {
-            ruleset,
-            cwd: directory.unwrap_or(root),
-        };
+        let prepared = Self { ruleset, access };
         let workspace = READ
             | if access == ExecutionAccess::WorkspaceWrite {
                 WRITE
             } else {
                 0
             };
-        // The pinned workspace handle is the exact object just verified by
-        // binding; when cwd is nested, the reopened root can already close.
-        prepared.path(
-            &grant.workspace._object,
-            workspace,
-            grant.workspace.is_dir,
-            meter,
-        )?;
+        // The caller has just bound and verified this original workspace.
+        prepared.path(root, workspace, grant.workspace.is_dir, meter)?;
         // The kernel ruleset owns the inserted inode reference. The grant
         // independently pins every original object against identity reuse;
         // another live descriptor per rule buys no additional guarantee.
@@ -331,12 +281,10 @@ impl Prepared {
                 })?;
             }
         }
-        // std and the static runner install stdio before guest entry. Keep
-        // both retained setup objects outside those three target slots even
-        // when the owner originally had closed standard streams.
+        // Keep this setup object outside the child stdio target slots.
         Ok(Self {
             ruleset: crate::file::outside_standard_streams(prepared.ruleset, meter)?,
-            cwd: crate::file::outside_standard_streams(prepared.cwd.into(), meter)?.into(),
+            access,
         })
     }
 
@@ -368,6 +316,96 @@ impl Prepared {
         })?;
         Ok(())
     }
+}
+
+// Cold preparation owns its policy directly without another allocation. A
+// retained policy shares the exact immutable descriptor across active launches.
+enum PolicyOwner {
+    Owned(Policy),
+    Shared(Arc<Policy>),
+}
+
+impl std::ops::Deref for PolicyOwner {
+    type Target = Policy;
+
+    fn deref(&self) -> &Policy {
+        match self {
+            Self::Owned(policy) => policy,
+            Self::Shared(policy) => policy,
+        }
+    }
+}
+
+pub(super) struct Prepared {
+    policy: PolicyOwner,
+    cwd: File,
+}
+
+impl Prepared {
+    pub(super) fn new(
+        grant: &Grant,
+        access: ExecutionAccess,
+        compiled: Option<&Arc<Policy>>,
+        root: File,
+        cwd: Option<&Path>,
+        meter: Option<&dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
+        let policy = match compiled.filter(|policy| policy.access == access) {
+            Some(policy) => {
+                // Retention saves compilation, never the original path fences.
+                // A replaced read root refuses before any child can launch.
+                for root in &grant.read {
+                    drop(root.bind_controlled(meter)?);
+                }
+                PolicyOwner::Shared(Arc::clone(policy))
+            }
+            None => PolicyOwner::Owned(Policy::new(grant, access, &root, meter)?),
+        };
+        // Resolve once beneath the original verified workspace. Both cold and
+        // retained policies use this same cwd owner and final-child handoff.
+        let relative = cwd
+            .unwrap_or(&grant.workspace)
+            .strip_prefix(&grant.workspace.path)
+            .map_err(|_| refused("execution working directory escapes the granted workspace"))?;
+        let cwd = if relative.as_os_str().is_empty() {
+            root
+        } else {
+            open_beneath_with_flags(&root, relative, libc::O_DIRECTORY, meter)?
+        };
+        Ok(Self {
+            policy,
+            cwd: crate::file::outside_standard_streams(cwd.into(), meter)?.into(),
+        })
+    }
+
+    pub(super) fn working_directory(&self) -> &File {
+        &self.cwd
+    }
+
+    pub(super) fn encode(
+        &self,
+        filter: &[Instruction],
+        body: &mut Vec<u8>,
+    ) -> io::Result<std::os::fd::RawFd> {
+        // The original request carries one extra descriptor and its native
+        // BPF bytes. Both images share Instruction; the child borrows these
+        // bytes after decoding, with no policy allocation or translation.
+        body.extend_from_slice(
+            &u32::try_from(filter.len())
+                .map_err(|_| refused("invalid execution filter length"))?
+                .to_ne_bytes(),
+        );
+        // SAFETY: Instruction is repr(C), and its eight-byte size assertion
+        // equals the sum of its integer fields, so it has no padding. Every
+        // byte is initialized; this immutable native-endian view borrows the
+        // same live slice and cannot outlive it. The decoder uses that same
+        // native layout, so one copy replaces field-by-field serialization.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(filter.as_ptr().cast::<u8>(), std::mem::size_of_val(filter))
+        };
+        body.extend_from_slice(bytes);
+        Ok(self.policy.ruleset.as_raw_fd())
+    }
 
     pub(super) fn install(self, command: &mut Command, grant: ExecutionGrant) {
         // SAFETY: only syscalls and owned preallocated storage in the child.
@@ -379,7 +417,7 @@ impl Prepared {
 
     fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
         sys::working_directory(self.cwd.as_raw_fd()).map_err(io::Error::from_raw_os_error)?;
-        entry::enter(self.ruleset.as_raw_fd(), grant.policy.filter)
+        entry::enter(self.policy.ruleset.as_raw_fd(), grant.policy.filter)
             .map_err(io::Error::from_raw_os_error)
     }
 }
