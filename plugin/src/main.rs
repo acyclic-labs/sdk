@@ -225,9 +225,9 @@ fn verify_certification(
 }
 
 fn help() -> Result<()> {
+    acyclic_plugin::command().print_help()?;
     println!(
-        "Acyclic {}\nacyclic run [OPTIONS]\nacyclic serve ADDRESS [OPTIONS]\nacyclic attach AGENT [OPTIONS]\nNative hosts own their tools, permissions and agent loops.\nStart acyclic run --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
-        env!("CARGO_PKG_VERSION")
+        "\nNative hosts own their tools, permissions and agent loops.\nStart acyclic run --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID"
     );
     Ok(())
 }

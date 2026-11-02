@@ -3,6 +3,6 @@ pub mod ingress;
 mod runner;
 
 pub use runner::{
-    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, FailureReport, main_from,
-    main_with,
+    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, FailureReport, command,
+    main_from, main_with,
 };
