@@ -453,11 +453,10 @@ mod tests {
     fn adopted_templates_preserve_the_original_creation_pin() -> Result<()> {
         use crate::{
             AgentId,
-            agent::{CreationConfig, ForkAdopted, InboxRecord, SpawnContext},
-            conversation::{
-                FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef,
-            },
+            agent::{AgentRecord, CreationConfig, ForkAdopted, InboxRecord, SpawnContext},
+            conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
             executor::metrics::inbox,
+            resources::ProviderRef,
         };
 
         let agent = AgentId::from_bytes([3; 16]);
@@ -484,7 +483,7 @@ mod tests {
         let later_reference = serde_json::to_string(&later).map_err(export_error)?;
         let project = |profile: Option<CreationConfig>| -> Result<Batch> {
             let record = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
-                agent,
+                agent: crate::agent::AgentId::from_bytes(agent.into_bytes()),
                 parent: None,
                 profile,
                 forked_at: 0,
