@@ -65,8 +65,20 @@ impl StockExecution<'_> {
         } else {
             executor.ensure_started(journal, &input).await?;
         }
-        self.stage_summary_source(journal, operation_id, step, source_bytes.as_deref())
-            .await?;
+        let source_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
+        })?;
+        stage_bytes(
+            journal,
+            operation_id,
+            &source_key,
+            &source_bytes,
+            true,
+            self.io,
+        )
+        .await?;
+        drop(source_bytes);
+        drop(source_key);
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
             .await?;
@@ -85,33 +97,10 @@ impl StockExecution<'_> {
         Ok((summary, text))
     }
 
-    async fn stage_summary_source(
-        &self,
-        journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
-        source: Option<&[u8]>,
-    ) -> Result<()> {
-        if let Some(source) = source {
-            let source_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
-            })?;
-            stage_bytes(journal, operation_id, &source_key, source, true, self.io).await?;
-        }
-        Ok(())
-    }
-
     fn summary_source_identity(
         &self,
         source: &crate::context::Context,
-    ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
-        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-            _ => crate::contract::canonical_json_bytes(&source)?.into(),
-        };
-        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
-        let source_bytes = Some(source_bytes);
+    ) -> Result<(acyclic_stream::OwnedBytes, [u8; 32], u32)> {
         let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
             stock_boundary(
                 self.io,
@@ -126,6 +115,12 @@ impl StockExecution<'_> {
                 "summary source is empty",
             ));
         }
+        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+        };
+        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
         Ok((source_bytes, source_digest, source_messages))
     }
 
