@@ -20,7 +20,7 @@ function nativeFailure(host,code,message,cause) {
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer,selection) {
  assert.equal(result.code,0,result.stderr);
- let terminal,text,completed=false,initialized=false;
+ let terminal,text,builtinPlugins,completed=false,initialized=false;
  for(const line of result.stdout.split('\n')) {
   if(!line)continue;
   const event=JSON.parse(line);
@@ -51,10 +51,24 @@ export function assertNativeCompletion(host,result,answer,selection) {
     const count=selection.installed?1:0;
     assert.ok(Array.isArray(event.plugins),'native Claude plugin set differs from paired mode');
     assert.ok(Array.isArray(event.mcp_servers),'native Claude MCP connections differ from paired mode');
-    assert.equal(event.plugins.length,count,'native Claude plugin set differs from paired mode');
+    // The pinned native host advertises its compiled-in plugins separately
+    // from installed plugins. Retain their exact identities and require the
+    // same native set in both legs; no user plugin is a baseline exemption.
+    builtinPlugins=0;
+    let installedPlugins=0;
+    for(const plugin of event.plugins) {
+     const bit=plugin.name==='agents-md'?1:plugin.name==='plugin-authoring'?2:0;
+     if(bit&&plugin.path==='builtin'&&plugin.source===plugin.name+'@builtin') {
+      assert.equal(builtinPlugins&bit,0,'duplicate native Claude builtin plugin');
+      builtinPlugins|=bit;
+     } else {
+      assert.equal(plugin.name,'acyclic','native Claude plugin set differs from paired mode');
+      installedPlugins++;
+     }
+    }
+    assert.equal(installedPlugins,count,'native Claude plugin set differs from paired mode');
     assert.equal(event.mcp_servers.length,count,'native Claude MCP connections differ from paired mode');
     if(selection.installed) {
-     assert.equal(event.plugins[0].name,'acyclic','native Claude plugin set differs from paired mode');
      assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
      assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
     }
@@ -91,6 +105,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
   text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
  }
  assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
+ return builtinPlugins;
 }
 
 

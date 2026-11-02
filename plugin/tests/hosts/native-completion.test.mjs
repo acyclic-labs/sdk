@@ -77,9 +77,18 @@ test('Codex tool failure survives a successful parent answer and process exit',a
 
 test('Claude native pair initialization fences model namespace and bare contamination',async()=>{
  const {records}=JSON.parse(await readFile(new URL('./fixtures/native-pair-initialization.json',import.meta.url),'utf8'));
- for(const record of records) {
+ const builtin=JSON.parse(await readFile(new URL('./fixtures/native-claude-builtin-plugins.json',import.meta.url),'utf8'));
+ for(const original of records)for(const plugins of [[],builtin.plugins]) {
+  // Keep the original native terminals and project the real Windows native
+  // plugin inventory into the original bare/installed initialization records.
+  const withPlugins=added=>({...original,stdout:original.stdout.trim().split('\n').map(line=>{
+   const event=JSON.parse(line);
+   if(event.type==='system'&&event.subtype==='init')event.plugins.push(...added);
+   return JSON.stringify(event);
+  }).join('\n')+'\n'});
+  const record=withPlugins(plugins);
   const selection={model:'claude-haiku-5-5',installed:record.mode==='installed'};
-  assertNativeCompletion(record.host,record,record.answer,selection);
+  assert.equal(assertNativeCompletion(record.host,record,record.answer,selection),plugins.length?3:0);
   assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,model:'unapproved'}),/model differs/);
   assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,installed:!selection.installed}),/plugin set differs/);
   const lines=record.stdout.trim().split('\n');
@@ -88,6 +97,12 @@ test('Claude native pair initialization fences model namespace and bare contamin
   if(selection.installed) {
    const namespace={...record,stdout:record.stdout.replace('plugin:acyclic:acyclic-sessions','acyclic-sessions')};
    assert.throws(()=>assertNativeCompletion(record.host,namespace,record.answer,selection),/MCP connections differ/);
+  }
+  for(const changed of [{...builtin.plugins[0],path:'installed'},
+   {...builtin.plugins[0],source:'agents-md@user'}, {...builtin.plugins[0],name:'unrelated'},
+   ...builtin.plugins]) {
+   const contaminated=withPlugins([...builtin.plugins,changed]);
+   assert.throws(()=>assertNativeCompletion(record.host,contaminated,record.answer,selection),/plugin/);
   }
  }
 });

@@ -1,0 +1,18 @@
+{
+  "provenance": "Unmodified plugins field from original Windows Claude Code system/init output; approved live native shell capture. Full stdout is bound by its SHA-256; no prompt or profile data is included.",
+  "host_version": "2.1.278",
+  "source": "859ccc3f871a9c1b01b8892d0aedc124bb493fbe",
+  "stdout_sha256": "2e88b99d1c92f56db84cabaaee0d2724117b0bf511d4b2bbe9ee4a0a398d7cee",
+  "plugins": [
+    {
+      "name": "agents-md",
+      "path": "builtin",
+      "source": "agents-md@builtin"
+    },
+    {
+      "name": "plugin-authoring",
+      "path": "builtin",
+      "source": "plugin-authoring@builtin"
+    }
+  ]
+}
