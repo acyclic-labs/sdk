@@ -808,12 +808,48 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
 #[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
+    use crate::{conversation::VolumeOperation, runtime::Bindings};
+
     let code = "await console.log({agent:'worker'}); console.log('drained'); export default null";
-    let (executor, _, _) = executor(code, allowed()?, false)?;
+    let (mut executor, _, _) = executor(code, allowed()?, false)?;
+    executor
+        .tools
+        .register((crate::tool::files::read()?, None), &mut None, None)?;
     let storage =
         crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
+    let content = storage.content_bindings();
+    let scope = RuntimeScope::new(
+        Capabilities::new([
+            "tool:call:code".into(),
+            "tool:call:read".into(),
+            content
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+        ]),
+        Limits::default(),
+    )?;
+    let task = Bindings {
+        scope: scope.clone(),
+        content: Some(content.clone()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), content)?;
+    executor = executor
+        .with_tool_authority(scope, allowed()?)?
+        .with_task_context(&task, operation)?;
+    let execution = StockExecution::ordinary(&executor);
+    execution
+        .ensure_started(
+            journal.as_ref(),
+            &TurnInput {
+                operation_id: operation,
+                ..input()
+            },
+        )
+        .await?;
     let internal = stage_json(
         journal.as_ref(),
         operation,
@@ -831,7 +867,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         json!({"code":code}),
         None,
     )?;
-    let ExecutionProgress::Ready(result) = StockExecution::ordinary(&executor)
+    let ExecutionProgress::Ready(result) = execution
         .code(
             journal.as_ref(),
             (operation, 0),
@@ -846,36 +882,45 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         crate::tools::code_mode::output(&result.value)?,
         &Value::Null
     );
-    // The owner sees the same directory that observers follow, using ordinary
-    // listing and pinned reads rather than the journal's private payload loader.
+    // Select the original console files through the model's ordinary module
+    // entrance, including tool authority and the file reader. Inner call logs
+    // created during selection cannot alter the iterator's pinned generation.
     let directory = format!("tools/.results/{operation}");
-    let (generation, page) = storage
-        .list_private_directory(&directory, None, None, 2)
-        .await?;
-    assert_eq!(page.entries.len(), 2);
-    assert!(!page.has_more);
-    let mut values = Vec::new();
-    for entry in &page.entries {
-        let name = std::str::from_utf8(entry.name.as_bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let (_, bytes, _) = storage
-            .content_reader()
-            .read_private_path(
-                storage.volume(),
-                "",
-                &format!("{directory}/{name}"),
-                Some(&generation),
-                65536,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    let select = format!(
+        r#"import {{list, read}} from 'acyclic';
+        const values = [];
+        for await (const entry of list({})) values.push((await read(entry.path)).json());
+        values.sort((a, b) => a.ordinal - b.ordinal);
+        export default values;"#,
+        serde_json::to_string(&directory).map_err(|error| Error::Invalid(error.to_string()))?,
+    );
+    let selection = ToolInvocation::for_model_call(
+        operation,
+        1,
+        "select-logs".into(),
+        "code".into(),
+        json!({"code":select}),
+        None,
+    )?;
+    let ExecutionProgress::Ready(selected) = execution
+        .code(
+            journal.as_ref(),
+            (operation, 1),
+            &selection,
+            &mut Vec::new(),
+        )
+        .await?
+    else {
+        panic!("console selection did not finish");
+    };
+    let values = crate::tools::code_mode::output(&selected.value)?
+        .as_array()
+        .expect("selected logs");
+    assert_eq!(values.len(), 2);
+    for value in values {
         assert_eq!(value["kind"], "code.log");
         assert_eq!(value["call_id"], "program");
-        values.push(value);
     }
-    values.sort_unstable_by_key(|value| value["ordinal"].as_u64().unwrap());
     assert_eq!(values[0]["values"], json!([{ "agent": "worker" }]));
     assert_eq!(values[1]["values"], json!(["drained"]));
     Ok(())
