@@ -1,0 +1,53 @@
+{
+  "id": "kill-during-count",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "capacity": {
+    "context_tokens": 4096,
+    "output_tokens": 1024
+  },
+  "model": {
+    "input_tokens": 64,
+    "steps": [
+      {
+        "when": {
+          "path": "count",
+          "user": "count marker"
+        },
+        "json": {
+          "input_tokens": 64
+        },
+        "hold": true
+      },
+      {
+        "when": {
+          "path": "responses",
+          "user": "count marker"
+        },
+        "text": [
+          "resumed"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "count marker",
+      "kill_on": {
+        "path": "count",
+        "step": 0
+      }
+    },
+    {
+      "mode": "headless",
+      "text": "count marker",
+      "answer": "resumed"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}
