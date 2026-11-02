@@ -5,6 +5,31 @@ use acyclic_harness::{agent::AgentPath, local::host_owner::HostAction};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[derive(Debug)]
+enum InvalidWorkspaceCommand {
+    Usage,
+    Agent(acyclic_harness::agent::Error),
+}
+
+impl std::fmt::Display for InvalidWorkspaceCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("step=admit native command: ")?;
+        match self {
+            Self::Usage => formatter.write_str("expected fs COMMAND..., discard REF..., agents, log, capture or reopen ID; recovery: run acyclic --help"),
+            Self::Agent(cause) => write!(formatter, "{cause}; recovery: run acyclic reopen harness/agents/AGENT_ID"),
+        }
+    }
+}
+
+impl std::error::Error for InvalidWorkspaceCommand {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Usage => None,
+            Self::Agent(cause) => Some(cause),
+        }
+    }
+}
+
 /// The original argv for the agent parser, or decoded native-host arguments.
 pub enum Input {
     /// Retains the program name and OS-native arguments for clap.
@@ -55,7 +80,7 @@ pub fn workspace_action(
 ) -> Result<HostAction> {
     let (command, rest) = arguments
         .split_first()
-        .ok_or("step=admit native command: expected COMMAND; recovery: run acyclic --help")?;
+        .ok_or(InvalidWorkspaceCommand::Usage)?;
     Ok(match (command.as_str(), rest) {
         ("fs" | "discard", [_, ..]) => HostAction::Fs {
             task: resolve()?,
@@ -72,11 +97,9 @@ pub fn workspace_action(
             command: "log".into(),
         },
         ("reopen", [task]) => HostAction::Reopen {
-            task: AgentPath::try_from(task.clone()).map_err(|_| {
-                "step=admit native command: invalid agent path; recovery: run acyclic reopen harness/agents/AGENT_ID"
-            })?,
+            task: AgentPath::try_from(task.clone()).map_err(InvalidWorkspaceCommand::Agent)?,
         },
         ("capture", []) => HostAction::Capture { task: resolve()? },
-        _ => return Err("step=admit native command: expected fs COMMAND..., discard REF..., agents, log, capture or reopen ID; recovery: run acyclic --help".into()),
+        _ => return Err(InvalidWorkspaceCommand::Usage.into()),
     })
 }
