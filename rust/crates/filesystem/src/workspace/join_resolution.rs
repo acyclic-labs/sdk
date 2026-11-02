@@ -102,24 +102,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         let path = self.conflict_path(file_id).await?;
-        let fs = &self.target_head.workspace.volume.fs;
-        let base = fs
-            .workspace_conflict_record(&self.target_head.workspace.volume, self.base.id, file_id)
-            .await?;
-        let ours = fs
-            .workspace_conflict_record(
-                &self.target_head.workspace.volume,
-                self.target_head.id,
-                file_id,
-            )
-            .await?;
-        let theirs = fs
-            .workspace_conflict_record(
-                &self.target_head.workspace.volume,
-                self.source_head.id,
-                file_id,
-            )
-            .await?;
+        let records = self.conflict_records(file_id).await?;
+        let [base, ours, theirs] = records;
         let fallback = |generation, record: Option<crate::kernel::FileRecord>| match record {
             Some(_) => ConflictValue::Record {
                 generation,
@@ -133,7 +117,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .map(|((base, ours), theirs)| (base, ours, theirs))
         else {
             if let Some(text) = path.as_deref()
-                && let Some(replaced) = self.replaced_file(file_id, text).await?
+                && let Some(replaced) = self.replaced_file(file_id, text, records).await?
                 && let Some(view) = self
                     .regular_conflict_view(file_id, path.clone(), replaced.records, contents)
                     .await?
@@ -200,6 +184,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             _ => ConflictKind::Special,
         };
         Ok(record_conflict_view(self, file_id, path, kind))
+    }
+
+    /// The original identity's records, shared by projection and resolution.
+    pub(super) async fn conflict_records(
+        &self,
+        file_id: FileId,
+    ) -> Result<[Option<crate::kernel::FileRecord>; 3], WorkspaceError> {
+        let volume = &self.target_head.workspace.volume;
+        let mut records = [None; 3];
+        for (slot, generation) in
+            records
+                .iter_mut()
+                .zip([self.base.id, self.target_head.id, self.source_head.id])
+        {
+            *slot = volume
+                .fs
+                .workspace_conflict_record(volume, generation, file_id)
+                .await?;
+        }
+        Ok(records)
     }
 
     /// The view of a conflict on one file identity's metadata.

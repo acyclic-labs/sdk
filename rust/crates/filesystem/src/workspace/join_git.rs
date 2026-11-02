@@ -93,19 +93,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         file_id: FileId,
         path: &str,
+        records: [Option<FileRecord>; 3],
     ) -> Result<Option<ReplacedFile>, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let fs = &volume.fs;
-        let mut records = [None; 3];
-        for (slot, generation) in
-            records
-                .iter_mut()
-                .zip([self.base.id, self.target_head.id, self.source_head.id])
-        {
-            *slot = fs
-                .workspace_conflict_record(volume, generation, file_id)
-                .await?;
-        }
         // `ours_replaced`: the target head deleted the base identity.
         let (side, editing, ours_replaced) = match records {
             [Some(_), None, Some(_)] => (&self.target_head, &self.source_head, true),
@@ -184,7 +175,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let Some(path) = path else {
             return Ok(None);
         };
-        let Some(replaced) = self.replaced_file(file_id, path).await? else {
+        let records = self.conflict_records(file_id).await?;
+        let Some(replaced) = self.replaced_file(file_id, path, records).await? else {
             return Ok(None);
         };
         self.replaced_file_resolution(file_id, replaced, resolution)
