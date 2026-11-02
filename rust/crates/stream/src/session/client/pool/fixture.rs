@@ -7,7 +7,6 @@ pub(in crate::session::client) fn fixture(
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
         credentials: BTreeMap::new(),
-        credential_bytes: 0,
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
@@ -134,6 +133,7 @@ pub(in crate::session::client) fn client(pool: &Pool) -> Client {
     let (commands, _) = commands::channel(2);
     Client {
         pool: PoolHandle {
+            executor: std::sync::Arc::clone(&pool.executor),
             connections: super::super::super::Connections::new(),
             commands,
             removed: Arc::clone(&pool.removed),
