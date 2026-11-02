@@ -78,120 +78,224 @@ pub(super) mod linux {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    struct Session<'a> {
-        name: String,
-        tool: &'a str,
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use std::io::{BufRead, Read};
+    use std::os::fd::AsFd;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::process::{Child, Stdio};
+
+    const CHILD_ROOT: &str = "ACYCLIC_REGION_EMULATOR_CHILD";
+
+    struct Session {
+        child: Child,
     }
-    impl Drop for Session<'_> {
+    impl Drop for Session {
         fn drop(&mut self) {
-            let mut command = Command::new(self.tool);
-            if self.tool == "tmux" {
-                command.args(["-L", &self.name, "kill-server"]);
-            } else {
-                command.args(["-S", &self.name, "-X", "quit"]);
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+    impl Session {
+        fn wait(&self, source: &impl AsFd, deadline: Instant) -> io::Result<()> {
+            let stderr = self
+                .child
+                .stderr
+                .as_ref()
+                .ok_or(io::ErrorKind::BrokenPipe)?;
+            let mut fds = [
+                PollFd::new(stderr, PollFlags::IN),
+                PollFd::new(source, PollFlags::IN),
+            ];
+            loop {
+                let timeout =
+                    Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+                        .map_err(|_| io::ErrorKind::InvalidInput)?;
+                match poll(&mut fds, Some(&timeout)) {
+                    Err(rustix::io::Errno::INTR) => continue,
+                    result => {
+                        if result? == 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "emulator consumption deadline; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                            ));
+                        }
+                    }
+                }
+                if !fds[0].revents().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "emulator producer closed or reported an error; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                    ));
+                }
+                if fds[1]
+                    .revents()
+                    .intersects(PollFlags::ERR | PollFlags::NVAL)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "emulator event source failed; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                    ));
+                }
+                return Ok(());
             }
-            let _ = command.output();
         }
     }
     fn checked(command: &mut Command) -> Vec<u8> {
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
-            "{command:?}: {}",
+            "{command:?}: {}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
             String::from_utf8_lossy(&output.stderr)
         );
         output.stdout
     }
+    // Runs inside the original emulator's PTY. A DSR reply proves the emulator
+    // consumed all preceding frame bytes; process exit alone cannot prove that.
+    fn frame_child(root: &Path) -> io::Result<()> {
+        use rustix::termios::{OptionalActions, tcgetattr, tcsetattr};
+        let stdin = io::stdin();
+        let mut raw = tcgetattr(&stdin)?;
+        raw.make_raw();
+        tcsetattr(&stdin, OptionalActions::Now, &raw)?;
+        let mut control = UnixStream::connect(root.join("control"))?;
+        let mut begin = [0];
+        control.read_exact(&mut begin)?;
+        let mut output = io::stdout().lock();
+        output.write_all(&std::fs::read(root.join("frame.bin"))?)?;
+        output.write_all(b"\x1b[6n")?;
+        output.flush()?;
+        let mut reply = Vec::new();
+        stdin.lock().read_until(b'R', &mut reply)?;
+        if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "emulator DSR reply missing; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+            ));
+        }
+        control.write_all(b"R")?;
+        // Hold the screen until its one snapshot has been taken. Dropping the
+        // original parent socket releases this wait, including failure paths.
+        assert_eq!(control.read(&mut begin)?, 0);
+        Ok(())
+    }
     pub(crate) fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("frame.bin");
-        let dump = dir.path().join("screen.txt");
-        let ready = dir.path().join("ready");
-        let start = dir.path().join("start");
-        let config = dir.path().join("tmux.conf");
-        std::fs::write(&config, "set -g status off\n").unwrap();
-        std::fs::write(&input, bytes).unwrap();
+        let root = dir.path();
+        let dump = root.join("screen.txt");
+        let config = root.join("tmux.conf");
+        std::fs::write(root.join("frame.bin"), bytes).unwrap();
+        let listener = UnixListener::bind(root.join("control")).unwrap();
         let name = format!(
             "acyclic-region-{}-{}",
             std::process::id(),
-            dir.path().file_name().unwrap().to_string_lossy()
+            root.file_name().unwrap().to_string_lossy()
         );
-        let session = Session { name, tool };
-        // Keep the process alive without echoing input into the screen.
-        let shell = format!(
-            "stty -echo; while [ ! -e '{}' ]; do sleep 0.01; done; cat '{}'; touch '{}'; read answer",
-            start.display(),
-            input.display(),
-            ready.display()
+        let test = format!(
+            "terminal_regions::native_profiles::linux::{}",
+            if tool == "tmux" {
+                "tmux_capture_pane_agrees_with_the_rendered_screen"
+            } else {
+                "screen_hardcopy_agrees_with_the_rendered_screen"
+            }
         );
+        let binary = std::env::current_exe().unwrap();
+        let mut command = Command::new(tool);
         if tool == "tmux" {
-            checked(Command::new(tool).args([
+            let shell = format!(
+                "exec {} --exact {} --nocapture",
+                shell_words::quote(binary.to_str().unwrap()),
+                test
+            );
+            std::fs::write(
+                &config,
+                format!(
+                    "set -g status off\nnew-session -d -x 24 -y 8 {}\n",
+                    shell_words::quote(&shell)
+                ),
+            )
+            .unwrap();
+            // The original foreground server owns stderr for the whole wait.
+            command.args(["-D", "-L", &name, "-f", config.to_str().unwrap()]);
+        } else {
+            command.args(["-c", "/dev/null", "-DmS", &name]);
+            command.arg(&binary).args(["--exact", &test, "--nocapture"]);
+        }
+        let session = Session {
+            child: command
+                .env(CHILD_ROOT, root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        session.wait(&listener, deadline).unwrap();
+        let (mut control, _) = listener.accept().unwrap();
+        if tool == "screen" {
+            checked(Command::new(tool).args(["-S", &name, "-X", "width", "24", "8"]));
+        }
+        control.write_all(b"G").unwrap();
+        session.wait(&control, deadline).unwrap();
+        let mut consumed = [0];
+        control.read_exact(&mut consumed).unwrap();
+        assert_eq!(
+            consumed, *b"R",
+            "original emulator consumption acknowledgement"
+        );
+        let text = if tool == "tmux" {
+            String::from_utf8(checked(Command::new(tool).args([
                 "-L",
-                &session.name,
-                "-f",
-                config.to_str().unwrap(),
-                "new-session",
-                "-d",
-                "-x",
-                "24",
-                "-y",
-                "8",
-                "sh",
-                "-c",
-                &shell,
-            ]));
+                &name,
+                "capture-pane",
+                "-p",
+                "-t",
+                "0",
+            ])))
+            .unwrap()
         } else {
             checked(Command::new(tool).args([
-                "-c",
-                "/dev/null",
-                "-dmS",
-                &session.name,
-                "sh",
-                "-c",
-                &shell,
+                "-S",
+                &name,
+                "-X",
+                "hardcopy",
+                dump.to_str().unwrap(),
             ]));
-            checked(Command::new(tool).args(["-S", &session.name, "-X", "width", "24", "8"]));
-        }
-        std::fs::write(start, "").unwrap();
+            std::fs::read_to_string(&dump).unwrap()
+        };
+        text.lines()
+            .take(8)
+            .map(|row| format!("{row:<24}"))
+            .collect()
+    }
+    #[test]
+    fn emulator_loss_wins_over_a_ready_consumer() {
+        let mut session = Session {
+            child: Command::new("sh")
+                .args(["-c", "read hold"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        };
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"R").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let text = if tool == "tmux" {
-                String::from_utf8(checked(Command::new(tool).args([
-                    "-L",
-                    &session.name,
-                    "capture-pane",
-                    "-p",
-                    "-t",
-                    "0",
-                ])))
-                .unwrap()
-            } else {
-                checked(Command::new(tool).args([
-                    "-S",
-                    &session.name,
-                    "-X",
-                    "hardcopy",
-                    dump.to_str().unwrap(),
-                ]));
-                std::fs::read_to_string(&dump).unwrap_or_default()
-            };
-            // The final footer establishes that the emulator consumed the
-            // complete initial frame, not just that the writer exited.
-            if ready.exists() && text.lines().nth(7).is_some_and(|row| row == "fixed footer") {
-                return text
-                    .lines()
-                    .take(8)
-                    .map(|row| format!("{row:<24}"))
-                    .collect();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{tool} did not consume the fixture: {text:?}"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        session.wait(&reader, deadline).unwrap();
+        session.child.kill().unwrap();
+        session.child.wait().unwrap();
+        assert_eq!(
+            session.wait(&reader, deadline).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe,
+            "a queued consumer byte cannot mask original producer loss"
+        );
     }
     fn oracle(tool: &str) {
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            frame_child(Path::new(&root)).unwrap();
+            return;
+        }
         for (bytes, expected) in fixtures() {
             assert_eq!(capture(tool, &bytes), expected, "{tool} region screen");
             assert_ne!(
