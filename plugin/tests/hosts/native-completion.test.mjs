@@ -3,6 +3,26 @@ import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
 
+test('Claude failed tool results survive a later successful parent terminal', async()=> {
+ const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-tool-terminals.json',import.meta.url),'utf8'));
+ const result=events=>({...record,stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
+ assertNativeCompletion(record.host,result(record.events),record.answer);
+ for(let index=0;index<record.events.length-1;index++) {
+  const failed=structuredClone(record.events);
+  const part=failed[index].message.content[0];
+  part.is_error=true;
+  assert.throws(()=>assertNativeCompletion(record.host,result(failed),record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
+   assert.deepEqual(error.cause,part);
+   return true;
+  });
+ }
+ // A successful first result cannot hide a failed sibling in the same message.
+ const siblings=structuredClone(record.events);
+ siblings[0].message.content.push({...siblings[1].message.content[0],is_error:true});
+ assert.throws(()=>assertNativeCompletion(record.host,result(siblings),record.answer),{code:'NATIVE_HOST_TOOL_FAILED'});
+});
+
 // Real pinned-host output, with event deletion as the missing-terminal control.
 const {records}=JSON.parse(await readFile(new URL('./fixtures/native-completion.json',import.meta.url),'utf8'));
 for(const record of records)test(`${record.host} requires its original successful native terminal`,()=>{
