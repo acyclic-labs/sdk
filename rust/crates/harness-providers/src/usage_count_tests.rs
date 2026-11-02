@@ -39,7 +39,7 @@ proptest! {
     }
     #[test]
     fn usage_bound_charges_every_appended_byte_and_never_anchors_a_changed_prefix(
-        input in ".{1,128}", delta in ".{1,128}", tokens in 1u64..100_000,
+        input in "\\S.{0,127}", delta in "\\S.{0,127}", tokens in 1u64..100_000,
         cache_read in 0u64..100_000,
     ) {
         let mut request = ModelRequest {

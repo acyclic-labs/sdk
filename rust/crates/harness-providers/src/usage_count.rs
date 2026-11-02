@@ -1,5 +1,8 @@
 //! Provider-reported usage anchors later admission without a count request.
-use acyclic_harness_core::{Result, model::PreparedModelRequest};
+use acyclic_harness_core::{
+    Result,
+    model::{ModelContent, ModelContentPart, PreparedModelRequest},
+};
 use serde::Serialize as _;
 
 use crate::usage_snapshot::{Snapshot, Usage};
@@ -21,24 +24,25 @@ impl Counter {
     /// provider's own reported input for the request's observed prefix, which
     /// already includes every token the provider adds, plus the canonical bytes
     /// appended since. Each token of appended text spans at least one byte.
-    /// `None` when no observation anchors this request's prefix, or notices
-    /// require the renderer's expanded byte bound instead of canonical bytes.
+    /// `None` when no observation anchors this request's prefix, or rendering
+    /// can expand or restore content outside the appended canonical bytes.
     pub(crate) fn bound(&self, request: &PreparedModelRequest) -> Result<Option<u64>> {
         let Some(snapshot) = self.snapshot()? else {
             return Ok(None);
         };
         if !byte_bound_eligible(request)
             || request.request().messages.iter().any(|message| {
-                message.content.parts().iter().any(|part| {
-                    matches!(
-                        part,
-                        acyclic_harness_core::model::ModelContentPart::Notices { .. }
-                    )
-                })
+                matches!(&message.content, ModelContent::Text(text) if text.trim().is_empty())
+                    || message.content.parts().iter().any(|part| match part {
+                        ModelContentPart::Notices { .. } | ModelContentPart::File { .. } => true,
+                        ModelContentPart::Text { text, .. } => text.trim().is_empty(),
+                        _ => false,
+                    })
             })
         {
-            // Notice projection can expand escaping and framing. The existing
-            // count-body path measures that exact rendered representation.
+            // Notices expand escaping; joining later text can restore a blank
+            // run dropped from the observation, including unresolved text files.
+            // The existing count-body path measures the actual representation.
             return Ok(None);
         }
         let (prefix, total) = footprint(request, snapshot.messages)?;

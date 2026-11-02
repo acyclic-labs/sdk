@@ -334,6 +334,78 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                 let local = provider.count_tokens(&expanded, expanded_bound).await?;
                 assert_eq!((local.input_tokens, sent()), (expanded_bound, before + 1));
             }
+            let whitespace = "\t\n ".repeat(4096);
+            for blank in [
+                ModelContent::Text(whitespace.clone()),
+                ModelContent::Part(ModelContentPart::Text {
+                    text: whitespace.clone(),
+                    native: None,
+                }),
+                ModelContent::Parts(vec![ModelContentPart::Text {
+                    text: whitespace.clone(),
+                    native: None,
+                }]),
+            ] {
+                let mut request = prepared.request().clone();
+                request.messages = vec![
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("Question".into()),
+                    },
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text("Answer".into()),
+                    },
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: blank,
+                    },
+                ];
+                let observed =
+                    PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(observed.request());
+                let projected = projection::body_named(
+                    &provider,
+                    observed.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let old_body = wire::body(projected, &provider.model.name, adapter)?;
+                provider
+                    .usage
+                    .observe(adapter, &observed, &json!({"usage":{"input_tokens":5}}))?;
+                let next = ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("Continue".into()),
+                };
+                // The old usage shortcut charges only this new message, although
+                // the same real renderer now restores the old whitespace run.
+                let old_bound =
+                    5 + serde_json::to_vec(&next).unwrap().len() as u64 + u64::from(framing);
+                request.messages.push(next);
+                let restored = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(restored.request());
+                let projected = projection::body_named(
+                    &provider,
+                    restored.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                assert!(rendered.len() > old_body.len() + whitespace.len());
+                let rendered_bound = rendered.len() as u64 + u64::from(framing);
+                assert!(rendered_bound > old_bound);
+                let before = sent();
+                let verified = provider.count_tokens(&restored, old_bound).await?;
+                assert_eq!(
+                    (verified.input_tokens, sent()),
+                    (7 + u64::from(framing), before + 1)
+                );
+                let local = provider.count_tokens(&restored, rendered_bound).await?;
+                assert_eq!((local.input_tokens, sent()), (rendered_bound, before + 1));
+            }
         }
     }
     Ok(())
