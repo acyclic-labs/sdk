@@ -166,12 +166,12 @@ impl Projection {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use acyclic_native_runtime::{InlineBlocking, run_blocking_io};
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     #[test]
     fn original_task_projection_preserves_inline_work_and_abandonment() -> std::io::Result<()> {
+        use super::*;
+        use acyclic_native_runtime::{InlineBlocking, run_blocking_io};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("original");
         std::fs::write(&path, b"original native work")?;

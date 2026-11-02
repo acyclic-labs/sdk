@@ -52,6 +52,13 @@ resolution is checked against the modeled floor itself, without multiplying
 it by an acceptance threshold.
 Each operation cohort requires identical floor terms across all its samples;
 a sample with different required work refuses before changing that cohort.
+Run the same quantile and cohort admission controls without calibration, storage
+setup or model calls:
+
+```sh
+cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+```
+
 These are single-operation latency measurements, not throughput or concurrency
 claims. Payloads and exact reads are checked outside the measured intervals.
 Root setup and session samples share the same exact requested-agent receipt
