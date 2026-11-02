@@ -55,11 +55,7 @@ fn attachment(
     )?;
     Ok(AttachedSession::new(
         AgentControls::new(pool, 0, binding),
-        AgentSelection {
-            agent,
-            conversation_from: 0,
-            status_from,
-        },
+        AgentSelection::new(agent, 0, status_from),
     )?)
 }
 
@@ -140,11 +136,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
 
     // Visible focus can change without retargeting this attachment's commands.
     editor.observer().set_view(
-        AgentSelection {
-            agent: AgentPath::root(&AgentId::from_bytes([2; 16])),
-            conversation_from: 0,
-            status_from: 0,
-        },
+        AgentSelection::new(AgentPath::root(&AgentId::from_bytes([2; 16])), 0, 0),
         std::iter::empty(),
     )?;
     let cancelled = editor.prepare_cancel(

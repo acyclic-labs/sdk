@@ -486,11 +486,11 @@ fn selections(
             .get(index)
             .dyn_into::<JsString>()
             .map_err(|_| error("invalid_agent_path", "agent path is not a string"))?;
-        selections.push(AgentSelection {
-            agent: agent_path(agent)?,
-            conversation_from: conversation_from.get_index(index),
-            status_from: status_from.get_index(index),
-        });
+        selections.push(AgentSelection::new(
+            agent_path(agent)?,
+            conversation_from.get_index(index),
+            status_from.get_index(index),
+        ));
     }
     Ok(selections)
 }

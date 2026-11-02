@@ -146,10 +146,12 @@ async fn verify_observation(
     credential: u32,
     fixture: &Fixture,
 ) -> Result<Report, Failure> {
-    let selection = || AgentSelection {
-        agent: fixture.agent.clone(),
-        conversation_from: fixture.conversation_from,
-        status_from: fixture.status_from,
+    let selection = || {
+        AgentSelection::new(
+            fixture.agent.clone(),
+            fixture.conversation_from,
+            fixture.status_from,
+        )
     };
     let mut client = AgentClient::new(
         session,
@@ -218,6 +220,36 @@ async fn verify_observation(
     }
     // Deliberately over-budget input is refused before any demand mutation.
     let composition = client.session().revision();
+    for status in [false, true] {
+        let mut invalid = selection();
+        let resume = if status {
+            &mut invalid.status
+        } else {
+            &mut invalid.conversation
+        };
+        // Deliberately malformed input, not a provider cursor fixture.
+        resume.opaque = vec![0].into();
+        match client.set_view(invalid, std::iter::empty()) {
+            Err(AgentClientError::Session(WireSessionError::Stream(
+                acyclic_stream::StreamError::InvalidArgument,
+            ))) => {}
+            result => {
+                return Err(failure(
+                    "complete_cursor_refusal",
+                    format!("unexpected {result:?}"),
+                ));
+            }
+        }
+        if client.session().revision() != composition
+            || client.conversation().next_sequence() != cursor
+            || client.conversation().revision() != revision
+        {
+            return Err(failure(
+                "complete_cursor_refusal",
+                "malformed cursor changed the original admitted view",
+            ));
+        }
+    }
     match client.set_view(
         selection(),
         std::iter::repeat_with(selection).take(AgentClient::selected_capacity()),
@@ -260,14 +292,7 @@ async fn verify_observation(
     // Demand is lazy: do not poll the unselected fixture's replacement. This
     // tests ownership release and explicit cursor admission, not absent follows.
     client
-        .set_view(
-            AgentSelection {
-                agent: unknown,
-                conversation_from: 0,
-                status_from: 0,
-            },
-            std::iter::empty(),
-        )
+        .set_view(AgentSelection::new(unknown, 0, 0), std::iter::empty())
         .map_err(|error| failure("reselection_cursor", error))?;
     if client.agent_conversation(&fixture.agent).is_some() {
         return Err(failure(
@@ -277,11 +302,7 @@ async fn verify_observation(
     }
     client
         .set_view(
-            AgentSelection {
-                agent: fixture.agent.clone(),
-                conversation_from: cursor,
-                status_from: fixture.status_from + 1,
-            },
+            AgentSelection::new(fixture.agent.clone(), cursor, fixture.status_from + 1),
             std::iter::empty(),
         )
         .map_err(|error| failure("reselection_cursor", error))?;

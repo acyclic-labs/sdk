@@ -102,14 +102,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         0,
         AgentBinding::new(&server.binding().encode_to_vec())?,
     );
-    let editor = AttachedSession::new(
-        controls,
-        AgentSelection {
-            agent: root.clone(),
-            conversation_from: 0,
-            status_from: 0,
-        },
-    )?;
+    let editor = AttachedSession::new(controls, AgentSelection::new(root.clone(), 0, 0))?;
     for (intent, prompt, expected) in [
         (
             "editor-text",

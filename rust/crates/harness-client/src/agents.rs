@@ -95,10 +95,27 @@ pub enum AgentEvent {
 pub struct AgentSelection {
     /// Canonical agent identity.
     pub agent: AgentPath,
-    /// Exclusive conversation cursor for a newly selected agent.
-    pub conversation_from: u64,
-    /// Exclusive status cursor for a newly selected agent.
-    pub status_from: u64,
+    /// Complete exclusive conversation cursor for a newly selected agent.
+    pub conversation: wire::SessionCursor,
+    /// Complete exclusive status cursor for a newly selected agent.
+    pub status: wire::SessionCursor,
+}
+
+impl AgentSelection {
+    /// Select from sequence positions without an opaque provider continuation.
+    pub fn new(agent: AgentPath, conversation_from: u64, status_from: u64) -> Self {
+        Self {
+            agent,
+            conversation: wire::SessionCursor {
+                next: conversation_from,
+                ..Default::default()
+            },
+            status: wire::SessionCursor {
+                next: status_from,
+                ..Default::default()
+            },
+        }
+    }
 }
 
 /// One shared fold for the focused agent and bounded visible agents. Each
@@ -141,9 +158,7 @@ impl AgentClient {
     ) -> Result<Self, AgentClientError> {
         Self::observing(
             client,
-            agent,
-            conversation_from,
-            status_from,
+            AgentSelection::new(agent, conversation_from, status_from),
             credential,
             false,
         )
@@ -159,26 +174,22 @@ impl AgentClient {
     ) -> Result<Self, AgentClientError> {
         Self::observing(
             client,
-            agent,
-            conversation_from,
-            status_from,
+            AgentSelection::new(agent, conversation_from, status_from),
             credential,
             true,
         )
     }
 
-    fn observing(
+    pub(crate) fn observing(
         client: Client,
-        agent: AgentPath,
-        conversation_from: u64,
-        status_from: u64,
+        selection: AgentSelection,
         credential: u32,
         all: bool,
     ) -> Result<Self, AgentClientError> {
-        let conversation = agent.conversation()?;
+        let conversation = selection.agent.conversation()?;
         let mut selected = Self {
             session: WireSession::new(client, DemandPolicy::default()),
-            agent: agent.clone(),
+            agent: selection.agent.clone(),
             conversation,
             streams: Vec::new(),
             resources: Vec::new(),
@@ -186,14 +197,7 @@ impl AgentClient {
             credential,
             all,
         };
-        selected.set_view(
-            AgentSelection {
-                agent,
-                conversation_from,
-                status_from,
-            },
-            std::iter::empty(),
-        )?;
+        selected.set_view(selection, std::iter::empty())?;
         Ok(selected)
     }
 
@@ -259,16 +263,16 @@ impl AgentClient {
         let mut streams = Vec::with_capacity(selections.len() * 2);
         let mut subscriptions = Vec::with_capacity(selections.len() * 2);
         for selection in selections {
-            for (is_status, path, from) in [
+            for (is_status, path, resume) in [
                 (
                     false,
                     selection.agent.conversation()?,
-                    selection.conversation_from,
+                    selection.conversation,
                 ),
-                (true, selection.agent.status()?, selection.status_from),
+                (true, selection.agent.status()?, selection.status),
             ] {
                 let mut request =
-                    subscription(&path, from, self.credential, is_status && !self.all);
+                    subscription(&path, resume, self.credential, is_status && !self.all);
                 if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
                     follow.opening_cut = self.all;
                 }
@@ -602,7 +606,7 @@ impl AgentClient {
 
 fn subscription(
     path: &StreamPath,
-    from: u64,
+    resume: wire::SessionCursor,
     credential: u32,
     status: bool,
 ) -> wire::SessionSubscription {
@@ -616,10 +620,7 @@ fn subscription(
             }],
             ..Default::default()
         }),
-        resume: Some(wire::SessionCursor {
-            next: from,
-            opaque: bytes::Bytes::new(),
-        }),
+        resume: Some(resume),
         kind: Some(wire::session_subscription::Kind::Follow(
             wire::SessionFollow {
                 resource: wire_codec::session::stream_resource(path.as_str()),

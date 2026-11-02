@@ -65,7 +65,9 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     pool.register_credential(0, session::testing::credential())?;
     // Admission completes while the stream is absent. Creation must wake the
     // same subscription; no viewport replacement or second open is involved.
-    let follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
+    let follow = pool
+        .subscribe(subscription(&path, Default::default(), 0, false))
+        .await?;
     let payload = acyclic_stream::OwnedBytes::from(b"created".to_vec());
     let key = acyclic_stream::OwnedBytes::from(b"key".to_vec());
     let attribute = acyclic_stream::OwnedBytes::from(b"attribute".to_vec());
@@ -104,7 +106,9 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
-    let inherited = pool.subscribe(subscription(&forked, 0, 0, false)).await?;
+    let inherited = pool
+        .subscribe(subscription(&forked, Default::default(), 0, false))
+        .await?;
     let mut own_charge = 0;
     let backings = crate::reader::backing::BackingPool::default();
     let mut retained = Vec::new();
@@ -274,7 +278,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
 
     let mut observed = WireSession::new(pool.clone(), DemandPolicy::default());
     observed.replace_streams([path.clone(), forked.clone()].into_iter().map(|path| {
-        let request = subscription(&path, 0, 0, false);
+        let request = subscription(&path, Default::default(), 0, false);
         (path, request)
     }))?;
     for path in [&path, &forked] {
@@ -327,7 +331,9 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 vec![AppendRecord::latest(tiny.clone(), "status", true)?],
             )
             .await?;
-            let mut source = pool.subscribe(subscription(&path, 0, 0, latest)).await?;
+            let mut source = pool
+                .subscribe(subscription(&path, Default::default(), 0, latest))
+                .await?;
             let frame = loop {
                 let frame = source.next().await.ok_or("tiny interest ended")??;
                 match frame.wire().body.as_ref() {
@@ -462,7 +468,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .await?;
-        let mut request = subscription(&indexed, 0, 0, true);
+        let mut request = subscription(&indexed, Default::default(), 0, true);
         request.filter = None;
         if let Some(wire::session_subscription::Kind::Follow(follow)) = request.kind.as_mut() {
             follow.bootstrap_head = false;
@@ -557,7 +563,15 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use prost::Message as _;
     let subscription = |path: &StreamPath, from: u64, credential: u32, latest: bool| {
-        let mut request = subscription(path, from, credential, latest);
+        let mut request = subscription(
+            path,
+            wire::SessionCursor {
+                next: from,
+                ..Default::default()
+            },
+            credential,
+            latest,
+        );
         if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
             follow.opening_cut = true;
         }

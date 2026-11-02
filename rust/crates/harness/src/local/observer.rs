@@ -46,7 +46,11 @@ impl Observer {
     /// Observes `connection`'s root from conversation sequence `from` and
     /// status sequence `status_from` on.
     pub(super) fn open(connection: &Connection, from: u64, status_from: u64) -> Result<Self> {
-        Self::opening(connection, from, status_from, None)
+        Self::opening(
+            connection,
+            AgentSelection::new(connection.root().clone(), from, status_from),
+            None,
+        )
     }
 
     pub(super) fn replay(
@@ -60,12 +64,16 @@ impl Observer {
                 .cursor(&acyclic_stream::wire_codec::session::stream_resource(
                     path.as_str(),
                 ))
-                .next
+                .wire()
+                .map_err(storage)
         };
         let observer = Self::opening(
             connection,
-            cursor(agent.conversation().map_err(storage)?),
-            cursor(agent.status().map_err(storage)?),
+            AgentSelection {
+                agent: agent.clone(),
+                conversation: cursor(agent.conversation().map_err(storage)?)?,
+                status: cursor(agent.status().map_err(storage)?)?,
+            },
             Some(projection),
         )?;
         projection
@@ -76,16 +84,11 @@ impl Observer {
 
     fn opening(
         connection: &Connection,
-        from: u64,
-        status_from: u64,
+        selection: AgentSelection,
         projection: Option<&acyclic_harness_client::EventProjection>,
     ) -> Result<Self> {
-        let agent = connection.root().clone();
-        let selection = AgentSelection {
-            agent: agent.clone(),
-            conversation_from: from,
-            status_from,
-        };
+        let agent = selection.agent.clone();
+        let from = selection.conversation.next;
         let mut client = match projection {
             Some(_) => connection.controls.observe_all(selection),
             None => connection.controls.observe(selection),
@@ -244,11 +247,7 @@ impl Observer {
         tracing::debug!(from = self.next_turn, "conversation reopen");
         self.client
             .set_view(
-                AgentSelection {
-                    agent: self.agent.clone(),
-                    conversation_from: self.next_turn,
-                    status_from: 0,
-                },
+                AgentSelection::new(self.agent.clone(), self.next_turn, 0),
                 std::iter::empty(),
             )
             .map_err(storage)

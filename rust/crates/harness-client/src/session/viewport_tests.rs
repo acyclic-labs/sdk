@@ -181,11 +181,7 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
 fn agent_viewport_releases_output_panes_on_scroll_out() {
     let tree = Tree::new(64);
     let (session, scheduler) = client();
-    let selection = |index: usize| crate::AgentSelection {
-        agent: tree.children[index].clone(),
-        conversation_from: 0,
-        status_from: 0,
-    };
+    let selection = |index: usize| crate::AgentSelection::new(tree.children[index].clone(), 0, 0);
     let mut client =
         crate::AgentClient::new(session.client().clone(), tree.children[0].clone(), 0, 0, 0)
             .unwrap();

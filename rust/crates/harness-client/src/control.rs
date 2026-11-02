@@ -291,13 +291,7 @@ impl AgentControls {
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
-        crate::AgentClient::new(
-            self.client.clone(),
-            selection.agent,
-            selection.conversation_from,
-            selection.status_from,
-            self.credential,
-        )
+        crate::AgentClient::observing(self.client.clone(), selection, self.credential, false)
     }
 
     /// Replay all committed transitions through the ordinary session owner.
@@ -305,13 +299,7 @@ impl AgentControls {
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
-        crate::AgentClient::all(
-            self.client.clone(),
-            selection.agent,
-            selection.conversation_from,
-            selection.status_from,
-            self.credential,
-        )
+        crate::AgentClient::observing(self.client.clone(), selection, self.credential, true)
     }
 
     /// Prepare and retain an exact invocation before starting any transport.
