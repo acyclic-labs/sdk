@@ -4,6 +4,7 @@ use super::*;
 async fn directory_link_projection_has_no_target_sized_conversion()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
+    let mut reads = costs;
     for (index, units) in [1, 1024].into_iter().enumerate() {
         let work = setup_work()?;
         let source = windows_checkout_source().await?;
@@ -27,7 +28,15 @@ async fn directory_link_projection_has_no_target_sized_conversion()
             starting: false,
         };
         let directory = MountPath::root();
+        drop(runtime.source.read_link(&path, &work)?);
         for (control, restore_conversion) in [false, true].into_iter().enumerate() {
+            let mut read = None;
+            reads[index][control] = acyclic_test_support::measure(|| {
+                read = Some(runtime.source.read_link(&path, &work));
+            });
+            let read = read.ok_or("missing source read")??;
+            assert_eq!(read.bytes.as_ref(), target);
+            drop(read);
             let component = owned_component(projection, &windows_name("link"))?;
             let mut result = Ok(None);
             costs[index][control] = acyclic_test_support::measure(|| {
@@ -49,10 +58,17 @@ async fn directory_link_projection_has_no_target_sized_conversion()
             assert!(!entry.directory_link);
         }
     }
-    // This thread owns projection conversion; source I/O retains its own accounting.
-    assert_eq!(costs[0][0].count_total, costs[1][0].count_total);
-    assert_eq!(costs[0][0].bytes_total, costs[1][0].bytes_total);
-    let conversion_bytes = |index: usize| costs[index][1].bytes_total - costs[index][0].bytes_total;
+    // Subtract the same source's required read storage before comparing conversion.
+    let overhead_count = |index: usize| {
+        i128::from(costs[index][0].count_total) - i128::from(reads[index][0].count_total)
+    };
+    let overhead_bytes = |index: usize, control: usize| {
+        i128::from(costs[index][control].bytes_total)
+            - i128::from(reads[index][control].bytes_total)
+    };
+    assert_eq!(overhead_count(0), overhead_count(1));
+    assert_eq!(overhead_bytes(0, 0), overhead_bytes(1, 0));
+    let conversion_bytes = |index| overhead_bytes(index, 1) - overhead_bytes(index, 0);
     assert!(conversion_bytes(0) > 0);
     assert!(conversion_bytes(1) > conversion_bytes(0));
     Ok(())
