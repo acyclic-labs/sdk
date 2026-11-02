@@ -99,6 +99,7 @@ impl StockExecutor {
     /// Offers the selected capabilities as `native`'s declarations. Called
     /// after any context manifest pins the selection, which a bound registry
     /// refuses, so each declaration runs the revision the manifest pins.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn with_native_tools(
         mut self,
         native: &crate::tools::native::NativeTools,
