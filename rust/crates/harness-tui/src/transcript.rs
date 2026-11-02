@@ -50,7 +50,10 @@ impl TranscriptRows {
     pub fn push(&mut self, prompt: bool, text: &str) {
         self.clear_pending();
         self.truncated |= text.len() > MAX_BLOCK_BYTES;
-        let text = bounded_text(text);
+        self.push_owned(prompt, bounded_text(text));
+    }
+
+    fn push_owned(&mut self, prompt: bool, text: String) {
         self.bytes += text.len();
         let rows = wrap(prompt, &text, self.width.max(1));
         self.blocks.push_back(Block {
@@ -72,7 +75,7 @@ impl TranscriptRows {
             self.lines.clear();
             self.bytes = 0;
             for block in std::mem::take(&mut self.blocks) {
-                self.push(block.prompt, &block.text);
+                self.push_owned(block.prompt, block.text);
             }
         }
         &self.lines
@@ -272,6 +275,61 @@ mod tests {
             assert!(rows.len() <= MAX_ROWS);
             assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
         }
+        assert!(transcript.truncated());
+    }
+
+    #[test]
+    fn resize_moves_retained_sources_and_preserves_the_bounded_projection() {
+        let mut transcript = TranscriptRows::default();
+        for index in 0..MAX_BLOCKS + 2 {
+            transcript.push(
+                index % 2 == 0,
+                &format!("source {index:03}: 界e\u{301}👩‍💻\nlast"),
+            );
+        }
+        let sources = transcript
+            .blocks
+            .iter()
+            .map(|block| block.text.as_ptr())
+            .collect::<Vec<_>>();
+        let bytes = transcript.bytes;
+        let original = transcript.lines.clone();
+        // Negative control: transient text must be rebuilt at the new width,
+        // rather than carried over with the immutable settled source.
+        transcript.pending([(true, "transient text")].into_iter());
+        assert!(transcript.pending_rows > 0);
+        for width in [47, 15, 3, 0, 80] {
+            let rows = transcript.rows(width);
+            assert!(rows.len() <= MAX_ROWS);
+            assert!(
+                rows.iter()
+                    .all(|row| row.width() <= usize::from(width.max(1)))
+            );
+            assert_eq!(transcript.pending_rows, 0);
+            assert_eq!(transcript.bytes, bytes);
+            assert_eq!(
+                transcript
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_ptr())
+                    .collect::<Vec<_>>(),
+                sources,
+                "resize copied settled source text"
+            );
+        }
+        assert_eq!(transcript.lines, original);
+        let allocation = transcript.lines[0].spans.as_ptr();
+        transcript.rows(80);
+        assert_eq!(transcript.lines[0].spans.as_ptr(), allocation);
+
+        // A narrow projection may evict older display blocks, but it must
+        // retain the original newest source without exceeding row credit.
+        transcript.push(false, &"界".repeat(MAX_ROWS - 4));
+        let newest = transcript.blocks.back().unwrap().text.as_ptr();
+        assert!(transcript.rows(1).len() <= MAX_ROWS);
+        assert_eq!(transcript.blocks.len(), 1);
+        assert_eq!(transcript.blocks.back().unwrap().text.as_ptr(), newest);
+        assert!(transcript.bytes <= MAX_BYTES);
         assert!(transcript.truncated());
     }
 
