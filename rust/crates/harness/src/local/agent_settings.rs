@@ -25,7 +25,7 @@ pub(super) struct Volumes<'a> {
     pub(super) signed: &'a Scope,
     pub(super) home: &'a VolumeRef,
     pub(super) journal: &'a VolumeRef,
-    pub(super) maximum_bytes: u64,
+    pub(super) maximum_bytes: Option<u64>,
 }
 
 /// Imports resolve in the home over the seed; `sys/` only in the seed.
@@ -199,7 +199,6 @@ async fn record(
                 volumes.signed,
                 volumes.journal,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
             &record,
@@ -434,7 +433,6 @@ mod tests {
             &harness.signed,
             &harness.scratch,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         harness
@@ -446,7 +444,7 @@ mod tests {
                 b"export const sampling = {temperature: 0.25};",
                 "text/typescript",
                 "options.ts",
-                u64::MAX,
+                None,
                 &crate::IdempotencyKey::new("settings-import-control".to_owned())?,
                 None,
                 ContentAccess::default(),
@@ -458,7 +456,7 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
-            maximum_bytes: u64::MAX,
+            maximum_bytes: None,
         };
         let layers = [Layer {
             name: "home",
@@ -536,7 +534,7 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
-            maximum_bytes: u64::MAX,
+            maximum_bytes: None,
         };
         let original = Tree::new(&volumes).await?;
         for (path, source) in [
