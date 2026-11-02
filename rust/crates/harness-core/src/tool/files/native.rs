@@ -30,6 +30,7 @@ record!(
     WriteFileInput,
     self,
     self.path.capacity(),
+    self.if_version.as_ref().map_or(0, String::capacity),
     self.content.capacity()
 );
 record!(

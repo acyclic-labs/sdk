@@ -484,24 +484,48 @@ impl ToolExecutor for FileTool {
                 };
             }
             let source = if matches!(self, Self::Write) {
-                (None, None)
+                match invocation
+                    .arguments
+                    .get("ifVersion")
+                    .and_then(Value::as_str)
+                    .filter(|version| !matches!(*version, "any" | "absent"))
+                {
+                    Some(version) => {
+                        let path = invocation
+                            .arguments
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                rejection(Some(work), "write receipt requires its path")
+                            })?;
+                        let (source, custody) = super::version::decode_tool_version(
+                            Some(context),
+                            path,
+                            version,
+                            Some(work),
+                        )?;
+                        (Some(source), custody)
+                    }
+                    None => (None, None),
+                }
             } else {
-                self.preflight(
+                let (source, custody) = self.preflight(
                     context.effective_scope(),
                     Some(context),
                     invocation,
                     Some(work),
-                )?
+                )?;
+                (source.map(FileReadSource::Content), custody)
             };
             let receipt =
                 context
                     .observe_tool_source_file_once(
                         invocation.operation_id,
-                        source.0.as_ref(),
-                        if matches!(self, Self::Write) {
+                        source.0.as_ref().map(FileReadSource::volume),
+                        if matches!(self, Self::Write) && source.0.is_none() {
                             None
                         } else {
-                            source.0.as_ref().map(FileRef::path).or_else(|| {
+                            source.0.as_ref().map(FileReadSource::path).or_else(|| {
                                 invocation.arguments.get("path").and_then(Value::as_str)
                             })
                         },
@@ -576,7 +600,7 @@ impl ToolExecutor for FileTool {
                 let receipt = context
                     .observe_tool_source_file_once(
                         invocation.operation_id,
-                        source.0.as_ref(),
+                        source.0.as_ref().map(FileRef::volume),
                         invocation.arguments.get("path").and_then(Value::as_str),
                         None,
                     )

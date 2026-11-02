@@ -499,14 +499,14 @@ impl ToolContext {
     pub(crate) async fn observe_tool_source_file_once(
         &self,
         operation_id: OperationId,
-        source: Option<&FileRef>,
+        source_volume: Option<&VolumeRef>,
         replacement_path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        let binding = self.task().tool_content(source.map(FileRef::volume));
+        let binding = self.task().tool_content(source_volume);
         let writer = super::content_write::content_writer(binding, io)?;
         let destination = replacement_path
-            .map(|path| writer.destination(source.map(FileRef::volume), path, io))
+            .map(|path| writer.destination(source_volume, path, io))
             .transpose()?;
         self.task()
             .observe_bound_file_once(
