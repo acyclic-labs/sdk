@@ -1,4 +1,5 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "@acyclic-labs/actors";
+import { snapshotBytes } from "@acyclic-labs/auth";
 import { ResourceIdentity, validateResourceLabel } from "@acyclic-labs/auth/addressing";
 import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";
@@ -34,7 +35,7 @@ export class WorkerServiceBinding {
   }
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {
     if (typeof method !== "string" || method.length === 0) throw new TypeError("RPC method is required");
-    const result = await this.#invoke(this.#request("RPC", "https://worker.internal/", payload.slice(), [], method), options);
+    const result = await this.#invoke(this.#request("RPC", "https://worker.internal/", snapshotBytes(payload), [], method), options);
     return Uint8Array.from(result.body);
   }
 }

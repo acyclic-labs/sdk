@@ -1,4 +1,5 @@
 import { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
+import { snapshotBytes } from "@acyclic-labs/auth";
 import { ActorReference, actorLocationHint } from "@acyclic-labs/auth/addressing";
 import { awaitSignal } from "@acyclic-labs/auth/credential";
 import type { ActorsClient, ActorsCallOptions } from "./client.js";
@@ -228,7 +229,7 @@ export class ActorStub {
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {
     if (typeof method !== "string" || method.length === 0) throw new TypeError("RPC method is required");
-    const snapshot = payload.slice();
+    const snapshot = snapshotBytes(payload);
     const result = await this.#call(async () => this.#request("RPC", "https://actor.internal/", snapshot, [], method), options);
     return Uint8Array.from(result.body);
   }
