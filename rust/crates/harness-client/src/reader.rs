@@ -18,6 +18,8 @@ mod cache;
 mod credential;
 mod demand;
 mod driver;
+#[cfg(any(feature = "agents", feature = "wasm"))]
+pub mod live;
 mod requests;
 
 pub use backing::RecordBytes;

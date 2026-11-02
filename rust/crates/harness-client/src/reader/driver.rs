@@ -464,7 +464,7 @@ pub(super) fn fetched(record: Record) -> Fetched {
     }
 }
 
-async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
+pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
     let result = match op {
         Op::Read {
             stream,
@@ -794,6 +794,25 @@ mod tests {
                 reader.issue(&path).unwrap(),
                 reader.issues.get(&path).unwrap()
             ));
+
+            #[cfg(any(feature = "agents", feature = "wasm"))]
+            {
+                use super::super::live::{Error, Source};
+                use std::num::NonZeroU32;
+
+                let source = Source::new(path.clone());
+                let original_issue = reader.issue(&path).unwrap();
+                let Err(Error::Source(latest_issue)) = source.latest(&reader) else {
+                    panic!("a refused live value must retain its original cause");
+                };
+                let Err(Error::Source(page_issue)) =
+                    source.page(&reader, 0, NonZeroU32::new(1).unwrap())
+                else {
+                    panic!("a refused live page must retain its original cause");
+                };
+                assert!(std::ptr::eq(latest_issue, original_issue));
+                assert!(std::ptr::eq(page_issue, original_issue));
+            }
 
             provider
                 .append(AppendRequest {
