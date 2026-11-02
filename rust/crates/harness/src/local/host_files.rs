@@ -730,7 +730,7 @@ pub async fn serve_until(
     directory
         .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
-    directory
+    let status = directory
         .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
     let session = uuid::Uuid::from_bytes(
@@ -763,7 +763,7 @@ pub async fn serve_until(
         .watch(&requests, RecursiveMode::NonRecursive)
         .map_err(storage)?;
     let result = tokio::select! {
-        result = serve_requests(&owner, &directory, session, &notices) => result,
+        result = serve_requests(&owner, &status, session, &notices) => result,
         result = shutdown => result,
     };
     drop(watcher);
@@ -985,7 +985,7 @@ impl Served {
     /// Publishes one dispatch's immutable reply unless it was withdrawn.
     fn answer(
         &mut self,
-        directory: &acyclic_fs::HeldRoot,
+        status: &acyclic_fs::HeldRoot,
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
@@ -996,10 +996,7 @@ impl Served {
             return Ok(());
         }
         let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-        let root = directory
-            .open_directory(Path::new("status"))
-            .map_err(native_file_error)?;
-        match root.publish_immutable(
+        match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
             acyclic_fs::NativeDurability::Durable,
@@ -1019,7 +1016,7 @@ impl Served {
 
 async fn serve_requests(
     owner: &HostWorkspaceOwner,
-    directory: &acyclic_fs::HeldRoot,
+    status: &acyclic_fs::HeldRoot,
     session: uuid::Uuid,
     notices: &Notices,
 ) -> Result<()> {
@@ -1038,7 +1035,7 @@ async fn serve_requests(
         tokio::select! {
             () = notices.changed.notified() => {}
             Some((operation, outcome)) = running.next(), if !running.is_empty() => {
-                served.answer(directory, operation, outcome)?;
+                served.answer(status, operation, outcome)?;
             }
         }
     }
