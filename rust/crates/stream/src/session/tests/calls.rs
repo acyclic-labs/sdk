@@ -240,18 +240,11 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
-    let (mut denied, refused) = client.actor_call_input(&invocation, 1, 128).await?;
-    assert_eq!(
-        denied.send(Bytes::from_static(b"secret input")).await,
+    assert!(matches!(
+        client.actor_call_input(&invocation, 1, 128).await,
         Err(StreamError::AccessDenied)
-    );
-    futures::pin_mut!(refused);
-    assert_eq!(
-        refused.next().await.map(|reply| reply.map(|_| ())),
-        Some(Err(StreamError::AccessDenied))
-    );
+    ));
     assert!(dispatches.try_recv().is_err());
-    drop(denied);
 
     let (mut abandoned, abandoned_reply) = client.actor_call_input(&invocation, 0, 128).await?;
     let (mut input, _abandoned_answer) = dispatches.recv().await.ok_or("no consumer to retire")?;
