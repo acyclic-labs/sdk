@@ -42,6 +42,8 @@ struct Model {
     call: CallPath,
     fence: StreamPath,
     fault: Fault,
+    request: bool,
+    requested: bool,
     executor: usize,
     stopped: bool,
     observed: Option<Outcome>,
@@ -64,6 +66,8 @@ impl Model {
             call: CallPath::new(&root, "c1").expect("call"),
             fence: StreamPath::new("executor/sessions/1/ended").expect("fence"),
             fault,
+            request: false,
+            requested: true,
             executor: 0,
             stopped: false,
             observed: None,
@@ -133,12 +137,16 @@ impl Model {
         };
         match hop {
             Hop::Request => {
-                self.publish(
-                    self.call
-                        .request(OwnedBytes::from(&b"run"[..]))
-                        .map_err(|error| error.to_string())?,
-                )
-                .await?;
+                if self
+                    .publish(
+                        self.call
+                            .request(OwnedBytes::from(&b"run"[..]))
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .await?
+                {
+                    self.request = true;
+                }
             }
             Hop::Replay => self.replay().await?,
             Hop::Chunk if self.executor == 0 || self.stopped => {}
@@ -147,7 +155,9 @@ impl Model {
                 let fence = Some(&self.fence);
                 let stage = if hop == Hop::Chunk { 1 } else { self.executor };
                 let commit = match stage {
-                    0 => self.call.accept(&accepted(b"e1", &self.fence), true),
+                    0 => self
+                        .call
+                        .accept(&accepted(b"e1", &self.fence), self.requested),
                     1 => self.call.chunk(
                         fence,
                         OwnedBytes::from(self.chunks.to_be_bytes().as_slice()),
@@ -183,7 +193,7 @@ impl Model {
             Hop::Rival => {
                 let commit = self
                     .call
-                    .accept(&accepted(b"e2", &self.fence), true)
+                    .accept(&accepted(b"e2", &self.fence), self.requested)
                     .map_err(|error| error.to_string())?;
                 if self.publish(self.guard(commit)).await? {
                     self.accepted = true;
@@ -291,7 +301,9 @@ impl Model {
         if let Some(receipt) = journal.receipt(self.call.log()) {
             // The receipt is the committed request plus the one terminal
             // record, or the fence that settled the accepted call.
-            if receipt.terminal.is_none() == receipt.fence.is_none() {
+            if receipt.request.is_some() != self.request
+                || receipt.terminal.is_none() == receipt.fence.is_none()
+            {
                 return Err(format!("incomplete receipt {receipt:?}"));
             }
         }
@@ -367,15 +379,18 @@ async fn explore(fault: Fault) -> Result<usize, String> {
     );
     assert_eq!(all.len(), 840);
     let mut violations = 0;
-    for schedule in all {
-        let mut model = Model::new(fault, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
-        for hop in &schedule {
-            if let Err(violation) = model.step(*hop).await {
-                if fault == Fault::None {
-                    return Err(format!("{schedule:?}: {violation}"));
+    for requested in [false, true] {
+        for schedule in &all {
+            let mut model = Model::new(fault, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+            model.requested = requested;
+            for hop in schedule {
+                if let Err(violation) = model.step(*hop).await {
+                    if fault == Fault::None {
+                        return Err(format!("requested={requested} {schedule:?}: {violation}"));
+                    }
+                    violations += 1;
+                    break;
                 }
-                violations += 1;
-                break;
             }
         }
     }
@@ -385,6 +400,25 @@ async fn explore(fault: Fault) -> Result<usize, String> {
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(Fault::None).await?, 0);
+    // Preserve the owning acceptance control: only its settled guard is
+    // removed from the original requestless, already cancelled call.
+    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+    model.step(Hop::Cancel).await?;
+    let mut acceptance = model
+        .call
+        .accept(
+            &Accepted {
+                executor: OwnedBytes::from(&b"e1"[..]),
+                fence: Some(model.fence.clone()),
+            },
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+    acceptance.conditions.retain(|condition| {
+        !matches!(condition, CommitCondition::Absent { path } if path == model.call.settled())
+    });
+    assert!(model.publish(acceptance).await?);
+    assert!(model.check(Hop::Rival).await.is_err());
     for fault in [
         Fault::Settlement,
         Fault::Fence,
@@ -413,6 +447,7 @@ pub async fn check(bytes: &[u8]) -> Result<(), String> {
         _ => Outcome::Indeterminate("unknown".into()),
     };
     let mut model = Model::new(Fault::None, result);
+    model.requested = bytes.last().is_none_or(|byte| byte & 8 == 0);
     for byte in bytes {
         let hop = match byte % 7 {
             0 => Hop::Request,
