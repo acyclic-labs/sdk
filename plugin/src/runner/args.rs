@@ -16,62 +16,82 @@ pub enum OutputFormat {
     Jsonl,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum Template {
+    #[default]
+    Graphcoder,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     version,
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]
 pub struct Args {
+    /// Select the shipped agent preset; configuration remains ordinary files.
+    #[arg(global = true, long, value_enum, default_value_t)]
+    pub template: Template,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
+    #[arg(global = true, long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.
-    #[arg(long, requires = "host_workspace")]
+    #[arg(global = true, long, requires = "host_workspace")]
     pub host_state_directory: Option<PathBuf>,
-    #[arg(long, default_value = ".")]
+    #[arg(global = true, long, default_value = ".")]
     pub workspace: PathBuf,
     /// Instruction scope relative to the workspace root.
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub directory: Option<String>,
-    #[arg(long, env = "GRAPHCODER_MODEL")]
+    #[arg(global = true, long, env = "GRAPHCODER_MODEL")]
     pub model: Option<String>,
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub catalog: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub credentials: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub settings_root: Option<PathBuf>,
     /// Use shipped defaults and explicit inputs only; ignore user settings,
     /// native credential discovery and environment model selection. Signing
     /// custody uses private files in this run's state directory.
-    #[arg(long, conflicts_with = "endpoint")]
+    #[arg(global = true, long, conflicts_with = "endpoint")]
     pub default_config: bool,
     /// Export committed call usage for this conversation tree after headless
     /// settlement. A path is replaced with this snapshot; '-' writes JSONL to
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
-    #[arg(long, value_name = "PATH|-")]
+    #[arg(global = true, long, value_name = "PATH|-")]
     pub usage_jsonl: Option<PathBuf>,
     /// Explicit number of retained diagnostic text records; no default credit.
-    #[arg(long, requires = "diagnostic_record_bytes")]
+    #[arg(global = true, long, requires = "diagnostic_record_bytes")]
     pub diagnostic_records: Option<usize>,
     /// Explicit bytes reserved per diagnostic record, allocated only for enabled logging.
-    #[arg(long, requires = "diagnostic_records")]
+    #[arg(global = true, long, requires = "diagnostic_records")]
     pub diagnostic_record_bytes: Option<usize>,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
     /// With `--host-workspace` it answers only native permission prompts for
     /// coordination tools, and defaults to leaving them to the host.
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub approval_policy: Option<PathBuf>,
-    #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
+    #[arg(
+        global = true,
+        short = 'p',
+        long = "prompt",
+        conflicts_with = "input_format"
+    )]
     pub prompt: Option<String>,
-    #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
+    #[arg(
+        global = true,
+        long,
+        value_enum,
+        default_value_t,
+        requires_if("jsonl", "operation")
+    )]
     pub input_format: InputFormat,
     /// Project every committed event with source cursors as versioned JSONL.
     #[arg(long, global = true, value_enum, default_value_t)]
     pub output_format: OutputFormat,
     /// Read source cursors here and replace the file after a complete flushed acknowledgement.
     /// Reuse the same operation; an interrupted observation may replay its payload chunks.
-    #[arg(long, requires = "operation")]
+    #[arg(global = true, long, requires = "operation")]
     pub event_cursor: Option<PathBuf>,
     /// Validate final JSON artifacts against this schema before reporting success.
     #[arg(long, global = true)]
@@ -89,12 +109,12 @@ pub struct Args {
     /// Select an existing session by its canonical agent path.
     #[arg(long, global = true)]
     pub agent: Option<String>,
-    #[arg(long)]
+    #[arg(global = true, long)]
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
     /// harness: the given URL, else `ACYCLIC_ENDPOINT`, else the managed
     /// default, with `ACYCLIC_API_KEY` as the credential.
-    #[arg(long, num_args = 0..=1, conflicts_with = "host_workspace")]
+    #[arg(global = true, long, num_args = 0..=1, conflicts_with = "host_workspace")]
     pub endpoint: Option<Option<String>>,
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -103,9 +123,36 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if matches!(self.command, Some(Command::Serve(_)))
+            && (self.prompt.is_some()
+                || self.endpoint.is_some()
+                || self.host_workspace
+                || self.usage_jsonl.is_some()
+                || self.input_format != InputFormat::Text
+                || self.operation.is_some()
+                || self.agent.is_some()
+                || self.resume)
+        {
+            return Err(
+                "serve input: execution inputs cannot select a server; recovery: acyclic serve ADDRESS --workspace PATH",
+            );
+        }
+        if let Some(Command::Attach { path }) = &self.command {
+            if self.agent.is_some()
+                || self.prompt.is_some()
+                || self.operation.is_some()
+                || self.input_format != InputFormat::Text
+                || self.host_workspace
+            {
+                return Err(
+                    "attach input: select one existing agent without execution input; recovery: acyclic attach AGENT",
+                );
+            }
+            self.agent = Some(path.clone());
+        }
         if let Some(Command::Exec { prompt }) = &self.command {
             if self.prompt.is_some() {
-                return Err("exec input: task supplied twice; recovery: graphcoder exec 'TASK'");
+                return Err("exec input: task supplied twice; recovery: acyclic run -p 'TASK'");
             }
             self.prompt = prompt.clone();
             if prompt.is_none() {
@@ -114,16 +161,16 @@ impl Args {
         }
         if self.input_format == InputFormat::Jsonl && self.operation.is_none() {
             return Err(
-                "JSONL input: --operation is required; recovery: graphcoder --operation OPERATION exec",
+                "JSONL input: --operation is required; recovery: acyclic run --operation OPERATION --input-format jsonl",
             );
         }
         if self.output_format == OutputFormat::Jsonl
             && self.input_format == InputFormat::Text
             && self.prompt.is_none()
-            && self.command.is_none()
+            && matches!(self.command, None | Some(Command::Run))
         {
             return Err(
-                "event input: no task or JSONL input; recovery: graphcoder --output-format jsonl --operation OPERATION exec",
+                "event input: no task or JSONL input; recovery: acyclic run --output-format jsonl --operation OPERATION --input-format jsonl",
             );
         }
         let event_options = self.output_format == OutputFormat::Jsonl
@@ -131,15 +178,19 @@ impl Args {
             || self.output_schema.is_some()
             || self.output.is_some();
         if event_options
-            && (self.host_workspace || !matches!(self.command, None | Some(Command::Exec { .. })))
+            && (self.host_workspace
+                || !matches!(
+                    self.command,
+                    None | Some(Command::Run | Command::Exec { .. })
+                ))
         {
             return Err(
-                "output projection: requires an execution; recovery: graphcoder --output-format jsonl exec 'TASK'",
+                "output projection: requires an execution; recovery: acyclic run --output-format jsonl -p 'TASK'",
             );
         }
         if event_options && self.output_format != OutputFormat::Jsonl {
             return Err(
-                "output projection: requires JSONL output; recovery: graphcoder --output-format jsonl exec 'TASK'",
+                "output projection: requires JSONL output; recovery: acyclic run --output-format jsonl -p 'TASK'",
             );
         }
         if self
@@ -148,7 +199,7 @@ impl Args {
             .is_some_and(|path| path.as_os_str() == "-")
         {
             return Err(
-                "output artifact: stdout is reserved for events; recovery: graphcoder --output-format jsonl --output final-output.json exec 'TASK'",
+                "output artifact: stdout is reserved for events; recovery: acyclic run --output-format jsonl --output final-output.json -p 'TASK'",
             );
         }
         if self.output_format == OutputFormat::Jsonl
@@ -158,7 +209,7 @@ impl Args {
                 .is_some_and(|path| path.as_os_str() == "-")
         {
             return Err(
-                "output projection: usage export also selects stdout; recovery: graphcoder --usage-jsonl usage.jsonl --output-format jsonl exec 'TASK'",
+                "output projection: usage export also selects stdout; recovery: acyclic run --usage-jsonl usage.jsonl --output-format jsonl -p 'TASK'",
             );
         }
         // Each writer replaces its own file whole; one shared destination
@@ -174,7 +225,7 @@ impl Args {
             .any(|(index, path)| files.clone().skip(index + 1).any(|other| other == path))
         {
             return Err(
-                "output files: --output, --event-cursor and --usage-jsonl must name distinct files; recovery: graphcoder --output-format jsonl --output final.json --event-cursor cursor.json exec 'TASK'",
+                "output files: --output, --event-cursor and --usage-jsonl must name distinct files; recovery: acyclic run --output-format jsonl --operation OPERATION --output final.json --event-cursor cursor.json -p 'TASK'",
             );
         }
         Ok(())
@@ -183,6 +234,10 @@ impl Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Run the GraphCoder preset through the shared conversation driver.
+    Run,
+    /// Attach the terminal to an existing canonical agent path.
+    Attach { path: String },
     /// Execute through the same conversation driver used by prompt mode.
     Exec {
         /// One task; omitted reads JSONL requests from stdin.
@@ -231,6 +286,45 @@ pub struct Serve {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_commands_reject_execution_inputs_before_attach_or_serve() {
+        let mut run = Args::try_parse_from([
+            "acyclic",
+            "run",
+            "--template",
+            "graphcoder",
+            "--workspace",
+            "source",
+            "-p",
+            "task",
+        ])
+        .unwrap();
+        run.prepare_input().unwrap();
+        assert_eq!(run.workspace, PathBuf::from("source"));
+        assert_eq!(run.prompt.as_deref(), Some("task"));
+
+        let mut attach =
+            Args::try_parse_from(["acyclic", "attach", "harness/agents/root"]).unwrap();
+        attach.prepare_input().unwrap();
+        assert_eq!(attach.agent.as_deref(), Some("harness/agents/root"));
+
+        for command in [
+            vec!["attach", "harness/agents/root"],
+            vec!["serve", "127.0.0.1:0"],
+        ] {
+            for input in [vec!["-p", "new task"], vec!["--operation", "new-operation"]] {
+                let mut args = Args::try_parse_from(
+                    ["acyclic"]
+                        .into_iter()
+                        .chain(command.iter().copied())
+                        .chain(input),
+                )
+                .unwrap();
+                assert!(args.prepare_input().is_err());
+            }
+        }
+    }
 
     #[test]
     fn native_workspace_owner_requires_explicit_state_and_excludes_agent_inputs() {

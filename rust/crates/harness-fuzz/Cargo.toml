@@ -32,6 +32,7 @@ native-execution = []
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
+clap.workspace = true
 acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "objects"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
@@ -50,6 +51,14 @@ uuid = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["test-util"], optional = true }
 tokio-util = { workspace = true, features = ["codec"], optional = true }
 which = { version = "=8.0.6", optional = true }
+
+[[bin]]
+name = "cli_args"
+path = "fuzz_targets/cli_args.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "mock_model_script"

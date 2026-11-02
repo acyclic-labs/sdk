@@ -7,7 +7,7 @@ through an already-running GraphCoder harness.
 Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh
-graphcoder --host-workspace --host-state-directory /path/to/explicit/state
+acyclic run --host-workspace --host-state-directory /path/to/explicit/state
 acyclic install codex
 acyclic host codex -- --sandbox workspace-write --ask-for-approval never
 ```

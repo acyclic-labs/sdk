@@ -1,4 +1,4 @@
-//! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
+//! Product entry point over the shared agent frontend and native-host adapters.
 mod install;
 #[cfg(test)]
 mod tests;
@@ -16,6 +16,19 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() -> std::process::ExitCode {
+    if matches!(
+        env::args_os()
+            .nth(1)
+            .as_deref()
+            .and_then(std::ffi::OsStr::to_str),
+        Some("run" | "serve" | "attach")
+    ) {
+        return std::process::Termination::report(acyclic_plugin::main_from(
+            env::args_os(),
+            std::convert::identity,
+            None,
+        ));
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -234,7 +247,7 @@ fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nacyclic run [OPTIONS]\nacyclic serve ADDRESS [OPTIONS]\nacyclic attach AGENT [OPTIONS]\nNative hosts own their tools, permissions and agent loops.\nStart acyclic run --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

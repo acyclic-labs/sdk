@@ -23,7 +23,7 @@ use acyclic_harness::{
     server::ServerConfig,
 };
 use acyclic_harness_providers::{Credentials, Registry};
-use args::{Args, Command, InputFormat, OutputFormat};
+use args::{Args, Command, InputFormat, OutputFormat, Template};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, sync::Arc};
@@ -56,6 +56,21 @@ pub fn main_with(
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     diagnostic_storage: Option<Vec<Box<[u8]>>>,
 ) -> CliCompletion {
+    main_from(std::env::args_os(), seams, diagnostic_storage)
+}
+
+/// Run the shared frontend with caller-owned arguments, including argv[0].
+/// The product executable embeds this entry point; it never starts another
+/// executable, constructs a second harness, or reparses a shell command.
+pub fn main_from<I, T>(
+    arguments: I,
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    diagnostic_storage: Option<Vec<Box<[u8]>>>,
+) -> CliCompletion
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let admission = match acyclic_native_runtime::obs::ReportAdmission::from_environment() {
         Ok(admission) => admission,
         Err(error) => {
@@ -66,7 +81,7 @@ pub fn main_with(
             );
         }
     };
-    let matches = Args::command().get_matches();
+    let matches = Args::command().get_matches_from(arguments);
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
@@ -212,9 +227,10 @@ fn configure(
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
     }
-    let mut config = registry
-        .graphcoder(&args.workspace, args.model.clone())
-        .working_directory(&std::env::current_dir()?)?;
+    let config = match args.template {
+        Template::Graphcoder => registry.graphcoder(&args.workspace, args.model.clone()),
+    };
+    let mut config = config.working_directory(&std::env::current_dir()?)?;
     if let Some(path) = &args.approval_policy {
         config = config.approval_policy(serde_json::from_slice(&std::fs::read(path)?)?);
     }
@@ -238,16 +254,6 @@ async fn run(
     event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
-    // A server is this machine's harness alone: refuse every client mode
-    // before any of them starts.
-    if matches!(args.command, Some(Command::Serve(_)))
-        && (args.prompt.is_some()
-            || args.endpoint.is_some()
-            || args.host_workspace
-            || args.usage_jsonl.is_some())
-    {
-        return Err("serve takes no prompt, endpoint, host workspace or usage export".into());
-    }
     if args.host_workspace {
         let directory = args
             .host_state_directory

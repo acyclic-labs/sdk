@@ -1358,7 +1358,7 @@ mod tests {
     fn full_output_pipe(terminal: Terminal, diagnostics: bool) -> Result<(), Failure> {
         let report = WaitReport::default();
         let dispatch = tracing::Dispatch::new(
-            crate::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
+            super::super::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
         );
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         acyclic_native_runtime::coordination_runtime()?.block_on(async {
@@ -1477,7 +1477,7 @@ mod tests {
                 (owner, reader, terminate)
             };
             let ((result, report_result, _failure_report), (owner, reader, _terminate)) = tokio::join!(
-                crate::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
+                super::super::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
                 host,
             );
             match terminal {
