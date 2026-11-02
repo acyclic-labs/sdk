@@ -132,25 +132,24 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     }
 }
 
-/// Read VT bytes without consuming beyond the caller's capacity.
-pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Result<Vec<u8>> {
-    // At most 1024 bytes, so the length always fits ReadFile's u32 count.
-    let length = u16::try_from(capacity).unwrap_or(u16::MAX).min(1024);
-    let mut bytes = vec![0; usize::from(length)];
+/// Read VT bytes directly into the caller's buffer. A native call consumes at
+/// most u32::MAX bytes; larger buffers continue in the caller's next read.
+pub fn console_read(input: usize, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
+    let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     if bytes.is_empty() {
-        return Ok(bytes);
+        return Ok(0);
     }
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Ok(Vec::new());
+            return Ok(0);
         }
         let timeout = u32::try_from((deadline - now).as_millis()).unwrap_or(u32::MAX - 1);
         // SAFETY: the OS checks the handle; event and count are writable stack
-        // storage, and ReadFile receives the exact allocated slice capacity.
+        // storage, and ReadFile receives at most the borrowed slice capacity.
         unsafe {
             match WaitForSingleObject(input as HANDLE, timeout) {
-                WAIT_TIMEOUT => return Ok(Vec::new()),
+                WAIT_TIMEOUT => return Ok(0),
                 WAIT_OBJECT_0 => {}
                 _ => return Err(io::Error::last_os_error()),
             }
@@ -172,15 +171,14 @@ pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Res
                 if ReadFile(
                     input as HANDLE,
                     bytes.as_mut_ptr(),
-                    u32::from(length),
+                    length,
                     &mut count,
                     std::ptr::null_mut(),
                 ) == 0
                 {
                     return Err(io::Error::last_os_error());
                 }
-                bytes.truncate(count as usize);
-                return Ok(bytes);
+                return usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData.into());
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());

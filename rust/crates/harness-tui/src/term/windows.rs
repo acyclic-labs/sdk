@@ -288,20 +288,22 @@ impl ProbeIo for Tty {
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
         // Input stays on the caller: a timed-out output worker must never
         // consume bytes whose result could be abandoned at the deadline.
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         loop {
             self.owner.check_open()?;
             let now = Instant::now();
             if now >= deadline {
                 return Ok(0);
             }
-            let input = ffi::console_read(
+            let count = ffi::console_read(
                 self.reader.as_raw_handle() as usize,
-                bytes.len(),
+                bytes,
                 deadline.min(now + std::time::Duration::from_millis(1)),
             )?;
-            if !input.is_empty() {
-                bytes[..input.len()].copy_from_slice(&input);
-                return Ok(input.len());
+            if count != 0 {
+                return Ok(count);
             }
         }
     }
