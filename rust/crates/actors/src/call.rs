@@ -342,6 +342,15 @@ pub fn fence(record: &Record) -> Result<Option<StreamPath>, Error> {
         .transpose()
 }
 
+/// Acceptance validated the path once; later records compare borrowed bytes.
+fn session_matches(accepted: &Accepted, fence: Option<&OwnedBytes>) -> bool {
+    fence.map(AsRef::as_ref)
+        == accepted
+            .fence
+            .as_ref()
+            .map(|fence| fence.as_str().as_bytes())
+}
+
 fn reason(value: &OwnedBytes) -> Result<String, Error> {
     String::from_utf8(value.to_vec()).map_err(|_| Error::Malformed("call reason is not UTF-8"))
 }
@@ -448,7 +457,8 @@ impl Journal {
     /// it: a cancel after acceptance reads as `indeterminate`.
     ///
     /// # Errors
-    /// When the record is out of order or breaks the protocol.
+    /// When the record is out of order or breaks the protocol, including an
+    /// executor chunk or terminal naming another acceptance session.
     pub fn apply(&mut self, record: &Record) -> Result<Entry, Error> {
         if record.sequence != self.next {
             return Err(Error::Malformed("call record out of order"));
@@ -473,19 +483,26 @@ impl Journal {
                     .accepted
                     .as_ref()
                     .ok_or(Error::Malformed("call chunk before its acceptance"))?;
-                if fence(record)? != accepted.fence {
+                if !session_matches(accepted, attribute(record, FENCE)) {
                     return Err(Error::Malformed("call chunk from another session"));
                 }
                 Entry::Chunk(body)
             }
-            Entry::Terminal(Outcome::Cancelled(reason)) if self.accepted.is_some() => {
-                let outcome =
-                    Outcome::Indeterminate(format!("cancelled after acceptance: {reason}"));
-                self.terminal = Some(Committed::of(record));
-                self.outcome = Some(outcome.clone());
-                Entry::Terminal(outcome)
-            }
             Entry::Terminal(outcome) => {
+                if let Some(fence) = attribute(record, FENCE)
+                    && !self
+                        .accepted
+                        .as_ref()
+                        .is_some_and(|accepted| session_matches(accepted, Some(fence)))
+                {
+                    return Err(Error::Malformed("call terminal from another session"));
+                }
+                let outcome = match outcome {
+                    Outcome::Cancelled(reason) if self.accepted.is_some() => {
+                        Outcome::Indeterminate(format!("cancelled after acceptance: {reason}"))
+                    }
+                    outcome => outcome,
+                };
                 self.terminal = Some(Committed::of(record));
                 self.outcome = Some(outcome.clone());
                 Entry::Terminal(outcome)
