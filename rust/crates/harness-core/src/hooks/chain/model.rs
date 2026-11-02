@@ -39,10 +39,10 @@ fn identity(hook: &HookSpec) -> &str {
     }
 }
 
-fn configured(hooks: Vec<HookSpec>) -> Result<Hooks> {
+fn configured(event: HookEvent, hooks: Vec<HookSpec>) -> Result<Hooks> {
     let mut configured = Hooks::default();
     configured.add_rules([HookRule {
-        on: HookEvent::PreToolUse,
+        on: event,
         matcher: String::new(),
         hooks,
     }])?;
@@ -56,7 +56,7 @@ pub(super) async fn judge(
     command: &str,
     decide: impl Fn(&str, &str) -> Value,
 ) -> Result<(HookOutput, Vec<(String, String)>)> {
-    let configured = configured(hooks)?;
+    let configured = configured(HookEvent::PreToolUse, hooks)?;
     let original = json!({"tool_name":"shell","tool_input":{"command":command}});
     let runs = RefCell::new(Vec::new());
     let output = configured
@@ -102,7 +102,7 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
     } else {
         vec![plugin("first", None), source, plugin("last", None)]
     };
-    let configured = configured(hooks)?;
+    let configured = configured(HookEvent::PreToolUse, hooks)?;
     let wait_input = if phase == 1 { "first" } else { "final" };
     let expected_visits = match phase {
         0 => 2,
@@ -203,7 +203,8 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
 
 /// Two original callback results remain jointly owned until both settle. The
 /// configured failure policies bind each retained cause to its selected hook,
-/// independently of completion order. Cancellation releases pending receivers.
+/// independently of completion order. Every event uses the same fixture;
+/// cancellation releases pending receivers on either dispatch path.
 fn joined(bytes: &[u8]) -> Result<()> {
     let mut first = plugin("first", None);
     first.run = HookRun::Shell {
@@ -211,7 +212,10 @@ fn joined(bytes: &[u8]) -> Result<()> {
         shell: None,
     };
     first.failure = HookFailure::Report;
-    let configured = configured(vec![first, plugin("second", None)])?;
+    let event = HookEvent::ALL
+        [usize::from(bytes.get(2).copied().unwrap_or_default()) % HookEvent::ALL.len()];
+    let blocking = event != HookEvent::Stop;
+    let configured = configured(event, vec![first, plugin("second", None)])?;
     let original = json!({"tool_name":"shell","tool_input":{"command":"checked"}});
     let registry = crate::tool::ToolRegistry::default();
     let channels = [
@@ -225,32 +229,26 @@ fn joined(bytes: &[u8]) -> Result<()> {
     let cancel = bytes.first().copied().unwrap_or_default() % 3;
     let first_completed = usize::from(bytes.get(1).is_some_and(|byte| byte & 1 != 0));
     {
-        let run = configured.run_commands(
-            HookEvent::PreToolUse,
-            &original,
-            &registry,
-            u64::MAX,
-            |hook, _, _| {
-                let index = usize::from(identity(hook) == "second");
-                visits[index].set(visits[index].get() + 1);
-                let receiver = receivers[index].take();
-                async move {
-                    let receiver = receiver
-                        .ok_or_else(|| Error::Invalid("joined hook dispatched twice".into()))?;
-                    receiver.await.map_err(|_| {
-                        Error::Invalid(
-                            if index == 0 {
-                                "first closed"
-                            } else {
-                                "second closed"
-                            }
-                            .into(),
-                        )
-                    })?;
-                    Err(Error::Invalid("withdrawn producer returned success".into()))
-                }
-            },
-        );
+        let run = configured.run_commands(event, &original, &registry, u64::MAX, |hook, _, _| {
+            let index = usize::from(identity(hook) == "second");
+            visits[index].set(visits[index].get() + 1);
+            let receiver = receivers[index].take();
+            async move {
+                let receiver = receiver
+                    .ok_or_else(|| Error::Invalid("joined hook dispatched twice".into()))?;
+                receiver.await.map_err(|_| {
+                    Error::Invalid(
+                        if index == 0 {
+                            "first closed"
+                        } else {
+                            "second closed"
+                        }
+                        .into(),
+                    )
+                })?;
+                Err(Error::Invalid("withdrawn producer returned success".into()))
+            }
+        });
         let mut run = std::pin::pin!(run);
         let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
         let waker = Waker::from(wakes.clone());
@@ -289,7 +287,7 @@ fn joined(bytes: &[u8]) -> Result<()> {
                     return Err(Error::Invalid("joined hooks lost their terminal".into()));
                 };
                 let output = output?;
-                if !output.blocks()
+                if output.blocks() != blocking
                     || output.updated_input.is_some()
                     || visits.iter().any(|visits| visits.get() != 1)
                     || !matches!(
@@ -301,9 +299,9 @@ fn joined(bytes: &[u8]) -> Result<()> {
                             },
                             HookDiagnostic {
                                 cause: crate::ProcessError::InvalidOutput { exit_code: None, message: second },
-                                blocking: true,
+                                blocking: actual_blocking,
                             },
-                        ] if first == "first closed" && second == "second closed"
+                        ] if first == "first closed" && second == "second closed" && *actual_blocking == blocking
                     )
                 {
                     return Err(Error::Invalid(
@@ -433,9 +431,9 @@ mod tests {
     async fn generated_chains_keep_strictness_final_input_and_linear_visits() -> Result<()> {
         for first in 0..6 {
             for second in 0..6 {
-                for cancel in 0..2 {
+                for event in 0..HookEvent::ALL.len() as u8 {
                     for phase in 0..3 {
-                        check(&[first, second, cancel, phase]).await?;
+                        check(&[first, second, event, phase]).await?;
                     }
                 }
             }
