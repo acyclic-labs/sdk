@@ -1,4 +1,19 @@
 //! Shared mutation facts, identities and conditions for stream backends.
+//!
+//! Native providers use these same preparation rules as the built-in backends.
+//! Preparation neither authorizes a request nor publishes a commit. The provider
+//! validates the canonical request, admits its retained inputs and output capacity,
+//! resolves retry identity, and observes conditions, source cuts and soft-append
+//! markers at one pre-commit state. It then publishes all resulting facts and the
+//! retry receipt atomically at that authority.
+//!
+//! After checking hard conditions with [`condition_conflict`] and source cuts with
+//! [`authority`], use [`settle`] and [`applied`] to select mutations, then [`facts`]
+//! to build their committed form. All callbacks must read that same pre-commit
+//! state; `None` means observed absence, never a failed read. An exact retry uses
+//! [`skipped`] with its original request and accepted envelope, without re-reading
+//! current soft-append markers. Caller-supplied vectors must be empty and admitted
+//! for every possible output slot; their capacity is not a product limit.
 use crate::AppendRecord;
 use crate::{
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitRequest, CommittedAppend,
@@ -22,7 +37,7 @@ pub(crate) fn committed_time(previous_micros: u64, sampled_millis: u64) -> u64 {
 
 /// Evaluate against the backend's authoritative head. The preceding commit is
 /// loaded lazily, only for a Head condition whose tail already matches.
-pub(crate) fn condition_conflict(
+pub fn condition_conflict(
     condition: &CommitCondition,
     actual: Option<u64>,
     preceding: impl FnOnce() -> Result<CommitId, StreamError>,
@@ -75,7 +90,7 @@ pub(crate) fn condition_conflict(
 /// pushed, in canonical order, into `skipped`, which the caller admitted with
 /// capacity for every soft append; nothing else is copied, and [`applied`]
 /// then views the request without them.
-pub(crate) fn settle(
+pub fn settle(
     request: &CommitRequest,
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
     mut skipped: Vec<StreamPath>,
@@ -100,7 +115,7 @@ pub(crate) fn settle(
 
 /// The number of soft appends in `request`: the capacity [`settle`] and
 /// [`skipped`] need.
-pub(crate) fn soft(request: &CommitRequest) -> usize {
+pub fn soft(request: &CommitRequest) -> usize {
     request
         .mutations
         .iter()
@@ -109,8 +124,9 @@ pub(crate) fn soft(request: &CommitRequest) -> usize {
 }
 
 /// The mutations a settled commit applies: all but the `skipped` soft appends.
-/// `skipped` is a canonical-order subsequence of the request's paths.
-pub(crate) fn applied<'a>(
+/// `skipped` must be the canonical-order subsequence produced by [`settle`] or
+/// [`skipped`] for this same validated request.
+pub fn applied<'a>(
     request: &'a CommitRequest,
     skipped: &'a [StreamPath],
 ) -> impl Iterator<Item = &'a CommitMutation> + Clone + 'a {
@@ -123,7 +139,7 @@ pub(crate) fn applied<'a>(
 /// without an append fact. Both are in canonical path order, so this is one
 /// merge walk; a replayed commit reports exactly what the original reported.
 /// `skipped` is admitted by the caller as in [`settle`].
-pub(crate) fn skipped(
+pub fn skipped(
     request: &CommitRequest,
     envelope: &crate::CommittedEnvelope,
     mut skipped: Vec<StreamPath>,
@@ -155,7 +171,9 @@ pub(crate) fn skipped(
     Ok(skipped)
 }
 
-pub(crate) fn fork_cut(
+/// Resolve a fork's cut against one pre-commit source and destination observation.
+/// An existing destination, absent source or unavailable prefix remains an error.
+pub fn fork_cut(
     request: &ForkRequest,
     source_tail: Option<u64>,
     destination_tail: Option<u64>,
@@ -171,7 +189,9 @@ pub(crate) fn fork_cut(
     Ok(cut)
 }
 
-pub(crate) fn append_fact(
+/// Move already prepared records into an append fact with a checked exclusive tail.
+/// The provider supplies records admitted for this path, start and commit identity.
+pub fn append_fact(
     path: StreamPath,
     start: u64,
     records: Vec<Record>,
@@ -188,7 +208,9 @@ pub(crate) fn append_fact(
     })
 }
 
-pub(crate) fn authority(
+/// Validate fork source cuts against the same pre-commit state as conditions.
+/// This checks retained prefixes; the provider still owns request authorization.
+pub fn authority(
     request: &CommitRequest,
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
 ) -> Result<(), StreamError> {
@@ -209,7 +231,7 @@ pub(crate) fn authority(
 /// Preserve pre-commit source cuts and mutation order independently of the
 /// backend's record storage. All output containers are admitted by the caller;
 /// the semantic planner never allocates a second unaccounted vector.
-pub(crate) fn facts<'a>(
+pub fn facts<'a>(
     source: impl IntoIterator<Item = &'a CommitMutation>,
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
     mut build: impl FnMut(
@@ -273,7 +295,10 @@ pub(crate) fn facts<'a>(
     Ok(output)
 }
 
-pub(crate) fn records(
+/// Build records with one accepted commit identity, time and origin.
+/// `records` must be empty with admitted capacity for every input body; record
+/// payload ownership and its retained-byte credit remain the provider's obligation.
+pub fn records(
     origin: &StreamPath,
     start: u64,
     bodies: &[AppendRecord],
