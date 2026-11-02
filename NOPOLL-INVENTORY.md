@@ -8,6 +8,9 @@ Identity cancellation successor, location on `8f31c227ee`:
 
 The original ping and canceled-reply assertions remain. The new first-exchange
 join prevents an unstarted operation from satisfying the completion observation.
+Before blocking output, the test selects between that entry and the original
+login reply/transport close. An early operation failure therefore ends the test
+while output can still drain, even if the unused HTTP router retains its sender.
 The oneshot retains entry before observation and reports producer withdrawal as
 an error. Operation completion or task withdrawal releases the original mutex;
 the test checks retained approval before unblocking output. Expiry without

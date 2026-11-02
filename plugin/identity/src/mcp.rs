@@ -1120,9 +1120,13 @@ mod tests {
         let output = Output::default();
         let mut client = connect(server, &output, None);
         client.reply().await;
-        output.pause(true);
         client.send(&call(1, "identity_login_complete"));
-        consumed.await.expect("original login exchange entered");
+        tokio::select! {
+            biased;
+            reply = client.replies.recv() => panic!("login ended before HTTP entry: {reply:?}"),
+            entered = consumed => entered.expect("original login exchange entered"),
+        }
+        output.pause(true);
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
         tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
             .await
