@@ -958,6 +958,9 @@ mod replay;
 #[path = "cli_regressions/archives.rs"]
 mod archives;
 
+#[path = "cli_regressions/cache.rs"]
+mod cache;
+
 #[path = "cli_regressions/paths.rs"]
 mod paths;
 
