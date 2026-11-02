@@ -329,7 +329,10 @@ prefix that makes older unversioned decoders refuse it. Its reader rejects
 version 1 and unversioned records rather than interpreting guest metadata as
 host funding. Invocation records likewise require version 2, which binds the
 original caller-owned call journal; version 1 is refused before decoding its
-payload. There is no migration or old-writer fallback. Adoption
+payload. Fork acceptance identities likewise use version 2: new forks exclude
+host failure records, and recovery selects only that version's original
+acceptance envelope. Version-1 acceptance identities are not reinterpreted with
+version-2 exclusion rules. There is no migration or old-writer fallback. Adoption
 requires a fresh state root/data generation. Metadata and the journal cut cannot
 be silently discarded by an older decoder. Older deployment validators also
 reject the new binding kind because its external capability/resource are empty.
