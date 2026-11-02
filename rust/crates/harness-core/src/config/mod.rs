@@ -30,6 +30,10 @@ mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{Evaluated, Surface, Tree, compose, evaluate};
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[doc(hidden)]
+pub use evaluate::model;
+
 /// Evaluates and decodes a `policy.ts` holding `source`: plain data, so a
 /// function export is invalid with its own error.
 ///

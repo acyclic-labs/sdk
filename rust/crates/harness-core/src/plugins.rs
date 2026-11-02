@@ -220,12 +220,13 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
                 "{root}hooks/after-{after}: after-hooks do not run on this host yet"
             )));
         }
+        let empty = Value::Object(Default::default());
         let settings = entry
             .config
-            .clone()
-            .or_else(|| manifest.defaults.clone())
-            .unwrap_or_else(|| Value::Object(Default::default()));
-        let settings = String::from_utf8(crate::contract::canonical_json_bytes(&settings)?)
+            .as_ref()
+            .or(manifest.defaults.as_ref())
+            .unwrap_or(&empty);
+        let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)
             .map_err(|error| invalid(error.to_string()))?;
         for event in Event::ALL {
             let read = |form: &str| {
