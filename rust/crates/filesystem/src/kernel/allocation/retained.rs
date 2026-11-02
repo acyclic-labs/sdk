@@ -518,7 +518,42 @@ mod tests {
         retained.value.push(9);
         let original_live = caller.standalone_parts().unwrap().0.live_bytes();
         caller.charge_items(1)?;
-        let mut owned = OwnedAccounting::take_branch(&mut caller, &cancel)?;
+        let baseline_scratch = caller.standalone_parts().unwrap().0.scratch_bytes();
+
+        // Ordinary scope cleanup retires discarded physical scratch while
+        // preserving the caller's earlier buffer and independent output.
+        {
+            let mut scope = caller.allocation_scope()?;
+            let temporary = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut scope)?;
+            drop(temporary);
+        }
+        assert_eq!(
+            caller.standalone_parts().unwrap().0.live_bytes(),
+            original_live
+        );
+
+        // This buffer crosses the same scope boundary with its continuation.
+        // Scope retirement must not release capacity that is still physical.
+        let (mut owned, temporary, transferred_live) = {
+            let mut scope = caller.allocation_scope()?;
+            let mut temporary = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut scope)?;
+            temporary.value.push(13);
+            let owned = OwnedAccounting::take_branch(&mut scope, &cancel)?;
+            let live = scope.standalone_parts().unwrap().0.live_bytes();
+            (owned, temporary, live)
+        };
+        assert_eq!(
+            caller.standalone_parts().unwrap().0.live_bytes(),
+            transferred_live
+        );
+        assert_eq!(
+            owned.borrow().standalone_parts().unwrap().0.scratch_bytes(),
+            baseline_scratch + 31
+        );
+        assert!(matches!(
+            caller.allocation_scope(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
         cancel.cancel();
         let baseline = caller.spent();
         let handed_off_live = caller.standalone_parts().unwrap().0.live_bytes();
@@ -553,6 +588,12 @@ mod tests {
             owned.borrow().charge_items(1).is_err(),
             "handoff granted a fresh item budget"
         );
+        assert_eq!(temporary.value, [13]);
+        temporary.retire(&mut owned.borrow())?;
+        assert_eq!(
+            owned.borrow().standalone_parts().unwrap().0.scratch_bytes(),
+            baseline_scratch
+        );
         owned.restore(&mut caller)?;
         assert_eq!(caller.spent().items_examined, 2);
         // Restored scope cleanup remains available after caller cancellation.
@@ -567,8 +608,11 @@ mod tests {
             caller.check().is_err(),
             "restoring accounting changed caller cancellation"
         );
-        drop(retained);
         earlier.retire(&mut caller)?;
+        assert_eq!(caller.standalone_parts().unwrap().0.scratch_bytes(), 0);
+        let live = caller.standalone_parts().unwrap().0.live_bytes();
+        drop(retained);
+        assert_eq!(caller.standalone_parts().unwrap().0.live_bytes(), live - 73);
         Ok(())
     }
 

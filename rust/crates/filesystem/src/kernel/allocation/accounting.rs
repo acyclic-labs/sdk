@@ -9,7 +9,7 @@ impl<'a> KernelAccounting<'a> {
             Self::NativeOriginal { cancellation, .. } => cancellation,
         }
     }
-    fn ensure_active(&self) -> Result<(), crate::FsError> {
+    pub(super) fn ensure_active(&self) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { allocations, .. } => allocations.ensure_active(),
             Self::BorrowedStandalone { allocations, .. } => allocations.ensure_active(),

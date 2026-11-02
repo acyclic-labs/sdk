@@ -2,6 +2,7 @@ use super::KernelAccounting;
 
 /// Retires an operation's discarded scratch after its physical temporaries drop.
 /// Earlier scratch, independently retained backing and completed work survive.
+/// Scratch handed to an owned continuation remains charged to its original ledger.
 pub(crate) struct AllocationScope<'w, 'a> {
     accounting: &'w mut KernelAccounting<'a>,
     floor: Option<u64>,
@@ -10,13 +11,10 @@ pub(crate) struct AllocationScope<'w, 'a> {
 impl<'a> KernelAccounting<'a> {
     /// A handed-off caller cannot retire scratch owned by its continuation.
     pub(crate) fn allocation_scope(&mut self) -> Result<AllocationScope<'_, 'a>, crate::FsError> {
-        let floor = match self.standalone_parts() {
-            Some((allocations, ..)) => {
-                allocations.ensure_active()?;
-                Some(allocations.scratch_bytes())
-            }
-            None => None,
-        };
+        self.ensure_active()?;
+        let floor = self
+            .standalone_parts()
+            .map(|(allocations, ..)| allocations.scratch_bytes());
         Ok(AllocationScope {
             accounting: self,
             floor,
@@ -52,6 +50,9 @@ impl Drop for AllocationScope<'_, '_> {
                 .accounting
                 .standalone_parts()
                 .unwrap_or_else(|| unreachable!("ordinary scratch keeps its original ledger"));
+            if matches!(allocations.state, super::LedgerState::Suspended(_)) {
+                return;
+            }
             allocations
                 .release_scratch_to(floor)
                 .unwrap_or_else(|_| unreachable!("an operation retires only its own scratch"));
