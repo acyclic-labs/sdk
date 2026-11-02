@@ -410,6 +410,8 @@ async fn physical_loss() -> TestResult {
             provider.cut_persistence(physical.clone());
             let mut binding = store.bind_state(store.load(&address).await?, 1)?;
             binding.transaction(|state| {
+                state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
+                state.debit_escrow(2)?;
                 state.put("value".into(), Bytes::from_static(b"durable"));
                 state.append_journal(0, vec![Bytes::from_static(b"durable")])?;
                 state.alarm(Some(42))
@@ -435,7 +437,17 @@ async fn physical_loss() -> TestResult {
         let applied = u64::from(fail_at == 2);
         assert_eq!(state.cursor("inbox"), Some(applied));
         assert_eq!(state.journal_tail(), applied);
-        assert_eq!(state.metadata().count(), usize::try_from(applied)?);
+        assert_eq!(state.metadata().count(), usize::try_from(applied)? * 2);
+        let escrow = state
+            .metadata
+            .get(crate::escrow::KEY)
+            .map(|record| crate::escrow::Escrow::decode(record))
+            .transpose()?;
+        assert_eq!(
+            escrow.map(crate::escrow::Escrow::remaining),
+            (applied != 0).then_some(Some(3)),
+            "uncertain acknowledgement cannot split spend from its consumed input"
+        );
         assert_eq!(state.checkpoint().is_some(), applied != 0);
         assert_eq!(state.alarm().pending(), (applied != 0).then_some(42));
         let binding = store.bind_state(snapshot, 1)?;
