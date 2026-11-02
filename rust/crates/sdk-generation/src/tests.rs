@@ -391,6 +391,7 @@ fn missing_owned_generated_source_is_restored_across_root_spellings() {
 #[test]
 fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
     let (_root_directory, root) = test_root("restoration-boundary");
+    let root = root.canonicalize().unwrap();
     for path in [
         std::env::temp_dir().join(".cargo/sdk-docs-unowned/wire.rs"),
         root.join("rust/wire.rs"),
@@ -401,6 +402,31 @@ fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
             error.to_string().contains("outside owned")
                 || error.to_string().contains("parent traversal")
         );
+    }
+    let missing = root.join("target/missing/wire.rs");
+    validate_restore_path(&root, &[], &missing).unwrap();
+    assert!(!missing.exists());
+
+    #[cfg(unix)]
+    {
+        let (_outside_directory, outside) = test_root("restoration-outside");
+        fs::create_dir_all(root.join("target")).unwrap();
+        let linked = root.join("target/linked");
+        for destination in [outside, root.join("absent")] {
+            std::os::unix::fs::symlink(&destination, &linked).unwrap();
+            let error = validate_restore_path(&root, &[], &linked.join("wire.rs")).unwrap_err();
+            assert!(error.to_string().contains("reparse point or symlink"));
+            assert!(!destination.join("wire.rs").exists());
+            fs::remove_file(&linked).unwrap();
+        }
+        let file = root.join("target/file");
+        fs::write(&file, b"retained").unwrap();
+        let error = validate_restore_path(&root, &[], &file.join("wire.rs")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            io_error(fs::symlink_metadata(file.join("wire.rs")).unwrap_err()).to_string()
+        );
+        assert_eq!(fs::read(file).unwrap(), b"retained");
     }
 }
 
