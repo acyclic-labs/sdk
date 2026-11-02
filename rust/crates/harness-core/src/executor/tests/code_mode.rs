@@ -138,19 +138,18 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
             .iter()
             .filter(|notice| notice.source == "tools" && notice.kind == "tools.changed")
         {
+            if notice.body["offset"].as_u64() == Some(0) && complete {
+                json.clear();
+                complete = false;
+            }
             assert!(!complete, "tool table continued after its final fragment");
             assert_eq!(notice.body["offset"].as_u64(), Some(json.len() as u64));
             json.push_str(notice.body["json"].as_str().unwrap());
             complete = notice.body["complete"].as_bool().unwrap();
         }
     }
-    if json.is_empty() {
-        assert!(!complete);
-        json!([])
-    } else {
-        assert!(complete, "tool table did not finish");
-        serde_json::from_str(&json).unwrap()
-    }
+    assert!(complete, "tool table did not finish");
+    serde_json::from_str(&json).unwrap()
 }
 
 #[tokio::test]
@@ -348,20 +347,37 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         let initial = io.remaining()?;
         execution.code_tools_notice(&mut context, &before[0].tools)?;
         let remaining = io.remaining()?;
-        assert!(context.messages.is_empty());
-        assert_eq!(remaining.bytes_encoded, initial.bytes_encoded);
-        assert_eq!(remaining.bytes_copied, initial.bytes_copied);
+        assert_eq!(context.messages.len(), 1);
+        let encoded = initial.bytes_encoded - remaining.bytes_encoded;
+        let copied = initial.bytes_copied - remaining.bytes_copied;
+        let allocated = initial.allocation_operations - remaining.allocation_operations;
+        let examined = initial.items_examined - remaining.items_examined;
+        assert!(encoded > 0);
+        // Native schema growth cannot enlarge the constant empty update.
+        let mut larger = before[0].tools.clone();
+        larger[0].description.push_str(&"schema".repeat(16_384));
+        let mut larger_context = crate::context::Context::default();
+        execution.code_tools_notice(&mut larger_context, &larger)?;
+        let larger_remaining = io.remaining()?;
         assert_eq!(
-            remaining.allocation_operations,
-            initial.allocation_operations
+            remaining.bytes_encoded - larger_remaining.bytes_encoded,
+            encoded
         );
         assert_eq!(
-            initial.items_examined - remaining.items_examined,
-            before[0].tools.len() as u64
+            remaining.bytes_copied - larger_remaining.bytes_copied,
+            copied
+        );
+        assert_eq!(
+            remaining.allocation_operations - larger_remaining.allocation_operations,
+            allocated
+        );
+        assert_eq!(
+            remaining.items_examined - larger_remaining.items_examined,
+            examined
         );
         // Restoring even the first full-table encoding violates this oracle.
-        let redundant = io.encode(&before[0].tools, u64::MAX, false)?;
-        assert!(io.remaining()?.bytes_encoded < remaining.bytes_encoded);
+        let redundant = io.encode(&larger, u64::MAX, false)?;
+        assert!(larger_remaining.bytes_encoded - io.remaining()?.bytes_encoded > encoded);
         drop(redundant);
         cancellation.cancel();
         assert!(
@@ -369,7 +385,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
                 .code_tools_notice(&mut context, &before[0].tools)
                 .is_err()
         );
-        assert!(context.messages.is_empty());
+        assert_eq!(context.messages.len(), 1);
     }
     let changed = tool_notice_table(&after[0]);
     assert_eq!(changed.as_array().unwrap().len(), 2);
@@ -394,6 +410,25 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             .unwrap()
             .is_empty()
     );
+    // Carry the actual earlier table into the next input boundary: removing
+    // the last dynamic tool must publish an empty successor, not a stale table.
+    let mut context = crate::context::Context {
+        messages: after[1].messages.clone(),
+        ..Default::default()
+    };
+    let boundary = context.messages.len();
+    context.messages.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text("after revocation".into()),
+    });
+    context.current_input_index = Some(boundary as _);
+    StockExecution::ordinary(&revoked)
+        .code_tools_notice(&mut context, &revoked_model.requests()[0].tools)?;
+    assert_eq!(context.messages[..boundary], after[1].messages);
+    assert_eq!(context.messages.len(), boundary + 2);
+    let mut continued = revoked_model.requests()[0].clone();
+    continued.messages = context.messages;
+    assert!(tool_notice_table(&continued).as_array().unwrap().is_empty());
     Ok(())
 }
 
