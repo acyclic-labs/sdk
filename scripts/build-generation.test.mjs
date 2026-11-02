@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -31,6 +31,10 @@ test("package closure follows declared workspaces and ignores leftover directori
   mkdirSync(`${root}/typescript/packages/z`, { recursive: true });
   writeFileSync(`${root}/typescript/packages/z/package.json`, "invalid undeclared manifest");
   assert.deepEqual([...packageClosure(root, "a")], ["b", "a"]);
+  assert.throws(() => packageClosure(root, "z"), { code: "ENOENT" });
+  writeFileSync(`${root}/typescript/packages/a/tsconfig.json`, JSON.stringify({ references: [{ path: "../missing" }] }));
+  assert.throws(() => packageClosure(root, "a"), { code: "ENOENT" });
+  writeFileSync(`${root}/typescript/packages/a/tsconfig.json`, JSON.stringify({}));
   writeFileSync(`${root}/typescript/packages/b/package.json`, "invalid declared manifest");
   assert.throws(() => packageClosure(root, "a"), SyntaxError);
 });

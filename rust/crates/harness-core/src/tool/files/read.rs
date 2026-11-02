@@ -60,9 +60,17 @@ impl FileTool {
             .effective_scope()
             .limits()
             .render_bytes
-            .min(crate::tool::output::VIEW_BYTES)
+            .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+                maximum.min(crate::tool::output::VIEW_BYTES)
+            })
             .saturating_add(3)
-            .min(context.effective_scope().limits().file_bytes);
+            .min(
+                context
+                    .effective_scope()
+                    .limits()
+                    .file_bytes
+                    .unwrap_or(crate::tool::output::VIEW_BYTES.saturating_add(3)),
+            );
         let window = super::window::Window::first(
             context,
             input,
@@ -149,7 +157,7 @@ impl FileTool {
                 media: selection,
                 outputs: Vec::new(),
             },
-            u64::MAX,
+            None,
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -161,10 +169,11 @@ fn text_result(
     source: &str,
     path: &str,
     interval: (u64, u64),
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(ToolResult, crate::NativeCustody)> {
+    let maximum = maximum.into();
     let (start, end) = interval;
     let _version_hold;
     let (version, version_hold) = super::version::encode_source(&file, work)?;
@@ -178,11 +187,13 @@ fn text_result(
                     text: Some(source),
                     page: None,
                 },
-                u64::MAX,
+                None,
                 history,
             )
         })? + schema::json_envelope_bytes()? as u64
-            <= maximum.min(crate::tool::output::VIEW_BYTES);
+            <= maximum.map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+                maximum.min(crate::tool::output::VIEW_BYTES)
+            });
     let shown = if complete {
         source
     } else {
@@ -208,7 +219,7 @@ fn text_result(
                 offset: 0,
             }),
         },
-        u64::MAX,
+        None,
         work,
     )?;
     Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -217,10 +228,11 @@ fn text_result(
 pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
+    let maximum = maximum.into();
     let empty = FileView {
         path,
         version,
@@ -233,10 +245,12 @@ pub(super) fn encoded_text_budget(
         }),
     };
     let overhead = crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+        crate::executor::json::json_byte_length(&empty, None, history)
     })? + schema::json_envelope_bytes()? as u64;
     maximum
-        .min(crate::tool::output::VIEW_BYTES)
+        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+            maximum.min(crate::tool::output::VIEW_BYTES)
+        })
         .checked_sub(overhead)
         .filter(|budget| *budget >= 6)
         .ok_or_else(|| executor::rejection(work, "render credit cannot hold a source page"))

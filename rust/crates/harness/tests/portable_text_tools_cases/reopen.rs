@@ -48,7 +48,6 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         &scope,
         &volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let write = ContentGrant::verify(
@@ -56,7 +55,6 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let replacement = ExactTextReplacement {

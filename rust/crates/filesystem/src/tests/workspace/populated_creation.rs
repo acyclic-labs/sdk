@@ -210,12 +210,8 @@ async fn many_file_creation(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> crate::MeasuredResult<crate::OperationReceipt<crate::GenerationId>, WorkspaceError> {
-    // The requested 10k-file creation also rewrites its root record. Declare
-    // this volume's atomic capacity explicitly; production defaults stay 2048.
-    let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
-    volume.limits.maximum_mutations_per_batch = 10_001;
     let config = crate::VolumeInitialization {
-        config: volume,
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
         access_policy: Some(crate::access::INITIAL_POLICY),
     };
     let operation = IdempotencyKey::from_bytes([0xe4; 16]).operation_id();

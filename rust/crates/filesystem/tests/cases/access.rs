@@ -671,7 +671,7 @@ fn inheritance_history_and_invalid_inputs_fail_closed() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn adversarial_globs_have_bounded_compilation() {
+fn adversarial_globs_respect_the_callers_finite_compilation_work() {
     let caller = principal();
     let context = Context {
         now: 100,
@@ -694,56 +694,21 @@ fn adversarial_globs_have_bounded_compilation() {
         };
         assert!(policy.validate().is_ok());
         assert!(cap.validate().is_ok());
-        assert!(
-            PathTrie::compile(
+        let mut work = 4_194_304;
+        assert!(matches!(
+            PathTrie::compile_with_work(
                 &policy,
                 &caller,
                 resource(&caller.lineage, "", 10),
                 context,
-                &cap
-            )
-            .is_err()
-        );
+                &cap,
+                &mut work,
+                |_| Ok(()),
+            ),
+            Err(InvalidPolicy("glob compilation exceeds work limit"))
+        ));
+        assert!(work < 4_194_304, "failed work must remain charged");
     }
-    let oversized = "a".repeat(32_769);
-    let policy = policy(vec![rule(
-        "oversized",
-        Effect::Allow,
-        &Action::ALL,
-        &oversized,
-    )]);
-    assert!(policy.validate().is_ok());
-    assert!(
-        PathTrie::compile(
-            &policy,
-            &caller,
-            resource(&caller.lineage, "", 10),
-            context,
-            &capability()
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn compiled_rule_identifiers_have_a_bound() {
-    let caller = principal();
-    let context = Context {
-        now: 100,
-        approvals: 0,
-    };
-    let long_id = "x".repeat(1_048_577);
-    let policy = policy(vec![rule(&long_id, Effect::Allow, &Action::ALL, "**")]);
-    assert!(
-        PathTrie::compile(
-            &policy,
-            &caller,
-            resource(&caller.lineage, "", 10),
-            context,
-            &capability()
-        )
-        .is_err()
-    );
 }
 
 #[test]

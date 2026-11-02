@@ -1,6 +1,6 @@
 //! Real held-file writes with a fault at the original Write boundary.
 use super::*;
-use std::io::{Read as _, Seek as _};
+use std::io::Seek as _;
 
 struct Writer {
     file: File,

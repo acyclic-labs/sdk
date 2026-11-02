@@ -13,7 +13,7 @@ fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
             config: "{}".into(),
             matcher,
         },
-        timeout_ms: u64::MAX,
+        timeout_ms: None,
         failure: HookFailure::Block,
     }
 }
@@ -270,7 +270,7 @@ fn report_only_context_overflow_cannot_discard_checked_arguments_and_allow() -> 
             command: "exit 0".into(),
             shell: None,
         },
-        timeout_ms: u64::MAX,
+        timeout_ms: None,
         failure: HookFailure::Report,
     });
     let context = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "x".repeat(1024)}});

@@ -61,6 +61,27 @@ npm, Cargo, and GitHub cannot commit a release atomically. The run summary repor
 each channel's result. A failed publisher can leave some packages published, so
 inspect the run before retrying.
 
+Registry visibility is checked once. A successful publication that is not yet
+visible returns `Pending` with exit status 75 and stops dependent publication.
+The workflow retains `npm-registry-publication-*` or
+`cargo-registry-publication-*` receipts, including the source, package, version,
+expected digest and actual observation. A digest conflict or a yanked crate
+remains a failure. Receipts are diagnostic evidence, never publication authority.
+
+To reconcile visibility without publishing, restore the same qualified source
+and artifacts and run one command:
+
+```sh
+node scripts/publish-cargo-crates.mjs reconcile SOURCE_SHA VERSION
+node scripts/publish-npm-packages.mjs reconcile ARTIFACT_DIR SOURCE_SHA VERSION
+```
+
+These commands revalidate the inputs and make one observation per package. They
+also return `Pending` if visibility is still incomplete. For npm, the exact
+archive and its `latest` tag must both be visible. They do not repair tags or
+start readiness timers. Once reconciliation completes, resume publication of
+the remaining packages using the same release inputs.
+
 Use **Re-run failed jobs** on that same release run. Successful qualification and
 build jobs retain their original artifacts and outputs; the remaining publishers
 resume those inputs. Registry publishers compare existing packages with the

@@ -134,8 +134,8 @@ pub(super) fn check_preview(
         seed,
         text.as_bytes(),
         crate::executor::json::JsonBounds {
-            maximum_bytes: text.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(text.len() as u64),
+            maximum_items: None,
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         None,
@@ -201,7 +201,7 @@ fn with_media<R>(
     #[cfg(feature = "filesystem")]
     {
         bytes = if let Some(io) = io {
-            io.encode(view, io.remaining()?.bytes_encoded, false)?
+            io.encode(view, Some(io.remaining()?.bytes_encoded), false)?
         } else {
             serde_json::to_vec(view)
                 .map_err(|error| Error::Invalid(error.to_string()))?
@@ -226,7 +226,7 @@ pub(crate) async fn spill(
     projection: &Value,
     context: &crate::runtime::TaskContext,
     operation: OperationId,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(Value, crate::NativeCustody)> {
     #[cfg(feature = "filesystem")]
@@ -234,7 +234,7 @@ pub(crate) async fn spill(
     let bytes;
     #[cfg(feature = "filesystem")]
     let encoded = if let Some(io) = io {
-        bytes = io.encode(projection, io.remaining()?.bytes_encoded, false)?;
+        bytes = io.encode(projection, Some(io.remaining()?.bytes_encoded), false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         bytes.as_ref()
     } else {
@@ -284,7 +284,7 @@ pub(crate) async fn spill(
             path: &path,
             version: &version,
         },
-        maximum,
+        maximum.into().unwrap_or(VIEW_BYTES),
         io,
         work,
     )
@@ -319,12 +319,12 @@ fn render(
     let overhead = if let Some(parts) = media {
         with_media(&empty, parts, io, |view| {
             crate::executor::with_history_io(io, |history| {
-                crate::executor::json::json_byte_length(view, u64::MAX, history)
+                crate::executor::json::json_byte_length(view, None, history)
             })
         })?
     } else {
         crate::executor::with_history_io(io, |history| {
-            crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+            crate::executor::json::json_byte_length(&empty, None, history)
         })? + super::schema::json_envelope_bytes()? as u64
     };
     // Reference metadata is indivisible. The display quantum bounds text;
@@ -346,7 +346,7 @@ fn render(
         omitted_bytes: (text.len() - shown.len()) as u64,
     };
     if let Some(parts) = media {
-        with_media(&view, parts, io, |view| super::value(view, u64::MAX, work))
+        with_media(&view, parts, io, |view| super::value(view, None, work))
     } else {
         super::schema::project_json(&view, work)
     }

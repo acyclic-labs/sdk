@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 // Opt-in local cloud fixture: runs a test command against the real cloud
 // service binaries on one Linux host, with no quorum outside localhost.
 //
@@ -31,7 +32,7 @@
 // into <out>/run-logs and releases the rest. A prebuilt harness e2e binary run
 // away from its build tree finds its scenario data through CARGO_MANIFEST_DIR,
 // as under cargo.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -250,8 +251,8 @@ async function hook(run) {
   return code === 0 ? 0 : 1;
 }
 
-function git(cloud, args) {
-  const result = spawnSync("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { encoding: "utf8" });
+function git(cloud, args, options = {}) {
+  const result = captureCommand("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { encoding: "utf8", ...options });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${String(result.stderr).trim()}`);
   return result.stdout.trim();
 }
@@ -341,7 +342,7 @@ async function main(options) {
   const topology = TOPOLOGIES[options.topology];
   fs.writeFileSync(source, wrapperSource(topology));
   const define = (name, value) => `-D${name}="${wrapperPath(value)}"`;
-  const cc = spawnSync("cc", ["-O2", "-o", path.join(bin, "cloud-e2e"), source,
+  const cc = captureCommand("cc", ["-O2", "-o", path.join(bin, "cloud-e2e"), source,
     define("REAL", path.join(options.binaries, "cloud-e2e")), define("NODE", process.execPath),
     define("SCRIPT", fileURLToPath(import.meta.url))], { encoding: "utf8" });
   if (cc.status !== 0) throw new Error(`wrapper compile failed: ${cc.stderr}`);

@@ -83,12 +83,16 @@ impl AuthorityState for State {
         &self,
         unix_seconds: u64,
     ) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>> {
-        let milliseconds = (unix_seconds as f64 * 1000.0 - Date::now()).max(0.0);
-        let expiry =
-            crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32);
         Box::pin(async move {
-            expiry.await;
-            Ok(())
+            let deadline = unix_seconds.checked_mul(1000).ok_or(SourceClosed)?;
+            let now = Date::now();
+            if !now.is_finite() || now < 0.0 || now >= u64::MAX as f64 {
+                return Err(SourceClosed);
+            }
+            crate::runtime::PlatformExecutor
+                .sleep(deadline.saturating_sub(now as u64))
+                .await
+                .map_err(|_| SourceClosed)
         })
     }
 }

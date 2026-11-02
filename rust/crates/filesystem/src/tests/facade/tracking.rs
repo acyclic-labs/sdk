@@ -175,7 +175,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         None,
         DependencyRegion::DirectoryName {
             directory_id: ids[0],
-            name: LogicalName::new(NameEncoding::Utf8, b"retained-name".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"retained-name".to_vec())?,
         },
     ));
     let mut expected = input.clone();
@@ -193,7 +193,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
             None,
             DependencyRegion::DirectoryName {
                 directory_id: id,
-                name: LogicalName::new(NameEncoding::Utf8, b"owner".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"owner".to_vec())?,
             },
         ),
         (None, DependencyRegion::FileLength(ids[1])),

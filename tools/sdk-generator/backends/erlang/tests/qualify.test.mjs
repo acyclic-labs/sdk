@@ -30,7 +30,7 @@ function fixture(t, fault) {
     }
     for (const name of ["actors", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
     fault?.({ ...f, root, sdk, consumer, libs });
-    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 23 populated native TCP RPC pairs",
+    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 21 populated native TCP RPC pairs", "PASS RPC shapes: 20 unary, 1 server streaming",
       ...["actors", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
   };
   const options = { command, runtimePin: { ...pins.runtime["linux-x64"], inventory_sha256: sha256(runtimeBytes), otp_archive_sha256: rt.otp_archive_sha256, files: 1, links: 0 },
@@ -39,8 +39,8 @@ function fixture(t, fault) {
   return { ...f, root, calls, options, sdk, consumer, libs };
 }
 
-test("offline lifecycle stages the complete package and private runtime without inherited tool paths", t => {
-  const f = fixture(t), result = qualify(f.args, f.options);
+test("offline lifecycle stages the complete package and private runtime without inherited tool paths", async t => {
+  const f = fixture(t), result = await qualify(f.args, f.options);
   assert.equal(f.calls.length, 3);
   assert.equal(f.calls[2].opts.env.ERL_LIBS, f.libs);
   assert.equal(f.calls[2].opts.cwd, f.consumer);
@@ -64,31 +64,31 @@ const mutations = {
   "upstream generator module": f => writeFileSync(join(f.args["tool-home"], "tool.beam"), "changed"),
   "OTP runtime module": f => writeFileSync(join(f.args["runtime-root"], "OTP-29.1.1/bin/erl"), "changed"),
 };
-for (const [name, mutate] of Object.entries(mutations)) test(`reject ${name} mutation before recording installed success`, t => {
+for (const [name, mutate] of Object.entries(mutations)) test(`reject ${name} mutation before recording installed success`, async t => {
   const f = fixture(t, mutate);
-  assert.throws(() => qualify(f.args, f.options), /changed|differs/);
+  await assert.rejects(async () => await qualify(f.args, f.options), /changed|differs/);
   assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
 });
 
-test("require both loaded-module provenance checks", t => {
+test("require both loaded-module provenance checks", async t => {
   const f = fixture(t), execute = f.options.command;
   f.options.command = (exe, argv, opts) => { const result = execute(exe, argv, opts); return exe.endsWith("erl") ? { ...result, stdout: result.stdout.replace("PASS installed SDK and loaded-module provenance", "missing") } : result; };
-  assert.throws(() => qualify(f.args, f.options), /provenance controls incomplete/);
+  await assert.rejects(async () => await qualify(f.args, f.options), /provenance controls incomplete/);
   assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
 });
 
-test("reject output that overlaps original dependencies before executing commands", t => {
+test("reject output that overlaps original dependencies before executing commands", async t => {
   const f = fixture(t); f.args.output = join(f.args.dependencies, "output");
-  assert.throws(() => qualify(f.args, f.options), /overlaps protected/);
+  await assert.rejects(async () => await qualify(f.args, f.options), /overlaps protected/);
   assert.equal(f.calls.length, 0);
 });
 
-test("native Erlang coverage matches every canonical method and streaming shape", t => {
+test("native Erlang coverage matches every canonical method and streaming shape", async t => {
   const methods = canonicalRPCs();
   const consumer = readFileSync(new URL("./fixtures/consumer/rpc_route_control.erl", import.meta.url), "utf8");
   assert.ok(consumer.includes(`${methods.length}=lists:sum(Counts),${methods.length}=ets:info(rpc_route_counts,size)`));
   const f = fixture(t);
-  const receipt = qualify(f.args, f.options);
+  const receipt = await qualify(f.args, f.options);
   assert.equal(receipt.native_rpc_calls_executed, methods.length);
   assert.equal(receipt.populated_rpc_message_pairs, methods.length);
   assert.equal(receipt.unary_rpc_calls, methods.filter(method => !method.clientStreaming && !method.serverStreaming).length);

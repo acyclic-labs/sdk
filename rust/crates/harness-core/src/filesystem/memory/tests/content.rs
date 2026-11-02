@@ -3,16 +3,23 @@ use crate::IdempotencyKey;
 
 #[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
-    // Hosted agents admit the portable file ceiling, which exceeds the
-    // volume's staging capacity even when the actual artifact is small.
+    // Publisher allowance and immutable chunk sizes are independent of
+    // the total logical content size.
     let storage =
         MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
             .await?;
+    let unbounded = FilesystemContentPublisher::new(
+        storage.host.clone(),
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        None,
+        None,
+    )?;
     let operation = OperationId::new();
     let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
     let mut source = futures::io::Cursor::new(bytes.as_slice());
-    let (original, _) = storage
-        .publisher
+    let (original, _) = unbounded
         .stage_stream_once(
             operation,
             "streamed",
@@ -38,8 +45,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
     assert_eq!(replayed, original);
     let mut replay = futures::io::Cursor::new(bytes.as_slice());
     assert_eq!(
-        storage
-            .publisher
+        unbounded
             .stage_stream_once(
                 operation,
                 "streamed",
@@ -54,8 +60,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
     );
     let mut changed = futures::io::Cursor::new(b"changed".as_slice());
     assert!(matches!(
-        storage
-            .publisher
+        unbounded
             .stage_stream_once(
                 operation,
                 "streamed",
@@ -68,7 +73,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
         Err(Error::Conflict(_))
     ));
     assert_eq!(storage.read(&original).await?.as_ref(), bytes.as_slice());
-    // Intersecting staging capacity must not widen a smaller publisher credit.
+    // Optional publication must not widen an explicitly smaller allowance.
     let limited = FilesystemContentPublisher::new(
         storage.host.clone(),
         &storage.volume,
@@ -97,7 +102,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
             .observe_staged_once(
                 refused,
                 None,
-                4,
+                Some(4),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -162,7 +167,7 @@ async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -
                 .observe_staged_once(
                     operation,
                     None,
-                    4096,
+                    Some(4096),
                     crate::conversation::ContentAccess::default()
                 )?
                 .await?
@@ -186,7 +191,7 @@ proptest::proptest! {
             let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
             let write = ContentGrant::verify(
                 &storage.verifier(), &storage.scope, &storage.volume,
-                VolumeOperation::Write, 1024, &mut None,
+                VolumeOperation::Write, &mut None,
             )?;
             let key = IdempotencyKey::new(key)?;
             let original = storage.host.put_content(
@@ -246,7 +251,6 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        1024,
         &mut None,
     )?;
     // A real user upload can choose an internal-looking string. Routing keys
@@ -319,7 +323,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&committed_io),
@@ -417,7 +421,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&observed_io),
@@ -537,7 +541,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 denied_operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&observed_io)
@@ -720,7 +724,6 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        1024,
         &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -957,7 +960,7 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = io.encode(&serde_json::Value::Null, Some(1024), true)?;
     let held = io.owned_bytes()?;
     let live_held = work.live_allocation_bytes() - baseline;
     let Err(error) = io.into_native_custody(held + work.remaining()?.peak_allocation_bytes + 1)
@@ -993,7 +996,7 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let receiver_baseline = receiving.live_allocation_bytes();
     let producer_baseline = producing.live_allocation_bytes();
     let producer_io = crate::filesystem::PreparationIo::from_native_work(&producing)?;
-    let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = producer_io.encode(&serde_json::Value::Null, Some(1024), true)?;
     drop(producer_io);
     let (metadata, incoming) = producing
         .display("source carrier metadata")

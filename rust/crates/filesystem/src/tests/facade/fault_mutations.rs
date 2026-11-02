@@ -233,7 +233,6 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.fault-cut".to_vec(),
-        config().limits.maximum_component_bytes,
     )?;
     through_every_object_cut!(checkout.change_named_attribute(
         large.clone(),
@@ -268,7 +267,6 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let identity_attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.identity-fault-cut".to_vec(),
-        config().limits.maximum_component_bytes,
     )?;
     through_every_object_cut!(checkout.change_named_attribute(
         large_id,
