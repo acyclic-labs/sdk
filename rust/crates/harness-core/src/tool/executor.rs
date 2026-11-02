@@ -100,25 +100,28 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// at its original launch boundary and preserve any narrower host ceiling.
     /// Native checks must use the caller's original work, without an ordinary
     /// fallback when its operation, allocation or cancellation checks refuse.
+    /// Blocking native proofs belong on the shared native workers. The caller
+    /// rechecks its pinned policy after this future settles, before attachment.
     #[cfg(not(target_arch = "wasm32"))]
-    fn authorize_execution_grant(
-        &self,
-        _invocation: &ToolInvocation,
-        _context: &crate::runtime::ToolContext,
-        _grant: &acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'_>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if work.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch",
-            });
-        }
-        let _ = work;
-        Err(Error::Unsupported(
-            "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch".into(),
-        ))
+    fn authorize_execution_grant<'a>(
+        &'a self,
+        _invocation: &'a ToolInvocation,
+        _context: &'a crate::runtime::ToolContext,
+        _grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
+        work: crate::NativeWork<'a>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let reason = "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch";
+            #[cfg(feature = "filesystem")]
+            if work.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason,
+                });
+            }
+            let _ = work;
+            Err(Error::Unsupported(reason.into()))
+        })
     }
 
     /// Rechecks mutable source authority before exposing a completed result.
