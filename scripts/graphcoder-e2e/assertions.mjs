@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
+// JSONL replies carry either a committed answer or an explicit message error.
+// The same contract applies to live, scripted and multi-turn acceptance.
+export function messageReply(value, id) {
+  assert.equal(typeof value?.id, "string", "missing message identity");
+  assert.equal(value.id, id, "reply names a different prompt");
+  if (value.error === undefined) {
+    assert.ok(Number.isSafeInteger(value.inbox) && value.inbox >= 0, "missing committed inbox identity");
+    assert.equal(typeof value.text, "string", "missing committed answer text");
+  } else assert.equal(typeof value.error, "string", "missing message error text");
+  return value;
+}
+
+export function jsonlReply(stdout, id) {
+  const lines = stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  assert.equal(lines.length, 1, "JSONL needs exactly one authoritative answer");
+  return messageReply(lines[0], id);
+}
+
 export async function fileBytes(path, expected) {
   assert.deepEqual(await readFile(path), Buffer.from(expected, "utf8"), path);
 }
