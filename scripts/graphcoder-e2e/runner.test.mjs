@@ -12,7 +12,7 @@ import { TerminalFrames, FailureHistory } from "./frames.mjs";
 import { failureReport } from "./report.mjs";
 
 test("terminal action failure survives original native completion and capture rejection", {
-  skip: process.platform === "win32" && !process.env.E2E_CONPTY_HOST,
+  skip: process.platform === "win32",
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "terminal-failure-"));
   try {
