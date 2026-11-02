@@ -82,7 +82,8 @@ test("terminal completion admits the final frame after its last input action", a
   const root = mkdtempSync(join(tmpdir(), "terminal-completion-"));
   try {
     const tails = ["clean completion", "task 00000000-0000-0000-0000-000000000001 failed: cancelled",
-      "has overflowed its stack", "\x1b[?2026huncommitted frame"];
+      "has overflowed its stack", "has overflowed its stack\x1b[2J\x1b[Hready",
+      "\x1b[?2026huncommitted frame"];
     for (const [tail, killed] of [...tails.map(tail => [tail, false]), [tails.at(-1), true]]) {
       const processes = new TerminalProcess();
       let capture;
@@ -97,7 +98,12 @@ test("terminal completion admits the final frame after its last input action", a
           assert.equal(Boolean(result.signal || result.code !== 0), killed);
         }
         else await assert.rejects(running, tail === tails.at(-1)
-          ? /admit completed terminal transaction/ : error => error.code === "terminal_frame_failed");
+          ? /admit completed terminal transaction/ : error => {
+            assert.equal(error.code, "terminal_frame_failed");
+            assert.ok(error.message.includes(tail.includes("has overflowed its stack")
+              ? "has overflowed its stack" : tail), "retain the detected failure even after a terminal redraw");
+            return true;
+          });
         assert.equal(capture.actions, 1, "the original input action must complete before the tail");
         assert.ok(capture.stdout.endsWith(tail), "retain the original final bytes before admission");
         assert.equal(processes.children.size, 0, "terminal admission follows original child retirement");

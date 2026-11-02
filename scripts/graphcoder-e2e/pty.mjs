@@ -58,8 +58,9 @@ export async function pty(processes, binary, fixture, input, capture) {
       try {
         const visible = screenText(screen);
         const action = input.actions[index];
-        if (raw.has(OVERFLOW) || failures.unexpected(visible, action?.when)) {
-          const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(visible, action?.when);
+        if (refusal) {
+          const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
           throw error;
         }
