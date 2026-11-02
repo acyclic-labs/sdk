@@ -209,7 +209,7 @@ proptest! {
 #[test]
 fn admitted_nested_tool_json_survives_the_shared_replay_key() -> Result<()> {
     let mut arguments = json!("original tool argument");
-    for _ in 0..128 {
+    for _ in 0..127 {
         arguments = Value::Array(vec![arguments]);
     }
     let mut request = request("generated nested request".into());
@@ -217,7 +217,7 @@ fn admitted_nested_tool_json_survives_the_shared_replay_key() -> Result<()> {
     else {
         unreachable!("generated tool request")
     };
-    tool.arguments = arguments;
+    tool.arguments = json!({"nested": arguments});
     let bytes = serde_json::to_vec(&request).map_err(invalid)?;
     assert!(
         serde_json::from_slice::<Value>(&bytes).is_err(),
