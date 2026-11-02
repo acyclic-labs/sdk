@@ -732,25 +732,24 @@ mod tests {
         endpoint: String,
         http: tokio::task::JoinHandle<()>,
         consumed: tokio::sync::oneshot::Receiver<()>,
-        released: std::sync::Arc<tokio::sync::Notify>,
+        released: tokio::sync::oneshot::Sender<()>,
         _directory: tempfile::TempDir,
     }
 
     async fn consumed_exchange(login: bool) -> ConsumedExchange {
         let (notify, consumed) = tokio::sync::oneshot::channel();
-        let notify = Arc::new(Mutex::new(Some(notify)));
-        let released = Arc::new(tokio::sync::Notify::new());
-        let release = released.clone();
+        let (released, release) = tokio::sync::oneshot::channel();
+        let exchange = Arc::new(Mutex::new(Some((notify, release))));
         let router = axum::Router::new().fallback(move || {
-            let notify = notify.clone();
-            let release = release.clone();
+            let exchange = exchange.lock().expect("exchange entry").take();
             async move {
-                if let Some(notify) = notify.lock().expect("exchange entry").take() {
-                    let _ = notify.send(());
-                }
-                release.notified().await;
-                axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
-                "token_type": "Bearer", "expires_in": 900}))
+                let (notify, release) = exchange.ok_or(StatusCode::CONFLICT)?;
+                let _ = notify.send(());
+                release.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                Ok::<_, StatusCode>(axum::Json(
+                    json!({"access_token": "issued", "refresh_token": "rotated",
+                "token_type": "Bearer", "expires_in": 900}),
+                ))
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -787,6 +786,49 @@ mod tests {
             consumed,
             released,
             _directory: directory,
+        }
+    }
+
+    #[tokio::test]
+    async fn consumed_exchange_release_retains_ready_and_source_loss() {
+        for release in [true, false] {
+            let ConsumedExchange {
+                mut server,
+                path,
+                endpoint,
+                http,
+                released,
+                _directory,
+                ..
+            } = consumed_exchange(false).await;
+            // Publish the release or withdraw its producer before the real
+            // HTTP handler can subscribe. Neither case may lose its terminal.
+            if release {
+                released.send(()).expect("release receiver retained");
+            } else {
+                drop(released);
+            }
+            let outcome = server.call("identity_refresh").await;
+            if release {
+                outcome.expect("refresh completes from retained release");
+                assert_eq!(
+                    Store::open(&path)
+                        .expect("store")
+                        .read(&endpoint)
+                        .expect("saved")
+                        .refresh_token,
+                    "rotated"
+                );
+            } else {
+                let error = outcome.expect_err("lost release producer ends the exchange");
+                assert_eq!(error.status, Some(StatusCode::SERVICE_UNAVAILABLE));
+            }
+            http.abort();
+            assert!(
+                http.await
+                    .expect_err("HTTP producer aborted")
+                    .is_cancelled()
+            );
         }
     }
 
@@ -1359,7 +1401,7 @@ mod tests {
             if eof {
                 client.close();
             }
-            released.notify_one();
+            released.send(()).expect("release receiver retained");
             // The consumed HTTP exchange proves the original operation holds
             // this mutex; releasing it follows its credential commit.
             let completed = client.server.lock().await;
@@ -1437,7 +1479,7 @@ mod tests {
                     !client.served.is_finished(),
                     "{name}/{fault} must drain before returning the transport error"
                 );
-                released.notify_one();
+                released.send(()).expect("release receiver retained");
                 client
                     .served
                     .await
