@@ -912,7 +912,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
         Some(
             original
                 .claim(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
-                .map_err(crate::native_name::original_name_error)?,
+                .map_err(crate::demand::DemandError::from)?,
         )
     } else {
         work.claim_allocation(
@@ -935,7 +935,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
         let reconciled = if let Some(allocation) = &mut owned.1 {
             allocation
                 .reconcile_capacity(actual)
-                .map_err(crate::native_name::original_name_error)
+                .map_err(crate::demand::DemandError::from)
         } else {
             work.reconcile_allocation(&mut claimed, actual)
         };

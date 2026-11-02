@@ -10,7 +10,7 @@ fn draw(fallback: impl FnOnce() -> Result<String, Error>) -> Result<String, Erro
     {
         let mut bytes = [0; 16];
         if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
-            return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
+            return Ok(uuid::Uuid::from_bytes(bytes).simple().to_string());
         }
     }
     fallback()
@@ -19,16 +19,13 @@ fn draw(fallback: impl FnOnce() -> Result<String, Error>) -> Result<String, Erro
 fn host_random_id() -> Result<String, Error> {
     // UUID-v4 masks six bits. Select eight unmasked random bytes from each
     // of two independent draws, retaining a full 128 random bits.
-    let left = uuid::Uuid::new_v4();
-    let right = uuid::Uuid::new_v4();
-    let mut bytes = Vec::with_capacity(16);
-    for value in [left.as_bytes(), right.as_bytes()] {
-        for index in [0, 1, 2, 3, 4, 5, 7, 9] {
-            bytes.push(*value.get(index).ok_or(Error::Scope)?);
-        }
-    }
-    let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(text)
+    let [a, b, c, d, e, f, _, g, _, h, ..] = uuid::Uuid::new_v4().into_bytes();
+    let [i, j, k, l, m, n, _, o, _, p, ..] = uuid::Uuid::new_v4().into_bytes();
+    Ok(
+        uuid::Uuid::from_bytes([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p])
+            .simple()
+            .to_string(),
+    )
 }
 
 #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]

@@ -176,7 +176,7 @@ impl NativeMaterializationWork {
     }
     pub(super) fn poison(&self, error: NativeTreeMaterializationError) {
         self.state(|state| {
-            state.record_native_io_failure(crate::native_name::original_name_error(error));
+            state.record_native_io_failure(crate::demand::DemandError::from(error));
             state.poison_native_original_work();
         });
     }

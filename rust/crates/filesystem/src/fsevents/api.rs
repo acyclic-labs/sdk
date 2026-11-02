@@ -278,7 +278,7 @@ impl Api {
                 drop(copy);
                 recorded
             }
-            .map_err(crate::native_name::original_name_error)?;
+            .map_err(crate::demand::DemandError::from)?;
         } else {
             work.record(WorkCounters {
                 bytes_copied: owned,
@@ -339,7 +339,7 @@ impl Api {
                 drop(copy);
                 recorded
             }
-            .map_err(crate::native_name::original_name_error)?;
+            .map_err(crate::demand::DemandError::from)?;
         } else {
             work.record(WorkCounters {
                 bytes_copied: slots,

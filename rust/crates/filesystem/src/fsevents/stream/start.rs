@@ -154,7 +154,7 @@ fn allocate_registration<W: SourceDemandReadWork>(
             ..crate::WorkCounters::UNCHARGED
         });
         drop(copy);
-        recorded.map_err(crate::native_name::original_name_error)
+        recorded.map_err(crate::demand::DemandError::from)
     } else {
         work.record(WorkCounters {
             bytes_copied: payload,

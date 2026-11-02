@@ -1,4 +1,3 @@
-use super::original_name_error;
 use crate::kernel::NameEncoding;
 use crate::model::FilesystemProfile;
 use std::ffi::OsStr;
@@ -31,7 +30,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                     crate::native_host::NativeHostWork::check(source)?;
                 }
                 work.admit(WorkCounters::UNCHARGED)
-                    .map_err(original_name_error)
+                    .map_err(DemandError::from)
             }
         }
     }
@@ -47,7 +46,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
             } => {
                 *allocation = Some(
                     work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
-                        .map_err(original_name_error)?,
+                        .map_err(DemandError::from)?,
                 );
                 Ok(())
             }
@@ -64,7 +63,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                 .as_mut()
                 .ok_or(DemandError::InvalidRequest)?
                 .reconcile_capacity(actual)
-                .map_err(original_name_error),
+                .map_err(DemandError::from),
         }
     }
 
@@ -76,7 +75,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                     .as_mut()
                     .ok_or(DemandError::InvalidRequest)?
                     .release(bytes)
-                    .map_err(original_name_error);
+                    .map_err(DemandError::from);
                 if result.is_ok() {
                     *allocation = None;
                 }
@@ -89,7 +88,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         self.check()?;
         match self {
             Self::Source(work) => work.admit(delta),
-            Self::Original { work, .. } => work.admit(delta).map_err(original_name_error),
+            Self::Original { work, .. } => work.admit(delta).map_err(DemandError::from),
         }
     }
 
@@ -111,7 +110,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                     ..crate::WorkCounters::UNCHARGED
                 })
                 .map(Some)
-                .map_err(original_name_error),
+                .map_err(DemandError::from),
         }
     }
 
@@ -119,14 +118,14 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         self.check()?;
         match self {
             Self::Source(work) => work.started_io(delta),
-            Self::Original { work, .. } => work.charge(delta).map_err(original_name_error),
+            Self::Original { work, .. } => work.charge(delta).map_err(DemandError::from),
         }
     }
 
     fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         match self {
             Self::Source(work) => work.record(delta),
-            Self::Original { work, .. } => work.record_admitted(delta).map_err(original_name_error),
+            Self::Original { work, .. } => work.record_admitted(delta).map_err(DemandError::from),
         }
     }
 }
@@ -281,7 +280,7 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
                 ..crate::WorkCounters::UNCHARGED
             })
         }
-        .map_err(original_name_error),
+        .map_err(DemandError::from),
         None => work.record(delta),
     };
     if let Err(error) = recorded {

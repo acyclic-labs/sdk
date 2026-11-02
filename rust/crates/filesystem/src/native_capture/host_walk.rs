@@ -40,13 +40,13 @@ fn walk_host_tree<E: From<CaptureError>>(
         let host_path = namespace_to_host_path_measured(&parent, meter)?;
         let mut reader = root
             .read_dir_stats(&host_path, &mut &*meter)
-            .map_err(crate::native_name::original_name_error)
+            .map_err(crate::demand::DemandError::from)
             .map_err(capture_demand_error)?;
         capture_drop_host_path(host_path, meter)?;
         while let Some(mut entry) = reader
             .0
             .next_metadata(&mut &*meter)
-            .map_err(crate::native_name::original_name_error)
+            .map_err(crate::demand::DemandError::from)
             .map_err(capture_demand_error)?
         {
             let (encoding, bytes) = meter

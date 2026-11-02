@@ -97,6 +97,24 @@ impl From<NamespacePathError> for DemandError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl From<crate::NativeTreeMaterializationError> for DemandError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        match error {
+            crate::NativeTreeMaterializationError::Work(error) => Self::Work(error),
+            crate::NativeTreeMaterializationError::Cancelled => Self::Cancelled,
+            crate::NativeTreeMaterializationError::OriginalWorkPoisoned => {
+                Self::OriginalWorkPoisoned
+            }
+            crate::NativeTreeMaterializationError::AllocationFailed(error) => {
+                Self::Allocation(error)
+            }
+            crate::NativeTreeMaterializationError::Io(error) => Self::Io(error),
+            _ => Self::InvalidRequest,
+        }
+    }
+}
+
 impl From<crate::FsError> for DemandError {
     fn from(error: crate::FsError) -> Self {
         match error {
@@ -104,17 +122,7 @@ impl From<crate::FsError> for DemandError {
             crate::FsError::Cancelled(_) => DemandError::Cancelled,
             crate::FsError::EncodedAllocationFailed(error) => DemandError::Allocation(error),
             #[cfg(not(target_arch = "wasm32"))]
-            crate::FsError::NativeKernel(error) => match error {
-                crate::NativeTreeMaterializationError::Work(error) => DemandError::Work(error),
-                crate::NativeTreeMaterializationError::Cancelled => DemandError::Cancelled,
-                crate::NativeTreeMaterializationError::OriginalWorkPoisoned => {
-                    DemandError::OriginalWorkPoisoned
-                }
-                crate::NativeTreeMaterializationError::AllocationFailed(error) => {
-                    DemandError::Allocation(error)
-                }
-                _ => DemandError::InvalidRequest,
-            },
+            crate::FsError::NativeKernel(error) => error.into(),
             _ => DemandError::InvalidRequest,
         }
     }

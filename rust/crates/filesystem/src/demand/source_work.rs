@@ -39,7 +39,7 @@ pub(crate) trait SourceDemandReadWork:
             return native
                 .reserve_work(delta)
                 .map(Some)
-                .map_err(crate::native_name::original_name_error);
+                .map_err(crate::demand::DemandError::from);
         }
         self.admit(delta)?;
         Ok(None)
