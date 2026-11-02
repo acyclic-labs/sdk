@@ -11,6 +11,7 @@ use crate::layers::{Layer, is_off};
 pub(super) struct Settings {
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) sampling: Option<Sampling>,
+    pub(super) compaction: crate::context::CompactionPolicy,
 }
 
 /// Resolves a model selection the settings name.
@@ -49,7 +50,11 @@ impl Tree<'_> {
             .await
         {
             Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes.to_vec()))),
-            Err(Error::NotFound(_)) => Ok(None),
+            Err(Error::NotFound(_))
+            | Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::NotFound,
+                ..
+            }) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -82,6 +87,10 @@ pub(super) async fn admit(
     agent: AgentId,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
+    compaction: (
+        &crate::context::CompactionPolicy,
+        &Option<crate::context::CompactionPolicy>,
+    ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
     let tree = Tree {
@@ -99,9 +108,18 @@ pub(super) async fn admit(
         generation: "",
         bytes: crate::seed::file(config::AGENT),
     };
-    let home = tree.home(config::AGENT).await?;
+    let home = match tree.home(config::AGENT).await {
+        Ok(home) => home,
+        // Selected-path refusal is invalid user settings. Storage, authority,
+        // cancellation and metadata failures keep their original errors.
+        Err(Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }) => None,
+        Err(error) => return Err(error),
+    };
     let Some((version, bytes)) = home else {
-        return settle(&[seed], &tree, started, resolve)
+        return settle(&[seed], &tree, started, resolve, compaction)
             .await
             .map_err(Refused::seed);
     };
@@ -113,16 +131,17 @@ pub(super) async fn admit(
             bytes: Some(&bytes),
         },
     ];
-    let (settings, status, error) = match settle(&layers, &tree, started.clone(), resolve).await {
-        Ok(settings) => (settings, AdmissionStatus::Applied, None),
-        Err(Refused(status, error)) => (
-            settle(&layers[..1], &tree, started, resolve)
-                .await
-                .map_err(Refused::seed)?,
-            status,
-            Some(error),
-        ),
-    };
+    let (settings, status, error) =
+        match settle(&layers, &tree, started.clone(), resolve, compaction).await {
+            Ok(settings) => (settings, AdmissionStatus::Applied, None),
+            Err(Refused(status, error)) => (
+                settle(&layers[..1], &tree, started, resolve, compaction)
+                    .await
+                    .map_err(Refused::seed)?,
+                status,
+                Some(error),
+            ),
+        };
     let admission = Admission {
         path: config::AGENT.to_owned(),
         version: version.clone(),
@@ -150,7 +169,10 @@ pub(super) async fn admit(
             "application/json",
             "admission",
             volumes.maximum_bytes,
-            &crate::IdempotencyKey::new(format!("admission:{agent}:{version}"))?,
+            &crate::IdempotencyKey::new(format!(
+                "admission:{agent}:{version}:{}",
+                blake3::hash(&bytes)
+            ))?,
             None,
             ContentAccess::default(),
         )
@@ -183,6 +205,10 @@ async fn settle(
     tree: &Tree<'_>,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
+    compaction: (
+        &crate::context::CompactionPolicy,
+        &Option<crate::context::CompactionPolicy>,
+    ),
 ) -> std::result::Result<Settings, Refused> {
     let selection = format!("{}/{}", started.0.provider, started.0.name);
     let invalid = |error: String| Refused(AdmissionStatus::Invalid, error);
@@ -231,7 +257,8 @@ async fn settle(
             return Err(rejected("sampling.maxOutputTokens must be positive"));
         }
     }
-    let model = if settings.model == selection {
+    let unchanged_model = settings.model == selection;
+    let model = if unchanged_model {
         started
     } else {
         let resolve = resolve.ok_or_else(|| {
@@ -239,7 +266,13 @@ async fn settle(
         })?;
         resolve(&settings.model)?
     };
+    let compaction = if unchanged_model {
+        compaction.0.clone()
+    } else {
+        super::compaction::select(compaction.1.clone(), &model.0, model.1.as_ref())?
+    };
     Ok(Settings {
+        compaction,
         model,
         sampling: settings.sampling,
     })
