@@ -288,6 +288,11 @@ fn charge(drop_observer: bool, panicked: bool, broken: bool) {
         };
         assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
         let job = task.pending.take().unwrap();
+        if panicked && broken {
+            // Sever only the original shared state's funding. The panic,
+            // terminal publication and worker lifetime remain unchanged.
+            state.lock().unwrap()._allocation.take();
+        }
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         if drop_observer {
             drop(task);
@@ -354,6 +359,18 @@ fn shared_state_funding_survives_observation_and_worker_release() {
 #[should_panic(expected = "live shared state lost its funding")]
 fn premature_shared_state_refund_is_detected() {
     charge(false, false, true);
+}
+
+#[test]
+#[should_panic(expected = "live shared state lost its funding")]
+fn premature_panicked_shared_state_refund_is_detected() {
+    charge(false, true, true);
+}
+
+#[test]
+#[should_panic(expected = "abandoned shared state lost its funding")]
+fn premature_abandoned_panicked_state_refund_is_detected() {
+    charge(true, true, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
