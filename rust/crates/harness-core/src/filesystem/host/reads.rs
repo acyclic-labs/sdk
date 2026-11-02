@@ -344,7 +344,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &unmeasured
         };
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace = self.open(&workspace_ref, Some(io)).await?;
+        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace_ref = (workspace_ref, workspace_hold);
+        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
             None => self.current_generation(&workspace, io).await?,

@@ -253,8 +253,15 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                             "disabled",
                         )
                         .await?;
-                    if native {
-                        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+                    {
+                        let io = if native {
+                            crate::executor::PreparationIo::from_native_work(&work)?
+                        } else {
+                            crate::executor::PreparationIo::from_budget(
+                                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                                &cancellation,
+                            )?
+                        };
                         let before = io.owned_bytes()?;
                         let error = context
                             .effective_tool_path(
@@ -264,6 +271,10 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                             .await
                             .unwrap_err();
                         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
+                        assert!(
+                            error.to_string().contains("is in no layer"),
+                            "disabled selection lost its refusal: {error}"
+                        );
                         assert_eq!(
                             io.owned_bytes()?,
                             before,
@@ -271,29 +282,21 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                         );
                         let heads = reader.heads.load(Ordering::SeqCst);
                         cancellation.cancel();
-                        assert!(
-                            context
-                                .effective_tool_path(
-                                    invocation.arguments["path"].as_str().unwrap(),
-                                    Some(&io)
-                                )
-                                .await
-                                .unwrap_err()
-                                .is_native_failure()
-                        );
+                        let error = context
+                            .effective_tool_path(
+                                invocation.arguments["path"].as_str().unwrap(),
+                                Some(&io),
+                            )
+                            .await
+                            .unwrap_err();
+                        assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
+                        if native {
+                            assert!(error.is_native_failure());
+                        }
                         assert_eq!(
                             reader.heads.load(Ordering::SeqCst),
                             heads,
                             "cancelled producer was called"
-                        );
-                    } else {
-                        assert_eq!(
-                            tool.executor
-                                .execute(invocation, Some(context))
-                                .await
-                                .unwrap_err()
-                                .code(),
-                            crate::wire::ErrorCode::NotFound
                         );
                     }
                 }
