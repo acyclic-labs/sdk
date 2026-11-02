@@ -26,8 +26,8 @@ use acyclic_stream::{
 use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
-    history_turns: 8,
+    maximum_bytes: Some(64 * 1024),
+    history_turns: Some(8),
 };
 
 fn within() -> acyclic_actors::addressing::ActorReference {
@@ -97,7 +97,7 @@ fn executors_with_render_bytes(
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
-        base.render_bytes = render_bytes;
+        base.render_bytes = Some(render_bytes);
     }
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
@@ -107,7 +107,7 @@ fn executors_with_render_bytes(
                 base
             } else {
                 acyclic_harness_core::conversation::Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..base
                 }
             },
@@ -1147,7 +1147,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(first.len(), 2, "parts share the original finite allowance");
     let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Default::default()
     };
     assert!(
@@ -1395,7 +1395,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             TurnAdmission::LocalRoot,
             executors_with_targets(model.clone(), true, Some(targets))?,
             TurnLimits {
-                history_turns,
+                history_turns: Some(history_turns),
                 ..LIMITS
             },
             Default::default(),

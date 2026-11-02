@@ -36,7 +36,11 @@ Authenticated authority expiry remains independent. A foreground yield is not a
 process deadline.
 
 Commands can carry binary stdin, a guest cwd, a combined output allowance and an
-absolute authority expiry. Native clients reuse the shared wall-clock alarm so
+absolute authority expiry. The command deadline is optional: `None` waits for
+completion or cancellation without a fallback timer. A selected deadline must be
+positive; it stays fixed through admission and native worker submission.
+Authority expiry remains independent, including when no command deadline is
+selected or output credit is withheld. Native clients reuse the shared wall-clock alarm so
 expiry also wakes silent commands. Client-side expiry reports uncertainty; only
 the producer can attest physical cleanup. Protocol 1.1 merged channels and cannot
 satisfy this contract: a server must refuse unsupported revisions before dispatch.

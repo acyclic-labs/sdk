@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::ForkRequest;
 use proptest::prelude::*;
 
 pub(in crate::local) fn request(body: Vec<u8>) -> CommitRequest {

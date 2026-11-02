@@ -97,9 +97,7 @@ pub(crate) fn plan(
 
 pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
-        value,
-        u64::MAX,
-        &mut None,
+        value, None, &mut None,
     )?)
     .map_err(|_| invalid("token size overflow"))
 }

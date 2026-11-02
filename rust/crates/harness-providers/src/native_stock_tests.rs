@@ -24,8 +24,8 @@ use acyclic_harness_core::{
 use acyclic_stream::{MemoryStream, ReadRequest, StreamPath, StreamProvider as _};
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 65_536,
-    history_turns: 8,
+    maximum_bytes: Some(65_536),
+    history_turns: Some(8),
 };
 
 #[tokio::test]

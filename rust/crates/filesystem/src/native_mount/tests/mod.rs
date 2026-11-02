@@ -49,13 +49,7 @@ pub(super) fn portable_path(
     Ok(NamespacePath::new(
         components
             .iter()
-            .map(|name| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.to_vec(),
-                    limits.maximum_component_bytes,
-                )
-            })
+            .map(|name| LogicalName::new(NameEncoding::Utf8, name.to_vec()))
             .collect::<Result<Vec<_>, _>>()?,
         limits,
     )?)

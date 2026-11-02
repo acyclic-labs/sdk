@@ -1,5 +1,5 @@
+import { captureCommand } from "./process-capture.mjs";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,7 +11,7 @@ const temporary = mkdtempSync(join(tmpdir(), "acyclic-stream-protocol-"));
 
 try {
   const output = join(temporary, "stream.json");
-  const result = spawnSync(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], {
+  const result = captureCommand(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], {
     cwd: root,
     encoding: "utf8",
   });

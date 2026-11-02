@@ -16,6 +16,7 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
+mod commands;
 mod data;
 mod socket;
 use admissions::Admissions;
@@ -24,6 +25,7 @@ pub use socket::{ActorSocket, ActorSocketSender};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
+mod deadline;
 mod observation;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
@@ -69,13 +71,15 @@ pub struct Client {
     pool: PoolHandle,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
+    registration_timeout: Option<u32>,
 }
 
 /// The shared transport owners, without an operation's causal requirements.
 #[derive(Clone)]
 pub(crate) struct PoolHandle {
     connections: super::Connections,
-    commands: mpsc::Sender<Command>,
+    executor: std::sync::Arc<dyn crate::runtime::Executor>,
+    commands: commands::Sender,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
@@ -89,6 +93,7 @@ impl PoolHandle {
         Client {
             pool: self,
             revisions,
+            registration_timeout: None,
         }
     }
 
@@ -183,6 +188,17 @@ impl futures::Stream for SubscriptionSource {
         self.records.as_mut().poll_next(cx)
     }
 }
+/// Drop progress frames through the shared synchronous projection while
+/// preserving each original provider record until its typed conversion.
+fn data_frames<S: futures::Stream<Item = Result<Frame, StreamError>>>(
+    source: S,
+) -> impl futures::Stream<Item = Result<Frame, StreamError>> {
+    crate::projection::filter_map(source, |item| match item {
+        Ok(frame) if matches!(frame.wire().body, Some(Body::Watermark(_))) => None,
+        item => Some(item),
+    })
+}
+
 enum Command {
     Credential {
         slot: u32,
@@ -251,7 +267,6 @@ struct Link {
 }
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
-    credential_bytes: usize,
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
     identity: Bytes,
@@ -269,7 +284,7 @@ struct Pool {
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
     dial_epoch: u64,
-    commands: mpsc::Receiver<Command>,
+    commands: commands::Receiver,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
@@ -343,7 +358,7 @@ impl Client {
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
         let termination = channel.termination();
-        let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
+        let (commands, receiver) = commands::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
@@ -354,7 +369,6 @@ impl Client {
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
             credentials: BTreeMap::new(),
-            credential_bytes: 0,
             connections: connections.clone(),
             executor: executor.clone(),
             identity: crate::new_identity_bytes(),
@@ -395,6 +409,7 @@ impl Client {
         }));
         PoolHandle {
             connections,
+            executor,
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
@@ -411,13 +426,19 @@ impl Client {
     pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
         &self.revisions
     }
-    /// Registers or renews a bounded capability slot on every physical session.
+    /// Selects an optional registration deadline in milliseconds for this client.
+    /// By default registration waits for its outcome or caller cancellation.
+    /// Dropping an expired opening withdraws only that interest, including its
+    /// pending queue admission; already opened siblings retain their owners.
+    #[must_use]
+    pub fn with_registration_timeout(mut self, milliseconds: Option<u32>) -> Self {
+        self.registration_timeout = milliseconds;
+        self
+    }
+    /// Registers or renews a capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
     /// the server rechecks bound channels and reports refusal on those channels.
     pub fn register_credential(&self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
-        if slot as usize >= Limits::default().channels {
-            return Err(StreamError::Capacity);
-        }
         let frame = frame(
             0,
             0,
@@ -429,13 +450,7 @@ impl Client {
         if frame.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        self.pool
-            .commands
-            .try_send(Command::Credential { slot, credential })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-            })
+        self.pool.commands.credential(slot, credential)
     }
     /// Observes successful handshakes without depending on further task records.
     #[must_use]
@@ -451,7 +466,10 @@ impl Client {
     pub async fn follow(
         &self,
         request: crate::FollowRequest,
-    ) -> Result<crate::FollowStream, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
         self.follow_with_ack(request, true).await
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
@@ -620,7 +638,7 @@ impl Client {
             },
         )?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
-        Ok(data::Data::new(
+        Ok(crate::projection::filter_map(
             self.open_kind(
                 Kind::Follow(follow),
                 from,
@@ -628,8 +646,11 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?,
-        )
-        .map(|item| item?.into_data()))
+            |item| match item {
+                Ok(frame) if matches!(frame.wire().body, Some(Body::Watermark(_))) => None,
+                item => Some(item.and_then(Frame::into_data)),
+            },
+        ))
     }
 
     async fn open_kind(
@@ -795,7 +816,19 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(super::runtime::waiting("session-open", id, registration))
+            .scope(async {
+                let registration = super::runtime::waiting("session-open", id, registration);
+                match self.registration_timeout {
+                    Some(milliseconds) => deadline::until(
+                        registration,
+                        self.pool.executor.sleep(u64::from(milliseconds)),
+                    )
+                    .await
+                    .map_err(|_| StreamError::Unavailable)?
+                    .unwrap_or(Err(StreamError::DeadlineElapsed)),
+                    None => registration.await,
+                }
+            })
             .await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));

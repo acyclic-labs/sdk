@@ -288,7 +288,7 @@ pub(super) async fn stage_summary_provenance(
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        Some(io) => io.encode(summary, Some(io.remaining()?.bytes_encoded), true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
     #[cfg(feature = "filesystem")]

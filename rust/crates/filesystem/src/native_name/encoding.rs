@@ -135,10 +135,9 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
 pub(crate) fn host_name_bytes_measured(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut DemandWork,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
-    host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut NameWork::Source(work))
+    host_name_bytes_with_accounting(name, profile, &mut NameWork::Source(work))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -146,7 +145,6 @@ pub(crate) fn host_name_bytes_measured(
 pub(crate) fn host_name_bytes_with_native_work(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     original: &crate::NativeMaterializationWork,
 ) -> Result<
     (
@@ -160,7 +158,7 @@ pub(crate) fn host_name_bytes_with_native_work(
         allocation: None,
         source: None,
     };
-    let name = host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut accounting)
+    let name = host_name_bytes_with_accounting(name, profile, &mut accounting)
         .map_err(name_native_error)?;
     let NameWork::Original { allocation, .. } = accounting else {
         unreachable!()
@@ -176,11 +174,10 @@ pub(crate) fn host_name_bytes_with_native_work(
 pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut W,
 ) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
     with_source_name_work(work, |accounting| {
-        host_name_bytes_with_accounting(name, profile, maximum_bytes, accounting)
+        host_name_bytes_with_accounting(name, profile, accounting)
     })
 }
 
@@ -188,11 +185,10 @@ pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
 pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
     name: &[u16],
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut W,
 ) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
     with_source_name_work(work, |accounting| {
-        host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, accounting)
+        host_wide_name_bytes_with_accounting(name, profile, accounting)
     })
 }
 
@@ -235,13 +231,9 @@ fn name_native_error(error: DemandError) -> crate::NativeTreeMaterializationErro
 #[cfg(not(target_arch = "wasm32"))]
 fn name_buffer<W: SourceDemandReadWork>(
     length: usize,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<Vec<u8>, DemandError> {
     work.check()?;
-    if length > maximum_bytes as usize {
-        return Err(DemandError::InvalidRequest);
-    }
     work.allocate(length as u64)?;
     let mut bytes = Vec::new();
     if let Err(error) = bytes.try_reserve_exact(length) {
@@ -263,7 +255,6 @@ fn name_buffer<W: SourceDemandReadWork>(
 #[cfg(not(target_arch = "wasm32"))]
 fn copy_bytes_measured<W: SourceDemandReadWork>(
     source: &[u8],
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<Vec<u8>, DemandError> {
     let delta = WorkCounters {
@@ -271,7 +262,7 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
         ..WorkCounters::UNCHARGED
     };
     let reservation = work.reserve_copy(source.len() as u64)?;
-    let mut bytes = name_buffer(source.len(), maximum_bytes, work)?;
+    let mut bytes = name_buffer(source.len(), work)?;
     bytes.extend_from_slice(source);
     let recorded = match reservation {
         Some(reservation) => {
@@ -296,7 +287,6 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
 #[cfg(not(target_arch = "wasm32"))]
 fn utf16_bytes_measured<I: Iterator<Item = u16> + Clone, W: SourceDemandReadWork>(
     units: I,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<Vec<u8>, DemandError> {
     let mut length = 0_usize;
@@ -306,11 +296,8 @@ fn utf16_bytes_measured<I: Iterator<Item = u16> + Clone, W: SourceDemandReadWork
             ..WorkCounters::UNCHARGED
         })?;
         length = length.checked_add(2).ok_or(crate::WorkError::Overflow)?;
-        if length > maximum_bytes as usize {
-            return Err(DemandError::InvalidRequest);
-        }
     }
-    let mut bytes = name_buffer(length, maximum_bytes, work)?;
+    let mut bytes = name_buffer(length, work)?;
     let result = (|| {
         for unit in units {
             let delta = WorkCounters {
@@ -338,12 +325,10 @@ fn utf16_bytes_measured<I: Iterator<Item = u16> + Clone, W: SourceDemandReadWork
 pub(crate) fn host_name_bytes(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
 ) -> Result<(NameEncoding, Vec<u8>), HostNameEncodingError> {
     host_name_bytes_measured(
         name,
         profile,
-        maximum_bytes,
         &mut DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
     )
     .map_err(|_| HostNameEncodingError)
@@ -353,30 +338,23 @@ pub(crate) fn host_name_bytes(
 fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
     use std::os::unix::ffi::OsStrExt as _;
     work.check()?;
     let raw = name.as_bytes();
     match profile {
-        FilesystemProfile::Posix => Ok((
-            NameEncoding::PosixBytes,
-            copy_bytes_measured(raw, maximum_bytes, work)?,
-        )),
+        FilesystemProfile::Posix => Ok((NameEncoding::PosixBytes, copy_bytes_measured(raw, work)?)),
         FilesystemProfile::Windows => {
             let text = std::str::from_utf8(raw).map_err(|_| DemandError::InvalidRequest)?;
             Ok((
                 NameEncoding::WindowsUtf16Le,
-                utf16_bytes_measured(text.encode_utf16(), maximum_bytes, work)?,
+                utf16_bytes_measured(text.encode_utf16(), work)?,
             ))
         }
         FilesystemProfile::Portable | FilesystemProfile::Browser => {
             std::str::from_utf8(raw).map_err(|_| DemandError::InvalidRequest)?;
-            Ok((
-                NameEncoding::Utf8,
-                copy_bytes_measured(raw, maximum_bytes, work)?,
-            ))
+            Ok((NameEncoding::Utf8, copy_bytes_measured(raw, work)?))
         }
     }
 }
@@ -385,7 +363,6 @@ fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
 fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
     name: &OsStr,
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
     use std::os::windows::ffi::OsStrExt as _;
@@ -393,7 +370,7 @@ fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
     match profile {
         FilesystemProfile::Windows => Ok((
             NameEncoding::WindowsUtf16Le,
-            utf16_bytes_measured(name.encode_wide(), maximum_bytes, work)?,
+            utf16_bytes_measured(name.encode_wide(), work)?,
         )),
         FilesystemProfile::Posix | FilesystemProfile::Portable | FilesystemProfile::Browser => {
             let text = name.to_str().ok_or(DemandError::InvalidRequest)?;
@@ -402,10 +379,7 @@ fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
             } else {
                 NameEncoding::Utf8
             };
-            Ok((
-                encoding,
-                copy_bytes_measured(text.as_bytes(), maximum_bytes, work)?,
-            ))
+            Ok((encoding, copy_bytes_measured(text.as_bytes(), work)?))
         }
     }
 }
@@ -414,13 +388,12 @@ fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
 fn host_wide_name_bytes_with_accounting<W: SourceDemandReadWork>(
     name: &[u16],
     profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
     if profile == FilesystemProfile::Windows {
         return Ok((
             NameEncoding::WindowsUtf16Le,
-            utf16_bytes_measured(name.iter().copied(), maximum_bytes, work)?,
+            utf16_bytes_measured(name.iter().copied(), work)?,
         ));
     }
     let mut length = 0_usize;
@@ -436,11 +409,8 @@ fn host_wide_name_bytes_with_accounting<W: SourceDemandReadWork>(
                     .len_utf8(),
             )
             .ok_or(crate::WorkError::Overflow)?;
-        if length > maximum_bytes as usize {
-            return Err(DemandError::InvalidRequest);
-        }
     }
-    let mut bytes = name_buffer(length, maximum_bytes, work)?;
+    let mut bytes = name_buffer(length, work)?;
     let result = (|| {
         for character in char::decode_utf16(name.iter().copied()) {
             work.check()?;
@@ -476,14 +446,12 @@ fn host_wide_name_bytes_with_accounting<W: SourceDemandReadWork>(
 fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
     name: &OsStr,
     _profile: FilesystemProfile,
-    maximum_bytes: u32,
     work: &mut NameWork<'_, W>,
 ) -> Result<(NameEncoding, Vec<u8>), DemandError> {
     Ok((
         NameEncoding::Utf8,
         copy_bytes_measured(
             name.to_str().ok_or(DemandError::InvalidRequest)?.as_bytes(),
-            maximum_bytes,
             work,
         )?,
     ))
@@ -493,12 +461,8 @@ fn host_name_bytes_with_accounting<W: SourceDemandReadWork>(
 pub(crate) fn host_name_bytes(
     name: &OsStr,
     _profile: FilesystemProfile,
-    maximum_bytes: u32,
 ) -> Result<(NameEncoding, Vec<u8>), HostNameEncodingError> {
     let source = name.to_str().ok_or(HostNameEncodingError)?.as_bytes();
-    if source.len() > maximum_bytes as usize {
-        return Err(HostNameEncodingError);
-    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(source.len())

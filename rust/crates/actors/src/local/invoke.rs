@@ -397,10 +397,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         else {
             return Ok(None);
         };
-        let original = super::owned(previous, epoch)?;
-        let mut state = original.clone();
-        super::consume(&mut state, &original.alarm, trigger)?;
-        let mut prepared = self.prepare(previous, state, effects, key)?;
+        let mut prepared = self.prepare_failed_input(
+            previous,
+            epoch,
+            trigger,
+            delivered.ok_or(Error::Invalid("missing failed input"))?,
+            failure,
+            key,
+        )?;
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
         prepared.call = Some((call, trigger.clone()));
         Ok(Some(prepared))
     }

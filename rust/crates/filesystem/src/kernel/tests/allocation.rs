@@ -109,19 +109,17 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Alloca
 }
 
 #[test]
-fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crate::FsError> {
+fn visited_set_grows_deterministically_and_detects_aliases() -> Result<(), crate::FsError> {
     let cancellation = crate::CancellationToken::new();
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut visited = VisitedObjectSet::new_with_accounting(
-        2,
-        &mut KernelAccounting::borrowed_standalone(
+    let mut visited =
+        VisitedObjectSet::new_with_accounting(&mut KernelAccounting::borrowed_standalone(
             &mut ledger,
             &mut work,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ),
-    )?;
+        ))?;
     let first = VisitedObjectSet::insert_with_accounting(
         &mut visited,
         object(1),
@@ -155,19 +153,7 @@ fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crat
     assert!(first.inserted);
     assert!(collision.inserted);
     assert!(!alias.inserted);
-    assert!(matches!(
-        VisitedObjectSet::insert_with_accounting(
-            &mut visited,
-            object(3),
-            &mut KernelAccounting::borrowed_standalone(
-                &mut ledger,
-                &mut work,
-                WorkBudget::UNBOUNDED,
-                &cancellation
-            )
-        ),
-        Err(crate::FsError::PendingMutationAllocationFailed)
-    ));
+
     visited.retire(&mut KernelAccounting::borrowed_standalone(
         &mut ledger,
         &mut work,
@@ -178,15 +164,13 @@ fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crat
 
     let mut scalable_ledger = AllocationLedger::default();
     let mut scalable_work = WorkCounters::default();
-    let mut scalable = VisitedObjectSet::new_with_accounting(
-        1_024,
-        &mut KernelAccounting::borrowed_standalone(
+    let mut scalable =
+        VisitedObjectSet::new_with_accounting(&mut KernelAccounting::borrowed_standalone(
             &mut scalable_ledger,
             &mut scalable_work,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ),
-    )?;
+        ))?;
     let initial_peak = scalable_work.peak_allocation_bytes;
     for suffix in 0..32 {
         assert!(
@@ -225,34 +209,16 @@ fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crat
 fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table()
 -> Result<(), crate::FsError> {
     let cancellation = crate::CancellationToken::new();
-    let mut empty_ledger = AllocationLedger::default();
-    let mut empty_work = WorkCounters::default();
-    assert!(matches!(
-        VisitedObjectSet::new_with_accounting(
-            0,
-            &mut KernelAccounting::borrowed_standalone(
-                &mut empty_ledger,
-                &mut empty_work,
-                WorkBudget::UNBOUNDED,
-                &cancellation
-            )
-        ),
-        Err(crate::FsError::PendingMutationAllocationFailed)
-    ));
-    assert_eq!(empty_ledger.live_bytes(), 0);
-
     for fail_on_copy in [false, true] {
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
-        let mut visited = VisitedObjectSet::new_with_accounting(
-            16,
-            &mut KernelAccounting::borrowed_standalone(
+        let mut visited =
+            VisitedObjectSet::new_with_accounting(&mut KernelAccounting::borrowed_standalone(
                 &mut ledger,
                 &mut work,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ),
-        )?;
+            ))?;
         for suffix in 0..8 {
             assert!(
                 VisitedObjectSet::insert_with_accounting(

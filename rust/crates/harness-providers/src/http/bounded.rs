@@ -23,7 +23,7 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
 
 pub(crate) async fn read(
     mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
-    maximum: usize,
+    maximum: Option<usize>,
     work: NativeWork<'_>,
 ) -> Result<Body> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -36,11 +36,12 @@ pub(crate) async fn read(
         let next = bytes
             .len()
             .checked_add(chunk.len())
-            .filter(|n| *n <= maximum)
+            .filter(|n| maximum.is_none_or(|maximum| *n <= maximum))
             .ok_or_else(|| boundary(work, "HTTP JSON response exceeds byte limit"))?;
         if next > bytes.capacity() {
             let previous = bytes.capacity();
-            let capacity = next.max(previous.saturating_mul(2)).min(maximum);
+            let capacity = next.max(previous.saturating_mul(2));
+            let capacity = maximum.map_or(capacity, |maximum| capacity.min(maximum));
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(work), Some(hold)) = (work, custody.as_mut()) {
                 let mut growth = work.claim(

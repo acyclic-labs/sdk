@@ -201,17 +201,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
     ) -> Result<Option<String>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let maximum = self.maximum_changes.max(1);
         let mut paths = self
             .target_head
-            .paths_for_file_id(file_id, maximum, WorkBudget::UNBOUNDED, &cancellation)
+            .paths_for_file_id(file_id, None, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| failure.error)?
             .value;
         if paths.is_empty() {
             paths = self
                 .source_head
-                .paths_for_file_id(file_id, maximum, WorkBudget::UNBOUNDED, &cancellation)
+                .paths_for_file_id(file_id, None, WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(|failure| failure.error)?
                 .value;

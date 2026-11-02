@@ -61,6 +61,7 @@ pub struct LocalHarnessConfig {
     #[cfg(feature = "search-http")]
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
+    pub(super) max_children: Option<u32>,
     pub(super) run_limits: TaskRunLimits,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -192,6 +193,7 @@ impl LocalHarnessConfig {
             #[cfg(feature = "search-http")]
             web_tools: false,
             limits: Limits::default(),
+            max_children: None,
             run_limits: TaskRunLimits::default(),
             compaction: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -451,7 +453,7 @@ impl LocalHarnessConfig {
         self.run_limits = limits;
         self
     }
-    /// Selects the finite goal policy; `None` disables automatic continuations.
+    /// Selects the goal policy; `None` disables automatic continuations.
     #[must_use]
     pub fn goal_continuations(
         mut self,
@@ -473,7 +475,7 @@ impl LocalHarnessConfig {
         self.settings = Some(settings);
         self
     }
-    /// Selects independent finite MCP discovery and tool-exchange bounds.
+    /// Selects optional MCP discovery/exchange policies and startup credit.
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
     pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {

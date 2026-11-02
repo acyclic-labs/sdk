@@ -137,6 +137,7 @@ pub struct StockExecutors {
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
     templates: bool,
+    max_children: Option<u32>,
     context: Arc<dyn TurnContext>,
 }
 
@@ -159,6 +160,7 @@ impl StockExecutors {
             compaction,
             agent_tools: Vec::new(),
             templates: false,
+            max_children: None,
             context,
         }
     }
@@ -184,7 +186,7 @@ impl StockExecutors {
 
 impl TurnExecutors for StockExecutors {
     fn render_bytes(&self) -> Option<u64> {
-        Some(self.limits.render_bytes)
+        self.limits.render_bytes
     }
 
     fn templates(&self) -> bool {
@@ -235,7 +237,11 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, authority.templates.clone()),
+                    (
+                        &self.agent_tools,
+                        self.max_children,
+                        authority.templates.clone(),
+                    ),
                 )?;
             }
             let executor = StockExecutor::new(

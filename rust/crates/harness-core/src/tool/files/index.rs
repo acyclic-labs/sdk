@@ -171,7 +171,13 @@ impl<'a> OrdinalIndex<'a> {
         context: &'a ToolContext,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<PrivateContent<'a>>> {
-        if context.task().scope().limits().file_bytes < BYTES as u64 {
+        if context
+            .task()
+            .scope()
+            .limits()
+            .file_bytes
+            .is_some_and(|maximum| maximum < BYTES as u64)
+        {
             return Ok(None);
         }
         context.task().projection_destination(io)

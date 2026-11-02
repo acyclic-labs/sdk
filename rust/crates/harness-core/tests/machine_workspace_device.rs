@@ -129,8 +129,8 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         bindings.scope = RuntimeScope::new(
             Capabilities::default(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 4096,
-                render_bytes: 4096,
+                file_bytes: Some(4096),
+                render_bytes: Some(4096),
                 ..Default::default()
             },
         )?;
@@ -473,8 +473,8 @@ async fn committed_handover(refused_close: bool) -> Result {
         bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 2,
-                render_bytes: 4,
+                file_bytes: Some(2),
+                render_bytes: Some(4),
                 ..Default::default()
             },
         )?;
@@ -1058,7 +1058,8 @@ async fn committed_handover(refused_close: bool) -> Result {
                     .ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);
                 assert_eq!(result.value["omitted_bytes"], 2);
-                let bounded = acyclic_harness_core::tools::shell::bounded_result(result, 2048)?;
+                let bounded =
+                    acyclic_harness_core::tools::shell::bounded_result(result, Some(2048))?;
                 assert_eq!(bounded.value["truncated"], true);
                 assert_eq!(bounded.value["omitted_bytes"], 2);
                 let shell_tool = registry
@@ -1109,7 +1110,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                                 "",
                                 &path,
                                 None,
-                                2,
+                                Some(2),
                                 acyclic_harness_core::conversation::ContentAccess::default(),
                             )?
                             .await?;
