@@ -15,12 +15,6 @@
           "interrupted"
         ],
         "hold": true
-      },
-      {
-        "when": {},
-        "text": [
-          "resumed"
-        ]
       }
     ]
   },
@@ -36,10 +30,14 @@
     {
       "mode": "headless",
       "text": "resume marker",
-      "answer": "resumed"
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "connection interrupted"
+      }
     }
   ],
   "assert": {
-    "requests": 2
+    "requests": 1
   }
 }
