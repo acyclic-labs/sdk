@@ -181,6 +181,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Reconciles a previously started invocation without executing it again.
     /// The caller must authenticate the complete invocation against its original
     /// start record; an operation ID alone does not admit replacement arguments.
+    /// `None` or an indeterminate error means completion is still unknown. The
+    /// caller retains the original invocation without recording a terminal
+    /// failure or executing it again, so a later result can settle that invocation.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
