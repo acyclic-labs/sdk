@@ -626,9 +626,9 @@ async fn print(
     entry: &ConversationEntry,
     output: &mut Output,
 ) -> Result<u8, Failure> {
-    let text = conversation.output_text(entry).await?;
+    let mut text = conversation.output_text(entry).await?;
+    text.push('\n');
     output.write(conversation.task(), text.into_bytes()).await?;
-    output.write(conversation.task(), [b'\n']).await?;
     Ok(u8::from(!entry.outcome.is_completed()))
 }
 
