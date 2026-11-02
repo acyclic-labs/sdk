@@ -190,6 +190,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) operation_denial: Option<NativeOperationKind>,
     pub(super) cancel_after_operation: bool,
     pub(super) fail_recorded_operation: Option<u64>,
+    /// Observes an actual operation for event-driven native progress controls.
+    pub(super) operation_recorded: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -299,6 +301,9 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
         if kind == NativeOperationKind::Write {
             self.write_attempts.fetch_add(1, Ordering::AcqRel);
+        }
+        if let Some(recorded) = &self.operation_recorded {
+            recorded()?;
         }
         if self.cancel_after_operation {
             self.cancelled.store(true, Ordering::Release);

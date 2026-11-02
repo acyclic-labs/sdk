@@ -89,6 +89,15 @@ root collection, rather than scanning every unrelated root. For a path with
 with no additional allocation, native operation or per-agent state. Overlapping
 roots retain their original shallowest-ancestor proof order; every selected
 object still undergoes the same native identity and rooted-resolution checks.
+`ExecutionGrant::check_attenuation_async` runs that one object proof on the
+shared native workers. The task owns clones of the original grants and the
+original invocation meter until terminal completion. The checkout admission
+awaits this producer without blocking its executor, then stock admission
+rechecks its pinned policy identity before attaching the grant. Cancellation,
+task storage refusal and producer failure cannot fall back to an unchecked
+grant. This adds one native task and completion, with no new native root calls,
+timer, polling loop, dedicated thread or per-agent state. Synchronous callers
+retain the same proof implementation through `check_attenuation_controlled`.
 When only workspace writes must be removed, `ExecutionGrant::into_read_only`
 consumes an already authorized grant and shares its original pinned roots,
 network authority and compiled filter. It performs no allocation, path lookup,

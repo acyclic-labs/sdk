@@ -9,23 +9,34 @@ struct NativeTool {
     workspace: std::path::PathBuf,
     supported: bool,
     calls: AtomicUsize,
+    revision: AtomicUsize,
+    change_policy: bool,
 }
 
 impl ToolExecutor for NativeTool {
-    fn authorize_execution_grant(
-        &self,
-        _: &ToolInvocation,
-        _: &ToolContext,
-        _: &ExecutionGrant,
-        _: crate::NativeWork<'_>,
-    ) -> Result<()> {
-        if self.supported {
-            Ok(())
-        } else {
-            Err(Error::Unsupported(
-                "executor cannot enforce this grant".into(),
-            ))
-        }
+    fn authorize_execution_grant<'a>(
+        &'a self,
+        _: &'a ToolInvocation,
+        _: &'a ToolContext,
+        grant: &'a ExecutionGrant,
+        _: crate::NativeWork<'a>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.supported {
+                grant
+                    .check_attenuation_async(grant, None)
+                    .await
+                    .map_err(Error::process_io)?;
+                if self.change_policy {
+                    self.revision.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            } else {
+                Err(Error::Unsupported(
+                    "executor cannot enforce this grant".into(),
+                ))
+            }
+        })
     }
 
     fn execute<'a>(
@@ -98,7 +109,7 @@ impl ToolPolicy for PhysicalPolicy {
         ComponentIdentity {
             name: "test.physical".into(),
             version: "1".into(),
-            digest: [1; 32],
+            digest: [self.executor.revision.load(Ordering::SeqCst) as u8; 32],
         }
     }
 
@@ -148,13 +159,15 @@ impl ToolPolicy for PhysicalPolicy {
 }
 
 #[tokio::test]
-async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Result<()> {
-    for (access, deny, supported) in [
-        (None, false, true),
-        (Some(ExecutionAccess::ReadOnly), false, true),
-        (Some(ExecutionAccess::WorkspaceWrite), false, true),
-        (Some(ExecutionAccess::WorkspaceWrite), true, true),
-        (Some(ExecutionAccess::WorkspaceWrite), false, false),
+async fn physical_grant_admission_reaches_native_dispatch_and_refusals_never_launch() -> Result<()>
+{
+    for (access, deny, supported, change_policy) in [
+        (None, false, true, false),
+        (Some(ExecutionAccess::ReadOnly), false, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), true, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, false, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, true, true),
     ] {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
@@ -164,6 +177,8 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
             workspace: workspace.clone(),
             supported,
             calls: AtomicUsize::new(0),
+            revision: AtomicUsize::new(1),
+            change_policy,
         });
         let grant = access.map(|access| {
             ExecutionGrant::new(
@@ -211,7 +226,19 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
             selected_context: None,
         };
         let journal = Journal::default();
-        let output = executor.execute(input.clone(), &journal).await?;
+        let output = executor.execute(input.clone(), &journal).await;
+        if change_policy {
+            assert!(matches!(output, Err(Error::Conflict(_))));
+            assert_eq!(native.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(policy.selections.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("outside")).unwrap(),
+                "original"
+            );
+            assert!(!workspace.join("inside").exists());
+            continue;
+        }
+        let output = output?;
         let dispatched = !deny && supported;
         let requests = provider.requests();
         let refusal = super::super::tools_1::tool_error_text(&requests[1].messages, "call-1");

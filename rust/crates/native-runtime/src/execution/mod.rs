@@ -338,6 +338,31 @@ impl ExecutionGrant {
         self.check_roots(requested, meter).map_err(failure)
     }
 
+    /// Verifies the same pinned roots on the shared native workers, without
+    /// blocking the caller's executor. The task owns both grants and the
+    /// original meter until its terminal producer retires the proof. Dropping
+    /// the wait never attaches a grant or starts a guest.
+    pub async fn check_attenuation_async(
+        &self,
+        requested: &Self,
+        meter: Option<Arc<dyn crate::NativeReadMeter>>,
+    ) -> io::Result<()> {
+        self.check_authority(requested.access, &requested.policy.network)?;
+        let ceiling = self.clone();
+        let requested = requested.clone();
+        let proof_meter = meter.clone();
+        crate::run_blocking_io(
+            move || {
+                ceiling
+                    .check_roots(&requested, proof_meter.as_deref())
+                    .map_err(failure)
+            },
+            meter.map(|meter| (meter, false)),
+        )?
+        .offloaded()
+        .await?
+    }
+
     fn check_authority(
         &self,
         access: ExecutionAccess,
