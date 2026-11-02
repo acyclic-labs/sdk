@@ -97,7 +97,7 @@ export async function runCase(binary, login, root, name, signal) {
   };
   const collaborate = async (task, followup) => {
     hooksPending = true;
-    const fixture = { id: name, workspace, env, args: ["--workspace", workspace,
+    const fixture = { workspace, env, args: ["--workspace", workspace,
       "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
     await conversation(processes, binary, fixture, { operation, turns: [
       { id: "spawn", text: task, answer: "SPAWNED" },
