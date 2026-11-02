@@ -496,6 +496,25 @@ mod tests {
             maximum_bytes: 128,
             ..bounded
         };
+        let tree = Tree::new(&bounded).await?;
+        let original = tree
+            .home("options.ts")
+            .await
+            .err()
+            .expect("import fits bound");
+        let (version, source) = tree.home(config::AGENT).await?.expect("entry is absent");
+        let layers = [Layer {
+            name: "home",
+            generation: &version,
+            bytes: Some(&source),
+        }];
+        assert!(
+            matches!(
+                settle(&layers, &tree, harness.agent()?.clone(), None, (&disabled, &None)).await,
+                Err(Refused::Operation(error)) if error.to_string() == original.to_string()
+            ),
+            "an imported source refusal was classified as invalid settings"
+        );
         let refused = admit(
             &bounded,
             harness.root,
@@ -506,7 +525,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
+            matches!(refused, Err(error) if error.to_string() == original.to_string()),
             "the imported source read bound became seed fallback"
         );
 
@@ -526,9 +545,31 @@ mod tests {
             ] {
                 write(&harness, path, &source).await?;
             }
+            let tree = Tree::new(&bounded).await?;
+            let original = tree
+                .home("plugins/guard/plugin.ts")
+                .await
+                .err()
+                .expect("plugin fits bound");
+            let (version, source) = tree
+                .home(crate::plugins::MANIFEST)
+                .await?
+                .expect("plugin entry is absent");
+            let layers = [Layer {
+                name: "home",
+                generation: &version,
+                bytes: Some(&source),
+            }];
+            assert!(
+                matches!(
+                    crate::plugins::load(&tree, &layers, "root").await,
+                    Err(config::AdmissionError::Source(error)) if error.to_string() == original.to_string()
+                ),
+                "a plugin source refusal was classified as invalid configuration"
+            );
             let refused = plugins(&bounded, harness.root, harness.clock.as_ref()).await;
             assert!(
-                matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
+                matches!(refused, Err(error) if error.to_string() == original.to_string()),
                 "the plugin source read bound became seed fallback"
             );
         }
