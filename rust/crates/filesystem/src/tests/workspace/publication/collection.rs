@@ -93,7 +93,7 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                                 offset: 0,
                                 length: content.len() as u64,
                             },
-                            maximum_spans: config.limits.maximum_directory_page_entries,
+                            maximum_spans: Some(config.limits.maximum_directory_page_entries),
                             limits: crate::kernel::DecodeLimits::for_volume(config),
                             budget: WorkBudget::UNBOUNDED,
                         },
