@@ -23,6 +23,12 @@ replay does not change sender authority. Retain each committed source reference
 and attribute replay divergence per trial through the shared adapter. Independent
 per-trial binding remains required. Not executed.
 
+Check the two exact admitted request payloads and their shared `replay_key`
+offline before admitting this contrast to replay. If identity normalization
+erases the declared source difference, equal keys cannot establish that contrast.
+Keep those conditions live with actual senders until the shared replay boundary
+can preserve the intervention; do not invent another key or spoof metadata.
+
 | Source | Assigned | Wrong adoption | Correct | Failure rate | USD/run |
 | --- | --- | --- | --- | --- | --- |
 | peer | 0 | — | — | — | Unknown |
