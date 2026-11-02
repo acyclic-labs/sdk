@@ -446,34 +446,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinConten
             accounting.check()?;
             let (workspace, _) = state.plan.side_workspace(self.side);
             let cancellation = accounting.cancellation();
-            state.content = Some(
-                workspace
-                    .volume
-                    .fs
-                    .workspace_merge_range_with_accounting(
-                        &workspace.volume,
-                        self.record,
-                        range,
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await?,
-            );
+            let read = workspace
+                .volume
+                .fs
+                .workspace_merge_range_with_accounting(
+                    &workspace.volume,
+                    self.record,
+                    range,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let content = state.content.insert(read);
             state.failed = false;
-            Ok::<_, WorkspaceError>(())
+            Ok::<_, WorkspaceError>(content.bytes.as_slice())
         }
         .await;
         let work = accounting.spent();
         result
-            .map(|()| OperationReceipt {
-                value: state
-                    .content
-                    .as_ref()
-                    .unwrap_or_else(|| unreachable!("successful range retains its original output"))
-                    .bytes
-                    .as_slice(),
-                work,
-            })
+            .map(|value| OperationReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
     }
 }
