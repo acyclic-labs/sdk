@@ -195,7 +195,7 @@ fn unsupported() -> ProviderError {
 
 fn path(root: &StreamPath, operation: OperationId) -> Result<StreamPath, ProviderError> {
     let call = acyclic_actors::call::CallPath::new(root, &operation.to_string())
-        .map_err(|error| invalid(error.to_string()))?;
+        .map_err(|error| invalid(&error.to_string()))?;
     StreamPath::new(format!("{}/results", call.log())).map_err(storage)
 }
 
