@@ -394,6 +394,8 @@ struct Paging {
 struct InFlight {
     key: OpKey,
     priority: Priority,
+    /// Original rotated age, retained even when the want is withdrawn.
+    ticket: u64,
     deadline: u64,
     issued: u64,
     paging: Paging,
@@ -483,7 +485,7 @@ pub struct Reader {
     next_ticket: u64,
     inflight: Requests,
     cancelled: Vec<u64>,
-    refused: BTreeSet<OpKey>,
+    refused: BTreeMap<OpKey, u64>,
     issues: BTreeMap<StreamPath, ReadIssue>,
     anchors: BTreeMap<StreamPath, Anchors>,
     follows: BTreeMap<StreamPath, FollowIntent>,
@@ -525,7 +527,7 @@ impl Reader {
             next_ticket: 0,
             inflight: Requests::default(),
             cancelled: Vec::new(),
-            refused: BTreeSet::new(),
+            refused: BTreeMap::new(),
             issues: BTreeMap::new(),
             anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
@@ -824,7 +826,11 @@ impl Reader {
                 priority,
                 paging,
                 &mut self.next_ticket,
-                |key, priority| inflight.set_priority(key, priority) || refused.contains(key),
+                |key, priority| {
+                    inflight
+                        .set_priority(key, priority)
+                        .or_else(|| refused.get(key).copied())
+                },
             );
         }
         for key in self.demand.finish_plan() {
@@ -1024,6 +1030,7 @@ impl Reader {
                 InFlight {
                     key: key.clone(),
                     priority: *priority,
+                    ticket: 0,
                     deadline: now.saturating_add(self.policy.timeout_ms),
                     issued: now,
                     paging: Paging::default(),
@@ -1095,7 +1102,7 @@ impl Reader {
                     self.denied(flight.key.path());
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
-                    self.refused.insert(flight.key.clone());
+                    self.refused.insert(flight.key.clone(), flight.ticket);
                 }
                 self.fail(failure, now);
                 return;
@@ -1161,7 +1168,7 @@ impl Reader {
         } else {
             self.demand
                 .restore_paging(&flight.key, flight.paging, false);
-            self.refused.insert(flight.key);
+            self.refused.insert(flight.key, flight.ticket);
         }
     }
 
@@ -1497,7 +1504,7 @@ impl Reader {
     pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
         self.issues.remove(stream);
         for range in OpKey::path_ranges(stream) {
-            for key in self.refused.extract_if(range, |_| true) {
+            for (key, _) in self.refused.extract_if(range, |_, _| true) {
                 self.demand.set_ready(&key, true);
             }
         }
@@ -2109,6 +2116,7 @@ mod reader_tests {
             InFlight {
                 key: key.clone(),
                 priority: Priority::Visible,
+                ticket: 0,
                 deadline: 100,
                 issued: 0,
                 paging: Paging {
@@ -2199,7 +2207,7 @@ mod reader_tests {
                 Priority::Prefetch,
                 Paging::default(),
                 &mut reader.next_ticket,
-                |_, _| false,
+                |_, _| None,
             );
         };
         // Invalidation must leave dormant history and its accumulated age
@@ -2320,18 +2328,23 @@ mod reader_tests {
             OpKey::children(&stream, 0, None),
             OpKey::children(&stream, u32::MAX, None),
         ];
-        reader.refused.extend(refused.iter().cloned());
+        reader
+            .refused
+            .extend(refused.iter().cloned().map(|key| (key, 0)));
         for index in 0..100_000 {
-            reader.refused.insert(OpKey::Head(
-                StreamPath::new(format!("test/source/unrelated-{index}")).unwrap(),
-            ));
+            reader.refused.insert(
+                OpKey::Head(StreamPath::new(format!("test/source/unrelated-{index}")).unwrap()),
+                0,
+            );
         }
         let neighboring = [
             OpKey::Read(child.clone(), u64::MAX),
             OpKey::Head(grandchild.clone()),
             OpKey::children(&parent, u32::MAX, None),
         ];
-        reader.refused.extend(neighboring.iter().cloned());
+        reader
+            .refused
+            .extend(neighboring.iter().cloned().map(|key| (key, 0)));
         OP_PATH_PROJECTIONS.with(|visits| visits.set(0));
         reader.acknowledge_issue(&stream);
         assert_eq!(
@@ -2341,12 +2354,16 @@ mod reader_tests {
         );
         assert!(reader.issues().next().is_none());
         assert!(
-            refused.iter().all(|key| !reader.refused.contains(key)),
+            refused.iter().all(|key| !reader.refused.contains_key(key)),
             "explicit retry retained an operation for the acknowledged stream"
         );
         assert_eq!(reader.refused.len(), 100_003);
-        assert!(neighboring.iter().all(|key| reader.refused.contains(key)));
-        assert!(reader.refused.contains(&unrelated));
+        assert!(
+            neighboring
+                .iter()
+                .all(|key| reader.refused.contains_key(key))
+        );
+        assert!(reader.refused.contains_key(&unrelated));
         reader.plan([(want, Priority::Visible)]);
         assert_eq!(reader.poll(10_000).len(), 1);
     }
@@ -2568,7 +2585,7 @@ mod reader_tests {
                 "refused demand returned to ready order"
             );
             refused.plan([]);
-            refused.plan(wants());
+            refused.plan(wants().rev());
             assert!(
                 refused.poll(1).is_empty(),
                 "withdrawn refusal alias bypassed acknowledgment"
@@ -2591,8 +2608,8 @@ mod reader_tests {
             );
             assert!(refused.poll(1).is_empty());
             refused.demand.take_visits();
-            // Reversing acknowledgment order retains the original admitted
-            // ages rather than creating a new queue or changing fairness.
+            // Reversing both re-admission and acknowledgment order retains
+            // the original admitted ages rather than changing fairness.
             let older = heads.keys().nth(1).unwrap();
             let newer = heads.keys().nth(2).unwrap();
             refused.acknowledge_issue(newer);
@@ -2602,6 +2619,26 @@ mod reader_tests {
             assert!(matches!(&resumed[0], Op::Head { stream, .. } if stream == older));
             assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == newer));
             assert_eq!(refused.demand.take_visits(), 2);
+
+            // The request itself retains its age if its visible want leaves
+            // before refusal arrives. A later fresh want cannot overtake it.
+            let mut withdrawn = Reader::new(policy).unwrap();
+            withdrawn.begin_frame(0);
+            withdrawn.plan(wants().take(1));
+            let first = withdrawn.poll(0);
+            assert_eq!(first.len(), 1);
+            withdrawn.plan([]);
+            withdrawn.plan(wants().skip(1).take(1));
+            withdrawn.complete(first[0].id(), Outcome::Failed(Failure::Refused), 1);
+            withdrawn.plan(wants().take(2).rev());
+            withdrawn.acknowledge_issue(&denied);
+            let resumed = withdrawn.poll(1);
+            assert_eq!(resumed.len(), 2);
+            assert!(
+                matches!(&resumed[0], Op::Head { stream, .. } if stream == &denied),
+                "withdrawal lost the original request age"
+            );
+            assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == older));
 
             // Other callers' failures cannot retire an original denial or
             // silently authorize a new read with its old credential.

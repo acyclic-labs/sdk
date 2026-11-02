@@ -83,16 +83,16 @@ impl Demands {
         self.mark = !self.mark;
     }
 
-    /// Reclassification reports whether this operation already owns a live
-    /// request or a retained refusal, including a newly admitted alias of a
-    /// withdrawn visible want.
+    /// Reclassification returns the original age of a live request or
+    /// retained refusal. A returning alias inherits that age without becoming
+    /// ready or consuming a new ticket.
     pub(super) fn want(
         &mut self,
         key: OpKey,
         priority: Priority,
         paging: Paging,
         next_ticket: &mut u64,
-        reclassify: impl FnOnce(&OpKey, Priority) -> bool,
+        reclassify: impl FnOnce(&OpKey, Priority) -> Option<u64>,
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
@@ -113,9 +113,12 @@ impl Demands {
             }
             entry.mark = self.mark;
         } else {
-            let blocked = reclassify(&key, priority);
-            let ticket = *next_ticket;
-            *next_ticket += 1;
+            let retained_ticket = reclassify(&key, priority);
+            let ticket = retained_ticket.unwrap_or_else(|| {
+                let ticket = *next_ticket;
+                *next_ticket += 1;
+                ticket
+            });
             self.insert_entry(
                 key,
                 Demand {
@@ -123,7 +126,7 @@ impl Demands {
                     paging,
                     ticket,
                 },
-                !blocked,
+                retained_ticket.is_none(),
             );
         }
     }
