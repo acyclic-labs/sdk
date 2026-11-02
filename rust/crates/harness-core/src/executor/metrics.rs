@@ -21,8 +21,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 /// Arrow/Parquet layout identity, independent of usage/cache producer versions.
-/// Version 3 records creation context and immutable template references.
-pub const VERSION: u32 = 3;
+/// Version 4 retains creation provenance and requires original call terminals.
+pub const VERSION: u32 = 4;
 
 /// Streaming W3C PROV-O projection over these same original observations.
 #[cfg(feature = "provenance-export")]
@@ -1028,7 +1028,7 @@ mod tests {
                 }
                 // A saved earlier layout cannot acquire the new ownership
                 // contract by copying its columns or erasing its version.
-                for saved_version in [None, Some("1"), Some("2")] {
+                for saved_version in [None, Some("1"), Some("2"), Some("3")] {
                     let mut metadata = original.data.schema().metadata().clone();
                     match saved_version {
                         Some(version) => {
