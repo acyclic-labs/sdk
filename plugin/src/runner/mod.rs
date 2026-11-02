@@ -36,6 +36,12 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
     build().boxed_local()
 }
 
+/// The original execution parser's command and option metadata.
+#[must_use]
+pub fn command() -> clap::Command {
+    Args::command()
+}
+
 /// `GraphCoder` on argv, its server (`acyclic serve`) through the seams
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
@@ -80,7 +86,7 @@ where
             );
         }
     };
-    let matches = Args::command().get_matches_from(arguments);
+    let matches = command().get_matches_from(arguments);
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
@@ -89,7 +95,7 @@ where
         args.catalog = None;
     }
     if let Err(error) = args.prepare_input() {
-        Args::command()
+        command()
             .error(clap::error::ErrorKind::ArgumentConflict, error)
             .exit();
     }

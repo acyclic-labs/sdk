@@ -41,6 +41,7 @@ fn execution_reopen_keeps_the_named_agent_without_ambient_selection()
 fn execution_dispatch_precedes_workspace_lookup() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     for args in [
+        vec!["--help"],
         vec!["run", "--help"],
         vec!["serve", "--help"],
         vec!["attach", "--help"],
