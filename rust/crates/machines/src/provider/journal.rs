@@ -312,7 +312,7 @@ impl Journal {
                 &call::Outcome::Ok(
                     encode(&Completed {
                         digest,
-                        outcome: outcome.clone(),
+                        outcome: &outcome,
                     })?
                     .into(),
                 ),
@@ -345,14 +345,15 @@ impl Journal {
         mutations: Vec<CommitMutation>,
         on_submit: impl FnOnce(),
     ) -> Result<CommitReceipt, ProviderError> {
-        let mut identity = self.root.as_str().as_bytes().to_vec();
-        identity.extend_from_slice(&key.as_bytes());
-        identity.extend_from_slice(phase);
+        let mut identity = Sha256::new();
+        identity.update(self.root.as_str().as_bytes());
+        identity.update(key.as_bytes());
+        identity.update(phase);
         let request = CommitRequest {
             deadline_unix_millis: None,
             conditions,
             mutations,
-            idempotency_key: acyclic_stream::IdempotencyKey::new(Sha256::digest(identity).to_vec())
+            idempotency_key: acyclic_stream::IdempotencyKey::new(identity.finalize().to_vec())
                 .map_err(storage)?,
         };
         // All reads, serialization, key admission and lock waits precede this

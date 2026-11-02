@@ -7,9 +7,9 @@ pub(super) struct Intent {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Completed {
+pub(super) struct Completed<T = MutationOutcome> {
     pub(super) digest: [u8; 32],
-    pub(super) outcome: MutationOutcome,
+    pub(super) outcome: T,
 }
 
 #[derive(Serialize, Deserialize)]
