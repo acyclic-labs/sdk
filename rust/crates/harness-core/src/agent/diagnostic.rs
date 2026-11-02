@@ -84,24 +84,26 @@ impl Diagnostic {
             .map_err(Error::Stream)?;
         let end = from + u64::from(count);
         let bytes = self.bytes;
-        Ok(Box::pin(futures::stream::try_unfold(
-            (records, from),
-            move |(mut records, next)| async move {
-                if next == end {
-                    return Ok(None);
-                }
-                let record = records
-                    .try_next()
-                    .await?
-                    .ok_or(acyclic_stream::StreamError::InvalidResponse)?;
-                let length = (bytes - next * acyclic_stream::MAX_RECORD_BYTES as u64)
-                    .min(acyclic_stream::MAX_RECORD_BYTES as u64);
-                if record.sequence != next || record.value.len() as u64 != length {
-                    return Err(acyclic_stream::StreamError::InvalidResponse);
-                }
-                Ok(Some((record, (records, next + 1))))
-            },
-        )))
+        Ok(records.map_cursor(|records| {
+            Box::pin(futures::stream::try_unfold(
+                (records, from),
+                move |(mut records, next)| async move {
+                    if next == end {
+                        return Ok(None);
+                    }
+                    let record = records
+                        .try_next()
+                        .await?
+                        .ok_or(acyclic_stream::StreamError::InvalidResponse)?;
+                    let length = (bytes - next * acyclic_stream::MAX_RECORD_BYTES as u64)
+                        .min(acyclic_stream::MAX_RECORD_BYTES as u64);
+                    if record.sequence != next || record.value.len() as u64 != length {
+                        return Err(acyclic_stream::StreamError::InvalidResponse);
+                    }
+                    Ok(Some((record, (records, next + 1))))
+                },
+            ))
+        }))
     }
 
     /// Stages only bounded records. Exact retries use the original per-chunk
