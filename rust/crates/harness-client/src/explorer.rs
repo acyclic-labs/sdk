@@ -325,7 +325,8 @@ mod tests {
                         path: StreamPath::new(child.as_str()).unwrap(),
                         records: vec![b"child directory entry".as_slice().into()],
                         if_tail: Some(0),
-                        idempotency_key: IdempotencyKey::new(id.to_be_bytes().to_vec()).unwrap(),
+                        idempotency_key: IdempotencyKey::new(child.as_str().as_bytes().to_vec())
+                            .unwrap(),
                     })
                     .await
                     .unwrap();
