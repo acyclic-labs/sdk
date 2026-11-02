@@ -1162,8 +1162,7 @@ fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
 struct TurnContext<'a> {
     /// The latest checkpoint: its turn and its staged summary.
     checkpoint: Option<(OperationId, FileRef)>,
-    /// Each settled turn: its id, the roster it announced, its input and
-    /// its staged output and decoded transcript.
+    /// Each settled turn, its original input and output, and its decoded transcript.
     settled: Vec<SettledTurn>,
     /// Latest roster message in `settled`, indexed while selecting history.
     roster_at: Option<usize>,
@@ -1286,10 +1285,17 @@ impl<'a> TurnContext<'a> {
     /// their ordered exact references for both grant derivation and the
     /// eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for SettledTurn { input, output, transcript, .. } in &mut self.settled {
+        for SettledTurn {
+            input,
+            output,
+            transcript,
+            steered,
+            ..
+        } in &mut self.settled
+        {
             let original = std::mem::replace(input, ModelContent::Text(String::new()));
             *input = crate::agent::expand_attachments(original, reader).await?;
-            *transcript = staged_transcript(reader, output).await?;
+            *transcript = staged_transcript(reader, output, std::mem::take(steered)).await?;
         }
         let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
         self.input = crate::agent::expand_attachments(original, reader).await?;
@@ -1322,7 +1328,12 @@ impl<'a> TurnContext<'a> {
                     .iter()
                     .chain(settled.input.file_refs())
                     .chain(std::iter::once(&settled.output))
-                    .chain(settled.transcript.iter().flat_map(|message| message.content.file_refs()))
+                    .chain(
+                        settled
+                            .transcript
+                            .iter()
+                            .flat_map(|message| message.content.file_refs()),
+                    )
                     .chain(settled.steering.iter())
                     .chain(
                         settled
@@ -1428,15 +1439,17 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(roster_id(turn));
         };
-        for (at, SettledTurn {
-            turn: settled,
-            targets: announced,
-            input: content,
-            transcript,
-            steered,
-            notices,
-            ..
-        }) in settled.into_iter().enumerate()
+        for (
+            at,
+            SettledTurn {
+                turn: settled,
+                targets: announced,
+                input: content,
+                transcript,
+                notices,
+                ..
+            },
+        ) in settled.into_iter().enumerate()
         {
             if fork == Some(at) {
                 directive(&mut messages, &mut message_ids);
@@ -1463,16 +1476,6 @@ impl<'a> TurnContext<'a> {
                     content,
                 });
                 message_ids.push(message_id(settled, ModelRole::User));
-            }
-            for (index, message) in steered.into_iter().enumerate() {
-                let mut hasher =
-                    blake3::Hasher::new_derive_key("acyclic.harness.steering-message.v1");
-                hasher.update(&settled.into_bytes());
-                hasher.update(&(index as u64).to_le_bytes());
-                let mut id = [0; 16];
-                id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-                message_ids.push(uuid::Uuid::from_bytes(id));
-                messages.push(message);
             }
             if transcript.is_empty() {
                 return Err(Error::Invalid("settled transcript is not decoded".into()));
@@ -1537,11 +1540,14 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
 
 /// A settled turn's transcript after its input as the next turn sees it:
 /// every message its last request sent plus its final reply, verbatim, or its
-/// text when the output kept none. Replaying the transcript rather than a
+/// separately admitted steering and text when the output kept none. A complete
+/// transcript already contains steering in request order, so its fallback must
+/// never be prepended a second time. Replaying the transcript rather than a
 /// summary of it keeps each turn's request a byte extension of the last.
 async fn staged_transcript(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,
+    mut fallback: Vec<ModelMessage>,
 ) -> Result<Vec<ModelMessage>> {
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
@@ -1549,10 +1555,11 @@ async fn staged_transcript(
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
     Ok(if output.transcript.is_empty() {
-        vec![ModelMessage {
+        fallback.push(ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Text(output.text),
-        }]
+        });
+        fallback
     } else {
         output.transcript
     })
