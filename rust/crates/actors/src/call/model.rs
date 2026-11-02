@@ -393,6 +393,12 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     ] {
         assert!(explore(fault).await? > 0);
     }
+    // Select each terminal kind independently of the schedule. Acceptance,
+    // multiple chunks, settlement and a later replay/cancel/fence all use the
+    // same generated entry point as arbitrary fuzz inputs.
+    for terminal in [6, 13, 20, 27] {
+        check(&[terminal, 0, 1, 5, 1, 1, 6, 3, 4]).await?;
+    }
     Ok(())
 }
 
