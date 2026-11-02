@@ -2,6 +2,149 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let root = acyclic_fs::hold_root(checkout.path()).map_err(native_file_error)?;
+    let directory = root
+        .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let requests = directory
+        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let status = directory
+        .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let lock_file = || {
+        directory
+            .open_file(Path::new("owner.lock"), true)
+            .map_err(native_file_error)
+    };
+    let ownership = acyclic_native_runtime::FileLock::try_acquire(
+        lock_file()?,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )
+    .map_err(storage)?;
+    let probe = lock_file()?;
+    Ok((
+        checkout,
+        CarrierIo {
+            served: Served::default(),
+            requests: requests.path().to_path_buf(),
+            status,
+            _ownership: Arc::new(ownership),
+        },
+        probe,
+    ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
+    let (_checkout, mut files, probe) = carrier_io()?;
+    let operation = OperationId::new();
+    files
+        .served
+        .known
+        .insert(operation, Tracked::Running { withdrawn: false });
+    let status = files.status.path().to_path_buf();
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (release, released) = mpsc::sync_channel(1);
+    let mut pending = Box::pin(files.apply(move |files| {
+        let _ = started.send(std::thread::current().id());
+        released.recv().map_err(storage)?;
+        files.served.answer(
+            &files.status,
+            operation,
+            Ok(serde_json::json!({"reply": 7})),
+        )
+    }));
+    let mut inline_caller = Box::pin(std::future::poll_fn(|context| {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        std::future::Future::poll(pending.as_mut(), context)
+    }));
+    let producer = tokio::select! {
+        producer = began => producer.map_err(storage)?,
+        _ = &mut inline_caller => panic!("the original write must wait for its release event"),
+    };
+    drop(inline_caller);
+    assert_ne!(producer, std::thread::current().id());
+    // The coordinator runs while its original native producer is blocked.
+    let sibling = tokio::spawn(async { 7 });
+    assert_eq!(sibling.await.map_err(storage)?, 7);
+    let error = acyclic_native_runtime::FileLock::try_acquire(
+        probe.try_clone().map_err(storage)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .expect_err("an accepted write retains its original owner");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    release.send(()).map_err(storage)?;
+    let files = pending.await?;
+    let reply: Value = serde_json::from_slice(&regular_bytes(&reply_path(&status, operation))?)
+        .map_err(storage)?;
+    assert_eq!(reply["ok"], serde_json::json!({"reply": 7}));
+    drop(files);
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_observer_loss_keeps_the_accepted_physical_owner() -> Result<()> {
+    let (_checkout, files, probe) = carrier_io()?;
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (release, released) = mpsc::sync_channel(1);
+    let mut pending = Box::pin(files.apply(move |_| {
+        let _ = started.send(());
+        released.recv().map_err(storage)
+    }));
+    tokio::select! {
+        started = began => started.map_err(storage)?,
+        _ = &mut pending => panic!("the original job must wait for its release event"),
+    }
+    drop(pending);
+    let error = acyclic_native_runtime::FileLock::try_acquire(
+        probe.try_clone().map_err(storage)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .expect_err("dropping observation cannot release accepted physical custody");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    release.send(()).map_err(storage)?;
+    // The OS lock waits for this same accepted producer to finish and release
+    // the original guard; no observer, retry or replacement producer is used.
+    acyclic_native_runtime::FileLock::acquire(probe, acyclic_native_runtime::FileLockMode::Shared)
+        .map_err(storage)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_preserves_original_failure_and_releases_its_files() -> Result<()> {
+    let (_checkout, files, probe) = carrier_io()?;
+    let result = files
+        .apply(|files| {
+            files.served.touch(
+                &files.requests,
+                uuid::Uuid::new_v4(),
+                Touched {
+                    names: BTreeSet::new(),
+                    rescan: false,
+                    failure: Some("original notification producer failure".into()),
+                },
+            )
+        })
+        .await;
+    assert!(
+        matches!(result, Err(Error::Storage(cause)) if cause == "original notification producer failure")
+    );
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
 #[test]
 fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     fn ownership(workspace: &Path) -> Result<acyclic_native_runtime::FileLock> {
