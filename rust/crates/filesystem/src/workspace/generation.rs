@@ -190,7 +190,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             let result = async {
                 let volume = &self.workspace.volume;
                 let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
-                    &volume.fs.inner.objects,
+                    volume.fs.objects(),
                     self.id.object_id(),
                     volume.config,
                     &mut scope,
