@@ -38,6 +38,31 @@ impl From<&HookSpec> for Protocol {
     }
 }
 
+impl Protocol {
+    /// Inspect the original capture without materializing its contributions.
+    /// Classification and the final reservation use this same protocol.
+    pub(super) fn inspect<'a>(
+        &self,
+        output: &HookOutput,
+        event: HookEvent,
+        code: Option<i32>,
+        stdout: &'a [u8],
+        stderr: &'a [u8],
+    ) -> Plan<'a> {
+        let Self(policy, plugin) = *self;
+        let blocking = policy.blocks(event);
+        if plugin && matches!(code, Some(0 | 2)) {
+            Plan::decision(code, stdout, stderr)
+                .unwrap_or_else(|message| Plan::invalid(message, blocking, code))
+        } else if plugin || code != Some(0) && (code != Some(2) || blocking) {
+            Plan::exit(code, stderr, blocking)
+        } else {
+            Plan::inspect(output, event, code, stdout, stderr)
+                .unwrap_or_else(|message| Plan::invalid(message, blocking, code))
+        }
+    }
+}
+
 /// Only the ledger constructs this token. Decoding retained strings/arguments
 /// and growing the outcome require ownership of an accepted reservation.
 pub(super) struct Reservation<'a> {
@@ -99,19 +124,11 @@ impl Budget {
         policy: impl Into<Protocol>,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
     ) {
-        let Protocol(policy, plugin) = policy.into();
-        let blocking = policy.blocks(event);
+        let protocol = policy.into();
+        let blocking = protocol.0.blocks(event);
         match result {
             Ok((code, stdout, stderr)) => {
-                let plan = if plugin && matches!(code, Some(0 | 2)) {
-                    Plan::decision(code, &stdout, &stderr)
-                        .unwrap_or_else(|message| Plan::invalid(message, blocking, code))
-                } else if plugin || code != Some(0) && (code != Some(2) || blocking) {
-                    Plan::exit(code, &stderr, blocking)
-                } else {
-                    Plan::inspect(output, event, code, &stdout, &stderr)
-                        .unwrap_or_else(|message| Plan::invalid(message, blocking, code))
-                };
+                let plan = protocol.inspect(output, event, code, &stdout, &stderr);
                 self.fold(output, plan, blocking);
             }
             Err(error) => self.fold(output, Plan::failed(error, blocking), blocking),

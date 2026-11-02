@@ -37,24 +37,22 @@ fn answer(hook: &HookSpec, event: HookEvent, run: &Run) -> Result<Answer> {
             Answer::Allow
         });
     };
-    let mut single = HookOutput::default();
-    let mut budget = budget::Budget::new(u64::MAX)?;
-    budget.apply(
-        &mut single,
-        event,
-        hook,
-        Ok((*code, stdout.clone(), stderr.clone())),
-    );
-    budget.finish(&mut single);
-    Ok(if single.blocks() {
-        Answer::Deny
-    } else if let Some(input) = single.updated_input {
-        Answer::Rewrite(input)
-    } else if single.approval.is_some() {
-        Answer::Ask
-    } else {
-        Answer::Allow
-    })
+    let plan =
+        budget::Protocol::from(hook).inspect(&HookOutput::default(), event, *code, stdout, stderr);
+    Ok(
+        if plan.blocked.is_some() || plan.failure.is_some_and(|(_, blocking)| blocking) {
+            Answer::Deny
+        } else if let Some((input, _)) = plan.input {
+            Answer::Rewrite(
+                serde_json::from_str(input.get())
+                    .map_err(|_| Error::Invalid("invalid hook arguments".into()))?,
+            )
+        } else if plan.approval.is_some() {
+            Answer::Ask
+        } else {
+            Answer::Allow
+        },
+    )
 }
 
 fn fold<'a>(

@@ -67,6 +67,46 @@ fn rewrite(command: &str) -> Value {
     json!({"allow": true, "input": {"command": command}})
 }
 
+proptest::proptest! {
+    // Decision classification borrows both capture buffers. A copy of either
+    // is observable even when the final decision and its reason stay identical.
+    #[test]
+    fn classifying_decisions_never_materializes_capture_or_reason(
+        length in 1usize..8192,
+        deny in proptest::bool::ANY,
+        plugin_protocol in proptest::bool::ANY,
+    ) {
+        let mut hook = plugin("guard", None);
+        if !plugin_protocol {
+            hook.run = HookRun::Shell { command: "exit 0".into(), shell: None };
+        }
+        let reason = "x".repeat(length);
+        let bytes = serde_json::to_vec(&if plugin_protocol {
+            if deny { json!({"allow": false, "reason": reason}) }
+            else { json!({"ask": reason, "to": "person"}) }
+        } else {
+            json!({"hookSpecificOutput": {
+                "permissionDecision": if deny { "deny" } else { "ask" },
+                "permissionDecisionReason": reason,
+            }})
+        })?;
+        let run = Ok((Some(0), bytes, reason.as_bytes().to_vec()));
+        for copy_capture in [false, true] {
+            let mut classified = None;
+            let measured = acyclic_test_support::measure(|| {
+                if copy_capture {
+                    let (_, stdout, stderr) = run.as_ref().unwrap();
+                    std::hint::black_box((stdout.clone(), stderr.clone()));
+                }
+                classified = Some(answer(&hook, HookEvent::PreToolUse, &run));
+            });
+            proptest::prop_assert_eq!(classified.unwrap()?, if deny { Answer::Deny } else { Answer::Ask });
+            proptest::prop_assert_eq!(measured.bytes_total == 0, !copy_capture,
+                "capture/reason allocation control: {:?}", measured);
+        }
+    }
+}
+
 #[tokio::test]
 async fn without_a_rewrite_the_strictest_answer_wins() -> Result<()> {
     let (output, runs) = judge(
