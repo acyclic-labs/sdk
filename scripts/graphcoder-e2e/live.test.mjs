@@ -51,11 +51,15 @@ test("reply-only cases reject recorded tool failure despite successful native co
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "live-reply-tools-"));
   try {
-    for (const [captured, capability, journey] of [[undefined, "ready", "session"],
+    const catalog = join(root, "catalog.json");
+    await writeFile(catalog, JSON.stringify({ selected: { endpoint: "http://127.0.0.1" } }));
+    for (const [captured, capability, journey, selection] of [[undefined, "ready", "session"],
       ...shellResults.map(captured => [captured, "ready", "session"]),
       [undefined, "absent", "session"], [undefined, "foreign", "session"],
-      [undefined, "absent", "child-result"]]) {
-      const name = `${captured?.status ?? "no-tools"}-${capability}-${journey}`, directory = join(root, name);
+      [undefined, "absent", "child-result"],
+      ...["openai/gpt-6-luna", "anthropic/claude-haiku-5-5", "gemini/gemini-3.8-flash"]
+        .map(model => [undefined, "ready", "session", { model, catalog }])]) {
+      const name = `${captured?.status ?? "no-tools"}-${capability}-${journey}-${selection?.model.split("/")[0] ?? "login"}`, directory = join(root, name);
       await mkdir(directory);
       const program = join(directory, "reply.mjs");
       // This native child speaks only the driver's text protocol. Tool events
@@ -63,9 +67,16 @@ test("reply-only cases reject recorded tool failure despite successful native co
       await writeFile(program, `#!${process.execPath}
 import { readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 const capability = ${JSON.stringify(capability)};
+const selection = ${JSON.stringify(selection ?? null)};
+if (selection) {
+  assert.equal(process.argv[process.argv.indexOf("--model") + 1], selection.model);
+  assert.equal(process.argv[process.argv.indexOf("--catalog") + 1], selection.catalog);
+  assert.equal(JSON.parse(readFileSync(selection.catalog, "utf8")).selected.endpoint, "http://127.0.0.1");
+}
 if (capability !== "absent") writeSync(Number(process.env.ACYCLIC_REPORT_FD), JSON.stringify({
   ...${JSON.stringify(nativeReady)}, generation: capability === "ready" ? process.env.ACYCLIC_REPORT_GENERATION : ${JSON.stringify(nativeReady.generation)},
 }) + "\\n");
@@ -91,7 +102,7 @@ if (process.argv.includes("--input-format")) {
 }
 `);
       await chmod(program, 0o700);
-      const result = await runCase(program, root, directory, journey, new AbortController().signal);
+      const result = await runCase(program, root, directory, journey, new AbortController().signal, selection);
       assert.equal(result.captures.length, 1);
       assert.equal(result.captures[0].code, 0, result.captures[0].stderr);
       assert.equal(result.captures[0].signal, null);
