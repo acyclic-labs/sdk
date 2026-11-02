@@ -437,6 +437,7 @@ impl BrowserStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
+        let _ = self.inner.revisions.floor(at_least)?;
         // Park on the durable authority outside the cache lock, so writes can
         // advance it. Refresh first: another tab's commits reach it by replay.
         self.with_provider(async |_| Ok(())).await?;

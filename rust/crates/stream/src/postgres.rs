@@ -343,11 +343,10 @@ impl StreamProvider for PostgresStream {
                 request.validate()?;
                 self.check()?;
                 let revisions = &self.inner.core.revisions;
+                let floor = revisions.floor(&request.at_least)?;
                 if !request.paths.is_empty()
                     || request.children.is_some()
-                    || revisions
-                        .floor(&request.at_least)?
-                        .is_some_and(|floor| floor > revisions.current().index)
+                    || floor.is_some_and(|floor| floor > revisions.current().index)
                 {
                     // Named observations refresh their snapshot. A covered revision
                     // wait needs no unrelated journal read or server clock request.
@@ -381,6 +380,11 @@ impl StreamProvider for PostgresStream {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let request = request.validate()?;
+                let _ = self
+                    .inner
+                    .core
+                    .revisions
+                    .floor(&request.request().at_least)?;
                 self.refresh().await?;
                 self.inner.core.read_inner(request).await
             }
@@ -413,6 +417,7 @@ impl StreamProvider for PostgresStream {
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
+                let _ = self.inner.core.revisions.floor(&request.at_least)?;
                 self.refresh().await?;
                 Ok(self
                     .inner
