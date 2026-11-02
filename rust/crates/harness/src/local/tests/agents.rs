@@ -1272,9 +1272,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     );
     // Built-in skills are read in place from the one shared seed volume.
     let seed = &harness.seed.0;
-    assert!(child_skills.iter().any(|skill| {
-        skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-    }));
+    assert!(
+        child_skills.iter().any(|skill| {
+            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
+        })
+    );
     assert!(
         child_skills
             .iter()
@@ -1300,9 +1302,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
         .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
     assert_eq!(&project_skill.source.root.volume, &project);
-    assert!(parent_skills.iter().any(|skill| {
-        skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-    }));
+    assert!(
+        parent_skills.iter().any(|skill| {
+            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
+        })
+    );
     assert!(
         parent_skills
             .iter()

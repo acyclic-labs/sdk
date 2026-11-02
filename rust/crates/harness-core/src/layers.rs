@@ -243,8 +243,11 @@ fn overlay(
             format!("{prefix}.{key}")
         };
         let nested = format!("{path}.");
-        if !matches!(base.get(&key), Some(Value::Object(_))) {
-            // A replaced value takes no provenance from the copy below.
+        if !matches!(
+            (base.get(&key), &value),
+            (Some(Value::Object(_)), Value::Object(_))
+        ) {
+            // A replaced value keeps no provenance from the copy below.
             set.retain(|key, _| key != &path && !key.starts_with(&nested));
         }
         match (base.get_mut(&key), value) {
@@ -308,18 +311,43 @@ mod tests {
             ),
         )?
         .unwrap();
-        let value: toml::Table = toml::from_str(std::str::from_utf8(&merged.bytes).unwrap()).unwrap();
+        let value: toml::Table =
+            toml::from_str(std::str::from_utf8(&merged.bytes).unwrap()).unwrap();
         assert_eq!(value["effort"].as_str(), Some("high"));
         assert_eq!(value["model"].as_str(), Some("a"));
         assert_eq!(value["limits"]["steps"].as_integer(), Some(9));
         assert_eq!(value["limits"]["tokens"].as_integer(), Some(5));
-        assert_eq!(merged.why.sources[0].keys, ["limits.tokens", "model", "tags"]);
+        assert_eq!(
+            merged.why.sources[0].keys,
+            ["limits.tokens", "model", "tags"]
+        );
         assert_eq!(merged.why.sources[1].keys, ["effort", "limits.steps"]);
         // A replaced array keeps no element of the lower copy.
-        let json = resolve("ui/settings.json", &layers(Some(r#"{"a":[3]}"#), Some(r#"{"a":[1,2]}"#)))?.unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&json.bytes).unwrap(), serde_json::json!({"a": [3]}));
+        let json = resolve(
+            "ui/settings.json",
+            &layers(Some(r#"{"a":[3]}"#), Some(r#"{"a":[1,2]}"#)),
+        )?
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.bytes).unwrap(),
+            serde_json::json!({"a": [3]})
+        );
+        // A table replaced by a scalar credits none of its old keys.
+        let replaced = resolve(
+            "a.json",
+            &layers(Some(r#"{"limits":9}"#), Some(r#"{"limits":{"steps":1}}"#)),
+        )?
+        .unwrap();
+        assert!(replaced.why.sources[0].keys.is_empty());
+        assert_eq!(replaced.why.sources[1].keys, ["limits"]);
         // Negative control: an `off` marker stops the merge at its layer.
-        assert!(resolve("model.toml", &layers(Some("off: true"), Some("model = \"a\"")))?.is_none());
+        assert!(
+            resolve(
+                "model.toml",
+                &layers(Some("off: true"), Some("model = \"a\""))
+            )?
+            .is_none()
+        );
         assert!(resolve("model.toml", &layers(Some("= 1"), Some("model = \"a\""))).is_err());
         Ok(())
     }

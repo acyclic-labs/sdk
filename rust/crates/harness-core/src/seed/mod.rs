@@ -45,8 +45,14 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("verify-before-done"),
     skill!("writing-skills"),
     ("sys/kernel.md", include_bytes!("kernel.md")),
-    ("sys/native/anthropic/profile.md", ANTHROPIC_PROFILE.as_bytes()),
-    ("sys/native/anthropic/tools.json", ANTHROPIC_TOOLS.as_bytes()),
+    (
+        "sys/native/anthropic/profile.md",
+        ANTHROPIC_PROFILE.as_bytes(),
+    ),
+    (
+        "sys/native/anthropic/tools.json",
+        ANTHROPIC_TOOLS.as_bytes(),
+    ),
     ("sys/native/google/profile.md", GOOGLE_PROFILE.as_bytes()),
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),

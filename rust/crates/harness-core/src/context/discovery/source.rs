@@ -283,11 +283,13 @@ pub async fn discover_skills_from<S: SkillReader>(
     revision: Option<&S::Revision>,
     optional_root: bool,
 ) -> Result<Vec<SkillMetadata>> {
-    Ok(layer_skills(source, directory, name, work, revision, optional_root)
-        .await?
-        .into_iter()
-        .filter_map(|(_, skill)| skill)
-        .collect())
+    Ok(
+        layer_skills(source, directory, name, work, revision, optional_root)
+            .await?
+            .into_iter()
+            .filter_map(|(_, skill)| skill)
+            .collect(),
+    )
 }
 
 /// The skills of `layers`, given lowest first with their pinned revisions:

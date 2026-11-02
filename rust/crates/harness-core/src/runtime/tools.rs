@@ -862,9 +862,10 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        if let (Some(relative), Some(seed)) =
-            (path.strip_prefix(SEED_PATH), self.task().harness.seed.as_ref())
-        {
+        if let (Some(relative), Some(seed)) = (
+            path.strip_prefix(SEED_PATH),
+            self.task().harness.seed.as_ref(),
+        ) {
             return Ok((seed, std::borrow::Cow::Borrowed(relative)));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -921,7 +922,11 @@ impl ToolContext {
         let seed = format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
-            return if seeded { Ok(seed.into()) } else { Err(missing()) };
+            return if seeded {
+                Ok(seed.into())
+            } else {
+                Err(missing())
+            };
         }
         let home = format!("{HOME_PATH}{relative}");
         // An `off` marker is a few bytes; a longer file is never one.
@@ -936,7 +941,11 @@ impl ToolContext {
         };
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
         let Some((selected, bytes)) = mine else {
-            return if seeded { Ok(seed.into()) } else { Err(missing()) };
+            return if seeded {
+                Ok(seed.into())
+            } else {
+                Err(missing())
+            };
         };
         if selected.byte_length <= probe.length && is_off(&bytes) {
             return Err(missing());

@@ -641,9 +641,8 @@ mod tests {
     #[test]
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
-        let error =
-            create_mount_directory(&directory.path().join("missing"), Path::new(HOME_PATH))
-                .expect_err("the mount parent is absent");
+        let error = create_mount_directory(&directory.path().join("missing"), Path::new(HOME_PATH))
+            .expect_err("the mount parent is absent");
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(error), ..
         } if error.kind() == std::io::ErrorKind::NotFound));

@@ -87,13 +87,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let scratch = mounts
-        .named(Some("home"))?
-        .1
-        .view
-        .source
-        .as_ref()
-        .unwrap();
+    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
         write_projected(&scratch.destination.join("data"), b"acknowledged")?;
         Ok(((), claims))
@@ -159,13 +153,7 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let scratch = mounts
-        .named(Some("home"))?
-        .1
-        .view
-        .source
-        .as_ref()
-        .unwrap();
+    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     // Negative control: bypass command serialization exactly as the former
     // shared projection did. One verified exit also publishes the other writer.
     let root = projection_root(&scratch.destination, HOME_PATH)?;
@@ -234,13 +222,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         None,
         [(
             "home".into(),
-            workspace
-                .mounts
-                .named(Some("home"))?
-                .1
-                .view
-                .volume
-                .clone(),
+            workspace.mounts.named(Some("home"))?.1.view.volume.clone(),
             Some(Arc::clone(original)),
         )],
     )?;
@@ -360,11 +342,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [
-            ("home", Arc::clone(scratch)),
-            ("zzz", Arc::clone(&blocked)),
-        ]
-        .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
+        [("home", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))]
+            .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     assert_eq!(
         ordered_mounts(&table)?
