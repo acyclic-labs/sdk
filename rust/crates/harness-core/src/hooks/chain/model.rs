@@ -79,10 +79,14 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
     })
     .await?;
     let denied = decisions.contains(&2);
+    if runs.len() != decisions.len() {
+        return Err(Error::Invalid(
+            "hook work exceeded one visit per unchanged selected hook".into(),
+        ));
+    }
     if output.blocks() != denied
         || output.updated_input.is_some()
         || (!denied && output.approval.is_some() != decisions.contains(&1))
-        || runs.len() != decisions.len()
     {
         return Err(Error::Invalid("strictest-wins oracle".into()));
     }
