@@ -3,14 +3,10 @@ use super::*;
 fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
     match error {
         crate::CaptureError::Kernel(error) => match *error {
-            FsError::Work(error)
-            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
+            FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
                 MountSourceError::Work(error)
             }
-            FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
-            FsError::Cancelled(_) => MountSourceError::Cancelled,
-            FsError::SourceSnapshotStale => MountSourceError::Stale,
-            error => MountSourceError::Filesystem(error),
+            error => MountSourceError::from(error),
         },
         error => engine_error(error),
     }
