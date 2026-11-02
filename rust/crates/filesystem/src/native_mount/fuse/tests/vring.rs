@@ -105,8 +105,8 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         .unique;
     let original = cache_work(FINITE_HANDLER_POLICY, &crate::CancellationToken::new());
     let original_meter = Arc::downgrade(&original.runtime_meter());
-    // Return, cancellation and producer unwind use the same physical path.
-    for exit in 0..3 {
+    // Return, cancellation, unwind and malformed descriptors share this path.
+    for exit in 0..4 {
         let (work, _cancellation) = original.invocation_view()?;
         let (socket, _frontend) = UnixStream::pair()?;
         let device = VringControl::new(
@@ -192,7 +192,12 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         let ram = memory.memory();
         ram.write_slice(&attributes.request, GuestAddress(1024))?;
         ram.write_obj(
-            Descriptor::new(1024, u32::try_from(attributes.request.len())?, 1, 1),
+            Descriptor::new(
+                1024,
+                u32::try_from(attributes.request.len())?,
+                if exit == 3 { 9 } else { 1 },
+                1,
+            ),
             GuestAddress(0),
         )?;
         ram.write_obj(Descriptor::new(4096, 4096, 2, 0), GuestAddress(16))?;
@@ -202,7 +207,20 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         guard.armed.store(true, Ordering::Release);
         drop(guard);
         let producer = Arc::clone(&device);
+        let (closed, before_close) = sync_channel(1);
         let worker = std::thread::spawn(move || {
+            if exit == 3 {
+                let queue = Arc::downgrade(&producer);
+                PacketSession::probe_close(move || {
+                    // Observe the original queue at the actual close boundary.
+                    // Restoring the former order reports a live batch here;
+                    // the negative is a finite assertion, not a drain hang.
+                    let retired = queue
+                        .upgrade()
+                        .is_some_and(|device| device.queues[1].probe_batch_retired());
+                    let _ = closed.send(retired);
+                });
+            }
             super::super::vring_worker::batch(&producer, &protocol, 1, &mut buffers)
         });
         // A pre-dispatch error or unwind drops the sole original gate sender;
@@ -254,15 +272,31 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         let drained = drain.join().map_err(|_| "original drain owner unwound")?;
         let observations = observations?;
         waiting?;
-        assert_eq!(unlocked?, [true; 3]);
-        assert_eq!(observations, Some((true, 0)));
-        if exit == 0 {
+        if exit == 3 {
+            assert!(unlocked.is_err());
+            assert_eq!(observations, None);
+            assert!(before_close.recv()?);
+            let error = match completion.map_err(|_| "malformed packet producer unwound")? {
+                Err(error) => error,
+                Ok(_) => panic!("malformed descriptors cannot complete a packet"),
+            };
+            assert_eq!(crate::native_mount::callback_errno(&error), libc::EPROTO);
+            assert!(matches!(
+                drained,
+                Err(NativeMountError::VirtioFsCompletionUnknown)
+            ));
+            assert_eq!(ram.read_obj::<u16>(GuestAddress(258))?, 0);
+        } else if exit == 0 {
+            assert_eq!(unlocked?, [true; 3]);
+            assert_eq!(observations, Some((true, 0)));
             completion.map_err(|_| "original packet producer unwound")??;
             assert_eq!(drained?, 1);
             assert_eq!(ram.read_obj::<u16>(GuestAddress(258))?, 1);
             assert_eq!(ram.read_obj::<u64>(GuestAddress(4104))?, unique);
             assert_eq!(ram.read_obj::<u64>(GuestAddress(8200))?, 0);
         } else {
+            assert_eq!(unlocked?, [true; 3]);
+            assert_eq!(observations, Some((true, 0)));
             if exit == 1 {
                 let error = match completion.map_err(|_| "cancelled packet producer unwound")? {
                     Err(error) => error,

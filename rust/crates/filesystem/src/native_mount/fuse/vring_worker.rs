@@ -116,9 +116,11 @@ pub(super) fn batch(
     })();
     if result.is_ok() {
         batch.finish();
-    } else {
-        // The affine batch marks this original queue failed and wakes control
-        // before returning. Physical failure also retires the shared protocol.
+    }
+    // Retire this physical batch before session cleanup can wait on a view.
+    // Failure marks the original queue Unknown and wakes its drain owner.
+    drop(batch);
+    if result.is_err() {
         session.close();
     }
     result.map(|pending| (Some(kick), pending))
