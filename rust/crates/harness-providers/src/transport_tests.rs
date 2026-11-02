@@ -6,6 +6,112 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+/// Replay actual provider bodies through public selection and execution. The
+/// local server supplies framing only; the original headers were not captured.
+#[tokio::test]
+async fn captured_gemini_terminal_and_refusal_keep_original_evidence() -> Result<()> {
+    use acyclic_harness_core::{
+        AgentId, OperationId,
+        context::{CompactionPolicy, ContextPipeline},
+        executor::{Executor as _, StockExecutor, TurnInput, usage_page},
+        filesystem::MemoryHarnessStorage,
+        tool::ToolRegistry,
+        wire::ErrorCode,
+    };
+
+    const SUCCESS: &str = include_str!("fixtures/gemini-captured-session.sse");
+    const REFUSAL: &str = include_str!("fixtures/gemini-captured-refusal.json");
+    let (port, accepted) =
+        serve(vec![Reply::Full(200, SUCCESS), Reply::Full(400, REFUSAL)]).await?;
+    let mut registry = Registry::new(Credentials::explicit(BTreeMap::from([(
+        "gemini".into(),
+        "local-replay-only".into(),
+    )])))?;
+    let mut endpoint = registry.catalog()["gemini"].as_ref().clone();
+    endpoint.base_url = format!("http://127.0.0.1:{port}");
+    registry.register("gemini".into(), endpoint)?;
+    let provider = Arc::new(registry.resolve("gemini/gemini-3.8-flash")?);
+    let executor = || {
+        StockExecutor::new(
+            provider.model().clone(),
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(CompactionPolicy::Disabled)
+    };
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 1_048_576).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::text("Replay captured response through the selected provider".into()),
+        selected_context: None,
+        max_steps: Some(1),
+    };
+    let output = executor().execute(input.clone(), journal.as_ref()).await?;
+    let original: Value = serde_json::from_str(
+        SUCCESS
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .last()
+            .unwrap(),
+    )
+    .map_err(|error| invalid(error.to_string()))?;
+    assert_eq!(output.metadata["usage"], original["usageMetadata"]);
+    assert_eq!(output.metadata["id"], original["responseId"]);
+    assert_eq!(output.metadata["finish_reason"], "STOP");
+    assert_eq!(output.text, "LIVE_d06f8c94b23148fd9ea588524212ab76");
+    assert!(output.metadata.get("provider_request_id").is_none());
+    let page = usage_page(journal.as_ref(), input.operation_id, &agent.to_string(), 0).await?;
+    assert!(page.next.is_none());
+    let completed: Vec<_> = page.items.iter().filter(|item| item.completed).collect();
+    assert_eq!(completed.len(), 1);
+    let usage = completed[0];
+    assert_eq!(usage.tokens.input, Some(7467));
+    assert_eq!(usage.tokens.output, Some(31));
+    assert_eq!(usage.tokens.cached, None);
+    assert_eq!(usage.provider_request_id, None);
+    let projected = serde_json::to_value(
+        usage
+            .estimate(None)
+            .map_err(|error| invalid(error.to_string()))?,
+    )
+    .map_err(|error| invalid(error.to_string()))?;
+    assert_eq!(projected["usage"]["tokens"]["input"], 7467);
+    assert_eq!(projected["usage"]["tokens"]["output"], 31);
+    // A fresh executor consumes the original committed terminal, without a send.
+    assert_eq!(executor().execute(input, journal.as_ref()).await?, output);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+
+    let failed = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::text("Replay the captured continuation refusal".into()),
+        selected_context: None,
+        max_steps: Some(1),
+    };
+    let error = executor()
+        .execute(failed.clone(), journal.as_ref())
+        .await
+        .unwrap_err();
+    match error {
+        Error::ModelDiagnostic { code, message, .. } => {
+            assert_eq!(code, ErrorCode::Invalid);
+            assert!(message.contains("400"), "{message}");
+            assert!(
+                message.contains("Function call is missing a thought_signature"),
+                "{message}"
+            );
+        }
+        error => panic!("original HTTP refusal lost its semantic class: {error}"),
+    }
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+    let failed_usage =
+        usage_page(journal.as_ref(), failed.operation_id, &agent.to_string(), 0).await?;
+    assert!(failed_usage.items.iter().all(|item| !item.completed));
+    Ok(())
+}
+
 /// One scripted connection.
 enum Reply {
     /// A complete response with this status and body.
