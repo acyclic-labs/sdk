@@ -22,7 +22,7 @@ export function render([stdout]) {
   const source = `${header}import { decodeHttpResponse as decodeHttpResponseWasm } from "../generated/wasm/acyclic_stream_wasm.js";
 import type {
   AccessToken, AppendResult, ChildrenPage, CommittedEnvelope, EncodedRecord, ForkReceipt,
-  IdempotencyObservation, CommitResult, ReadResult, TailResult, PathHead, Heads,
+  IdempotencyObservation, CommitResult, Revision, Sequence, PathHead, Heads,
 } from "./types.js";
 
 type HttpResponseContract = {
@@ -34,12 +34,12 @@ export type HttpRoute = keyof HttpResponseContract;
 type HttpResponseByKind = {
   empty: void;
   observation: IdempotencyObservation | undefined;
-  tail: TailResult;
+  tail: { readonly tail: Sequence; readonly applied?: Revision };
   head: PathHead;
   heads: Heads;
   append: AppendResult;
   fork: ForkReceipt;
-  read: ReadResult;
+  read: { readonly records: readonly EncodedRecord[]; readonly applied?: Revision };
   children_page: ChildrenPage;
   commit: CommitResult;
   envelope: CommittedEnvelope;

@@ -238,6 +238,8 @@ message FollowRequest {
   repeated Revision at_least = 5;
   // Initial absence only. A missing history anchor never waits.
   WhenAbsent when_absent = 6;
+  bool bootstrap_head = 7;
+  optional uint64 until = 8;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.

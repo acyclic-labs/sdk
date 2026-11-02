@@ -4,7 +4,7 @@ import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ForkRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { verifyHistoryTimeoutPolicy } from "./remote-history.browser.js";
+import { openCursor, readFrames } from "./wasm-frames.js";
 
 export async function test(endpoint: string) {
   await init();
@@ -24,8 +24,8 @@ export async function test(endpoint: string) {
     return records[0].sequence;
   };
   await append(1);
-  const follow = await stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 0n })));
-  const sibling = await stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 1n })));
+  const follow = await openCursor(stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 0n }))));
+  const sibling = await openCursor(stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 1n }))));
   if (sequence(await follow.next()) !== 0n) throw new Error("snapshot replay lost its cursor");
   const first = await stream.nextConnection(0n);
   if (await (await fetch(`${endpoint}/fixture/connections`)).text() !== "1") throw new Error("follows did not share one physical session");
@@ -36,9 +36,9 @@ export async function test(endpoint: string) {
   const [a, b] = await Promise.all([follow.next(), sibling.next()]);
   if (sequence(a) !== 1n || sequence(b) !== 1n) throw new Error("reconnect skipped or duplicated a consumed cursor");
   if (credentials < 4) throw new Error("credential resolver was cached across calls");
-  const open = (delivery: SessionDelivery) => stream.openData(toBinary(SessionSubscriptionSchema, create(SessionSubscriptionSchema, {
+  const open = (delivery: SessionDelivery) => openCursor(stream.openData(toBinary(SessionSubscriptionSchema, create(SessionSubscriptionSchema, {
     resume: { next: 0n }, kind: { case: "follow", value: { resource: streamResource("browser/status"), delivery } },
-  })));
+  }))));
   const value = new TextEncoder().encode('{"phase":"done"}');
   await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "browser/status", records: [{ value, keys: [new Uint8Array([1])], attributes: [{ name: "attention", value: new TextEncoder().encode("true") }] }], idempotencyKey: key() })));
   const latest = await open(SessionDelivery.LATEST), all = await open(SessionDelivery.ALL);
@@ -54,7 +54,7 @@ export async function test(endpoint: string) {
       path: "browser/history", records: Array.from({ length: count }, () => ({ value: payload })), idempotencyKey: key(),
     })));
   }
-  const pages = await stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/history", from: 0n, limit: 17 })));
+  const pages = await readFrames(stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/history", from: 0n, limit: 17 }))));
   const records = pages.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);
   const exact = records.length === 17 && records.every((record, index) => record.sequence === BigInt(index) && record.value.length === payload.length && record.value[0] === 7);
   if (!exact) throw new Error("large history was truncated by a unary response budget");
@@ -134,11 +134,10 @@ export async function test(endpoint: string) {
     path: "browser/overlap", records: Array.from({ length: 6 }, (_, index) => ({ value: new Uint8Array([index]) })), idempotencyKey: key(),
   })));
   for (const cut of [1n, 2n, 3n]) {
-    const overlap = await stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/overlap", from: cut, limit: 3 })));
+    const overlap = await readFrames(stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/overlap", from: cut, limit: 3 }))));
     const fresh = overlap.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);
     if (fresh.length !== 3 || fresh.some((record, offset) => record.sequence !== cut + BigInt(offset) || record.value[0] !== Number(cut) + offset)) throw new Error("overlap consumed replayed bytes or skipped a fresh cursor");
   }
-  const historyTimeouts = await verifyHistoryTimeoutPolicy(stream);
-  follow.close(); sibling.close(); latest.close(); all.close(); stream.free();
-  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length, historyTimeouts };
+  await Promise.all([follow.close(), sibling.close(), latest.close(), all.close()]); stream.free();
+  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length };
 }

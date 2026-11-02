@@ -1,4 +1,5 @@
 use super::*;
+use futures::Stream as _;
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Wake, Waker};
@@ -57,7 +58,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             .follow(crate::FollowRequest::new(path, 1))
             .map_ok(crate::records_only)
             .await?;
-        wakes.push(probe(follow.as_mut()));
+        wakes.push(probe(std::pin::Pin::new(&mut follow)));
         records.push(follow);
     }
     // Seeding must not have woken earlier, unrelated subscriptions either.
@@ -91,8 +92,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(record.sequence, 1);
     let wake = Waker::from(woken.clone());
     assert!(
-        follow
-            .as_mut()
+        std::pin::Pin::new(&mut *follow)
             .poll_next(&mut Context::from_waker(&wake))
             .is_pending()
     );
@@ -185,7 +185,7 @@ async fn a_follow_at_its_tail_is_a_reported_wait_until_its_record_arrives()
         .follow(crate::FollowRequest::new(path.clone(), 1))
         .map_ok(crate::records_only)
         .await?;
-    probe(follow.as_mut());
+    probe(std::pin::Pin::new(&mut follow));
     assert_eq!(report()?.matches("waiting: stream-follow ").count(), 1);
     append(&provider, path).await?;
     assert!(matches!(follow.next().await, Some(Ok(_))));

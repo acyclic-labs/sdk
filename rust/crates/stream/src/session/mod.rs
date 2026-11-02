@@ -124,7 +124,11 @@ struct Pending {
 }
 enum Event {
     /// Confirmed anchor and the applied revision the open was served at.
-    Opened(Option<crate::CommitId>, Option<wire::Revision>),
+    Opened(
+        Option<crate::CommitId>,
+        Option<wire::Revision>,
+        Option<wire::SessionSelection>,
+    ),
     Record(crate::Record),
     Progress(wire::SessionWatermark),
     /// One fragment of a finite one-shot reply, carried in `item`.

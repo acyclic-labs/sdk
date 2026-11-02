@@ -1,12 +1,14 @@
 import { validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { projectMemoryResponse, WasmSession, type WasmFollow, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { RevisionSchema, RecordSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { StreamError, type EncodedRecord, type FollowOptions, type ReadOptions, type Revision } from "./types.js";
-import { checkedRecord, projectRecord } from "./record.js";
+import { checkedRecord } from "./record.js";
+import { Opened, streamOpening } from "./opened.js";
+import { openWasmCursor, wasmRecords } from "./wasm-records.js";
 
 export interface SessionTransport {
   /** Canonical v1 frames; the Rust session admits each untrusted message. */
@@ -80,22 +82,55 @@ export class StreamSessions {
   }
 
   /** Finite reads share the native pinned-end, revision and credit machinery. */
-  async *read(path: string, options: ReadOptions, maximumResponseBytes?: number): AsyncGenerator<EncodedRecord> {
-    const { from, limit, key } = structuredClone(options);
-    const request = { kind: "read" as const, path, from, limit, ...(key === undefined ? {} : { key }) };
-    const input = await validateWireRequest(request);
-    yield* this.#cursor(() => this.#inner.read(input), undefined,
-      bytes => projectRecord(fromBinary(RecordSchema, bytes), path), maximumResponseBytes);
+  read(path: string, options: ReadOptions, maximumResponseBytes?: number): Opened {
+    const authored = structuredClone(options);
+    return wasmRecords(async signal => {
+      const input = await validateWireRequest({ kind: "read", path, ...authored });
+      signal.throwIfAborted();
+      return this.#inner.read(input);
+    }, path, "session", authored, undefined, maximumResponseBytes);
   }
-
-  async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
-    for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
-      if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
-      yield checkedRecord(data.item.value, data.item.value.sequence, path);
-    }
+  follow(path: string, options: FollowOptions & SessionOptions): Opened {
+    const subscription = this.#followSubscription(create(wire.SessionFollowSchema, {
+      resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent),
+    }), options);
+    const input = toBinary(wire.SessionSubscriptionSchema, subscription);
+    return new Opened(async signal => {
+      let owned: Awaited<ReturnType<typeof openWasmCursor>> | undefined;
+      try {
+        await ensureStreamWasm();
+        owned = await openWasmCursor(async () => this.#inner.subscribe(input), signal);
+        const opening = streamOpening(owned.opened);
+        const cursor = owned;
+        const records = async function* (): AsyncGenerator<EncodedRecord> {
+          for (;;) {
+            let bytes: Uint8Array | null;
+            try { bytes = await cursor.next(); }
+            catch (error) { throw streamError(error, "session"); }
+            if (bytes === null || signal.aborted) return;
+            const frame = fromBinary(wire.SessionFrameSchema, bytes);
+            if (frame.body.case === "watermark") continue;
+            if (frame.body.case !== "data" || frame.body.value.item.case !== "record") {
+              throw new StreamError("invalid_response", "Rust ALL cursor returned a non-record item");
+            }
+            const record = frame.body.value.item.value;
+            yield checkedRecord(record, record.sequence, path);
+          }
+        };
+        return { opening, records: records(), close: owned.close };
+      } catch (error) {
+        await owned?.close();
+        if (signal.aborted) throw error;
+        throw streamError(error, "session");
+      }
+    }, options.signal);
   }
 
   followData(follow: wire.SessionFollow, options: FollowOptions & SessionOptions): AsyncGenerator<wire.SessionData> {
+    return this.#data(this.subscribe(this.#followSubscription(follow, options), options.signal));
+  }
+
+  #followSubscription(follow: wire.SessionFollow, options: FollowOptions & SessionOptions): wire.SessionSubscription {
     const { from } = options;
     validateSequenceValue(from);
     const subscription = create(wire.SessionSubscriptionSchema, {
@@ -103,7 +138,8 @@ export class StreamSessions {
       ...(options.filter === undefined ? {} : { filter: options.filter }),
       credential: options.credential ?? 0,
     });
-    return this.#data(this.subscribe(subscription, options.signal));
+    validateCredentialSlot(subscription.credential);
+    return subscription;
   }
 
   async *#data(frames: AsyncIterable<wire.SessionFrame>): AsyncGenerator<wire.SessionData> {
@@ -154,34 +190,29 @@ export class StreamSessions {
     }
   }
 
-  async *#cursor<T>(open: () => WasmFollow, signal: AbortSignal | undefined,
-    project: (bytes: Uint8Array) => T, maximumResponseBytes?: number): AsyncGenerator<T> {
-    if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
-    let remaining = maximumResponseBytes;
+  async *#cursor<T>(open: () => WasmProviderRequest, signal: AbortSignal | undefined,
+    project: (bytes: Uint8Array) => T): AsyncGenerator<T> {
     if (signal?.aborted) return;
     await ensureStreamWasm();
     if (signal?.aborted) return;
-    let cursor: WasmFollow | undefined;
-    const abort = (): void => cursor?.close();
+    const cancellation = new AbortController();
+    const abort = (): void => cancellation.abort(signal?.reason);
+    let owned: Awaited<ReturnType<typeof openWasmCursor>> | undefined;
     try {
-      cursor = open();
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) return;
+      owned = await openWasmCursor(async () => open(), cancellation.signal);
       for (;;) {
-        const bytes = await cursor.next();
+        const bytes = await owned.next();
         if (signal?.aborted || bytes === null) return;
-        if (remaining !== undefined) {
-          if (bytes.byteLength > remaining) throw new StreamError("response_too_large", "response exceeds configured bound");
-          remaining -= bytes.byteLength;
-        }
         yield project(bytes);
       }
     } catch (error) {
       if (!signal?.aborted) throw streamError(error, "session");
     } finally {
       signal?.removeEventListener("abort", abort);
-      cursor?.close();
-      cursor?.free();
+      cancellation.abort();
+      await owned?.close();
     }
   }
 }

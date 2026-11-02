@@ -8,7 +8,7 @@ pub struct WasmProviderRequest {
 #[wasm_bindgen]
 impl WasmProviderRequest {
     /// Resolve the original call, or return null after explicit cancellation.
-    #[wasm_bindgen(unchecked_return_type = "Uint8Array | WasmFollow | null")]
+    #[wasm_bindgen(unchecked_return_type = "Uint8Array | WasmFollow | WasmOpened | null")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {
         Ok(self.state.next().await?.unwrap_or(JsValue::NULL))
     }
@@ -17,5 +17,16 @@ impl WasmProviderRequest {
     #[wasm_bindgen]
     pub fn close(&self) {
         self.state.close();
+    }
+}
+
+impl WasmProviderRequest {
+    fn new(request: impl std::future::Future<Output = Result<JsValue, JsValue>> + 'static) -> Self {
+        Self {
+            state: Rc::new(crate::pull::PullCursor::new(
+                futures::stream::once(request).boxed_local(),
+                js_error(StreamError::Unavailable),
+            )),
+        }
     }
 }

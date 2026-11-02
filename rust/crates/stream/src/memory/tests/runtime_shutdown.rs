@@ -57,6 +57,8 @@ fn pending_stream_survives_its_polling_runtime() {
                     futures::executor::block_on(
                         provider
                             .follow(crate::FollowRequest {
+                                bootstrap_head: false,
+                                until: None,
                                 when_absent: Default::default(),
                                 path: path,
                                 from: 1,

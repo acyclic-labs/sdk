@@ -1,6 +1,35 @@
-import { StreamLimit, type Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import { StreamError, commitId, type EncodedRecord, type ReadKeySeek } from "./types.js";
-import { validatePathValue } from "./contract.js";
+import { ReadResponseSchema, StreamLimit, type ReadResponse, type Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamError, commitId, type EncodedRecord, type ReadKeySeek, type ReadOptions } from "./types.js";
+import { readResponseRecords, validatePathValue } from "./contract.js";
+import { fromBinary } from "@bufbuild/protobuf";
+
+/** One cursor/key/origin admission for native and WASM record frames. */
+export async function* recordsFromFrames(
+  frames: AsyncIterable<Uint8Array>, path: string, next: bigint, read?: ReadOptions, signal?: AbortSignal,
+): AsyncGenerator<EncodedRecord> {
+  let count = 0;
+  for await (const bytes of frames) {
+    let response: ReadResponse;
+    try { response = fromBinary(ReadResponseSchema, bytes); }
+    catch { throw new StreamError("invalid_response", "stream response contains a malformed record frame"); }
+    // Admit a whole bounded frame before exposing its first record.
+    const records = readResponseRecords(response).map(decoded => {
+      if (read !== undefined) {
+        if (++count > read.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
+        next = checkedReadSequence(decoded, next, read.key);
+      } else if (decoded.sequence < next) {
+        throw new StreamError("invalid_response", "follow record cursor regressed");
+      }
+      const record = checkedRecord(decoded, decoded.sequence, path);
+      next = record.sequence + 1n;
+      return record;
+    });
+    for (const record of records) {
+      if (signal?.aborted) return;
+      yield record;
+    }
+  }
+}
 
 /** Preserve dense reads and validate sparse indexed results at every transport. */
 export function checkedReadSequence(record: Pick<EncodedRecord, "sequence" | "keys">, next: bigint, key?: ReadKeySeek): bigint {

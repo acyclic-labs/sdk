@@ -333,6 +333,8 @@ async fn qualify(provider: &impl StreamProvider) {
         .unwrap();
     let mut history = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 0,
@@ -351,6 +353,8 @@ async fn qualify(provider: &impl StreamProvider) {
     );
     let mut live = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
@@ -383,6 +387,8 @@ async fn qualify(provider: &impl StreamProvider) {
     assert_eq!(second.sequence, 1);
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path,
             from: 1,

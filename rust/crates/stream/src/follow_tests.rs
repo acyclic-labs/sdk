@@ -39,6 +39,8 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
     ] {
         let result = provider
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path,
                 from: from,
@@ -54,6 +56,8 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
     }
     let mut follow = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
@@ -116,6 +120,8 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
         let from = if loss == "unconsumed" { 1 } else { 2 };
         let mut follow = provider
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: from,

@@ -18,23 +18,73 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
         incarnation: original.incarnation ^ 1,
         ..original.clone()
     };
-    for (minimum, reply, error) in [
-        (false, Some(reset.clone()), StreamError::RevisionForeign),
-        (true, None, StreamError::InvalidResponse),
+    let selected = fixture::opened(super::super::super::cursor(0), Bytes::new()).selection;
+    let newer = crate::Revision {
+        index: 2,
+        ..original.clone()
+    };
+    for (minimum, reply, selection, error) in [
+        (
+            false,
+            Some(reset.clone()),
+            selected.clone(),
+            StreamError::RevisionForeign,
+        ),
+        (true, None, selected.clone(), StreamError::InvalidResponse),
         (
             true,
             Some(crate::Revision {
                 index: 0,
                 ..original.clone()
             }),
+            selected.clone(),
             StreamError::InvalidResponse,
         ),
-        (true, Some(reset.clone()), StreamError::InvalidResponse),
+        (
+            true,
+            Some(reset.clone()),
+            selected.clone(),
+            StreamError::InvalidResponse,
+        ),
         (
             true,
             Some(crate::Revision {
                 scope: crate::RevisionScope::new(b"another-authority".to_vec()),
                 ..original.clone()
+            }),
+            selected.clone(),
+            StreamError::InvalidResponse,
+        ),
+        (
+            false,
+            Some(newer.clone()),
+            None,
+            StreamError::InvalidResponse,
+        ),
+        (
+            false,
+            Some(newer.clone()),
+            Some(wire::SessionSelection {
+                from: 1,
+                ..selected.clone().ok_or("missing valid selection")?
+            }),
+            StreamError::InvalidResponse,
+        ),
+        (
+            false,
+            Some(newer.clone()),
+            Some(wire::SessionSelection {
+                end: Some(1),
+                ..selected.clone().ok_or("missing valid selection")?
+            }),
+            StreamError::InvalidResponse,
+        ),
+        (
+            false,
+            Some(newer.clone()),
+            Some(wire::SessionSelection {
+                has_bootstrap: true,
+                ..selected.clone().ok_or("missing valid selection")?
             }),
             StreamError::InvalidResponse,
         ),
@@ -50,9 +100,8 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
                 id,
                 generation,
                 Body::Opened(wire::SessionOpened {
-                    resume: Some(super::super::super::cursor(0)),
                     applied: revision.map(wire_codec::revision_to_wire),
-                    preceding_commit_id: Bytes::new(),
+                    ..fixture::opened(super::super::super::cursor(0), Bytes::new())
                 }),
             )
         };
@@ -79,7 +128,11 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
         if minimum && let Kind::Follow(follow) = &mut route.kind {
             follow.at_least = vec![wire_codec::revision_to_wire(&original)];
         }
-        pool.receive("good", opened(3, 2, reply.as_ref()))?;
+        let mut refused = opened(3, 2, reply.as_ref());
+        if let Some(Body::Opened(opened)) = &mut refused.body {
+            opened.selection = selection;
+        }
+        pool.receive("good", refused)?;
         assert_eq!(reset_opened.await?, Err(error.clone()));
         assert!(matches!(
             records.recv().await,
@@ -94,11 +147,16 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
             .served;
         assert!(held.covers(&original));
         assert!(!held.covers(&reset));
+        assert!(!held.covers(&newer));
+        assert_eq!(
+            revisions.floor(&Default::default())?,
+            crate::RevisionCut::of(original.clone())
+        );
         // Re-subscription must use the same tracker that observed both opens.
         pool.subscribe(5)?;
         assert!(pool.routes.contains_key(&5));
         pool.receive("good", opened(5, 1, Some(&original)))?;
-        assert_eq!(sibling_opened.await?, Ok(5));
+        assert_eq!(sibling_opened.await?.map(|(id, _)| id), Ok(5));
     }
     Ok(())
 }
@@ -268,11 +326,10 @@ fn open(
         frame(
             id,
             1,
-            Body::Opened(wire::SessionOpened {
-                resume: Some(super::super::super::cursor(0)),
-                preceding_commit_id: Bytes::new(),
-                applied: None,
-            }),
+            Body::Opened(fixture::opened(
+                super::super::super::cursor(0),
+                Bytes::new(),
+            )),
         ),
     )
     .map_err(fail)?;

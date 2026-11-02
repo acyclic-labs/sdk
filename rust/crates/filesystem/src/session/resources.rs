@@ -144,6 +144,8 @@ where
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;
                 let records = streams
                     .follow(acyclic_stream::FollowRequest {
+                        bootstrap_head: false,
+                        until: None,
                         when_absent: Default::default(),
                         path,
                         from: request.from,
@@ -154,21 +156,22 @@ where
                     })
                     .await?;
                 opened.validate()?;
-                let output = records.map(move |update| {
-                    opened.validate()?;
-                    match update? {
-                        FollowUpdate::Record(record) => metadata::project(
-                            record,
-                            volume_id,
-                            scope,
-                            volume.config,
-                            &trie,
-                            &request.authorization,
-                        ),
-                        progress => Ok(progress),
-                    }
-                });
-                Ok(Box::pin(output) as acyclic_stream::FollowStream)
+                Ok(records.map_cursor(|records| {
+                    Box::pin(records.map(move |update| {
+                        opened.validate()?;
+                        match update? {
+                            FollowUpdate::Record(record) => metadata::project(
+                                record,
+                                volume_id,
+                                scope,
+                                volume.config,
+                                &trie,
+                                &request.authorization,
+                            ),
+                            progress => Ok(progress),
+                        }
+                    }))
+                }))
             }),
         })
     }

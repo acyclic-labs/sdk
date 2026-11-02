@@ -56,6 +56,8 @@ async fn unpolled_streams_do_not_block_appends() {
             let follow = if checked {
                 provider
                     .follow(crate::FollowRequest {
+                        bootstrap_head: false,
+                        until: None,
                         when_absent: Default::default(),
                         path: path.clone(),
                         from: 1,

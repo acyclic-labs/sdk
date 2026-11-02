@@ -1,5 +1,6 @@
 /// Incremental cursor over immutable history.
 pub(crate) struct HistoryCursor {
+    end: Option<u64>,
     records: crate::pages::PinnedCursor<PinnedHistory>,
     awaiting_creation: bool,
     opening_tail: Option<u64>,
@@ -67,6 +68,9 @@ impl HistoryCursor {
         Ok(cursor)
     }
     async fn peek_record(&mut self) -> Result<Option<&Record>, StreamError> {
+        if self.finished() {
+            return Ok(None);
+        }
         self.records.peek().await
     }
     fn position(&self) -> u64 {
@@ -106,6 +110,7 @@ impl HistoryCursor {
     pub(crate) fn at(next: u64) -> Self {
         Self {
             records: Self::pinned(PinnedHistory::empty(next), next),
+            end: None,
             awaiting_creation: false,
             opening_tail: None,
             registration: None,
@@ -121,6 +126,7 @@ impl HistoryCursor {
             records.seed_page(page);
         }
         Self {
+            end: None,
             records,
             awaiting_creation: false,
             opening_tail: None,
@@ -146,7 +152,14 @@ impl HistoryCursor {
         self.records.repin(pinned, keep_page);
     }
     async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
+        if self.finished() {
+            return Ok(None);
+        }
         self.records.next().await
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.end.is_some_and(|end| self.position() >= end)
     }
 }
 
@@ -161,6 +174,15 @@ struct FiniteRead {
 }
 
 impl FiniteRead {
+    fn selection(&self) -> crate::StreamSelection {
+        crate::StreamSelection {
+            from: self.next,
+            preceding: None,
+            end: Some(self.history.tail),
+            bootstrap: None,
+        }
+    }
+
     fn new(path: &PathState, request: ReadRequest) -> Self {
         let tail = request.key.as_ref().map_or_else(
             || {

@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope,
+    IdempotencyKey, IdempotencyObservation, ReadRequest,
 };
 use futures::{
     stream::{FuturesUnordered, SelectAll},
@@ -424,7 +423,7 @@ async fn quiescence_rejects_extra_deliveries_and_truncated_follow_controls() -> 
         let mut follow = if truncate {
             follow.take(2).boxed()
         } else {
-            follow
+            follow.boxed()
         };
         for sequence in 0..2 {
             assert_eq!(next(&mut follow).await?.sequence, sequence);

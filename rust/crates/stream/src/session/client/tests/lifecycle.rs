@@ -26,6 +26,8 @@ async fn registration_producer_loss_removes_only_its_interest() -> TestResult {
     let mut stalled = Box::pin(
         client
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: StreamPath::new("stalled")?,
                 from: 1,
@@ -58,7 +60,24 @@ async fn registration_producer_loss_removes_only_its_interest() -> TestResult {
         ..
     } = *open;
     ready
-        .send(Ok(healthy_id))
+        .send(Ok((
+            healthy_id,
+            Some(wire::SessionOpened {
+                resume: Some(cursor(0)),
+                preceding_commit_id: Bytes::new(),
+                applied: Some(wire_codec::revision_to_wire(&crate::Revision {
+                    scope: crate::RevisionScope::new(b"fixture".to_vec()),
+                    incarnation: 1,
+                    index: 0,
+                })),
+                selection: Some(wire::SessionSelection {
+                    from: 0,
+                    end: None,
+                    preceding_commit_id: Bytes::new(),
+                    has_bootstrap: false,
+                }),
+            }),
+        )))
         .map_err(|_| "sibling cancelled")?;
     let healthy = healthy.await?;
     assert!(futures::poll!(stalled.as_mut()).is_pending());
@@ -84,6 +103,8 @@ async fn cancellation_withdraws_blocked_queue_admission() -> TestResult {
     let mut blocked = Box::pin(
         client
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: StreamPath::new("blocked")?,
                 from: 1,
@@ -168,6 +189,8 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             let mut stalled = Box::pin(
                 client
                     .follow(crate::FollowRequest {
+                        bootstrap_head: false,
+                        until: None,
                         when_absent: Default::default(),
                         path: StreamPath::new("private/stalled")?,
                         from: 1,

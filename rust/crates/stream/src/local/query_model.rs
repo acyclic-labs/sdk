@@ -159,6 +159,8 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
         block_on(async {
             let mut follow = stream
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
@@ -217,6 +219,8 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
         block_on(async {
             match stream
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path,
                     from: 1,
@@ -263,6 +267,8 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let mut follow = block_on(
             stream
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
@@ -276,7 +282,11 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let pushed = Arc::new(Push(loom::sync::atomic::AtomicBool::new(false)));
         let waker = std::task::Waker::from(pushed.clone());
         let mut context = std::task::Context::from_waker(&waker);
-        assert!(follow.as_mut().poll_next(&mut context).is_pending());
+        assert!(
+            std::pin::Pin::new(&mut follow)
+                .poll_next(&mut context)
+                .is_pending()
+        );
         // The subscriber is genuinely parked before the production append starts.
         let writer = loom::thread::spawn({
             let stream = stream.clone();

@@ -39,7 +39,7 @@ impl WasmStream {
             return Err(js_error(StreamError::InvalidArgument));
         }
         let provider = Self::from_provider(self.provider.clone());
-        let request = futures::stream::once(async move {
+        Ok(WasmProviderRequest::new(async move {
             if operation == "read" || operation == "follow" {
                 provider
                     .provider_cursor(&operation, &input, &preceding)
@@ -53,14 +53,7 @@ impl WasmStream {
             } else {
                 Err(js_error(StreamError::InvalidArgument))
             }
-        })
-        .boxed_local();
-        Ok(WasmProviderRequest {
-            state: Rc::new(crate::pull::PullCursor::new(
-                request,
-                js_error(StreamError::Unavailable),
-            )),
-        })
+        }))
     }
 
     /// Pull-based finite read or atomic checked follow for an injected host
@@ -196,22 +189,20 @@ impl WasmStream {
     /// Opens a canonical SessionSubscription, yielding encoded SessionFrame data
     /// and watermarks. Rust owns IDs, ALL/LATEST cursors, anchors and bounded credit.
     #[wasm_bindgen(js_name = openData)]
-    pub async fn open_data(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+    pub fn open_data(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
         let subscription = decode::<wire::SessionSubscription>(input)?;
         let session = self
             .session
             .as_ref()
-            .ok_or_else(|| js_error(StreamError::Unsupported))?;
-        let frames = session.subscribe(subscription).await.map_err(js_error)?;
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                frames
-                    .map(|frame| frame.map(|frame| frame.wire().encode_to_vec()))
-                    .boxed_local(),
-                StreamError::Unavailable,
-            )),
-        })
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .clone();
+        Ok(WasmProviderRequest::new(async move {
+            WasmOpened::subscription(session, subscription, true)
+                .await
+                .map(JsValue::from)
+                .map_err(js_error)
+        }))
     }
 
     /// Invokes a canonical Actors message through the existing shared session.
@@ -325,29 +316,21 @@ impl WasmStream {
         Ok(output)
     }
 
-    /// Reads one bounded page, returning encoded `ReadResponse` messages.
-    #[wasm_bindgen(unchecked_return_type = "Uint8Array[]")]
-    pub async fn read(&self, input: &[u8]) -> Result<JsValue, JsValue> {
+    /// Opens a finite read without materializing its selected history.
+    pub fn read(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
-        let request = decode::<wire::ReadRequest>(input)?;
-        let request = wire_codec::read_from_wire(request).map_err(js_error)?;
+        let request =
+            wire_codec::read_from_wire(decode::<wire::ReadRequest>(input)?).map_err(js_error)?;
         let path = request.path.clone();
-        let records = self.provider.read(request).await.map_err(js_error)?;
-        let mut output = Vec::new();
-        futures::pin_mut!(records);
-        while let Some(record) = records.next().await {
-            let record = record.map_err(js_error)?;
-            output.push(
-                wire_codec::read_response_wire(vec![wire_codec::record_wire(record, Some(&path))])
-                    .encode_to_vec(),
-            );
-        }
-        Ok(bytes_array(output))
+        let provider = self.provider.clone();
+        Ok(WasmProviderRequest::new(async move {
+            let records = provider.read(request).await.map_err(js_error)?;
+            Ok(JsValue::from(WasmOpened::records(records, path)))
+        }))
     }
 
-    /// Opens a live follow cursor backed by the canonical provider.
-    #[wasm_bindgen]
-    pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+    /// Opens a live follow and retains its original selection with the cursor.
+    pub fn open_follow(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
         let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(input)?)
             .map_err(js_error)?;
@@ -355,23 +338,21 @@ impl WasmStream {
             return Err(js_error(StreamError::InvalidArgument));
         }
         let path = request.path.clone();
-        let stream = crate::records_only(self.provider.follow(request).await.map_err(js_error)?);
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                stream
-                    .map(move |record| {
-                        record.map(|record| {
-                            wire_codec::read_response_wire(vec![wire_codec::record_wire(
-                                record,
-                                Some(&path),
-                            )])
-                            .encode_to_vec()
-                        })
-                    })
-                    .boxed_local(),
-                StreamError::Unavailable,
-            )),
-        })
+        let filter = request.filter.clone();
+        let provider = self.provider.clone();
+        Ok(WasmProviderRequest::new(async move {
+            let mut records =
+                crate::records_only(provider.follow(request).await.map_err(js_error)?);
+            records.selection.bootstrap = records
+                .selection
+                .bootstrap
+                .take()
+                .map(|record| filter.project(record))
+                .transpose()
+                .map_err(js_error)?
+                .flatten();
+            Ok(JsValue::from(WasmOpened::records(records, path)))
+        }))
     }
 }
 

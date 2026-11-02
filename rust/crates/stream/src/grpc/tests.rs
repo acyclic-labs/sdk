@@ -110,29 +110,25 @@ impl StreamProvider for EndingFollow {
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
         let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
+        if self.deny {
+            return Err(StreamError::AccessDenied);
+        }
         if self.finite {
-            return if attempt == 0 {
-                self.inner
-                    .read(ReadRequest {
-                        key: None,
-                        path: request.path,
-                        from: request.from,
-                        limit: u32::try_from(crate::MAX_ITEMS)
-                            .map_err(|_| StreamError::LimitExceeded)?,
-                        at_least: Default::default(),
-                    })
-                    .await
-                    .map(|records| {
-                        records
-                            .map(|record| record.map(crate::FollowUpdate::Record))
-                            .boxed()
-                    })
-            } else {
-                Ok(stream::empty().boxed())
-            };
+            let opened = self.inner.follow(request).await?;
+            return Ok(opened.map_cursor(|cursor| {
+                if attempt == 0 {
+                    cursor.take(20).boxed()
+                } else {
+                    stream::empty().boxed()
+                }
+            }));
         }
         if attempt == 0 {
-            return Ok(stream::empty().boxed());
+            return Ok(self
+                .inner
+                .follow(request)
+                .await?
+                .map_cursor(|_| stream::empty().boxed()));
         }
         if self.deny {
             return Err(StreamError::AccessDenied);
@@ -303,7 +299,7 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
 }
 
 #[tokio::test]
-async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
+async fn source_eof_is_unavailable_without_reopening() -> TestResult {
     let provider = EndingFollow {
         inner: MemoryStream::default(),
         follows: AtomicUsize::new(0),
@@ -338,16 +334,13 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
         deny: true,
         finite: false,
     })?;
-    let items = transport
+    let result = transport
         .follow(crate::FollowRequest::new(
             StreamPath::new("accounts/events")?,
             0,
         ))
-        .map_ok(crate::records_only)
-        .await?
-        .collect::<Vec<_>>()
         .await;
-    assert_eq!(items, vec![Err(StreamError::AccessDenied)]);
+    assert!(matches!(result, Err(StreamError::AccessDenied)));
     Ok(())
 }
 

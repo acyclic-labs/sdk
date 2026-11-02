@@ -58,7 +58,7 @@ impl futures::Stream for NativeFaultRecordCursor {
             this.fault = 3;
             return Poll::Ready(Some(Ok(Err(StreamError::Unavailable))));
         }
-        let mut output = match this.source.value_mut().as_mut().poll_next(context) {
+        let mut output = match std::pin::Pin::new(this.source.value_mut()).poll_next(context) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Some(Ok(Ok(output)))) => output,
             Poll::Ready(Some(error)) => return Poll::Ready(Some(error)),

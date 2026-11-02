@@ -10,6 +10,7 @@ struct State {
     position: Position,
     generation: u64,
     track_records: bool,
+    bootstrap: Option<(u64, [u8; 32])>,
 }
 pub(super) struct Progress {
     sparse_records: bool,
@@ -51,6 +52,7 @@ impl Progress {
                 },
                 generation: 1,
                 track_records: preceding.is_some(),
+                bootstrap: None,
             }),
             cancelled: AtomicU64::new(0),
             ended: AtomicU64::new(0),
@@ -104,6 +106,39 @@ impl Progress {
     ) -> Result<bool, StreamError> {
         self.consume_cut(generation, sequence, &[], Some(commit), self.sparse_records)
     }
+    /// Admit only the original selected head's jump, without acknowledging its
+    /// delivery. An absent/filtered head already proves the selected prefix.
+    pub(super) fn select_bootstrap(
+        &self,
+        generation: u64,
+        selection: &crate::StreamSelection,
+        has_bootstrap: bool,
+        records: bool,
+    ) -> Result<u64, StreamError> {
+        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        if generation != state.generation || state.position.next != 0 {
+            return Err(StreamError::InvalidResponse);
+        }
+        state.track_records |= records;
+        if has_bootstrap {
+            let sequence = selection
+                .from
+                .checked_sub(1)
+                .ok_or(StreamError::InvalidResponse)?;
+            let commit = selection.preceding.ok_or(StreamError::InvalidResponse)?;
+            state.bootstrap = records.then_some((sequence, *commit.as_bytes()));
+            Ok(sequence)
+        } else {
+            state.position.next = selection.from;
+            state.position.preceding = if records {
+                selection.preceding.map(|commit| *commit.as_bytes())
+            } else {
+                None
+            };
+            state.bootstrap = None;
+            Ok(selection.from)
+        }
+    }
     pub(super) fn current(&self, generation: u64) -> Result<bool, StreamError> {
         Ok(self
             .state
@@ -155,7 +190,15 @@ impl Progress {
         if generation != state.generation || sequence < state.position.next {
             return Ok(false);
         }
-        if sequence > state.position.next && !conflated {
+        let bootstrap = if let Some((selected, expected)) = state.bootstrap {
+            if sequence != selected || commit != Some(expected) {
+                return Err(StreamError::Unavailable);
+            }
+            true
+        } else {
+            false
+        };
+        if sequence > state.position.next && !conflated && !bootstrap {
             return Err(StreamError::Unavailable);
         }
         if state.track_records && commit.is_none() {
@@ -163,6 +206,7 @@ impl Progress {
         }
         state.position.next = sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
         state.position.opaque = opaque.to_vec();
+        state.bootstrap = None;
         if state.track_records {
             state.position.preceding = commit;
         }

@@ -1,6 +1,97 @@
 //! The one wire spelling of the shared applied-revision token.
 use crate::{Revision, RevisionCut, RevisionScope, StreamError, wire};
 
+/// Encodes the choices made by an original stream open.
+#[must_use]
+pub fn selection_to_wire(value: &crate::StreamSelection) -> wire::SessionSelection {
+    wire::SessionSelection {
+        from: value.from,
+        end: value.end,
+        preceding_commit_id: value.preceding.map_or_else(bytes::Bytes::new, |id| {
+            bytes::Bytes::copy_from_slice(id.as_bytes())
+        }),
+        has_bootstrap: value.bootstrap.is_some(),
+    }
+}
+
+/// Projects the original provider receipt without polling or sampling again.
+#[must_use]
+pub fn opened_to_wire<T, E>(value: &crate::Opened<T, E>) -> wire::SessionOpened {
+    wire::SessionOpened {
+        resume: Some(wire::SessionCursor {
+            next: value.selection.from,
+            opaque: bytes::Bytes::new(),
+        }),
+        preceding_commit_id: value
+            .selection
+            .preceding
+            .map_or_else(bytes::Bytes::new, |id| {
+                bytes::Bytes::copy_from_slice(id.as_bytes())
+            }),
+        applied: Some(revision_to_wire(&value.snapshot)),
+        selection: Some(selection_to_wire(&value.selection)),
+    }
+}
+
+/// Decodes the mandatory metadata of a successful stream opening receipt.
+pub fn selection_from_opened(
+    value: &wire::SessionOpened,
+) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
+    let snapshot = revision_from_wire(value.applied.clone().ok_or(StreamError::InvalidResponse)?)
+        .map_err(|_| StreamError::InvalidResponse)?;
+    let selected = value
+        .selection
+        .as_ref()
+        .ok_or(StreamError::InvalidResponse)?;
+    let preceding = if selected.preceding_commit_id.is_empty() {
+        None
+    } else {
+        Some(
+            super::commit_id(&selected.preceding_commit_id)
+                .map_err(|_| StreamError::InvalidResponse)?,
+        )
+    };
+    Ok((
+        snapshot,
+        crate::StreamSelection {
+            from: selected.from,
+            preceding,
+            end: selected.end,
+            bootstrap: None,
+        },
+        selected.has_bootstrap,
+    ))
+}
+
+/// Admits the original selection before data or its revision can be observed.
+/// Sessions and injected provider ports use the same request/receipt contract.
+pub(crate) fn selection_for_follow(
+    value: &wire::SessionOpened,
+    follow: &wire::SessionFollow,
+    from: u64,
+) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
+    let (snapshot, selection, has_bootstrap) = selection_from_opened(value)?;
+    let bootstrap = follow.bootstrap_head && from == 0;
+    let preceding = if follow.preceding_commit_id.is_empty() {
+        None
+    } else {
+        Some(super::commit_id(&follow.preceding_commit_id)?)
+    };
+    if !cut_proven_by(&follow.at_least, Some(&snapshot))
+        || (!bootstrap && selection.from != from)
+        || (!bootstrap && selection.preceding != preceding)
+        || (has_bootstrap && (!bootstrap || selection.from == 0 || selection.preceding.is_none()))
+        || selection.end.is_some() != follow.until.is_some()
+        || selection
+            .end
+            .zip(follow.until)
+            .is_some_and(|(selected, requested)| selected > requested)
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok((snapshot, selection, has_bootstrap))
+}
+
 /// Encodes one revision.
 #[must_use]
 pub fn revision_to_wire(value: &Revision) -> wire::Revision {

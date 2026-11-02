@@ -4,6 +4,7 @@ mod absence;
 mod atomic;
 mod backend;
 pub(crate) mod key_seek;
+pub(crate) mod selected;
 mod soft;
 mod views;
 #[path = "conformance"]
@@ -42,6 +43,7 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     absence::verify(provider).await?;
     views::verify(provider).await?;
+    selected::verify(provider).await?;
     key_seek::verify(provider).await?;
     soft::verify(provider).await?;
     let source = path("conformance/source")?;

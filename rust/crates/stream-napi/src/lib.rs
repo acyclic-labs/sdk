@@ -90,6 +90,8 @@ impl NativeStreamConnectResult {
 /// Result of opening a Rust-owned finite read or follow cursor.
 #[napi(object, object_from_js = false)]
 pub struct NativeStreamFollowResult {
+    /// Canonical `SessionOpened` receipt, available before pulling the cursor.
+    pub opened: Option<Buffer>,
     /// Follow cursor on success.
     pub follow: Option<NativeStreamFollow>,
     /// Structured Rust error on failure.
@@ -97,8 +99,9 @@ pub struct NativeStreamFollowResult {
 }
 
 impl NativeStreamFollowResult {
-    fn success(follow: NativeStreamFollow) -> Self {
+    fn success((follow, opened): (NativeStreamFollow, Buffer)) -> Self {
         Self {
+            opened: Some(opened),
             follow: Some(follow),
             error: None,
         }
@@ -106,6 +109,7 @@ impl NativeStreamFollowResult {
 
     fn failure(error: NativeStreamErrorMetadata) -> Self {
         Self {
+            opened: None,
             follow: None,
             error: Some(error),
         }

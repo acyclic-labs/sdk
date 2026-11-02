@@ -1,8 +1,4 @@
 //! Shared Stream fault fixture; all successful operations use the real provider.
-#![allow(
-    dead_code,
-    reason = "shared fault fixtures expose controls used by different test modules"
-)]
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
@@ -233,7 +229,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         if let Some(commit) = head_race {
             self.inner.commit(commit).await?;
         }
-        if (request.path.as_str().contains("/effect-heads/")
+        let hidden = (request.path.as_str().contains("/effect-heads/")
             && request.path.as_str().contains("/nodes/")
             && self
                 .hide_effect_node_read
@@ -242,33 +238,29 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 && self
                     .hide_effect_transition_position
                     .load(std::sync::atomic::Ordering::SeqCst)
-                    == request.from.saturating_add(1))
-        {
-            return Ok(Box::pin(futures::stream::empty()));
+                    == request.from.saturating_add(1));
+        let mut opened = self.inner.read(request).await?;
+        if hidden {
+            return Ok(opened.map_cursor(|_| Box::pin(futures::stream::empty())));
         }
         let fault = self
             .history_read_fault
             .swap(0, std::sync::atomic::Ordering::SeqCst);
-        use futures::TryStreamExt as _;
+        use futures::{StreamExt as _, TryStreamExt as _};
         if fault == 0 {
             let delivered = self.observation_bytes.clone();
-            return Ok(Box::pin(self.inner.read(request).await?.inspect_ok(
-                move |record| {
+            return Ok(opened.map_cursor(|records| {
+                Box::pin(records.inspect_ok(move |record| {
                     delivered.fetch_add(
                         record.value.len() as u64,
                         std::sync::atomic::Ordering::SeqCst,
                     );
-                },
-            )));
+                }))
+            }));
         }
-        let mut records = self
-            .inner
-            .read(request)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
+        let mut records = opened.by_ref().try_collect::<Vec<_>>().await?;
         match fault {
-            7..=9 => return Ok(hints::records(records, fault)),
+            7..=9 => return Ok(hints::records(opened, records, fault)),
             1 => {
                 if let Some(record) = records.first_mut() {
                     record.sequence += 1;
@@ -291,17 +283,19 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 }
             }
             6 => {
-                return Ok(Box::pin(futures::stream::iter(
-                    records
-                        .into_iter()
-                        .take(1)
-                        .map(Ok)
-                        .chain(std::iter::once(Err(StreamError::Unavailable))),
-                )));
+                return Ok(opened.map_cursor(|_| {
+                    Box::pin(futures::stream::iter(
+                        records
+                            .into_iter()
+                            .take(1)
+                            .map(Ok)
+                            .chain(std::iter::once(Err(StreamError::Unavailable))),
+                    ))
+                }));
             }
             _ => {}
         }
-        Ok(Box::pin(futures::stream::iter(records.into_iter().map(Ok))))
+        Ok(opened.map_cursor(|_| Box::pin(futures::stream::iter(records.into_iter().map(Ok)))))
     }
     async fn follow(
         &self,
@@ -463,6 +457,8 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 &original,
                 std::mem::size_of::<NativeFaultRecordCursor>(),
             )?;
+            let snapshot = source.value().snapshot.clone();
+            let selection = source.value().selection.clone();
             let cursor = NativeFaultRecordCursor {
                 source,
                 meter: original,
@@ -472,7 +468,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 previous: None,
             };
             Ok(Ok(acyclic_stream::NativeStreamOutput::new(
-                Box::pin(cursor) as acyclic_stream::NativeRecordStream,
+                acyclic_stream::Opened::new(snapshot, selection, Box::pin(cursor)),
                 allocation,
             )))
         })

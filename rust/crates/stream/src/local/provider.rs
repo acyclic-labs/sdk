@@ -214,15 +214,33 @@ impl StreamProvider for LocalStream {
                     progress,
                     when_absent,
                     at_least,
+                    bootstrap_head,
+                    until,
                 } = request;
                 // Parks before any visibility guard, so no writer waits on a parked read.
                 self.inner.provider.revisions.wait(&at_least).await?;
                 if progress {
-                    self.progress_from(path, from, preceding, when_absent, filter)
-                        .await
+                    self.progress_from(
+                        path,
+                        from,
+                        preceding,
+                        when_absent,
+                        filter,
+                        bootstrap_head,
+                        until,
+                    )
+                    .await
                 } else {
-                    self.follow_from(path, from, preceding, when_absent, filter)
-                        .await
+                    self.follow_from(
+                        path,
+                        from,
+                        preceding,
+                        when_absent,
+                        filter,
+                        bootstrap_head,
+                        until,
+                    )
+                    .await
                 }
             }
         )

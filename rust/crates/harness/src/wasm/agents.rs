@@ -803,15 +803,15 @@ impl WasmAgents {
     }
 
     /// Atomically replays and follows the same agent stream as `read`.
-    /// The canonical Stream cursor returns encoded ReadResponse frames; close
-    /// it to release the subscription and wake a pending next call.
-    pub async fn follow(
+    /// The canonical request retains registration until it returns the selected
+    /// opening and cursor. Closing it cancels a still-pending registration.
+    pub fn follow(
         &self,
         agent: String,
         #[wasm_bindgen(unchecked_param_type = "\"inbox\" | \"conversation\" | \"status\"")]
         stream: String,
         from: u64,
-    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+    ) -> std::result::Result<acyclic_stream::WasmProviderRequest, JsValue> {
         use prost::Message as _;
         let request = acyclic_stream::wire::FollowRequest {
             path: record_path(agent, &stream)?.to_string(),
@@ -821,7 +821,6 @@ impl WasmAgents {
         };
         acyclic_stream::WasmStream::from_provider(Arc::clone(self.agents.provider()))
             .open_follow(&request.encode_to_vec())
-            .await
     }
 
     /// The verified bytes of `file` on one of `agent`'s volumes, such as a

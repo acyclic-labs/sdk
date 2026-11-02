@@ -190,6 +190,8 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         assert!(matches!(
             client
                 .follow(crate::FollowRequest {
+                    bootstrap_head: false,
+                    until: None,
                     when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
@@ -204,6 +206,8 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         ));
         let mut checked = client
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,

@@ -2,8 +2,8 @@ use super::*;
 mod reconnect;
 mod tail;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, RecordStream, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, RecordStream, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -106,7 +106,10 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     let stream_polled = Arc::clone(&polled);
     let stream_dropped = Arc::clone(&dropped);
     let sentinel = DropSentinel(stream_dropped);
-    let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+    let records: acyclic_stream::BoxProviderStream<
+        'static,
+        std::result::Result<acyclic_stream::Record, StreamError>,
+    > = Box::pin(futures::stream::poll_fn(move |_| {
         let _sentinel = &sentinel;
         stream_polled.store(true, Ordering::SeqCst);
         Poll::Pending
@@ -189,7 +192,10 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         headers: Default::default(),
     };
     let mut record = Some(record);
-    let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+    let records: acyclic_stream::BoxProviderStream<
+        'static,
+        std::result::Result<acyclic_stream::Record, StreamError>,
+    > = Box::pin(futures::stream::poll_fn(move |_| {
         let close_state = follow_state.clone();
         close_state.closed.store(true, Ordering::Release);
         close_state.token.cancel();
@@ -219,7 +225,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
 }
 
 struct TcpDropProbe {
-    operation_claims: acyclic_stream::OperationClaims,
+    memory: acyclic_stream::MemoryStream,
     started: Arc<tokio::sync::Notify>,
     dropped: Arc<tokio::sync::Notify>,
 }
@@ -233,7 +239,7 @@ impl Drop for TcpDropped {
 #[async_trait]
 impl StreamProvider for TcpDropProbe {
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
-        acyclic_stream::ProviderContext::new(&self.operation_claims)
+        self.memory.context()
     }
 
     async fn inspect_idempotency(
@@ -288,16 +294,20 @@ impl StreamProvider for TcpDropProbe {
 
     async fn follow(
         &self,
-        _request: acyclic_stream::FollowRequest,
+        request: acyclic_stream::FollowRequest,
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        let records = self.memory.follow(request).await?;
         self.started.notify_one();
         let dropped = Arc::clone(&self.dropped);
         let sentinel = TcpDropped(dropped);
-        Ok(futures::stream::poll_fn(move |_| {
-            let _sentinel = &sentinel;
-            Poll::Pending
-        })
-        .boxed())
+        Ok(records.map_cursor(|cursor| {
+            cursor
+                .map(move |record| {
+                    let _sentinel = &sentinel;
+                    record
+                })
+                .boxed()
+        }))
     }
 
     async fn read_commit(
@@ -335,7 +345,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         let started = Arc::new(tokio::sync::Notify::new());
         let dropped = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(TcpDropProbe {
-            operation_claims: Default::default(),
+            memory: Default::default(),
             started: Arc::clone(&started),
             dropped: Arc::clone(&dropped),
         });
@@ -403,7 +413,9 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
         )?;
         let request = wire::FollowRequest {
-            when_absent: Default::default(),
+            bootstrap_head: false,
+            until: None,
+            when_absent: wire::WhenAbsent::Wait.into(),
             filter: None,
             path: "accounts/events".to_owned(),
             from: 0,
@@ -417,7 +429,8 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
                 None,
             )
             .await
-            .map_err(|error| error.message)?,
+            .map_err(|error| error.message)?
+            .0,
         );
         let pending = tokio::spawn({
             let follow = Arc::clone(&follow);

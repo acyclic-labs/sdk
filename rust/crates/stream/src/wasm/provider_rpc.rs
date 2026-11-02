@@ -152,12 +152,68 @@ impl InjectedStream {
         if !cursor.is_object() {
             return Err(StreamError::InvalidResponse);
         }
-        let cursor = CursorFrames {
+        let mut cursor = CursorFrames {
             cursor: OwnedCursor(cursor.unchecked_into()),
             decoder: wire_codec::session::FrameDecoder::default(),
             chunk: Vec::new(),
             offset: 0,
         };
+        let opened = cursor.next().await?.ok_or(StreamError::InvalidResponse)?;
+        if opened.channel_id != 1 || opened.generation != 1 {
+            return Err(StreamError::InvalidResponse);
+        }
+        let Some(wire::session_frame::Body::Opened(opened)) = opened.body else {
+            return Err(StreamError::InvalidResponse);
+        };
+        let (minimum, bootstrap, until) = match operation {
+            "read" => {
+                let request = wire::ReadRequest::decode(input.as_slice())
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                (
+                    request.at_least,
+                    false,
+                    Some(request.key.as_ref().map_or_else(
+                        || request.from.saturating_add(u64::from(request.limit)),
+                        |key| key.before,
+                    )),
+                )
+            }
+            "follow" => {
+                let request = wire::FollowRequest::decode(input.as_slice())
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                (request.at_least, request.bootstrap_head, request.until)
+            }
+            _ => return Err(StreamError::InvalidArgument),
+        };
+        let follow = wire::SessionFollow {
+            at_least: minimum,
+            bootstrap_head: bootstrap,
+            until,
+            preceding_commit_id: anchor.into(),
+            ..Default::default()
+        };
+        let (snapshot, mut selection, has_bootstrap) =
+            wire_codec::selection_for_follow(&opened, &follow, from)?;
+        if has_bootstrap {
+            let frame = cursor.next().await?.ok_or(StreamError::InvalidResponse)?;
+            let Some(wire::session_frame::Body::Data(data)) = frame.body else {
+                return Err(StreamError::InvalidResponse);
+            };
+            let Some(wire::session_data::Item::Record(record)) = data.item else {
+                return Err(StreamError::InvalidResponse);
+            };
+            let record = wire_codec::record(record, Some(path))?;
+            if frame.channel_id != 1
+                || frame.generation != 1
+                || record.sequence.checked_add(1) != Some(selection.from)
+                || Some(record.commit_id) != selection.preceding
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+            selection.bootstrap = Some(record);
+        }
+        let from = selection.from;
+        let finite = selection.end.is_some();
         let read = operation == "read";
         let seek = if read {
             wire_codec::read_from_wire(
@@ -169,12 +225,14 @@ impl InjectedStream {
             None
         };
         let path = path.clone();
-        Ok(
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
             futures::stream::try_unfold((cursor, from), move |(mut cursor, next)| {
                 let (seek, path) = (seek.clone(), path.clone());
                 async move {
                     let Some(frame) = cursor.next().await? else {
-                        return if read {
+                        return if read || finite {
                             Ok(None)
                         } else {
                             Err(StreamError::Unavailable)
@@ -249,7 +307,7 @@ impl InjectedStream {
                 }
             })
             .boxed_local(),
-        )
+        ))
     }
 }
 #[async_trait::async_trait(?Send)]
@@ -389,6 +447,8 @@ impl StreamProvider for InjectedStream {
             "follow",
             &request.path,
             wire::FollowRequest {
+                bootstrap_head: request.bootstrap_head,
+                until: request.until,
                 when_absent: request.when_absent.to_wire(),
                 path: request.path.to_string(),
                 from: request.from,
@@ -412,7 +472,7 @@ impl super::WasmStream {
     ) -> Result<super::WasmFollow, JsValue> {
         super::check_command_size(input)?;
         let provider = self.provider();
-        let (path, updates): (_, FollowStream) = match operation {
+        let (path, mut updates): (_, FollowStream) = match operation {
             "read" if preceding.is_empty() => {
                 let request =
                     wire_codec::read_from_wire(super::decode::<wire::ReadRequest>(input)?)
@@ -422,8 +482,11 @@ impl super::WasmStream {
                     .read(request)
                     .await
                     .map_err(super::js_error)?
-                    .map(|item| item.map(FollowUpdate::Record))
-                    .boxed_local();
+                    .map_cursor(|cursor| {
+                        cursor
+                            .map(|item| item.map(FollowUpdate::Record))
+                            .boxed_local()
+                    });
                 (path, records)
             }
             "follow" => {
@@ -437,14 +500,35 @@ impl super::WasmStream {
                 };
                 request.preceding = anchor;
                 let path = request.path.clone();
-                (
-                    path,
-                    provider.follow(request).await.map_err(super::js_error)?,
-                )
+                let filter = request.filter.clone();
+                let mut updates = provider.follow(request).await.map_err(super::js_error)?;
+                updates.selection.bootstrap = updates
+                    .selection
+                    .bootstrap
+                    .take()
+                    .map(|record| filter.project(record))
+                    .transpose()
+                    .map_err(super::js_error)?
+                    .flatten();
+                (path, updates)
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };
-        let stream = updates
+        let opened = wire::SessionFrame {
+            channel_id: 1,
+            generation: 1,
+            body: Some(wire::session_frame::Body::Opened(
+                wire_codec::opened_to_wire(&updates),
+            )),
+        }
+        .encode_length_delimited_to_vec();
+        let bootstrap = updates
+            .selection
+            .bootstrap
+            .take()
+            .map(|record| Ok(FollowUpdate::Record(record)));
+        let stream = futures::stream::iter(bootstrap)
+            .chain(updates)
             .map(move |item| {
                 item.map(|update| {
                     let body = match update {
@@ -492,6 +576,9 @@ impl super::WasmStream {
                     .encode_length_delimited_to_vec()
                 })
             })
+            .boxed_local();
+        let stream = futures::stream::once(async move { Ok(opened) })
+            .chain(stream)
             .boxed_local();
         Ok(super::WasmFollow {
             state: Rc::new(super::FollowState::new(stream, StreamError::Unavailable)),

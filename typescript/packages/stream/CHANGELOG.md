@@ -2,6 +2,8 @@
 
 ## 0.2.0 - Unreleased
 
+- Return an `Opened` cursor from provider and typed reads/follows, exposing the original applied revision and selected bounds before any record pull. Preserve that receipt across native, WASM, Session, codec and observation adapters; cancel pending opens through the same cursor owner.
+- Share record framing, validation and cursor disposal; remove materialized browser history and the retired fetch-history timer control. Finite gRPC provider reads now use the shared Session path.
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
 
 ## Unreleased

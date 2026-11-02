@@ -11,14 +11,32 @@ impl MemoryStream {
             progress,
             when_absent,
             at_least,
+            bootstrap_head,
+            until,
         } = request;
         self.revisions.wait(&at_least).await?;
         if progress {
-            self.progress_from(path, from, preceding, when_absent, filter)
-                .await
+            self.progress_from(
+                path,
+                from,
+                preceding,
+                when_absent,
+                filter,
+                bootstrap_head,
+                until,
+            )
+            .await
         } else {
-            self.follow_from(path, from, preceding, when_absent, filter)
-                .await
+            self.follow_from(
+                path,
+                from,
+                preceding,
+                when_absent,
+                filter,
+                bootstrap_head,
+                until,
+            )
+            .await
         }
     }
 
@@ -62,8 +80,14 @@ impl MemoryStream {
             return Err(StreamError::OutOfRange);
         }
         let cursor = FiniteRead::new(path, request);
+        let snapshot = self.revisions.at(state.decision);
+        let selection = cursor.selection();
         drop(state);
-        Ok(stream::iter(cursor).boxed())
+        Ok(crate::Opened::new(
+            snapshot,
+            selection,
+            stream::iter(cursor).boxed(),
+        ))
     }
 
     pub(crate) async fn read_commit_inner(
@@ -926,6 +950,8 @@ impl MemoryStream {
         meter.admit_examination(1, 0)?;
         let cursor = FiniteRead::new(path, request);
         meter.record_examination(1, 0)?;
+        let snapshot = self.revisions.at(state.decision);
+        let selection = cursor.selection();
         drop(state);
         let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
         let cursor_meter = Arc::clone(&meter);
@@ -973,7 +999,7 @@ impl MemoryStream {
         let mut frame =
             acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of_val(&cursor))?;
         allocation.absorb(&mut frame)?;
-        let cursor: crate::NativeRecordStream = Box::pin(cursor);
+        let cursor = crate::Opened::new(snapshot, selection, Box::pin(cursor));
         Ok(Ok(crate::NativeStreamOutput::new(cursor, allocation)))
     }
     pub(crate) async fn native_tail_inner(

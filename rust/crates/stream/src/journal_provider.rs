@@ -376,7 +376,10 @@ impl StreamProvider for JournalStream {
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
         }
-        Ok(self.retain(self.query(async move |p| p.follow(request).await).await?))
+        Ok(self
+            .query(async move |p| p.follow(request).await)
+            .await?
+            .map_cursor(|cursor| self.retain(cursor)))
     }
 }
 

@@ -49,6 +49,7 @@ fuzz_target!(|input: &[u8]| {
                     resume: Some(resume),
                     preceding_commit_id: follow.preceding_commit_id,
                     applied: None,
+                    selection: None,
                 };
                 assert!(confirm_follow(Some(anchor), &opened).is_ok());
             }

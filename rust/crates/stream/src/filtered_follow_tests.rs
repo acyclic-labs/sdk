@@ -1,4 +1,5 @@
 use crate::*;
+use futures::Stream as _;
 use futures::StreamExt;
 use futures::TryFutureExt as _;
 use std::{
@@ -16,6 +17,8 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     let first = append(provider, record("z", "alice")?).await?;
     let mut updates = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
@@ -73,6 +76,8 @@ async fn qualify_resume(
     // A checked resume at a skipped cut must lead to exactly the same match.
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: next,
@@ -98,6 +103,8 @@ async fn qualify_resume(
     assert!(matches!(
         provider
             .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: next,
@@ -181,6 +188,8 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     let first = append(provider, record("z", "alice")?).await?;
     let mut follow = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
@@ -198,8 +207,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     let probe = Arc::new(Wakes::default());
     let waker = Waker::from(probe.clone());
     assert!(
-        follow
-            .as_mut()
+        std::pin::Pin::new(&mut follow)
             .poll_next(&mut Context::from_waker(&waker))
             .is_pending()
     );
@@ -223,6 +231,8 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(matched.headers, selected.headers);
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 3,

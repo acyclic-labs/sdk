@@ -7,7 +7,7 @@ import type { SessionConnect, SessionTransport } from "../src/session.js";
 import { StreamError } from "../src/types.js";
 
 type Credit = { bytes: bigint; frames: number };
-type Route = { id: bigint; generation: bigint; path: string; next: bigint; credit: Credit; latest: boolean };
+type Route = { id: bigint; generation: bigint; path: string; next: bigint; end?: bigint; credit: Credit; latest: boolean };
 type Connection = { node: string; output: SessionQueue<wire.SessionFrame>; routes: Map<bigint, Route>; credit: Credit; closed: boolean };
 export const frame = (id: bigint, generation: bigint, body: wire.SessionFrame["body"]): wire.SessionFrame => create(wire.SessionFrameSchema, { channelId: id, generation, body });
 export const checkpoint = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
@@ -25,6 +25,7 @@ export class SessionNode {
   readonly resumes: { node: string; path: string; next: bigint }[] = [];
   readonly received: wire.SessionFrame[] = [];
   readonly changed = new Set<() => void>();
+  readonly revision = { scope: new TextEncoder().encode("session-fixture"), incarnation: new Uint8Array(16), index: 0n };
   until(ready: () => boolean): Promise<void> {
     return new Promise(resolve => {
       const check = (): void => { if (ready()) { this.changed.delete(check); resolve(); } };
@@ -60,6 +61,7 @@ export class SessionNode {
       const commit = new Uint8Array(32);
       new DataView(commit.buffer).setBigUint64(0, BigInt(history.length + 1), true);
       history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), keys: [], attributes: [], commitId: commit, committedAtMicros: 0n });
+      this.revision.index++;
     }
     for (const connection of this.connections) this.pump(connection);
   }
@@ -68,6 +70,7 @@ export class SessionNode {
     values.push(create(wire.SessionDataSchema, { after: { next }, accepted: next + 2n, durable: next - 1n,
       item: { case: "latestValue", value: { key: new TextEncoder().encode(path), value: new Uint8Array([Number(next)]), attention } } }));
     this.latest.set(path, values);
+    this.revision.index++;
     for (const connection of this.connections) this.pump(connection);
   }
   move(path: string, destination = "owner"): void {
@@ -115,10 +118,16 @@ export class SessionNode {
       if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
       if (subscription.kind.case !== "follow" || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
       const path = streamResourcePath(subscription.kind.value.resource);
-      const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, latest: subscription.kind.case === "follow" && subscription.kind.value.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, credit: { bytes: 0n, frames: 0 } };
+      const follow = subscription.kind.value;
+      const tail = BigInt(this.history.get(path)?.length ?? 0);
+      const end = follow.until === undefined ? undefined : follow.until < tail ? follow.until : tail;
+      const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, latest: follow.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, ...(end === undefined ? {} : { end }), credit: { bytes: 0n, frames: 0 } };
       connection.routes.set(route.id, route);
       this.resumes.push({ node: connection.node, path: route.path, next: route.next });
-      connection.output.push(frame(route.id, route.generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume, precedingCommitId: subscription.kind.case === "follow" ? subscription.kind.value.precedingCommitId : new Uint8Array() }) }));
+      connection.output.push(frame(route.id, route.generation, { case: "opened", value: create(wire.SessionOpenedSchema, {
+        resume: subscription.resume, precedingCommitId: follow.precedingCommitId, applied: this.revision,
+        selection: { from: route.next, precedingCommitId: follow.precedingCommitId, ...(end === undefined ? {} : { end }) },
+      }) }));
     }
     connection.output.push(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: interest.revision }) }));
   }
@@ -127,7 +136,7 @@ export class SessionNode {
     for (const route of connection.routes.values()) {
       const history = this.history.get(route.path) ?? [];
       const latest = this.latest.get(route.path) ?? [];
-      const length = route.latest ? latest.at(-1)?.after?.next ?? 0n : BigInt(history.length);
+      const length = route.end ?? (route.latest ? latest.at(-1)?.after?.next ?? 0n : BigInt(history.length));
       while (route.next < length && route.credit.frames > 0 && connection.credit.frames > 0) {
         const item = { case: "record" as const, value: history[Number(route.next)]! };
         const data = route.latest ? latest.find(value => value.after!.next > route.next)! : create(wire.SessionDataSchema, { after: { next: route.next + 1n }, accepted: length, item });
@@ -139,6 +148,10 @@ export class SessionNode {
         connection.credit.frames -= 1; connection.credit.bytes -= bytes;
         route.next = data.after!.next;
         connection.output.push(fromBinary(wire.SessionFrameSchema, encoded));
+      }
+      if (route.end !== undefined && route.next >= route.end) {
+        connection.routes.delete(route.id);
+        connection.output.push(frame(route.id, route.generation, { case: "closed", value: create(wire.SessionClosedSchema, { code: "end" }) }));
       }
     }
   }

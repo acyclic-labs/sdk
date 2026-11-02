@@ -169,12 +169,15 @@ mod tests {
                         .follow(acyclic_stream::FollowRequest::new(path, 0))
                         .await?,
                 )
-                .inspect(move |record| {
-                    if hot && record.is_ok() {
-                        observed.fetch_add(1, Ordering::SeqCst);
-                    }
-                })
-                .boxed(),
+                .map_cursor(|records| {
+                    records
+                        .inspect(move |record| {
+                            if hot && record.is_ok() {
+                                observed.fetch_add(1, Ordering::SeqCst);
+                            }
+                        })
+                        .boxed()
+                }),
             );
         }
         let cancellation = CancellationToken::new();

@@ -50,13 +50,15 @@ fn check<const OMIT_ANCHOR: bool>() {
             } else {
                 Some(receipt.commit_id)
             };
-            let (_, mut cursor) = provider
+            let (_, _, _, mut cursor) = provider
                 .prepare_follow(
                     &path,
                     1,
                     anchor,
                     crate::WhenAbsent::NotFound,
                     crate::FollowFilter::default(),
+                    false,
+                    None,
                 )
                 .await?;
             changed

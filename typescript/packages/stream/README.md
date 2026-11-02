@@ -38,12 +38,26 @@ const events = client.json("runs/example", value => {
 });
 const intent = idempotencyKey(new TextEncoder().encode("run/example/started"));
 await events.append({ type: "started" }, { idempotencyKey: intent });
-for await (const record of events.read({ from: 0n, limit: 100 })) {
+await using history = events.read({ from: 0n, limit: 100 });
+const { snapshot, selection } = await history.opened;
+console.log(snapshot, selection.end);
+for await (const record of history) {
   console.log(record.sequence, record.value.type);
 }
 ```
 
 Calling `client.json(path)` gives a stream of `JsonValue`. Pass a parser when the stream has a narrower type; the parser validates each decoded record before it reaches the application.
+
+Provider and typed `read` and `follow` return an `Opened` cursor. Its `opened`
+promise reports the applied revision and selected bounds from the same provider
+operation that owns the records. It resolves before the first pull, including
+an empty read or a quiet follow. Awaiting it never performs a separate head or
+tail request. A finite read pins its exclusive `selection.end` at opening;
+later appends cannot widen it. `selection.from` and `precedingCommitId` identify
+the selected prefix, and `hasBootstrap` identifies a selected head record.
+Use `close()`, iterator `return()`, or `await using` to release the cursor or
+cancel an opening still waiting on its minimum revision or missing path.
+Codecs and provider facades preserve this receipt and cancellation owner.
 
 Node and Bun can use the same handles over native gRPC:
 

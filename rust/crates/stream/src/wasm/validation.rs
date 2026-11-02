@@ -56,14 +56,6 @@ async fn dispatch_commit(provider: &dyn StreamProvider, input: &[u8]) -> Result<
         .encode_to_vec())
 }
 
-fn bytes_array(values: Vec<Vec<u8>>) -> JsValue {
-    let array = Array::new();
-    for value in values {
-        array.push(&Uint8Array::from(value.as_slice()));
-    }
-    array.into()
-}
-
 /// Validate canonical protobuf bytes for one append request.
 #[wasm_bindgen(js_name = validateAppendRequest)]
 pub fn validate_append_request(input: &[u8]) -> String {

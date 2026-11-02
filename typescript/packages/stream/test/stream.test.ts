@@ -7,6 +7,7 @@ import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
+import { openWasmCursor } from "../src/wasm-records.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
@@ -85,19 +86,51 @@ describe("website Stream contract", () => {
       .toEqual({ parent: "seek", after: "seek/a", limit: 1 });
   });
 
-  test("opens the local provider without exposing provider setup", async () => {
+  test("retains the original selected cut through typed reads and quiet follows", async () => {
     const stream = StreamClient.memory().json("runs/memory", answer);
-    await stream.append({ answer: 42 }, { idempotencyKey: key("stream.test-70") });
+    const first = await stream.append({ answer: 42 }, { idempotencyKey: key("stream.test-70") });
+    if (!first.ok) throw new Error("initial append conflicted");
+    const opened = stream.read({ from: 0n, limit: 2 });
+    expect((await opened.opened).snapshot).toMatchObject(first.revision);
+    expect((await opened.opened).selection).toMatchObject({ from: 0n, end: 1n });
+    const second = await stream.append({ answer: 43 }, { idempotencyKey: key("stream.test-selected-later") });
+    if (!second.ok) throw new Error("later append conflicted");
     const records = [];
-    for await (const record of stream.read({ from: 0n, limit: 1 })) records.push(record);
+    for await (const record of opened) records.push(record);
     expect(records).toHaveLength(1);
     expect(records[0]?.value).toEqual({ answer: 42 });
+    const empty = stream.read({ from: 2n, limit: 1 });
+    expect((await empty.opened).snapshot).toMatchObject(second.revision);
+    expect((await empty.next()).done).toBe(true);
+    const quiet = stream.follow({ from: 2n });
+    expect((await quiet.opened).snapshot).toMatchObject(second.revision);
+    await quiet.close();
+    expect((await quiet.next()).done).toBe(true);
   });
 
   test("local streams do not issue unused hosted access tokens", async () => {
     expect(() => StreamClient.memory().tokens.create({
       expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] }],
     })).toThrow();
+  });
+
+  test("closing typed cursors before adapter setup closes their original WASM owners", async () => {
+    const provider = new MemoryStreamProvider();
+    const read = provider.read.bind(provider), follow = provider.follow.bind(provider);
+    let readOwner: ReturnType<typeof read> | undefined, followOwner: ReturnType<typeof follow> | undefined;
+    provider.read = (...args) => readOwner = read(...args);
+    provider.follow = (...args) => followOwner = follow(...args);
+    const stream = new StreamClient(provider).json("selected/close", answer);
+    await stream.append({ answer: 1 }, { idempotencyKey: key("selected/close-seed") });
+    const selected = stream.read({ from: 0n, limit: 1 });
+    await selected.close();
+    if (readOwner === undefined) throw new Error("read lost its original owner");
+    expect((await readOwner.next()).done).toBe(true);
+    const live = stream.follow({ from: 1n });
+    await live.close();
+    if (followOwner === undefined) throw new Error("follow lost its original owner");
+    await stream.append({ answer: 2 }, { idempotencyKey: key("selected/close-later") });
+    expect((await followOwner.next()).done).toBe(true);
   });
 
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
@@ -527,12 +560,12 @@ describe("website Stream contract", () => {
     const wasm = new WasmStream();
     await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
-    const closed = await wasm.open_follow(request);
-    closed.close();
+    const closed = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
+    await closed.close();
     expect(await closed.next()).toBeNull();
-    const pending = await wasm.open_follow(request);
+    const pending = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
     const next = pending.next();
-    pending.close();
+    await pending.close();
     expect(await next).toBeNull();
   });
 
@@ -904,12 +937,11 @@ describe("website Stream contract", () => {
     }
   });
 
-  test("hosted follow stops on malformed frames and canonical channel errors", async () => {
-    for (const mode of ["protobuf", "item", "cursor", "denied"] as const) {
+  test("hosted cursors stop on malformed frames and canonical channel errors", async () => {
+    for (const mode of ["protobuf", "item", "cursor"] as const) {
       const socket = new SessionSocket();
       socket.node.append("events");
       socket.transform = output => {
-        if (mode === "denied" && output.body.case === "opened") return { ...output, body: { case: "closed", value: create(SessionClosedSchema, { code: "access_denied", message: "revoked" }) } };
         if (output.body.case !== "data") return output;
         if (mode === "protobuf") return new Uint8Array([255]);
         if (mode === "item") output.body.value.item = { case: undefined };
@@ -920,10 +952,45 @@ describe("website Stream contract", () => {
         const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
           fetcher: async () => { throw new Error("follow must not fetch"); } });
         const iterator = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
-        await expect(iterator.next()).rejects.toMatchObject({ code: mode === "denied" ? "access_denied" : "invalid_response" });
+        await expect(iterator.next()).rejects.toMatchObject({ code: "invalid_response" });
         expect(await iterator.next()).toEqual({ done: true, value: undefined });
         expect(socket.sockets.length).toBe(1);
       } finally { socket.close(); }
+    }
+    for (const [operation, phase] of [
+      ["read", "opened"], ["read", "data"], ["follow", "opened"], ["follow", "data"],
+    ] as const) {
+      for (const failure of [
+        { wireCode: "not_found", code: "stream_not_found" },
+        { wireCode: "access_denied", code: "access_denied" },
+        { wireCode: "capacity", code: "capacity_exhausted" },
+      ]) {
+        const socket = new SessionSocket();
+        socket.node.append("events", operation === "read" ? 2 : 1);
+        socket.transform = output => {
+          if (output.body.case === phase && (phase === "opened" ||
+              (output.body.case === "data" && output.body.value.item.case === "record" && output.body.value.item.value.sequence === 1n))) {
+            return { ...output, body: { case: "closed", value: create(SessionClosedSchema, { code: failure.wireCode, message: "service detail" }) } };
+          }
+          return output;
+        };
+        try {
+          const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+            fetcher: async () => { throw new Error("session cursor must not fetch"); } });
+          const opened = operation === "read" ? provider.read("events", { from: 0n, limit: 2 }) : provider.follow("events", { from: 0n });
+          if (phase === "data") {
+            await opened.opened;
+            await expect(opened.next()).resolves.toMatchObject({ done: false, value: { sequence: 0n } });
+            if (operation === "follow") socket.node.append("events");
+          }
+          const error = await opened.next().catch(error => error);
+          expect(error).toBeInstanceOf(StreamError);
+          expect(error).toMatchObject({ code: failure.code });
+          if (phase === "opened") await expect(opened.opened).rejects.toBe(error);
+          expect(await opened.next()).toEqual({ done: true, value: undefined });
+          expect(socket.sockets.length).toBe(1);
+        } finally { socket.close(); }
+      }
     }
   });
 

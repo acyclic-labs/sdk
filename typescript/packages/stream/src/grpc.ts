@@ -1,5 +1,5 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
-import { checkedReadSequence } from "./record.js";
+import type { Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
@@ -13,9 +13,9 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
-import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
+import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
@@ -124,13 +124,11 @@ function streamGrpc(options: StreamGrpcOptions) {
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof streamGrpc>["client"];
-  readonly #acknowledgeDeliveries: boolean;
   readonly #sessions: StreamSessions;
   constructor(options: StreamGrpcOptions) {
     const { client, sessions } = streamGrpc(options);
     this.#client = client;
     this.#sessions = sessions;
-    this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
   }
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) {
@@ -187,15 +185,8 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#sessions.observe(receipt.revision);
     return receipt;
   }
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "read" as const, path, ...structuredClone(options) };
-    await validateWireRequest(request);
-    const controller = new AbortController();
-    try {
-      const atLeast = this.#sessions.revisionFloor();
-      const input = wireRequest({ ...request, atLeast });
-      yield* this.#frames("read", path, this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast, request.key);
-    } finally { controller.abort(); }
+  read(path: string, options: ReadOptions): Opened {
+    return this.#sessions.read(path, options);
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     await this.#sessions.registerCredential(slot, credential);
@@ -204,40 +195,9 @@ export class GrpcStreamProvider implements StreamProvider {
     const authored = structuredClone(follow);
     yield* this.#sessions.followData(authored, options);
   }
-  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
+  follow(path: string, options: FollowOptions): Opened {
     const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
-    await validateWireRequest({ kind: "follow", path, from: authored.from });
-    yield* this.#sessions.follow(path, authored);
-  }
-  async *#frames(operation: string, path: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
-    remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[], key?: import("./types.js").ReadKeySeek): AsyncIterable<EncodedRecord> {
-    // The first frame carries the read's applied revision; it must prove the minimum sent.
-    let minimum = atLeast;
-    try {
-      for await (const response of frames) {
-        if (signal?.aborted) return;
-        if (minimum !== undefined) { this.#sessions.served(minimum, response.applied); minimum = undefined; }
-        else this.#sessions.observe(response.applied);
-        const values = readResponseRecords(response);
-        if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const records = values.map(value => {
-          const record = checkedRecord(value, checkedReadSequence(value, next, key), path);
-          next = record.sequence + 1n;
-          return record;
-        });
-        if (remaining !== undefined) remaining -= records.length;
-        for (const record of records) {
-          if (signal?.aborted) return;
-          yield record;
-        }
-      }
-      // A reply that ends before its first frame proves no minimum.
-      if (minimum !== undefined && !signal?.aborted) this.#sessions.served(minimum, undefined);
-    } catch (error) {
-      if (signal?.aborted) return;
-      const failure = providerError(error, operation);
-      throw failure;
-    }
+    return this.#sessions.follow(path, authored);
   }
 
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {

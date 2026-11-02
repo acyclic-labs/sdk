@@ -1,7 +1,6 @@
 use super::*;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::{EmbeddedCapabilities, Fs, MemoryObjectStore};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{FollowFilter, MemoryStream, ReadRequest, StreamProvider};
 use std::error::Error;
 
@@ -257,6 +256,8 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
     let mut follow = acyclic_stream::records_only(
         streams
             .follow(acyclic_stream::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
@@ -546,6 +547,8 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
         })?;
         let mut followed = streams
             .follow(acyclic_stream::FollowRequest {
+                bootstrap_head: false,
+                until: None,
                 when_absent: Default::default(),
                 path,
                 from: 0,

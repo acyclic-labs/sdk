@@ -109,13 +109,13 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 frame(
                     3,
                     1,
-                    Body::Opened(wire::SessionOpened {
-                        resume: Some(wire::SessionCursor::default()),
-                        ..Default::default()
-                    })
+                    Body::Opened(fixture::opened(
+                        wire::SessionCursor::default(),
+                        Bytes::new()
+                    ))
                 )
             ));
-            assert_eq!(opened.try_recv().unwrap().unwrap(), 3);
+            assert_eq!(opened.try_recv().unwrap().unwrap().0, 3);
             drop(second);
         });
     }
@@ -419,13 +419,13 @@ pub fn verify_link_isolation(broken: bool) {
             frame(
                 5,
                 1,
-                Body::Opened(wire::SessionOpened {
-                    resume: Some(wire::SessionCursor::default()),
-                    ..Default::default()
-                })
+                Body::Opened(fixture::opened(
+                    wire::SessionCursor::default(),
+                    Bytes::new()
+                ))
             )
         ));
-        assert_eq!(opened.try_recv().unwrap().unwrap(), 5);
+        assert_eq!(opened.try_recv().unwrap().unwrap().0, 5);
         assert!(pool.routes.contains_key(&3));
     });
 }

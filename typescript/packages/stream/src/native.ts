@@ -1,4 +1,6 @@
-import { checkedReadSequence } from "./record.js";
+import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { Opened, streamOpening } from "./opened.js";
+import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
@@ -8,12 +10,12 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
-import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
+import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
 let modulePromise: Promise<typeof GeneratedNative> | undefined;
 const requireNative = createRequire(import.meta.url);
@@ -182,104 +184,67 @@ export class NativeStreamProvider implements StreamProvider {
     return this.project("fork", value) as ForkReceipt;
   }
 
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "read" as const, path, ...structuredClone(options) };
-    await validateWireRequest(request);
-    let cursor: GeneratedNative.NativeStreamFollow | undefined;
-    let release: (() => void) | undefined;
-    let next = request.from;
-    let count = 0;
-    try {
-      release = this.credential?.retain();
-      const opened = await this.client.readResult(Buffer.from(wireRequest(request)));
-      if (opened.error !== undefined) throw nativeError(opened.error, "read");
-      if (opened.follow === undefined) throw new StreamError("invalid_response", "native read omitted its cursor");
-      cursor = opened.follow;
-      for (;;) {
-        const result = await cursor.nextResult();
-        if (result.error !== undefined) throw nativeError(result.error, "read");
-        if (result.value === undefined) return;
-        let response: wire.ReadResponse;
-        try { response = fromBinary(wire.ReadResponseSchema, result.value); }
-        catch (error) { throw invalidResponse("read", error); }
-        for (const decoded of readResponseRecords(response)) {
-          if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-          const record = checkedRecord(decoded, checkedReadSequence(decoded, next, request.key), path);
-          next = record.sequence + 1n;
-          yield record;
-        }
-      }
-    } catch (error) {
-      if (error instanceof StreamError) throw error;
-      throw nativeError(error, "read");
-    } finally {
-      release?.();
-      if (cursor !== undefined) await cursor.close();
-    }
+  read(path: string, options: ReadOptions): Opened {
+    return this.records("read", path, structuredClone(options));
   }
 
-  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "follow" as const, path, from: options.from };
-    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { whenAbsent: wireWhenAbsent(options.whenAbsent),
-      path, from: options.from, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
-    }));
-    await validateWireRequest(request);
-    if (options.signal?.aborted) return;
-    const cancellation = new this.module.NativeStreamCancellation();
-    let follow: GeneratedNative.NativeStreamFollow | undefined;
-    let release: (() => void) | undefined;
-    const abort = () => { release?.(); cancellation.cancel(); if (follow !== undefined) void follow.close(); };
-    options.signal?.addEventListener("abort", abort, { once: true });
-    if (options.signal?.aborted) {
-      cancellation.cancel();
-      options.signal.removeEventListener("abort", abort);
-      return;
-    }
-    let next = request.from;
-    try {
-      let opened: GeneratedNative.NativeStreamFollowResult;
+  follow(path: string, options: FollowOptions): Opened {
+    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    return this.records("follow", path, authored, options.signal);
+  }
+
+  private records(operation: "read" | "follow", path: string, options: ReadOptions | FollowOptions, signal?: AbortSignal): Opened {
+    return new Opened(async signal => {
+      const input = operation === "read"
+        ? await validateWireRequest({ kind: "read", path, ...(options as ReadOptions) })
+        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
+          toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { path, from: options.from,
+            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
+            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
+          })));
+      signal.throwIfAborted();
+      const cancellation = new this.module.NativeStreamCancellation();
+      let cursor: GeneratedNative.NativeStreamFollow | undefined;
+      let release: (() => void) | undefined;
+      const abort = (): void => { cancellation.cancel(); };
+      const close = async (): Promise<void> => {
+        signal.removeEventListener("abort", abort);
+        cancellation.cancel();
+        release?.(); release = undefined;
+        const retained = cursor; cursor = undefined;
+        await retained?.close();
+      };
+      signal.addEventListener("abort", abort, { once: true });
       try {
-        release = this.credential?.retain(options.signal);
-        opened = await this.client.openFollowResult(Buffer.from(encoded), cancellation);
+        release = this.credential?.retain(signal);
+        const result = operation === "read"
+          ? await this.client.readResult(Buffer.from(input), cancellation)
+          : await this.client.openFollowResult(Buffer.from(input), cancellation);
+        if (result.error !== undefined) throw nativeError(result.error, operation);
+        cursor = result.follow;
+        if (cursor === undefined || result.opened === undefined) throw new StreamError("invalid_response", "native open omitted its receipt or cursor");
+        signal.throwIfAborted();
+        const opening = streamOpening(fromBinary(SessionOpenedSchema, result.opened));
+        const retained = cursor;
+        const frames = async function* (): AsyncGenerator<Uint8Array> {
+          for (;;) {
+            const result = await retained.nextResult();
+            if (signal.aborted) return;
+            if (result.error !== undefined) throw nativeError(result.error, operation);
+            if (result.value === undefined) return;
+            yield result.value;
+          }
+        };
+        return { opening, records: recordsFromFrames(frames(), path, opening.selection.from,
+          operation === "read" ? options as ReadOptions : undefined, signal), close };
       } catch (error) {
-        if (options.signal?.aborted) return;
-        throw nativeError(error, "follow");
+        try { await close(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], "native stream open failed during cleanup"); }
+        if (error instanceof StreamError || signal.aborted) throw error;
+        throw nativeError(error, operation);
       }
-      if (opened.error !== undefined) {
-        if (options.signal?.aborted) return;
-        throw nativeError(opened.error, "follow");
-      }
-      if (opened.follow === undefined) {
-        if (options.signal?.aborted) return;
-        throw new StreamError("invalid_response", "native follow omitted its cursor");
-      }
-      follow = opened.follow;
-      if (options.signal?.aborted) return;
-      while (!options.signal?.aborted) {
-        const result = await follow.nextResult();
-        if (result.error !== undefined) {
-          if (options.signal?.aborted) return;
-          throw nativeError(result.error, "follow");
-        }
-        if (result.value === undefined) return;
-        let response: wire.ReadResponse;
-        try { response = fromBinary(wire.ReadResponseSchema, result.value); }
-        catch (error) { throw invalidResponse("follow", error); }
-        for (const decoded of readResponseRecords(response)) {
-          if (decoded.sequence < next) throw new StreamError("invalid_response", "follow record cursor regressed");
-          const record = checkedRecord(decoded, decoded.sequence, path);
-          next = record.sequence + 1n;
-          yield record;
-        }
-      }
-    } finally {
-      release?.();
-      options.signal?.removeEventListener("abort", abort);
-      if (follow !== undefined) await follow.close();
-    }
+    }, signal);
   }
-
-
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const,
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
