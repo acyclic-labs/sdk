@@ -978,6 +978,7 @@ async fn conversation_follow_waits_on_the_original_checkpoint_and_preserves_refu
 
     let provider = Arc::new(MemoryStream::default());
     let entry = ConversationEntry {
+        steering: None,
         inbox: 1,
         input: TurnInput::Message {
             from: user(),
@@ -1456,7 +1457,7 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
 
 #[tokio::test]
 async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
-    use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
+    use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
