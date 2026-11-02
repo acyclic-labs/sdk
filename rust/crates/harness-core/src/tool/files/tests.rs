@@ -109,7 +109,8 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(100_000, 16_000_000),
         &acyclic_fs::CancellationToken::new(),
-    )?;
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
 
     for (prefix, storage) in [("", &project), (crate::layers::HOME_PATH, &home)] {
         for mode in ["omitted", "any", "absent", "content", "authored"] {
