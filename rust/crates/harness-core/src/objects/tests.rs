@@ -8,49 +8,127 @@ use crate::{
 use acyclic_objects::MemoryObjects;
 
 #[tokio::test]
-async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
-    let objects = MemoryObjects::memory();
+async fn an_upload_retry_naming_other_content_is_refused()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    upload_contract(MemoryObjects::memory(), None).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use acyclic_objects::{LocalClose, LocalMedium, Store, binary::BinaryObjects};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let root = tempfile::tempdir()?;
+        let medium = LocalMedium::open(root.path(), Default::default(), None).await?;
+        let store = Store::new(medium.clone());
+        let account = Arc::new(store.account(b"original-owner")?);
+        let other = BinaryObjects::new(LocalCell {
+            account: Arc::new(store.account(b"non-owner")?),
+            lost_retain_reply: Arc::new(AtomicBool::new(false)),
+        });
+        let lost_retain_reply = Arc::new(AtomicBool::new(false));
+        let objects = BinaryObjects::new(LocalCell {
+            account: account.clone(),
+            lost_retain_reply: lost_retain_reply.clone(),
+        });
+        let (file, uncertain) = upload_contract(objects, Some(lost_retain_reply.clone())).await?;
+        assert!(!lost_retain_reply.load(Ordering::SeqCst));
+        let digest = Digest::from_hex(file.version())?;
+        assert_eq!(
+            other
+                .get(digest, ByteRange::FULL, u64::MAX)
+                .await
+                .unwrap_err()
+                .code,
+            acyclic_objects::wire::ErrorCode::NotFound,
+            "a non-owner account cannot read the retained content"
+        );
+        assert_eq!(
+            other.delete(digest).await?.outcome,
+            acyclic_objects::Delete::Absent
+        );
+        drop(other);
+        drop(account);
+        drop(store);
+        assert_eq!(medium.close().await?, LocalClose::Released);
+
+        let medium = LocalMedium::open(root.path(), Default::default(), None).await?;
+        let store = Store::new(medium.clone());
+        let objects = Arc::new(BinaryObjects::new(LocalCell {
+            account: Arc::new(store.account(b"original-owner")?),
+            lost_retain_reply: Arc::new(AtomicBool::new(false)),
+        }));
+        objects.collect().await?;
+        objects.collect().await?;
+        let binding = upload_binding(objects.clone())?;
+        for (file, expected) in [
+            (file, b"owner bytes".as_slice()),
+            (
+                uncertain.expect("lost-reply upload"),
+                b"accepted before reply loss",
+            ),
+        ] {
+            assert_eq!(
+                binding
+                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .await?
+                    .as_slice(),
+                expected,
+                "the original volume binding and payload survive collection and reopen"
+            );
+        }
+        drop(binding);
+        drop(objects);
+        drop(store);
+        assert_eq!(medium.close().await?, LocalClose::Released);
+    }
+    Ok(())
+}
+
+// This cell serves actual canonical dispatch and returns its encoded response;
+// only the post-retain delivery cut is controlled. No response is invented.
+#[cfg(not(target_arch = "wasm32"))]
+struct LocalCell {
+    account: Arc<dyn Blobs>,
+    lost_retain_reply: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_objects::binary::Transport for LocalCell {
+    async fn invoke(
+        &self,
+        route: &str,
+        input: bytes::Bytes,
+    ) -> std::result::Result<acyclic_objects::binary::Reply, acyclic_objects::Error> {
+        let (body, revision) =
+            acyclic_objects::route::invoke_at(self.account.as_ref(), route, input).await?;
+        if route == "blobs/retain"
+            && self
+                .lost_retain_reply
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(acyclic_objects::wire::ErrorCode::OutcomeUnknown.into());
+        }
+        Ok((body.into(), revision))
+    }
+
+    async fn availability(
+        &self,
+        digest: Digest,
+    ) -> std::result::Result<acyclic_objects::Availability, acyclic_objects::Error> {
+        self.account.availability(digest).await
+    }
+}
+
+async fn upload_contract(
+    objects: impl Blobs + 'static,
+    lost_retain_reply: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(FileRef, Option<FileRef>)> {
     #[cfg(feature = "conformance")]
     let objects = acyclic_stream::testing::Counted::new(objects);
     #[cfg(feature = "conformance")]
     let ledger = objects.ledger();
     let objects = Arc::new(objects);
-    let owner = AgentId::from_bytes([7; 16]);
-    let volume = VolumeRef::new(
-        ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
-        "harness-content".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(owner),
-        &mut None,
-    )?;
-    let issuer = AuthorityRoot::new(
-        "objects-test",
-        [9; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "objects-test".into(),
-        },
-    );
-    let owner_scope = issuer.bootstrap_scope(
-        "owner",
-        &Capabilities::new([
-            volume.capability(VolumeOperation::Read, &mut None)?,
-            volume.capability(VolumeOperation::Write, &mut None)?,
-        ]),
-        Some(owner),
-        &mut None,
-    )?;
-    let owner_store = ObjectContentStore::new(
-        objects.clone(),
-        volume.provider().clone(),
-        volume.clone(),
-        (
-            issuer.verifier(&mut None).expect("verifier copy"),
-            owner_scope.clone(),
-        ),
-        owner_scope,
-        4_096,
-    )?;
+    let owner_store = upload_binding(objects.clone())?;
     let stage = |operation: u8, path: &'static str, bytes: &'static [u8]| {
         owner_store.stage(
             OperationId::from_bytes([operation; 16]),
@@ -102,6 +180,30 @@ async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
         b"owner bytes"
     );
     assert_eq!(stage(42, "notes/one.txt", b"owner bytes")?.await?.0, file);
+    let uncertain = if let Some(lost_retain_reply) = lost_retain_reply {
+        lost_retain_reply.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            stage(77, "notes/uncertain.txt", b"accepted before reply loss")?.await,
+            Err(Error::Storage(_))
+        ));
+        let retried = stage(77, "notes/uncertain.txt", b"accepted before reply loss")?
+            .await?
+            .0;
+        assert_eq!(
+            owner_store
+                .read(&retried, retried.descriptor().byte_length(), None, None)?
+                .await?
+                .as_slice(),
+            b"accepted before reply loss"
+        );
+        assert!(matches!(
+            stage(77, "notes/uncertain.txt", b"another body")?.await,
+            Err(Error::Conflict(_))
+        ));
+        Some(retried)
+    } else {
+        None
+    };
     #[cfg(feature = "conformance")]
     {
         // Real serial publication is the cost negative control. The shared
@@ -134,7 +236,46 @@ async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
         assert_eq!(calls.data(), 4);
         assert_eq!(calls.control(), 0);
     }
-    Ok(())
+    Ok((file, uncertain))
+}
+
+fn upload_binding(objects: Arc<dyn Blobs>) -> Result<Arc<ObjectContentStore>> {
+    let owner = AgentId::from_bytes([7; 16]);
+    let volume = VolumeRef::new(
+        ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
+        "harness-content".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(owner),
+        &mut None,
+    )?;
+    let issuer = AuthorityRoot::new(
+        "objects-test",
+        [9; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "objects-test".into(),
+        },
+    );
+    let owner_scope = issuer.bootstrap_scope(
+        "owner",
+        &Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner),
+        &mut None,
+    )?;
+    ObjectContentStore::new(
+        objects,
+        volume.provider().clone(),
+        volume,
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope.clone(),
+        ),
+        owner_scope,
+        4_096,
+    )
 }
 #[tokio::test]
 async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Result<()> {
