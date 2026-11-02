@@ -71,7 +71,7 @@ pub(super) fn iterator(
 ) -> JsValue {
     let stream = Box::pin(async_stream::try_stream! {
         let auth = crate::dispatch::authenticate(&provider).await?;
-        let events = crate::dispatch::generate_encoded(&provider, &prepared.request, dispatch, prepared.generation.clone(), auth, crate::tool_names::Names::new(prepared.request.request()));
+        let events = crate::dispatch::generate_encoded(&provider, &prepared.request, dispatch, prepared.generation.clone(), prepared.cache, auth, crate::tool_names::Names::new(prepared.request.request()));
         futures::pin_mut!(events);
         while let Some(event) = events.next().await { yield event?; }
     });

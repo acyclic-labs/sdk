@@ -329,7 +329,7 @@ proptest! {
                     let body = prepared.generation.clone();
                     let mut generation = None;
                     let allocated = acyclic_test_support::measure(|| {
-                        generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, auth, names));
+                        generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, prepared.cache, auth, names));
                     });
                     assert_eq!(allocated.count_total, 0);
                     // Negative control: the former erased retry frame adds one allocation.
@@ -344,7 +344,7 @@ proptest! {
                 let baseline_count = provider.count_tokens(&request).await.unwrap();
                 let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();
                 assert_eq!(baseline_count, count);
-                assert_eq!(baseline_generation.as_slice(), prepared.generation.as_ref());
+                assert_eq!(baseline_generation.bytes.as_slice(), prepared.generation.as_ref());
                 // Negative control: the independent old paths require two additional reads.
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 3);
                 let original_counter = provider.config.token_counter.clone();
@@ -431,9 +431,9 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                     .map(|n| u64::from(*n))
                     .sum::<u64>())
                 * 2
-                >= wire.len() as u64
+                >= wire.bytes.len() as u64
         );
-        let body = json(&wire)?;
+        let body = json(&wire.bytes)?;
         let marker = format!("[file: {}]", serde_json::to_string(&file).unwrap());
         let texts = |parts: &Value| {
             parts

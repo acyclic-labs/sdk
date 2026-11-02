@@ -185,7 +185,7 @@ async fn check_projection(
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
         return;
     }
-    let body: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
+    let body: Value = serde_json::from_slice(&encoded.unwrap().bytes).unwrap();
     assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
     let parts: Vec<_> = match adapter {
         Adapter::Responses => body["input"]
@@ -322,7 +322,7 @@ async fn check_result_media(
     )
     .await
     .unwrap();
-    let body: Value = serde_json::from_slice(&encoded).unwrap();
+    let body: Value = serde_json::from_slice(&encoded.bytes).unwrap();
     assert!(
         crate::validate_input(adapter, &body).is_empty(),
         "{adapter:?}: {body}"

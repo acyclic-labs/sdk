@@ -94,7 +94,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
             &provider.reasoning_origin(provider.key.as_deref(), None),
         )
         .await?;
-        let body: Value = serde_json::from_slice(&encoded).unwrap();
+        let body: Value = serde_json::from_slice(&encoded.bytes).unwrap();
         assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
         let parts = match adapter {
             Adapter::Responses => body["input"]

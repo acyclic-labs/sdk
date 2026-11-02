@@ -66,6 +66,16 @@ impl Body<'_> {
         include: Option<&[&str]>,
         model: Option<impl Serialize>,
     ) -> Result<S::Ok, S::Error> {
+        self.serialize_with_messages(serializer, include, model, &self.messages)
+    }
+
+    pub(super) fn serialize_with_messages<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include: Option<&[&str]>,
+        model: Option<impl Serialize>,
+        messages: impl Serialize,
+    ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         for (name, value) in &self.fields {
             if include.is_none_or(|fields| fields.contains(&name.as_str()))
@@ -82,7 +92,7 @@ impl Body<'_> {
         {
             map.serialize_entry("tools", tools)?;
         }
-        map.serialize_entry(self.messages_field, &self.messages)?;
+        map.serialize_entry(self.messages_field, &messages)?;
         map.end()
     }
 }

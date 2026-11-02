@@ -55,7 +55,12 @@ mod event_page;
 pub use event_page::{
     EXECUTION_EVENT_PAGE_RECORDS, ExecutionEventPage, ExecutionPayloadField, event_page,
 };
+mod model_cache;
 mod model_cost;
+pub use model_cache::{
+    ModelCacheAccess, ModelCacheBreakpoint, ModelCacheError, ModelCacheKey, ModelCacheObservation,
+    ModelCacheResidency, ModelCacheTtl,
+};
 mod model_observation;
 pub use model_cost::{
     ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageTotals,
