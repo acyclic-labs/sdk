@@ -9,6 +9,64 @@ fn components(path: &str) -> impl Iterator<Item = &str> {
 }
 
 impl NamespacePath {
+    /// Appends to a path already admitted under the same volume limits, moving
+    /// its original component backing rather than copying the parent names.
+    pub(crate) fn child_from_owned(
+        path: super::super::Owned<Self>,
+        name: &LogicalName,
+        limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<super::super::Owned<Self>, crate::FsError> {
+        let encoded_bytes = path.value.encoded_bytes;
+        let mut names =
+            super::super::Owned::new(path.value.components, path.allocation, path.bytes);
+        let result = (|| {
+            accounting.check()?;
+            cancellation.check()?;
+            accounting.charge_items(1)?;
+            if names.value.len() >= usize::from(limits.maximum_path_depth) {
+                return Err(NamespacePathError::TooDeep.into());
+            }
+            let length = u32::try_from(name.as_bytes().len())
+                .map_err(|_| NamespacePathError::ComponentTooLong)?;
+            if length > limits.maximum_component_bytes {
+                return Err(NamespacePathError::ComponentTooLong.into());
+            }
+            let encoded_bytes = encoded_bytes
+                .checked_add(length)
+                .and_then(|bytes| bytes.checked_add(u32::from(!names.value.is_empty())))
+                .filter(|bytes| *bytes <= limits.maximum_path_bytes)
+                .ok_or(NamespacePathError::PathTooLong)?;
+            let (name, allocation) = name.clone_with_accounting(accounting, cancellation)?;
+            let bytes = name.retained_bytes() as u64;
+            let name = super::super::Owned::new(name, allocation, bytes);
+            if let Err(error) =
+                names.ensure_for_push(usize::from(limits.maximum_path_depth), accounting)
+            {
+                name.retire(accounting)?;
+                return Err(error);
+            }
+            let name = name.transfer_to(&mut names.allocation, &mut names.bytes, accounting)?;
+            names.value.push(name);
+            Ok(encoded_bytes)
+        })();
+        match result {
+            Ok(encoded_bytes) => Ok(super::super::Owned::new(
+                Self {
+                    components: names.value,
+                    encoded_bytes,
+                },
+                names.allocation,
+                names.bytes,
+            )),
+            Err(error) => {
+                names.retire(accounting)?;
+                Err(error)
+            }
+        }
+    }
+
     /// Consumes leaf-to-root names without cloning their backing buffers.
     pub(crate) fn from_reversed_owned(
         mut names: super::super::Owned<Vec<LogicalName>>,

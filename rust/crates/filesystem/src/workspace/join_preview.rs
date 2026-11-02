@@ -33,7 +33,7 @@ impl JoinPathEntry {
 /// A read-only projection of a join's pinned endpoints. Clean paths and raw
 /// conflicts advance independently, without publishing either workspace.
 /// Rows retain their original backing if they outlive the preview. A refused
-/// or withdrawn clean-row call is terminal; dropping the preview retires its
+/// or withdrawn call is terminal; dropping the preview retires its
 /// frontier, generation pins and closure hold before the original read frame.
 pub struct JoinPreview<A: 'static, O: 'static> {
     owner: ReadOwner<State<A, O>>,
@@ -69,6 +69,14 @@ impl<A, O> State<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
+    fn side_workspace(&self, side: ConflictSide) -> (&Workspace<A, O>, GenerationId) {
+        match side {
+            ConflictSide::Base => (&self.base_workspace, self.base.id),
+            ConflictSide::Ours => (&self.target_head.workspace, self.target_head.id),
+            ConflictSide::Theirs => (&self.source_head.workspace, self.source_head.id),
+        }
+    }
+
     /// Retains the original merge's clean projection and conflicts for paging.
     /// This consumes one original read frame. The total budget and cancellation
     /// apply to preparation and every subsequent row, without a per-page reset.
@@ -173,6 +181,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         file_id: FileId,
         side: ConflictSide,
     ) -> crate::MeasuredResult<OperationReceipt<Option<JoinPathEntry>>, WorkspaceError> {
+        self.conflict_path(&MergeConflict::File(file_id), side)
+            .await
+    }
+
+    /// Selects a conflict's location in one pinned side. Binding conflicts
+    /// retain their exact directory and name even if the file has other aliases.
+    /// An absent containing directory or file identity returns `None`.
+    pub async fn conflict_path(
+        &mut self,
+        conflict: &MergeConflict,
+        side: ConflictSide,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<JoinPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = async {
             if state.failed {
@@ -181,16 +201,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             state.failed = true;
             accounting.check()?;
             let plan = &state.plan;
-            let (workspace, generation) = match side {
-                ConflictSide::Base => (&plan.base_workspace, plan.base.id),
-                ConflictSide::Ours => (&plan.target_head.workspace, plan.target_head.id),
-                ConflictSide::Theirs => (&plan.source_head.workspace, plan.source_head.id),
+            let (workspace, generation) = plan.side_workspace(side);
+            let file_id = match conflict {
+                MergeConflict::File(id) => *id,
+                MergeConflict::Binding { directory_id, .. } => *directory_id,
             };
             let cancellation = accounting.cancellation();
             let path = workspace
                 .first_path_at_with_accounting(generation, file_id, &mut accounting, cancellation)
-                .await?
+                .await?;
+            let path = path
                 .map(|path| {
+                    let path = match conflict {
+                        MergeConflict::File(_) => path,
+                        MergeConflict::Binding { name, .. } => NamespacePath::child_from_owned(
+                            path,
+                            name,
+                            workspace.volume.config().limits,
+                            &mut accounting,
+                            cancellation,
+                        )?,
+                    };
                     Retained::from_owned(path, &mut accounting).map(|path| JoinPathEntry { path })
                 })
                 .transpose()?;
@@ -223,11 +254,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             state.failed = true;
             accounting.check()?;
             let plan = &state.plan;
-            let (workspace, generation) = match side {
-                ConflictSide::Base => (&plan.base_workspace, plan.base.id),
-                ConflictSide::Ours => (&plan.target_head.workspace, plan.target_head.id),
-                ConflictSide::Theirs => (&plan.source_head.workspace, plan.source_head.id),
-            };
+            let (workspace, generation) = plan.side_workspace(side);
             let cancellation = accounting.cancellation();
             let record = workspace
                 .volume

@@ -162,6 +162,106 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
         Some(&posix)
     );
     assert!(native.is_within(&NamespacePath::new(vec![posix], limits)?));
+
+    for (profile, name) in [
+        (
+            FilesystemProfile::Portable,
+            LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+        ),
+        (
+            FilesystemProfile::Posix,
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'], 255)?,
+        ),
+        (
+            FilesystemProfile::Windows,
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 255)?,
+        ),
+    ] {
+        for root in ["/", "/parent"] {
+            let cancellation = CancellationToken::new();
+            let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let (path, allocation) = NamespacePath::parse_in_profile(
+                root,
+                profile,
+                limits,
+                &mut accounting,
+                &cancellation,
+            )?;
+            let parent_name = path
+                .components()
+                .first()
+                .map(|name| name.as_bytes().as_ptr());
+            let parent_encoded_bytes = path.encoded_bytes();
+            let bytes = path.retained_bytes();
+            let before = accounting.spent();
+            let path = NamespacePath::child_from_owned(
+                crate::kernel::Owned::new(path, allocation, bytes),
+                &name,
+                limits,
+                &mut accounting,
+                &cancellation,
+            )?;
+            assert_eq!(path.value.components().last(), Some(&name));
+            if let Some(parent_name) = parent_name {
+                assert_eq!(path.value.components()[0].as_bytes().as_ptr(), parent_name);
+            }
+            assert_eq!(
+                accounting.spent().bytes_copied - before.bytes_copied,
+                name.as_bytes().len() as u64
+            );
+            let expected_bytes =
+                parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;
+            assert_eq!(path.value.encoded_bytes(), expected_bytes);
+            path.retire(&mut accounting)?;
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or("original ledger lost")?
+                    .0
+                    .live_bytes(),
+                0
+            );
+
+            for cancel in [false, true] {
+                let (path, allocation) = NamespacePath::parse_in_profile(
+                    root,
+                    profile,
+                    limits,
+                    &mut accounting,
+                    &cancellation,
+                )?;
+                let bytes = path.retained_bytes();
+                let before = accounting.spent();
+                if cancel {
+                    cancellation.cancel();
+                }
+                let result = NamespacePath::child_from_owned(
+                    crate::kernel::Owned::new(path, allocation, bytes),
+                    &name,
+                    VolumeLimits {
+                        maximum_path_bytes: expected_bytes - 1,
+                        ..limits
+                    },
+                    &mut accounting,
+                    &cancellation,
+                );
+                assert!(result.is_err());
+                assert_eq!(
+                    accounting.spent().allocation_operations,
+                    before.allocation_operations
+                );
+                assert_eq!(accounting.spent().bytes_copied, before.bytes_copied);
+                assert_eq!(
+                    accounting
+                        .standalone_parts()
+                        .ok_or("original ledger lost")?
+                        .0
+                        .live_bytes(),
+                    0
+                );
+            }
+        }
+    }
     Ok(())
 }
 
