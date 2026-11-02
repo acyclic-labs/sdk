@@ -1974,17 +1974,9 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         refused.volumes[0].retained_workspace,
         snapshot.retained_workspace
     );
-    let crate::client::AgentReply::History { items, next } = connection
-        .execute(&crate::client::AgentCommand::History {
-            agent: root.clone(),
-            page: crate::client::AgentPageRequest::new(1, 4096, None).map_err(agent)?,
-        })
-        .await?
-    else {
-        return Err(Error::Invalid(
-            "history query returned another reply".into(),
-        ));
-    };
+    let crate::local::agent_conversation::HistoryPage { items, next } = client
+        .history_page(crate::client::AgentPageRequest::new(1, 4096, None).map_err(agent)?)
+        .await?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].conversation, 2);
     assert_eq!(items[0].context_tail, saved.context.tail);
@@ -2060,17 +2052,10 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     // The saved continuation stays at its original cut after another turn.
     // A fresh selection seeks directly to the new tail.
     for (cursor, expected) in [(Some(older), 1), (None, 3)] {
-        let crate::client::AgentReply::History { items, .. } = connection
-            .execute(&crate::client::AgentCommand::History {
-                agent: root.clone(),
-                page: crate::client::AgentPageRequest::new(1, 4096, cursor).map_err(agent)?,
-            })
-            .await?
-        else {
-            return Err(Error::Invalid(
-                "history query returned another reply".into(),
-            ));
-        };
+        let page = client
+            .history_page(crate::client::AgentPageRequest::new(1, 4096, cursor).map_err(agent)?)
+            .await?;
+        let items = page.items;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].conversation, expected);
     }

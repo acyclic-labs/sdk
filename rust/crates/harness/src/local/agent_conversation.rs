@@ -12,6 +12,7 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod events;
+mod history;
 mod recording;
 mod tree;
 mod usage;
@@ -31,6 +32,7 @@ use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
 pub use events::ExecutionQuery;
+pub use history::HistoryPage;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},

@@ -19,6 +19,13 @@ The selected agent and immutable turn are authority; a displayed row index is no
 The full descriptor remains at its original indexed history record. A picker
 receives only the conversation cut, context tail and project-binding count.
 
+GraphCoder's `/history` opens this bounded summary view for the current agent.
+Page Down reveals retained rows before following the opaque older continuation;
+Page Up scrolls to the start before opening the newest page. New committed turns
+refresh the newest page after any pending read completes. Older pages keep their
+original cut. Resize only wraps the retained page; Escape closes its pending
+consumer. This view displays cuts and does not submit a restore or fork.
+
 ## Restoration
 
 The caller explicitly chooses one scope:
