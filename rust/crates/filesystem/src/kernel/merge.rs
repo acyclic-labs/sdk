@@ -134,6 +134,9 @@ impl<'a> MergeGenerationBorrowedRequest<'a> {
 
 #[derive(Clone, Copy)]
 enum ResolutionView<'a> {
+    /// Keep clean decisions and leave unresolved regions at the target value.
+    /// A preview is never a publication resolution.
+    Preview,
     #[cfg(feature = "native-mount")]
     DistinctAdditions,
     Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
@@ -142,6 +145,10 @@ enum ResolutionView<'a> {
 }
 
 impl<'a> ResolutionView<'a> {
+    fn is_preview(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+
     fn converges_additions(self) -> bool {
         match self {
             #[cfg(feature = "native-mount")]
@@ -156,6 +163,7 @@ impl<'a> ResolutionView<'a> {
         mut compare: impl FnMut(&MergeConflict) -> std::cmp::Ordering,
     ) -> Result<Option<&'a MergeConflictResolution>, FsError> {
         match self {
+            Self::Preview => Ok(None),
             #[cfg(feature = "native-mount")]
             Self::DistinctAdditions => Ok(None),
             Self::Map(map) => {

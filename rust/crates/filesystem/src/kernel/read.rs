@@ -11,6 +11,41 @@ use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkErr
 use crate::storage::{ObjectId, ObjectStoreError};
 use thiserror::Error;
 
+impl super::FileRecord {
+    /// Resolves one exact binding of this directory record to a scalar identity.
+    /// The original point lookup and name ownership stay in the kernel reader.
+    pub(crate) async fn binding_with_accounting<S: AsyncObjectStore>(
+        &self,
+        store: &S,
+        name: &LogicalName,
+        limits: DecodeLimits,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<crate::FileId>, crate::FsError> {
+        let mut scope = accounting.allocation_scope()?;
+        scope.check()?;
+        let super::FilePayload::Directory { entries } = self.payload else {
+            return Ok(None);
+        };
+        let (entry, allocation) = lookup_tree_entry_async_with_accounting(
+            store,
+            entries,
+            name,
+            limits,
+            &mut scope,
+            cancellation,
+            None,
+        )
+        .await?;
+        let id = entry.as_ref().map(|entry| entry.file_id);
+        let bytes = entry
+            .as_ref()
+            .map_or(0, |entry| entry.name.retained_bytes() as u64);
+        super::Owned::new(entry, allocation, bytes).retire(&mut scope)?;
+        Ok(id)
+    }
+}
+
 /// Looks up an arbitrary name batch while reading each distinct tree frontier once.
 pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     store: &S,

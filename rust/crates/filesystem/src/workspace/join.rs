@@ -440,3 +440,21 @@ impl<A: 'static, O: 'static> JoinPlan<A, O> {
         work.finish(result, &accounting)
     }
 }
+
+pub(crate) enum JoinPreparation {
+    Complete(crate::kernel::Owned<crate::facade::WorkspaceJoinOutcome>),
+    /// Read-only clean projection with unresolved regions kept at the target.
+    /// It carries no publication intent and cannot be submitted as a join.
+    Preview {
+        generation_root: crate::ObjectId,
+        conflicts: crate::kernel::Owned<Vec<MergeConflict>>,
+        hold: crate::PublicationHold,
+    },
+    Candidate {
+        request: crate::kernel::PublishGenerationRequest,
+        intent: crate::kernel::PublicationIntent,
+        limits: crate::kernel::ClosureLimits,
+        resolutions_digest: crate::Digest,
+        source_hold: Option<crate::PublicationHold>,
+    },
+}

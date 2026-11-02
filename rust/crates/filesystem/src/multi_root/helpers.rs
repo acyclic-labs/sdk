@@ -154,22 +154,3 @@ pub(super) fn decode_reservation<E: std::error::Error + 'static>(
     }
     Ok(decoded)
 }
-
-pub(super) fn preview_workspace_name(
-    operation_id: OperationId,
-    root_id: WorkspaceRootId,
-    preview_key: IdempotencyKey,
-) -> Result<WorkspaceName, WorkspaceError> {
-    WorkspaceName::new(
-        format!(
-            "multi-root-preview-{}-{}-{}",
-            hex::encode(&operation_id.into_bytes()[..6]),
-            hex::encode(&root_id.into_bytes()[..6]),
-            hex::encode(preview_key.operation_id().into_bytes())
-        ),
-        &WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)
-}

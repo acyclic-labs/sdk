@@ -1,5 +1,7 @@
 use super::*;
-use crate::{Digest, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot};
+use crate::{
+    Digest, ForkOptions, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot,
+};
 use std::path::PathBuf;
 
 #[derive(Debug, Error)]

@@ -1,5 +1,39 @@
 use super::*;
 
+use crate::workspace::JoinPreparation as WorkspaceJoinPreparation;
+
+#[cfg(test)]
+impl WorkspaceJoinPreparation {
+    pub(crate) fn candidate_root(&self) -> Option<ObjectId> {
+        match self {
+            Self::Candidate { request, .. } => Some(request.generation_root),
+            Self::Complete(_) | Self::Preview { .. } => None,
+        }
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
+    /// Opens only the immutable projection retained by the caller's join hold.
+    /// This checkout has no authority head and cannot enter writable paths.
+    pub(crate) async fn open_join_preview(
+        &self,
+        generation_root: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<Checkout<A, O>>, WorkspaceError> {
+        let mut checkout = self
+            .unpublished_checkout(generation_root, accounting, cancellation)
+            .await?;
+        checkout.mode = CheckoutMode::read_only_pinned();
+        let bytes = if accounting.standalone_parts().is_some() {
+            checkout.scratch_owned_bytes()
+        } else {
+            0
+        };
+        Ok(Owned::new(checkout, accounting.claim_owned(0, 0)?, bytes))
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn apply_workspace_join(
         &self,
@@ -8,23 +42,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let token = CancellationToken::new();
         let cancellation = &token;
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
-        let output = self
-            .apply_workspace_join_with_accounting(
+        let target = request.target;
+        let prepared = self
+            .prepare_workspace_join_with_accounting::<WorkspaceError>(
                 request,
                 &mut accounting,
                 cancellation,
-                |request, intent, limits, budget| async move {
-                    publish_generation(self.clone(), request, intent, limits, budget, cancellation)
-                        .await
-                        .map(|receipt| OperationReceipt {
-                            value: checkout_commit_outcome(&receipt),
-                            work: receipt.work,
-                        })
-                        .map_err(|failure| {
-                            failure.map_error(|error| WorkspaceError::from(FsError::from(error)))
-                        })
-                },
             )
+            .await?;
+        let output = self
+            .publish_workspace_join_prepared(target, prepared, &mut accounting, cancellation)
             .await?;
         Ok(output.value)
     }
@@ -101,238 +128,406 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
             + ProviderTask,
     {
-        use Owned;
-        accounting.check()?;
-        let resolutions_digest = hash_join_resolutions(&request.resolutions, accounting)?;
-        let hashing = WorkCounters {
-            bytes_hashed: super::join_request::workspace_join_context_bytes(
-                request.source.id,
-                request.expected_target,
-                request.base.id,
-            ),
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(hashing)?;
-        let operation_context = request.operation_context(resolutions_digest);
-        accounting.record_completed(hashing)?;
-        let WorkspaceJoinRequest {
+        let target = request.target;
+        let prepared = self
+            .prepare_workspace_join_with_accounting::<E>(request, accounting, cancellation)
+            .await?;
+        self.publish_workspace_join_prepared_with_accounting(
             target,
-            base,
-            source,
-            expected_target,
-            expected_head,
-            history,
-            operation_id,
-            permit,
-            maximum_generations,
-            maximum_changes,
-            maximum_conflicts,
-            resolutions,
-        } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
-            return Err(WorkspaceError::JoinLimit.into());
+            prepared,
+            accounting,
+            cancellation,
+            publication,
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_workspace_join_prepared(
+        &self,
+        target: &Volume<A, O>,
+        prepared: WorkspaceJoinPreparation,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<WorkspaceJoinOutcome>, WorkspaceError> {
+        self.publish_workspace_join_prepared_with_accounting(
+            target,
+            prepared,
+            accounting,
+            cancellation,
+            |request, intent, limits, budget| async move {
+                publish_generation(self.clone(), request, intent, limits, budget, cancellation)
+                    .await
+                    .map(|receipt| OperationReceipt {
+                        value: checkout_commit_outcome(&receipt),
+                        work: receipt.work,
+                    })
+                    .map_err(|failure| {
+                        failure.map_error(|error| WorkspaceError::from(FsError::from(error)))
+                    })
+            },
+        )
+        .await
+    }
+
+    async fn publish_workspace_join_prepared_with_accounting<E, Fut>(
+        &self,
+        target: &Volume<A, O>,
+        prepared: WorkspaceJoinPreparation,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+        publication: impl FnOnce(
+            PublishGenerationRequest,
+            PublicationIntent,
+            ClosureLimits,
+            WorkBudget,
+        ) -> Fut
+        + ProviderTask,
+    ) -> Result<Owned<WorkspaceJoinOutcome>, E>
+    where
+        E: From<FsError> + From<WorkspaceError> + Send,
+        Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
+            + ProviderTask,
+    {
+        let WorkspaceJoinPreparation::Candidate {
+            request,
+            intent,
+            limits,
+            resolutions_digest,
+            source_hold: _source_hold,
+        } = prepared
+        else {
+            return match prepared {
+                WorkspaceJoinPreparation::Complete(outcome) => Ok(outcome),
+                WorkspaceJoinPreparation::Preview { conflicts, .. } => {
+                    conflicts.retire(accounting)?;
+                    Err(WorkspaceError::InvalidMergeResolution.into())
+                }
+                WorkspaceJoinPreparation::Candidate { .. } => unreachable!(),
+            };
+        };
+        let published = publication(request, intent, limits, accounting.remaining()?).await;
+        if accounting.standalone_parts().is_some() {
+            let spent = match &published {
+                Ok(receipt) => receipt.work,
+                Err(failure) => *failure.work,
+            };
+            merge_creation_backend_work(accounting, spent)?;
         }
-        if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
-            || source.workspace.volume.config != target.config
-        {
-            return Err(WorkspaceError::IncompatibleWorkspace.into());
-        }
-        let current_target = self
-            .workspace_head_state(target, accounting, cancellation)
-            .await?
-            .0;
-        let target_object = expected_target.object_id();
-        let base_object = base.id.object_id();
-        let source_object = source.id.object_id();
-        let mut base_root = self
-            .read_join_root_with_accounting(base_object, target.config, accounting, cancellation)
-            .await?;
-        let mut source_root = self
-            .read_join_root_with_accounting(source_object, target.config, accounting, cancellation)
-            .await?;
-        let target_root = self
-            .read_join_root_with_accounting(target_object, target.config, accounting, cancellation)
-            .await?;
+        let outcome = match published.map_err(|failure| failure.error)?.value {
+            LivePublicationObservation::Committed { generation_id, .. } => {
+                WorkspaceJoinOutcome::Joined(generation_id, resolutions_digest)
+            }
+            LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
+                WorkspaceJoinOutcome::AlreadyJoined(generation_id, resolutions_digest)
+            }
+            LivePublicationObservation::Conflict { .. } => WorkspaceJoinOutcome::Stale(
+                self.workspace_head_state(target, accounting, cancellation)
+                    .await?
+                    .0,
+            ),
+            LivePublicationObservation::Fenced { .. } => WorkspaceJoinOutcome::Fenced,
+            LivePublicationObservation::IdempotencyConflict { .. } => {
+                WorkspaceJoinOutcome::IdempotencyConflict
+            }
+        };
+        workspace_join_scalar(outcome, accounting).map_err(E::from)
+    }
+
+    /// Builds the original join candidate without submitting an authority write.
+    /// Its normalized history parent stays protected until publication finishes.
+    pub(crate) async fn prepare_workspace_join_with_accounting<E>(
+        &self,
+        request: WorkspaceJoinRequest<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceJoinPreparation, E>
+    where
+        E: From<FsError> + From<WorkspaceError> + Send,
+    {
+        self.prepare_workspace_join(request, false, accounting, cancellation)
+            .await
+    }
+
+    pub(crate) async fn preview_workspace_join_with_accounting(
+        &self,
+        request: WorkspaceJoinRequest<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceJoinPreparation, WorkspaceError> {
+        self.prepare_workspace_join(request, true, accounting, cancellation)
+            .await
+    }
+
+    async fn prepare_workspace_join<E>(
+        &self,
+        request: WorkspaceJoinRequest<'_, A, O>,
+        preview: bool,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceJoinPreparation, E>
+    where
+        E: From<FsError> + From<WorkspaceError> + Send,
+    {
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
         let result = async {
-            if source_root.value.volume_id != source.workspace.volume.id
-                || target_root.value.volume_id != target.id
-                || base_root.value.root_file_id != target_root.value.root_file_id
-                || source_root.value.root_file_id != target_root.value.root_file_id
+            use Owned;
+            accounting.check()?;
+            let publication_context = if preview {
+                None
+            } else {
+                let resolutions_digest = hash_join_resolutions(&request.resolutions, accounting)?;
+                let hashing = WorkCounters {
+                    bytes_hashed: super::join_request::workspace_join_context_bytes(
+                        request.source.id,
+                        request.expected_target,
+                        request.base.id,
+                    ),
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(hashing)?;
+                let operation_context = request.operation_context(resolutions_digest);
+                accounting.record_completed(hashing)?;
+                Some((resolutions_digest, operation_context))
+            };
+            let WorkspaceJoinRequest {
+                target,
+                base,
+                source,
+                expected_target,
+                expected_head,
+                history,
+                operation_id,
+                permit,
+                maximum_generations,
+                maximum_changes,
+                maximum_conflicts,
+                resolutions,
+            } = request;
+            if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+                return Err(WorkspaceError::JoinLimit.into());
+            }
+            if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
+                || source.workspace.volume.config != target.config
             {
                 return Err(WorkspaceError::IncompatibleWorkspace.into());
             }
-            // Normalize scalar identity in place; each decoded parent vector keeps
-            base_root.value.required_features = base_root.value.continuation_features();
-            base_root.value.volume_id = target.id;
-            source_root.value.required_features = source_root.value.continuation_features();
-            source_root.value.volume_id = target.id;
-            let encoded =
-                crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                    crate::kernel::encode_generation_root(
-                        &base_root.value,
-                        observe,
-                        allocation_error,
-                    )
-                })?;
-            let normalized_base_object = self
-                .put_encoded_with_accounting(
-                    ObjectKind::GenerationRoot,
-                    encoded,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            let encoded =
-                crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                    crate::kernel::encode_generation_root(
-                        &source_root.value,
-                        observe,
-                        allocation_error,
-                    )
-                })?;
-            let normalized_source_object = self
-                .put_encoded_with_accounting(
-                    ObjectKind::GenerationRoot,
-                    encoded,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            if normalized_source_object == target_object && current_target == expected_target {
-                return workspace_join_scalar(
-                    WorkspaceJoinOutcome::NoChanges(current_target),
-                    accounting,
-                )
-                .map_err(E::from);
-            }
-            let merge_request = crate::kernel::MergeGenerationBorrowedRequest {
-                base_generation: normalized_base_object,
-                base: &base_root.value,
-                ours_generation: Some(target_object),
-                ours: &target_root.value,
-                theirs_generation: normalized_source_object,
-                theirs: &source_root.value,
-                retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
-                maximum_changes,
-                maximum_conflicts,
-                content: crate::kernel::ContentMerge::Extents,
-            };
-            let (merged, allocation) = match &resolutions {
-                WorkspaceJoinResolutions::Map(map) => {
-                    merge_generation_with_borrowed_map_resolutions_with_accounting(
-                        &self.inner.objects,
-                        &merge_request,
-                        map,
-                        DecodeLimits::for_volume(target.config),
-                        accounting,
-                        cancellation,
-                    )
-                    .await?
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                WorkspaceJoinResolutions::Slice(slice) => {
-                    merge_generation_with_borrowed_resolutions_with_accounting(
-                        &self.inner.objects,
-                        merge_request,
-                        slice,
-                        DecodeLimits::for_volume(target.config),
-                        accounting,
-                        cancellation,
-                    )
-                    .await?
-                }
-            };
-            let (candidate, root) = match merged {
-                MergeGenerationOutcome::Conflicted {
-                    conflicts,
-                    truncated,
-                } => {
-                    let mut conflicts = Owned::new(
-                        WorkspaceJoinOutcome::Conflicted(conflicts, truncated),
-                        allocation,
-                        0,
-                    );
-                    if let WorkspaceJoinOutcome::Conflicted(values, _) = &conflicts.value {
-                        conflicts.bytes = workspace_join_conflict_bytes(values)?;
-                    }
-                    return Ok(conflicts);
-                }
-                MergeGenerationOutcome::Prepared {
-                    generation_root,
-                    root,
-                    ..
-                } => {
-                    let mut root = Owned::new(root, allocation, 0);
-                    root.bytes = root_parent_bytes(&root.value)?;
-                    (generation_root, root)
-                }
-            };
-            let unchanged = root.value.file_table == target_root.value.file_table;
-            root.retire(accounting)?;
-            if unchanged {
-                return workspace_join_scalar(
-                    WorkspaceJoinOutcome::NoChanges(current_target),
-                    accounting,
-                )
-                .map_err(E::from);
-            }
-            // This immutable normalized history parent is outside the candidate's
-            let _source_hold = if history == crate::workspace::JoinHistory::Merge {
-                Some(
-                    self.flush_join_parent_with_accounting(
-                        normalized_source_object,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?,
-                )
+            let current_target = if preview {
+                expected_target
             } else {
-                None
+                self.workspace_head_state(target, accounting, cancellation)
+                    .await?
+                    .0
             };
-            let published = publication(
-                PublishGenerationRequest {
-                    authority_id: volume_authority_id(target.id),
-                    volume_id: target.id,
-                    epoch: expected_head.epoch,
-                    expected: expected_head,
-                    operation_id,
-                    generation_root: candidate,
-                },
-                PublicationIntent::guarded(Some(operation_context), permit),
-                closure_limits(target.config),
-                accounting.remaining()?,
-            )
-            .await;
-            if accounting.standalone_parts().is_some() {
-                let spent = match &published {
-                    Ok(receipt) => receipt.work,
-                    Err(failure) => *failure.work,
-                };
-                merge_creation_backend_work(accounting, spent)?;
-            }
-            let outcome = match published.map_err(|failure| failure.error)?.value {
-                LivePublicationObservation::Committed {
-                    generation_id: id, ..
-                } => WorkspaceJoinOutcome::Joined(id, resolutions_digest),
-                LivePublicationObservation::AlreadyCommitted {
-                    generation_id: id, ..
-                } => WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest),
-                LivePublicationObservation::Conflict { .. } => WorkspaceJoinOutcome::Stale(
-                    self.workspace_head_state(target, accounting, cancellation)
-                        .await?
-                        .0,
-                ),
-                LivePublicationObservation::Fenced { .. } => WorkspaceJoinOutcome::Fenced,
-                LivePublicationObservation::IdempotencyConflict { .. } => {
-                    WorkspaceJoinOutcome::IdempotencyConflict
+            let target_object = expected_target.object_id();
+            let base_object = base.id.object_id();
+            let source_object = source.id.object_id();
+            let mut base_root = self
+                .read_join_root_with_accounting(
+                    base_object,
+                    target.config,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let mut source_root = self
+                .read_join_root_with_accounting(
+                    source_object,
+                    target.config,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let target_root = self
+                .read_join_root_with_accounting(
+                    target_object,
+                    target.config,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let result = async {
+                if source_root.value.volume_id != source.workspace.volume.id
+                    || target_root.value.volume_id != target.id
+                    || base_root.value.root_file_id != target_root.value.root_file_id
+                    || source_root.value.root_file_id != target_root.value.root_file_id
+                {
+                    return Err(WorkspaceError::IncompatibleWorkspace.into());
                 }
-            };
-            workspace_join_scalar(outcome, accounting).map_err(E::from)
+                // Normalize scalar identity in place, retaining decoded parent custody.
+                base_root.value.required_features = base_root.value.continuation_features();
+                base_root.value.volume_id = target.id;
+                source_root.value.required_features = source_root.value.continuation_features();
+                source_root.value.volume_id = target.id;
+                let encoded =
+                    crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                        crate::kernel::encode_generation_root(
+                            &source_root.value,
+                            observe,
+                            allocation_error,
+                        )
+                    })?;
+                let normalized_source_object = self
+                    .put_encoded_with_accounting(
+                        ObjectKind::GenerationRoot,
+                        encoded,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                if !preview
+                    && normalized_source_object == target_object
+                    && current_target == expected_target
+                {
+                    return workspace_join_scalar(
+                        WorkspaceJoinOutcome::NoChanges(current_target),
+                        accounting,
+                    )
+                    .map(WorkspaceJoinPreparation::Complete)
+                    .map_err(E::from);
+                }
+                let merge_request = crate::kernel::MergeGenerationBorrowedRequest {
+                    // The existing immutable target is the checkpoint parent;
+                    // the normalized base is borrowed only for table merging.
+                    base_generation: base_object,
+                    base: &base_root.value,
+                    ours_generation: Some(target_object),
+                    ours: &target_root.value,
+                    theirs_generation: normalized_source_object,
+                    theirs: &source_root.value,
+                    retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
+                    maximum_changes,
+                    maximum_conflicts,
+                    content: crate::kernel::ContentMerge::Extents,
+                };
+                if preview {
+                    let (generation_root, conflicts) = merge_request
+                        .preview_with_accounting(
+                            &self.inner.objects,
+                            DecodeLimits::for_volume(target.config),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    let hold = self
+                        .flush_join_parent_with_accounting(
+                            generation_root,
+                            accounting,
+                            cancellation,
+                        )
+                        .await;
+                    return match hold {
+                        Ok(hold) => Ok(WorkspaceJoinPreparation::Preview {
+                            generation_root,
+                            conflicts,
+                            hold,
+                        }),
+                        Err(error) => {
+                            conflicts.retire(accounting)?;
+                            Err(error.into())
+                        }
+                    };
+                }
+                let (resolutions_digest, operation_context) =
+                    publication_context.ok_or(WorkspaceError::InvalidMergeResolution)?;
+                let (merged, allocation) = match &resolutions {
+                    WorkspaceJoinResolutions::Map(map) => {
+                        merge_generation_with_borrowed_map_resolutions_with_accounting(
+                            &self.inner.objects,
+                            &merge_request,
+                            map,
+                            DecodeLimits::for_volume(target.config),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    WorkspaceJoinResolutions::Slice(slice) => {
+                        merge_generation_with_borrowed_resolutions_with_accounting(
+                            &self.inner.objects,
+                            merge_request,
+                            slice,
+                            DecodeLimits::for_volume(target.config),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?
+                    }
+                };
+                let (candidate, root) = match merged {
+                    MergeGenerationOutcome::Conflicted {
+                        conflicts,
+                        truncated,
+                    } => {
+                        let mut conflicts = Owned::new(
+                            WorkspaceJoinOutcome::Conflicted(conflicts, truncated),
+                            allocation,
+                            0,
+                        );
+                        if let WorkspaceJoinOutcome::Conflicted(values, _) = &conflicts.value {
+                            conflicts.bytes = workspace_join_conflict_bytes(values)?;
+                        }
+                        return Ok(WorkspaceJoinPreparation::Complete(conflicts));
+                    }
+                    MergeGenerationOutcome::Prepared {
+                        generation_root,
+                        root,
+                        ..
+                    } => {
+                        let mut root = Owned::new(root, allocation, 0);
+                        root.bytes = root_parent_bytes(&root.value)?;
+                        (generation_root, root)
+                    }
+                };
+                let unchanged = root.value.file_table == target_root.value.file_table;
+                root.retire(accounting)?;
+                if unchanged {
+                    return workspace_join_scalar(
+                        WorkspaceJoinOutcome::NoChanges(current_target),
+                        accounting,
+                    )
+                    .map(WorkspaceJoinPreparation::Complete)
+                    .map_err(E::from);
+                }
+                // Retain the normalized history parent through publication.
+                let source_hold = if history == crate::workspace::JoinHistory::Merge {
+                    Some(
+                        self.flush_join_parent_with_accounting(
+                            normalized_source_object,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                Ok(WorkspaceJoinPreparation::Candidate {
+                    request: PublishGenerationRequest {
+                        authority_id: volume_authority_id(target.id),
+                        volume_id: target.id,
+                        epoch: expected_head.epoch,
+                        expected: expected_head,
+                        operation_id,
+                        generation_root: candidate,
+                    },
+                    intent: PublicationIntent::guarded(Some(operation_context), permit),
+                    limits: closure_limits(target.config),
+                    resolutions_digest,
+                    source_hold,
+                })
+            }
+            .await;
+            target_root.retire(accounting)?;
+            source_root.retire(accounting)?;
+            base_root.retire(accounting)?;
+            result
         }
         .await;
-        target_root.retire(accounting)?;
-        source_root.retire(accounting)?;
-        base_root.retire(accounting)?;
+        if result.is_ok() {
+            scope.keep();
+        }
         result
     }
 

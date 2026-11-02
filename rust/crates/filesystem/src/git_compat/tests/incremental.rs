@@ -67,8 +67,16 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .write_text("/sub/.gitignore", "*.tmp\n")
         .await
         .expect("nested ignore");
+    initial
+        .write_text("/removed.tmp", "before deletion")
+        .await
+        .expect("ignored deletion fixture");
     publish_fixture(initial).await;
     let before = unbounded!(workspace, head()).expect("before");
+    workspace
+        .remove("/removed.tmp")
+        .await
+        .expect("child deletion");
     workspace
         .write_text("/scratch.tmp", "child")
         .await
@@ -85,24 +93,24 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .expect("generated file");
     publish_fixture(build).await;
     let after = unbounded!(workspace, head()).expect("after");
-    let changes = before
-        .diff_to(&after, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
+    workspace
+        .write_text("/sub/.gitignore", "!*.tmp\n")
         .await
-        .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)
-        .expect("diff")
-        .changed_paths(16, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)
-        .expect("changed paths");
+        .expect("later policy must not change the pinned merge");
     let policy = GitIgnorePolicy::parse("*.tmp\nbuild/\n");
     assert_eq!(
         policy
-            .newly_ignored_paths_at(&after, &changes, &BTreeSet::new())
+            .newly_ignored_paths_between(
+                &before,
+                &after,
+                &BTreeSet::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .expect("untracked policy"),
         BTreeSet::from([
+            "/removed.tmp".to_owned(),
             "/scratch.tmp".to_owned(),
             "/sub/cache.tmp".to_owned(),
             "/build/output.bin".to_owned(),
@@ -110,19 +118,53 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     );
     assert!(
         policy
-            .newly_ignored_paths_at(
+            .newly_ignored_paths_between(
+                &before,
                 &after,
-                &changes,
                 &BTreeSet::from([
+                    "removed.tmp".to_owned(),
                     "scratch.tmp".to_owned(),
                     "sub/cache.tmp".to_owned(),
                     "build/output.bin".to_owned(),
                 ]),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
             .expect("tracked policy")
             .is_empty()
     );
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        policy
+            .newly_ignored_paths_between(
+                &before,
+                &after,
+                &BTreeSet::new(),
+                WorkBudget::UNBOUNDED,
+                &cancelled,
+            )
+            .await,
+        Err(GitCaptureError::Workspace(WorkspaceError::Cancelled(_)))
+    ));
+    assert!(matches!(
+        policy
+            .newly_ignored_paths_between(
+                &before,
+                &after,
+                &BTreeSet::new(),
+                WorkBudget {
+                    items_examined: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .await,
+        Err(GitCaptureError::Workspace(WorkspaceError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        )))
+    ));
 }
 
 #[cfg(feature = "local")]

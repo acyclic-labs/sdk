@@ -8,13 +8,12 @@
 use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
-    ConflictSide, DefaultTextMergeDriver, DriverError, ForkOptions, GenerationId, IdempotencyKey,
-    JoinOutcome, MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry,
-    MergePlanResolutionError, MergeResolution, OperationId, PublicationPermit,
-    PublicationReservation, ReservationOutcome, UnpublishedMergeCandidate, WorkBudget, Workspace,
-    WorkspaceContextError, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextStore,
-    WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
-    WorkspaceLineageStore, WorkspaceName, WorkspaceRootId,
+    ConflictSide, DefaultTextMergeDriver, DriverError, GenerationId, IdempotencyKey, JoinOutcome,
+    MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry, MergePlanResolutionError,
+    MergeResolution, OperationId, PublicationPermit, PublicationReservation, ReservationOutcome,
+    UnpublishedMergeCandidate, WorkBudget, Workspace, WorkspaceContextError, WorkspaceContextId,
+    WorkspaceContextRegistry, WorkspaceContextStore, WorkspaceError, WorkspaceGraph, WorkspaceId,
+    WorkspaceLineageError, WorkspaceLineageStore, WorkspaceRootId,
 };
 use acyclic_stream::ProviderTask;
 use serde::{Deserialize, Serialize};
@@ -454,9 +453,6 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
     /// The supplied opaque fence does not describe these exact inputs.
     #[error("multi-root publication fence is invalid")]
     InvalidFence,
-    /// Disposable validation state could not be reclaimed safely.
-    #[error("multi-root validation workspace could not be reclaimed")]
-    PreviewCleanup,
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.

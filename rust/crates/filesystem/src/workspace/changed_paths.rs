@@ -29,8 +29,8 @@ pub struct ChangedPaths<A: 'static, O: 'static> {
     owner: ReadOwner<State<A, O>>,
 }
 
-struct State<A: 'static, O: 'static> {
-    pending: Option<ChangedPathEntry>,
+pub(super) struct State<A: 'static, O: 'static> {
+    pub(super) pending: Option<ChangedPathEntry>,
     // Frontier backing retires before the generation pins it reads.
     cursor: Option<Cursor<'static>>,
     checkouts: [Option<Owned<Checkout<A, O>>>; 2],
@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
                 initial,
             ));
         }
-        let mut owner = ReadOwner::<State<A, O>>::new(accounting)
+        let mut owner = ReadOwner::<State<A, O>>::new(accounting, State::default())
             .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial))?;
         let result = async {
             let (state, mut accounting) = owner.borrow();
@@ -95,15 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
                     )
                     .await?,
             );
-            let roots = state
-                .checkouts
-                .each_ref()
-                .map(|checkout| checkout.as_ref().map(|checkout| checkout.value.root()));
-            state.cursor = Some(Cursor::new(
-                roots,
-                to.workspace.volume.config(),
-                &mut accounting,
-            )?);
+            state.initialize(to.workspace.volume.config(), &mut accounting)?;
             Ok::<_, WorkspaceError>(())
         }
         .await;
@@ -164,7 +156,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O> {
-    async fn prepare_next(
+    pub(super) fn initialize(
+        &mut self,
+        config: crate::VolumeConfig,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceError> {
+        let roots = self
+            .checkouts
+            .each_ref()
+            .map(|checkout| checkout.as_ref().map(|checkout| checkout.value.root()));
+        self.cursor = Some(Cursor::new(roots, config, accounting)?);
+        Ok(())
+    }
+
+    pub(super) fn set_checkouts(&mut self, checkouts: [Owned<Checkout<A, O>>; 2]) {
+        self.checkouts = checkouts.map(Some);
+    }
+
+    pub(super) async fn prepare_next(
         &mut self,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {

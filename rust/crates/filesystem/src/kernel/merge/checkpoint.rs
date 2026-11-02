@@ -15,6 +15,7 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
         MergeFileTableOutcome::Conflicted {
             conflicts,
             truncated,
+            ..
         } => {
             return Ok((
                 MergeGenerationOutcome::Conflicted {
@@ -25,36 +26,10 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
             ));
         }
     };
-    let (parent, parent_id) = match request.ours_generation {
-        Some(object) if object.kind == ObjectKind::GenerationRoot => {
-            (object, GenerationId::from_root(object))
-        }
-        Some(_) => return Err(FsError::InvalidDiff),
-        None => {
-            let parent = build_checkpoint_with_accounting(
-                store,
-                CheckpointRequest {
-                    base: request.base_generation,
-                    file_table: request.ours.file_table,
-                    merge_parent: None,
-                },
-                limits,
-                accounting,
-                cancellation,
-            )
-            .await?;
-            (parent, GenerationId::from_root(parent))
-        }
-    };
-    let merged = build_checkpoint_with_accounting(
+    let (merged, parent_id) = merged_checkpoint(
         store,
-        CheckpointRequest {
-            base: parent,
-            file_table: merged_table,
-            merge_parent: request
-                .retain_theirs_parent
-                .then_some(request.theirs_generation),
-        },
+        &request,
+        merged_table,
         limits,
         accounting,
         cancellation,
@@ -98,4 +73,96 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
         },
         allocation,
     ))
+}
+
+async fn merged_checkpoint<S: AsyncObjectStore>(
+    store: &S,
+    request: &MergeGenerationBorrowedRequest<'_>,
+    merged_table: ObjectId,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(ObjectId, GenerationId), FsError> {
+    let (parent, parent_id) = match request.ours_generation {
+        Some(object) if object.kind == ObjectKind::GenerationRoot => {
+            (object, GenerationId::from_root(object))
+        }
+        Some(_) => return Err(FsError::InvalidDiff),
+        None => {
+            let parent = build_checkpoint_with_accounting(
+                store,
+                CheckpointRequest {
+                    base: request.base_generation,
+                    file_table: request.ours.file_table,
+                    merge_parent: None,
+                },
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            (parent, GenerationId::from_root(parent))
+        }
+    };
+    let merged = build_checkpoint_with_accounting(
+        store,
+        CheckpointRequest {
+            base: parent,
+            file_table: merged_table,
+            merge_parent: request
+                .retain_theirs_parent
+                .then_some(request.theirs_generation),
+        },
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await?;
+    Ok((merged, parent_id))
+}
+
+impl MergeGenerationBorrowedRequest<'_> {
+    /// Retains the same merge's clean decisions and exact unresolved regions.
+    /// The checkpoint is a read projection only: no resolution or publication
+    /// intent is produced, and an incomplete conflict frontier is refused.
+    pub(crate) async fn preview_with_accounting<S: AsyncObjectStore>(
+        self,
+        store: &S,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(ObjectId, Owned<Vec<MergeConflict>>), FsError> {
+        let (outcome, allocation) = merge_file_tables_core(
+            store,
+            self.tables(),
+            ResolutionView::Preview,
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        let (table, conflicts) = match outcome {
+            MergeFileTableOutcome::Prepared(table) => {
+                (table, Owned::new(Vec::new(), allocation, 0))
+            }
+            MergeFileTableOutcome::Conflicted {
+                conflicts, preview, ..
+            } => {
+                let bytes = merge_conflict_bytes(&conflicts)?;
+                let conflicts = Owned::new(conflicts, allocation, bytes);
+                let Some(table) = preview else {
+                    conflicts.retire(accounting)?;
+                    return Err(FsError::MergeChangeLimit);
+                };
+                (table, conflicts)
+            }
+        };
+        match merged_checkpoint(store, &self, table, limits, accounting, cancellation).await {
+            Ok((checkpoint, _)) => Ok((checkpoint, conflicts)),
+            Err(error) => {
+                conflicts.retire(accounting)?;
+                Err(error)
+            }
+        }
+    }
 }

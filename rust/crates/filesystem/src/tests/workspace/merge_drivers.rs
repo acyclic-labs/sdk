@@ -196,6 +196,406 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     Ok(())
 }
 
+#[tokio::test]
+async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
+-> Result<(), Box<dyn Error>> {
+    use crate::kernel::{DecodeLimits, FilePayload, LogicalName, NameEncoding, Owned};
+
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("preview-main"))?;
+    main.write_text("/shared", "base").await?;
+    main.write_text("/deleted", "base").await?;
+    let agent = fork_workspace(
+        &main,
+        "preview-agent",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    agent.write_text("/shared", "agent").await?;
+    main.write_text("/shared", "main").await?;
+    agent.remove("/deleted").await?;
+    main.write_text("/deleted", "modified").await?;
+    agent.write_text("/added", "agent-add").await?;
+    main.write_text("/added", "main-add").await?;
+    agent.write_text("/clean", "clean").await?;
+    main.write_text("/target", "target").await?;
+
+    let plan = unbounded!(agent.join_into(&main), plan())?;
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let prior = Owned::<Vec<u8>>::allocate(29, &mut accounting)?;
+    let options = ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let prepared = plan
+        .preview_with_accounting(options, &mut accounting, &cancellation)
+        .await?;
+    let crate::workspace::JoinPreparation::Preview {
+        generation_root,
+        conflicts,
+        hold: _,
+    } = &prepared
+    else {
+        return Err("merge preview did not retain its read projection".into());
+    };
+    assert_eq!(conflicts.value.len(), 3);
+    assert!(
+        conflicts
+            .value
+            .iter()
+            .any(|conflict| matches!(conflict, crate::MergeConflict::Binding { .. }))
+    );
+    fs.workspace_merge_record_with_accounting(
+        &main.volume,
+        plan.target_head(),
+        conflicts.value.first().ok_or("preview conflict missing")?,
+        &mut accounting,
+        &cancellation,
+    )
+    .await?;
+    let selections = conflicts
+        .value
+        .iter()
+        .cloned()
+        .map(|conflict| (conflict, crate::ConflictSide::Theirs))
+        .collect();
+    let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+        fs.objects(),
+        *generation_root,
+        main.volume.config(),
+        &mut accounting,
+        &cancellation,
+    )
+    .await?;
+    let root_bytes = (root.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
+    let root = Owned::new(root, allocation, root_bytes);
+    let limits = DecodeLimits::for_volume(main.volume.config());
+    let root_record = value!(
+        crate::kernel::lookup_file_record(
+            fs.objects(),
+            root.value.file_table,
+            root.value.root_file_id,
+            limits,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+    )?
+    .ok_or("preview root record missing")?;
+    let FilePayload::Directory { entries } = root_record.payload else {
+        return Err("preview root is not a directory".into());
+    };
+    for (name, expected) in [
+        ("clean", b"clean".as_slice()),
+        ("target", b"target".as_slice()),
+        ("shared", b"main".as_slice()),
+        ("added", b"main-add".as_slice()),
+    ] {
+        let entry = value!(
+            crate::kernel::lookup_tree_entry(
+                fs.objects(),
+                entries,
+                &LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 255)?,
+                limits,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+        )?
+        .ok_or("preview binding missing")?;
+        let record = value!(
+            crate::kernel::lookup_file_record(
+                fs.objects(),
+                root.value.file_table,
+                entry.file_id,
+                limits,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+        )?
+        .ok_or("preview file record missing")?;
+        let FilePayload::InlineRegular(bytes) = record.payload else {
+            return Err("preview file content changed representation".into());
+        };
+        assert_eq!(bytes.as_bytes(), expected);
+        assert_eq!(record.link_count, 1);
+        assert!(record.bindings.is_some());
+    }
+    root.retire(&mut accounting)?;
+    // A projection retains unresolved regions; it is not a selected resolution.
+    assert!(matches!(
+        fs.publish_workspace_join_prepared(&main.volume, prepared, &mut accounting, &cancellation,)
+            .await,
+        Err(WorkspaceError::InvalidMergeResolution)
+    ));
+    assert_eq!(unbounded!(main, head())?.id(), plan.target_head());
+    assert_eq!(unbounded!(agent, head())?.id(), plan.source_head());
+    assert!(unbounded!(main, read("/clean", 16)).is_err());
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("original ledger lost")?
+            .0
+            .scratch_bytes(),
+        prior.bytes
+    );
+    prior.retire(&mut accounting)?;
+
+    // The same projection feeds two independent continuations. No conflict's
+    // path or content is expanded merely to visit another clean/conflict row.
+    let paged_plan = unbounded!(agent.join_into(&main), plan())?;
+    let paged_cancel = CancellationToken::new();
+    let mut pages = paged_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &paged_cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    assert_eq!(pages.conflict_count(), 3);
+    assert_eq!(pages.plan().target_head(), plan.target_head());
+    let mut conflict_rows = Vec::new();
+    loop {
+        let peeked = pages.peek_conflict().map_err(|failure| failure.error)?;
+        let expected = peeked.value.cloned();
+        let peek_work = peeked.work;
+        assert_eq!(
+            pages
+                .peek_conflict()
+                .map_err(|failure| failure.error)?
+                .value,
+            expected.as_ref()
+        );
+        assert_eq!(pages.work(), peek_work);
+        let taken = pages.next_conflict().map_err(|failure| failure.error)?;
+        assert_eq!(taken.work, peek_work);
+        assert_eq!(
+            taken.value.as_ref().map(|row| row.value()),
+            expected.as_ref()
+        );
+        let Some(row) = taken.value else {
+            break;
+        };
+        let mut records = [None; 3];
+        for (side, record) in [
+            crate::ConflictSide::Base,
+            crate::ConflictSide::Ours,
+            crate::ConflictSide::Theirs,
+        ]
+        .into_iter()
+        .zip(&mut records)
+        {
+            *record = pages
+                .conflict_record(row.value(), side)
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+        }
+        match row.value() {
+            crate::MergeConflict::File(id) => {
+                assert!(records[0].is_some());
+                assert!(records[1].is_some());
+                assert!(
+                    records
+                        .into_iter()
+                        .flatten()
+                        .all(|record| record.file_id == *id)
+                );
+                for (record, expected) in records.into_iter().zip([
+                    Some(b"base".as_slice()),
+                    Some(if records[2].is_some() {
+                        b"main".as_slice()
+                    } else {
+                        b"modified"
+                    }),
+                    records[2].map(|_| b"agent".as_slice()),
+                ]) {
+                    assert_eq!(record.is_some(), expected.is_some());
+                    if let (Some(record), Some(expected)) = (record, expected) {
+                        let FilePayload::InlineRegular(bytes) = record.payload else {
+                            return Err("selected conflict record changed representation".into());
+                        };
+                        assert_eq!(bytes.as_bytes(), expected);
+                    }
+                }
+            }
+            crate::MergeConflict::Binding { .. } => {
+                assert!(records[0].is_none());
+                let ours = records[1].ok_or("target binding not selected")?;
+                let theirs = records[2].ok_or("source binding not selected")?;
+                assert_ne!(ours.file_id, theirs.file_id);
+                for (record, expected) in [(ours, b"main-add".as_slice()), (theirs, b"agent-add")] {
+                    let FilePayload::InlineRegular(bytes) = record.payload else {
+                        return Err("selected binding content changed representation".into());
+                    };
+                    assert_eq!(bytes.as_bytes(), expected);
+                }
+            }
+        }
+        conflict_rows.push(row);
+    }
+    assert_eq!(conflict_rows.len(), 3);
+    let first_work = pages
+        .peek_clean()
+        .await
+        .map_err(|failure| failure.error)?
+        .work;
+    assert!(
+        pages
+            .peek_clean()
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .is_some()
+    );
+    assert_eq!(pages.work(), first_work);
+    let clean = pages
+        .next_clean()
+        .await
+        .map_err(|failure| failure.error)?
+        .value
+        .ok_or("clean merge row missing")?;
+    assert_eq!(namespace_path_text(&clean.value().path)?, "/clean");
+    assert!(
+        pages
+            .next_clean()
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .is_none()
+    );
+    // The original token remains authoritative even after the frontier ends.
+    paged_cancel.cancel();
+    assert!(matches!(
+        pages.next_conflict().map_err(|failure| failure.error),
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert!(pages.next_clean().await.is_err());
+    drop(pages);
+    // Output backing is independent of the preview, including a binding name.
+    assert_eq!(namespace_path_text(&clean.value().path)?, "/clean");
+    assert!(conflict_rows.iter().any(|row| matches!(
+        row.value(), crate::MergeConflict::Binding { name, .. }
+            if name.as_bytes() == b"added"
+    )));
+    drop((clean, conflict_rows));
+
+    // Output admission may suspend after peek. That cached identity cannot
+    // bypass cancellation when the encoder later attempts to consume it.
+    let cancelled_plan = unbounded!(agent.join_into(&main), plan())?;
+    let cancelled = CancellationToken::new();
+    let mut cancelled_pages = cancelled_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &cancelled)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    assert!(
+        cancelled_pages
+            .peek_conflict()
+            .map_err(|failure| failure.error)?
+            .value
+            .is_some()
+    );
+    cancelled.cancel();
+    assert!(matches!(
+        cancelled_pages
+            .next_conflict()
+            .map_err(|failure| failure.error),
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert!(cancelled_pages.next_clean().await.is_err());
+    drop(cancelled_pages);
+
+    let selected_plan = unbounded!(agent.join_into(&main), plan())?;
+    let selected_cancel = CancellationToken::new();
+    let mut selected_pages = selected_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &selected_cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let selected = selected_pages
+        .next_conflict()
+        .map_err(|failure| failure.error)?
+        .value
+        .ok_or("selected conflict missing")?;
+    selected_cancel.cancel();
+    assert!(matches!(
+        selected_pages
+            .conflict_record(selected.value(), crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error),
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert!(selected_pages.next_clean().await.is_err());
+    drop((selected_pages, selected));
+
+    let refused_plan = unbounded!(agent.join_into(&main), plan())?;
+    assert!(
+        refused_plan
+            .preview_pages(
+                options,
+                WorkBudget {
+                    items_examined: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+    );
+
+    let limited = unbounded!(agent.join_into(&main).bounds(128, 128, 1), plan())?;
+    assert!(matches!(
+        limited
+            .preview_with_accounting(
+                ApplyOptions {
+                    if_target: limited.target_head(),
+                    ..options
+                },
+                &mut accounting,
+                &cancellation,
+            )
+            .await,
+        Err(WorkspaceError::Filesystem(FsError::MergeChangeLimit))
+    ));
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("original ledger lost")?
+            .0
+            .scratch_bytes(),
+        0
+    );
+    cancellation.cancel();
+    assert!(matches!(
+        plan.preview_with_accounting(options, &mut accounting, &cancellation)
+            .await,
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("original ledger lost")?
+            .0
+            .scratch_bytes(),
+        0
+    );
+    assert!(matches!(
+        plan.apply_sides(options, selections).await?,
+        JoinOutcome::Applied(_)
+    ));
+    for (path, expected) in [
+        ("/clean", b"clean".as_slice()),
+        ("/shared", b"agent".as_slice()),
+        ("/added", b"agent-add".as_slice()),
+    ] {
+        assert_eq!(unbounded!(main, read(path, 16))?.as_ref(), expected);
+    }
+    assert!(unbounded!(main, read("/deleted", 16)).is_err());
+    Ok(())
+}
+
 /// A workspace join (no Git metadata) where one side replaced the file under
 /// its path: the replacement merges with the identity it replaced, the text
 /// driver sees both texts, and the path keeps its original identity.
