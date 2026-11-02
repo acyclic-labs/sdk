@@ -5,6 +5,75 @@ use crate::storage::{AuthorityStoreError, ObjectKind, ObjectStoreError, object_d
 use acyclic_stream::OwnedBytes;
 
 #[tokio::test]
+async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = crate::test_support::OwnedReadObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let bytes = b"independent read backing";
+    let object_id = ObjectId {
+        storage: None,
+        kind: ObjectKind::BlobChunk,
+        digest: object_digest(bytes),
+    };
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    store
+        .put(
+            object_id,
+            OwnedBytes::copy_from_slice(bytes),
+            &mut AuthorityWork::new(budget, &cancellation),
+        )
+        .await?;
+    let requests = [ObjectReadRequest {
+        object_id,
+        maximum_bytes: bytes.len() as u64,
+    }; 2];
+    let output_bytes = (2 * size_of::<crate::ObjectRead>() + 2 * bytes.len()) as u64;
+    for shortfall in [0, 1] {
+        let mut work = AuthorityWork::new(
+            WorkBudget {
+                peak_allocation_bytes: 31 + output_bytes - shortfall,
+                ..budget
+            },
+            &cancellation,
+        );
+        let mut earlier = work.vec_owned::<u8>(31)?;
+        earlier.value.extend([7; 31]);
+        let result = store.read_many(&requests, &mut work).await;
+        if shortfall == 0 {
+            let (values, allocation) = result?;
+            assert_eq!(values.len(), 2);
+            for read in &values {
+                assert_eq!(read.bytes.as_ref(), bytes);
+                assert_eq!(
+                    read.retention,
+                    crate::ObjectReadRetention::Owned {
+                        logical_bytes: bytes.len() as u64
+                    }
+                );
+            }
+            assert_eq!(work.spent().peak_allocation_bytes, 31 + output_bytes);
+            assert_eq!(work.spent().bytes_copied, 2 * bytes.len() as u64);
+            drop(values);
+            drop(allocation);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }))
+            ));
+            assert_eq!(work.spent().bytes_copied, bytes.len() as u64);
+        }
+        assert_eq!(earlier.value, [7; 31]);
+        assert_eq!(work.allocations.live_bytes(), 31);
+        earlier.retire(&mut work.accounting())?;
+        assert_eq!(work.allocations.live_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dyn std::error::Error>>
 {
     let cancel = CancellationToken::new();
