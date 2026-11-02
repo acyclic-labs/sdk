@@ -370,13 +370,14 @@ mod tests {
                     let failure = allocator.failure();
                     let failure = failure.lock().unwrap();
                     assert!(matches!(failure.as_ref(),
-                        Some(crate::Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        Some(crate::Error::NativeFilesystem { source, .. })
+                        if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
+                            acyclic_fs::NativeTreeMaterializationError::Work(
                                 acyclic_fs::WorkError::BudgetExceeded {
-                                    counter: "peak_allocation_bytes", ..
+                                    counter: "peak_allocation_bytes", maximum, ..
                                 }
-                            ), ..
-                        })
+                            )
+                        ) if *maximum == baseline + bytes)
                     ), "{failure:?}");
                 } else {
                     let result = result.unwrap();
