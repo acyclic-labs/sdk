@@ -720,7 +720,7 @@ impl AgentRecord for InboxRecord {
                 // Refused before the parent's inbox admits it: once queued, a
                 // request its spawn cannot apply would block the parent.
                 if spawn.profile.context == SpawnContext::Fresh && spawn.history.is_some() {
-                    return Err(Error::Record("a fresh-context role selects no history"));
+                    return Err(Error::Record("a fresh-context template selects no history"));
                 }
                 Ok(())
             }
