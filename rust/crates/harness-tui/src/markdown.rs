@@ -20,7 +20,7 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
         if index > 0 {
             shown.push('\n');
         }
-        let mut label = String::new();
+        let mut label_start = None;
         for (at, span) in line.spans.iter().enumerate() {
             let start = shown.len();
             shown.push_str(&span.text);
@@ -31,7 +31,7 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
             let Some(link) = &span.link else {
                 continue;
             };
-            label.push_str(&span.text);
+            let begin = *label_start.get_or_insert(start);
             // A link's label may span several styled spans: its destination
             // follows the last of them.
             let continues = line
@@ -41,7 +41,7 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
             if continues {
                 continue;
             }
-            if label.trim() != link.as_ref() {
+            if shown[begin..].trim() != link.as_ref() {
                 shown.push_str(" (");
                 let start = shown.len();
                 shown.push_str(link);
@@ -51,7 +51,7 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
                 ));
                 shown.push(')');
             }
-            label.clear();
+            label_start = None;
         }
     }
     (shown, styles)
@@ -95,5 +95,20 @@ mod tests {
         assert_eq!(shown, "see the docs (https://example.com/a) now");
         let (shown, _) = render("<https://example.com/b>", 80);
         assert_eq!(shown, "https://example.com/b");
+        let (shown, styles) = render(
+            "see [ https://**example**.com/a ](https://example.com/a) [**next**](https://example.com/b)",
+            80,
+        );
+        assert_eq!(
+            shown,
+            "see  https://example.com/a  next (https://example.com/b)"
+        );
+        assert!(styles.iter().any(|(range, style)| {
+            &shown[range.clone()] == "example" && style.add_modifier.contains(Modifier::BOLD)
+        }));
+        assert!(styles.iter().any(|(range, style)| {
+            &shown[range.clone()] == "https://example.com/b"
+                && style.add_modifier.contains(Modifier::UNDERLINED)
+        }));
     }
 }
