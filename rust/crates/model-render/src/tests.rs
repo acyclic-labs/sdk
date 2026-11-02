@@ -797,11 +797,20 @@ fn borrowed_settings_preserve_prefixes_and_isolate_call_and_count_controls() {
 #[test]
 fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     let mut fields = Fields::default();
+    // Generated provider settings, independent of provider tool naming.
+    let native = json!({"fixture_server": {"version": 1}});
+    let definition = native.as_object().unwrap();
     fields
         .set_tools(
             Family::Gemini,
-            &ToolDeclarations::<Value>::new(Family::Gemini, vec![ToolDeclaration::WebSearch])
-                .unwrap(),
+            &ToolDeclarations::<Value>::new(
+                Family::Gemini,
+                vec![ToolDeclaration::Provider {
+                    definition,
+                    server_tool: true,
+                }],
+            )
+            .unwrap(),
         )
         .unwrap();
     let server_header = Header::new(
@@ -828,6 +837,46 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     )
     .unwrap();
     assert!(!output.is_empty());
+    output.clear();
+    // Server execution classification is independent of declaration bytes.
+    // Equality retains that fact for Gemini summary admission.
+    let mut client = fields.borrowed();
+    client
+        .set_tools(
+            Family::Gemini,
+            &ToolDeclarations::<Value>::new(
+                Family::Gemini,
+                vec![ToolDeclaration::Provider {
+                    definition,
+                    server_tool: false,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_ne!(fields, client);
+    let client_header = Header::new(
+        target(Family::Gemini, "provider"),
+        RENDERER_VERSION,
+        &client,
+        None,
+    )
+    .unwrap();
+    assert_eq!(server_header.bytes(), client_header.bytes());
+    render_summary(
+        &client_header,
+        std::iter::empty::<&WireItem>(),
+        "summary",
+        &closer,
+        &mut output,
+    )
+    .unwrap();
+    let allowed: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(&allowed["tools"][0], &native);
+    assert_eq!(
+        allowed["toolConfig"]["functionCallingConfig"]["mode"],
+        "NONE"
+    );
     output.clear();
     assert!(
         render_summary(
@@ -884,9 +933,14 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
         }
     }
     // Declarations for another protocol cannot enter this header.
-    let anthropic =
-        ToolDeclarations::<Value>::new(Family::Anthropic, vec![ToolDeclaration::WebSearch])
-            .unwrap();
+    let anthropic = ToolDeclarations::<Value>::new(
+        Family::Anthropic,
+        vec![ToolDeclaration::Provider {
+            definition,
+            server_tool: true,
+        }],
+    )
+    .unwrap();
     assert!(fields.set_tools(Family::Gemini, &anthropic).is_err());
 }
 

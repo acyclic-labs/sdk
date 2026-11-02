@@ -26,8 +26,15 @@ pub enum ToolDeclaration<'a, P> {
         /// Borrowed native text or grammar format.
         format: P,
     },
-    /// Provider-owned web search, without a client function or executor.
-    WebSearch,
+    /// Exact provider settings data, without schema rewriting or name gates.
+    Provider {
+        /// Canonical declaration object retained by settings admission.
+        definition: &'a serde_json::Map<String, serde_json::Value>,
+        /// Whether the provider can execute this declaration itself. The
+        /// protocol owner classifies the admitted definition, independently of
+        /// client tool names and executable capability grants.
+        server_tool: bool,
+    },
 }
 
 /// A declaration list admitted once and serialized in its original order.
@@ -35,48 +42,39 @@ pub enum ToolDeclaration<'a, P> {
 pub struct ToolDeclarations<'a, P> {
     family: Family,
     declarations: Vec<ToolDeclaration<'a, P>>,
+    server_tools: bool,
 }
 
 impl<'a, P> ToolDeclarations<'a, P> {
-    /// Pins the protocol and checks that every server declaration is supported.
-    /// This does not enable native response replay in a host: the ingress
-    /// parser and durable conversation owner must retain server items too.
+    /// Pins the protocol and retains declarations in their original order.
+    /// Provider declarations are data; their validation belongs to the selected
+    /// provider. Rendering grants no native response or execution authority.
     ///
     /// # Errors
-    /// Chat Completions cannot represent this native search declaration;
-    /// Repeated search declarations and Anthropic name collisions are refused.
+    /// Freeform client tools require the Responses protocol.
     pub fn new(
         family: Family,
         declarations: Vec<ToolDeclaration<'a, P>>,
     ) -> Result<Self, RenderError> {
-        let mut search = false;
-        let mut search_function = false;
+        let mut server_tools = false;
         for declaration in &declarations {
             if matches!(declaration, ToolDeclaration::Freeform { .. })
                 && family != Family::Responses
             {
                 return Err(RenderError::InvalidItem("freeform tools require Responses"));
             }
-            if let ToolDeclaration::Function { name, .. } = declaration {
-                search_function |= name == "web_search";
-            }
-            if matches!(declaration, ToolDeclaration::WebSearch) {
-                if family == Family::Chat || search {
-                    return Err(RenderError::InvalidItem(
-                        "unsupported or repeated native web search declaration",
-                    ));
+            server_tools |= matches!(
+                declaration,
+                ToolDeclaration::Provider {
+                    server_tool: true,
+                    ..
                 }
-                search = true;
-            }
-        }
-        if family == Family::Anthropic && search && search_function {
-            return Err(RenderError::InvalidItem(
-                "native web search collides with a client function name",
-            ));
+            );
         }
         Ok(Self {
             family,
             declarations,
+            server_tools,
         })
     }
 
@@ -91,10 +89,8 @@ impl<'a, P> ToolDeclarations<'a, P> {
 
     /// GenerateContent's NONE controls function declarations only; it cannot
     /// establish that a built-in server tool will not execute.
-    pub(crate) fn has_server_tools(&self) -> bool {
-        self.declarations
-            .iter()
-            .any(|tool| matches!(tool, ToolDeclaration::WebSearch))
+    pub(crate) const fn has_server_tools(&self) -> bool {
+        self.server_tools
     }
 }
 
@@ -152,40 +148,26 @@ struct Declaration<'a, 'b, P> {
 impl<P: Serialize> Serialize for Declaration<'_, '_, P> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(None)?;
         match self.tool {
+            ToolDeclaration::Provider { definition, .. } => definition.serialize(serializer),
             ToolDeclaration::Freeform {
                 name,
                 description,
                 format,
             } => {
+                let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("type", "custom")?;
                 map.serialize_entry("name", name)?;
                 map.serialize_entry("description", description)?;
                 map.serialize_entry("format", format)?;
+                map.end()
             }
-            ToolDeclaration::WebSearch => match self.family {
-                Family::Responses => map.serialize_entry("type", "web_search")?,
-                Family::Anthropic => {
-                    map.serialize_entry("type", "web_search_20250305")?;
-                    map.serialize_entry("name", "web_search")?;
-                }
-                Family::Gemini => {
-                    #[derive(Serialize)]
-                    struct Empty {}
-                    map.serialize_entry("googleSearch", &Empty {})?;
-                }
-                Family::Chat => {
-                    return Err(serde::ser::Error::custom(
-                        "Chat Completions has no native web search declaration",
-                    ));
-                }
-            },
             ToolDeclaration::Function {
                 name,
                 description,
                 parameters,
             } => {
+                let mut map = serializer.serialize_map(None)?;
                 if self.family == Family::Chat {
                     #[derive(Serialize)]
                     struct Function<'a, P> {
@@ -216,8 +198,8 @@ impl<P: Serialize> Serialize for Declaration<'_, '_, P> {
                     };
                     map.serialize_entry(schema, parameters)?;
                 }
+                map.end()
             }
         }
-        map.end()
     }
 }

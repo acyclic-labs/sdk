@@ -74,7 +74,8 @@ pub struct Fields<'a> {
 
 impl PartialEq for Fields<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.values == other.values
+        self.server_tools == other.server_tools
+            && self.values == other.values
             && self.tools.as_deref().map(RawValue::get) == other.tools.as_deref().map(RawValue::get)
     }
 }
