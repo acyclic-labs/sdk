@@ -375,6 +375,11 @@ pub enum ContentChange<'a> {
         /// Exact source identity authorized for deletion in this commit.
         source: &'a FileRef,
     },
+    /// Removes the binding only while its original namespace selection is unchanged.
+    DeleteAt {
+        /// Original volume, path and generation; no content body is required.
+        source: &'a PathSelection,
+    },
     /// Removes the current binding without requiring a source read.
     Delete {
         /// Destination authorized for deletion at the commit's selected cut.
@@ -388,13 +393,21 @@ impl ContentChange<'_> {
         match self {
             Self::CreateAbsent { path, .. } | Self::Delete { path } => path,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => source.path(),
+            Self::DeleteAt { source } => &source.path,
         }
     }
     /// Original immutable source, when this change replaces or removes a file.
     pub fn source(&self) -> Option<&FileRef> {
         match self {
-            Self::CreateAbsent { .. } | Self::Delete { .. } => None,
+            Self::CreateAbsent { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => None,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => Some(source),
+        }
+    }
+
+    pub(crate) fn path_source(&self) -> Option<&PathSelection> {
+        match self {
+            Self::DeleteAt { source } => Some(source),
+            _ => None,
         }
     }
 }

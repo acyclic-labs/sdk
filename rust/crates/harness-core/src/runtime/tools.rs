@@ -608,10 +608,35 @@ impl ToolContext {
                     ));
                 }
             }
+            if let Some(source) = change.path_source() {
+                crate::executor::with_history_io(io, |work| {
+                    source.validate(work)?;
+                    if &source.volume != volume
+                        || !crate::core::directory_read_granted_with_work(
+                            self.effective_scope().grants(),
+                            volume,
+                            source
+                                .path
+                                .rsplit_once('/')
+                                .map_or("", |(parent, _)| parent),
+                            work,
+                        )?
+                    {
+                        return Err(crate::store::guarded_boundary(
+                            work,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "conditional path source requires its original directory read grant",
+                        ));
+                    }
+                    Ok(())
+                })?;
+            }
             let bytes = match change {
                 ContentChange::CreateAbsent { bytes, .. }
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
-                ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => 0,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => 0,
             };
             if bytes > self.effective_scope().limits().file_bytes {
                 return Err(Error::tool_rejected(
@@ -652,7 +677,9 @@ impl ToolContext {
                     file
                 }
                 (
-                    ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. },
+                    ContentChange::DeleteExpected { .. }
+                    | ContentChange::DeleteAt { .. }
+                    | ContentChange::Delete { .. },
                     ContentChangeResult::Deleted(_),
                 ) => continue,
                 _ => {
@@ -675,7 +702,9 @@ impl ToolContext {
                     source.descriptor().media_type(),
                     source.display_name(),
                 ),
-                ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => continue,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => continue,
             };
             if file.volume() != volume
                 || file.path() != change.path()

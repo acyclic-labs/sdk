@@ -87,18 +87,27 @@ impl FileTool {
             Self::Remove => {
                 let input = decode::<RemoveFileInput>(&invocation.arguments, work)?;
                 let (volume, path) = context.tool_write_path_selection(&input.0.path, io)?;
+                let _source_custody;
                 let source = if input.0.if_version == "any" {
+                    _source_custody = None;
                     None
                 } else {
-                    Some(
-                        self.source(context, &input.0.path, Some(&input.0.if_version), work, io)
-                            .await?,
-                    )
+                    let (source, custody) = super::version::decode_tool_version(
+                        Some(context),
+                        &input.0.path,
+                        &input.0.if_version,
+                        work,
+                    )?;
+                    _source_custody = custody;
+                    Some(source)
                 };
                 let change = match &source {
-                    Some(source) => crate::conversation::ContentChange::DeleteExpected {
-                        source: &source.file,
-                    },
+                    Some(super::version::SelectedVersion::Content(source)) => {
+                        crate::conversation::ContentChange::DeleteExpected { source }
+                    }
+                    Some(super::version::SelectedVersion::Authored(source)) => {
+                        crate::conversation::ContentChange::DeleteAt { source }
+                    }
                     None => crate::conversation::ContentChange::Delete { path: &path },
                 };
                 let (receipt, retained) = context

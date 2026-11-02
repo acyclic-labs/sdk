@@ -323,8 +323,9 @@ mod tests {
             }
             await remove('remove.txt', 'any');
             if (await read('remove.txt') !== null) throw new Error('unconditional removal did not remove current binding');
-            await write('remove.txt', 'again', 'any');
+            await write('remove.txt', 'again'.repeat(400), 'any');
             const latest = await read('remove.txt');
+            if (!latest.version.startsWith('authored-path-v1:')) throw new Error('removal control needs original namespace version');
             await remove('remove.txt', latest.version);
             if (await read('remove.txt') !== null || retained.text() !== 'old') throw new Error('versioned removal changed pinned content');
             await write('recovery.txt', 'original', 'any');
@@ -422,6 +423,10 @@ mod tests {
                     if invocation.arguments["selection"]["kind"] == "directory" {
                         directory_pages += 1;
                     }
+                    let namespace_removal = name == "remove"
+                        && invocation.arguments["ifVersion"]
+                            .as_str()
+                            .is_some_and(|version| version.starts_with("authored-path-v1:"));
                     let acting = if name == "remove" && invocation.arguments["path"] == "denied.txt"
                     {
                         Arc::new(
@@ -433,20 +438,45 @@ mod tests {
                                     publisher
                                         .volume()
                                         .capability(VolumeOperation::Write, &mut None)?,
+                                    Capability::whole_volume(
+                                        None,
+                                        &[
+                                            Action::List,
+                                            Action::Read,
+                                            Action::ReadHistory,
+                                            Action::Create,
+                                            Action::Write,
+                                        ],
+                                    )
+                                    .to_scope_label()
+                                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
                                     "tool:call:remove".into(),
                                 ]),
-                                Limits {
-                                    file_bytes: 65536,
-                                    render_bytes: 4096,
-                                    ..Limits::default()
-                                },
+                                task.scope().limits(),
                             )?,
                         )
+                    } else if namespace_removal {
+                        // The original version is admitted, but the 2000-byte body
+                        // cannot be read on this narrower operation's allowance.
+                        Arc::new(task.scoped(
+                            task.scope().grants().clone(),
+                            Limits {
+                                file_bytes: 1536,
+                                ..task.scope().limits()
+                            },
+                        )?)
                     } else {
                         task.clone()
                     };
                     let context =
                         ToolContext::new(acting, invocation.operation_id, &invocation.call_id)?;
+                    if namespace_removal {
+                        let refusal = context
+                            .read_tool_path("remove.txt", None, None)
+                            .await
+                            .unwrap_err();
+                        assert!(refusal.to_string().contains("read bound"), "{refusal}");
+                    }
                     let recovering =
                         name == "remove" && invocation.arguments["path"] == "recovery.txt";
                     let reply = match tool

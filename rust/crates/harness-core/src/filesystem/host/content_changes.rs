@@ -8,23 +8,24 @@ use acyclic_fs::access::Action;
 // Version 2 has no optional-field combinations or synthetic deleted FileRef.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "action", rename_all = "snake_case")]
-enum ChangeRecord<S, F, P> {
+enum ChangeRecord<S, F, P, G> {
     Create { file: F },
     Update { source: S, file: F },
     DeleteExpected { source: S },
+    DeleteAt { source: G },
     Delete { path: P },
 }
 
-impl<S, F, P> ChangeRecord<S, F, P> {
+impl<S, F, P, G> ChangeRecord<S, F, P, G> {
     fn file(&self) -> Option<&F> {
         match self {
             Self::Create { file } | Self::Update { file, .. } => Some(file),
-            Self::DeleteExpected { .. } | Self::Delete { .. } => None,
+            Self::DeleteExpected { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => None,
         }
     }
 }
 
-type StoredChange = ChangeRecord<FileRef, FileRef, String>;
+type StoredChange = ChangeRecord<FileRef, FileRef, String, crate::conversation::PathSelection>;
 
 #[derive(Deserialize, crate::HeapLayout)]
 struct ChangeReceipt(u8, Vec<StoredChange>);
@@ -41,6 +42,7 @@ impl UploadRecord for ChangeReceipt {
                         file.logical_owned_bytes()?,
                     ])?,
                     ChangeRecord::DeleteExpected { source } => source.logical_owned_bytes()?,
+                    ChangeRecord::DeleteAt { source } => source.logical_owned_bytes()?,
                     ChangeRecord::Delete { path } => path.capacity() as u64,
                 };
                 crate::core::owned_sum([bytes, owned])
@@ -138,6 +140,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ChangeRecord::Update { file, .. } => (file.path(), Action::Write, Some(file)),
                     ChangeRecord::DeleteExpected { source } => {
                         (source.path(), Action::Delete, Some(source))
+                    }
+                    ChangeRecord::DeleteAt { source } => {
+                        source.validate(&mut Some(&mut io.history_io()))?;
+                        if &source.volume != volume {
+                            return Err(io.invalid("conditional receipt volume differs"));
+                        }
+                        (source.path.as_str(), Action::Delete, None)
                     }
                     ChangeRecord::Delete { path } => (path.as_str(), Action::Delete, None),
                 };
@@ -249,6 +258,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         return Err(io.invalid("conditional source belongs to another volume"));
                     }
                 }
+                if let Some(source) = change.path_source() {
+                    source.validate(&mut Some(&mut io.history_io()))?;
+                    if &source.volume != volume {
+                        return Err(io.invalid("conditional source belongs to another volume"));
+                    }
+                }
                 let output = match change {
                     ContentChange::CreateAbsent {
                         path,
@@ -262,7 +277,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         source.descriptor().media_type(),
                         source.display_name(),
                     )),
-                    ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => None,
+                    ContentChange::DeleteExpected { .. }
+                    | ContentChange::DeleteAt { .. }
+                    | ContentChange::Delete { .. } => None,
                 };
                 let file = if let Some((path, bytes, media, display)) = output {
                     if bytes.len() as u64 > maximum_bytes {
@@ -291,6 +308,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     },
                     ContentChange::DeleteExpected { source } => {
                         ChangeRecord::DeleteExpected { source: *source }
+                    }
+                    ContentChange::DeleteAt { source } => {
+                        ChangeRecord::DeleteAt { source: *source }
                     }
                     ContentChange::Delete { path } => ChangeRecord::Delete { path: *path },
                 });
@@ -391,17 +411,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 // All conditions are resolved at this one cut. The original
                 // transaction observes these bindings and publishes once.
                 for change in changes {
-                    if let Some(source) = change.source() {
-                        let source_generation = self.file_generation(source, Some(io))?;
-                        if source_generation != selected_ref {
+                    let content_generation = change
+                        .source()
+                        .map(|source| self.file_generation(source, Some(io)))
+                        .transpose()?;
+                    let source_generation = content_generation
+                        .as_ref()
+                        .or_else(|| change.path_source().map(|source| &source.generation));
+                    if let Some(source_generation) = source_generation {
+                        if source_generation != &selected_ref {
                             let absolute = crate::executor::preparation_format(
-                                format_args!("/{}", source.path()),
+                                format_args!("/{}", change.path()),
                                 &mut Some(&mut io.history_io()),
                             )?;
-                            let metadata = content_metadata_path_io(source.path(), true, Some(io))?;
+                            let metadata = content_metadata_path_io(change.path(), true, Some(io))?;
                             self.require_unchanged_content(
                                 &opened,
-                                &source_generation,
+                                source_generation,
                                 &selected_ref,
                                 [&metadata, &absolute],
                                 Some(io),
@@ -502,7 +528,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     .await,
                             )?;
                         }
-                        ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => {
+                        ContentChange::DeleteExpected { .. }
+                        | ContentChange::DeleteAt { .. }
+                        | ContentChange::Delete { .. } => {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
@@ -616,8 +644,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-fn change_result<S: std::borrow::Borrow<FileRef>, P: AsRef<str>>(
-    record: ChangeRecord<S, FileRef, P>,
+fn change_result<
+    S: std::borrow::Borrow<FileRef>,
+    P: AsRef<str>,
+    G: std::borrow::Borrow<crate::conversation::PathSelection>,
+>(
+    record: ChangeRecord<S, FileRef, P, G>,
     io: &PreparationIo,
 ) -> Result<ContentChangeResult> {
     Ok(match record {
@@ -625,6 +657,9 @@ fn change_result<S: std::borrow::Borrow<FileRef>, P: AsRef<str>>(
         ChangeRecord::Update { file, .. } => ContentChangeResult::Updated(file),
         ChangeRecord::DeleteExpected { source } => {
             ContentChangeResult::Deleted(stock_string_copy(source.borrow().path(), Some(io))?)
+        }
+        ChangeRecord::DeleteAt { source } => {
+            ContentChangeResult::Deleted(stock_string_copy(&source.borrow().path, Some(io))?)
         }
         ChangeRecord::Delete { path } => {
             ContentChangeResult::Deleted(stock_string_copy(path.as_ref(), Some(io))?)
@@ -636,6 +671,8 @@ fn change_action(change: &ContentChange<'_>) -> Action {
     match change {
         ContentChange::CreateAbsent { .. } => Action::Create,
         ContentChange::UpdateExpected { .. } => Action::Write,
-        ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => Action::Delete,
+        ContentChange::DeleteExpected { .. }
+        | ContentChange::DeleteAt { .. }
+        | ContentChange::Delete { .. } => Action::Delete,
     }
 }
