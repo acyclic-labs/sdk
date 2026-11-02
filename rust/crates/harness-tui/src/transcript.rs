@@ -221,17 +221,13 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
             spans.push(Span::styled(marker, style_at(row.start)));
         }
         // The marker span stays its own, borrowed; text cells of one style join.
-        let text = spans.len();
-        for cell in &row.cells {
-            let style = style_at(cell.source.start);
-            let joinable = spans.len() > text;
-            match spans.last_mut() {
-                Some(span) if joinable && span.style == style => {
-                    span.content.to_mut().push_str(&cell.symbol);
-                }
-                _ => spans.push(Span::styled(cell.symbol.clone(), style)),
-            }
-        }
+        crate::styled_cells::append(
+            &mut spans,
+            row.cells
+                .iter()
+                .map(|cell| (cell.source.start, cell.symbol.clone())),
+            style_at,
+        );
         rows.push(Line::from(spans));
     }
     rows.push(Line::default());
