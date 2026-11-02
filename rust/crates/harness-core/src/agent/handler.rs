@@ -343,21 +343,41 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         if let Some(state) = state.as_mut() {
-            state.open_children.bind(Arc::clone(self.agents.store.provider()));
-            state.archive_pending.bind(Arc::clone(self.agents.store.provider()));
-            state.awaiting.bind(Arc::clone(self.agents.store.provider()));
+            state
+                .open_children
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .archive_pending
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .awaiting
+                .bind(Arc::clone(self.agents.store.provider()));
         }
         let mut step = super::step(
-            &self.driver, &path, state, (cursor, delivery.now_unix_ms), wake, cancellation,
-        ).await?;
+            &self.driver,
+            &path,
+            state,
+            (cursor, delivery.now_unix_ms),
+            wake,
+            cancellation,
+        )
+        .await?;
         for out in &step.outs {
             if let Out::Diagnostic { diagnostic, text } = out {
-                diagnostic.stage(self.agents.store.provider().as_ref(), text).await?;
+                diagnostic
+                    .stage(self.agents.store.provider().as_ref(), text)
+                    .await?;
             }
         }
-        step.state.open_children.bind(Arc::clone(self.agents.store.provider()));
-        step.state.archive_pending.bind(Arc::clone(self.agents.store.provider()));
-        step.state.awaiting.bind(Arc::clone(self.agents.store.provider()));
+        step.state
+            .open_children
+            .bind(Arc::clone(self.agents.store.provider()));
+        step.state
+            .archive_pending
+            .bind(Arc::clone(self.agents.store.provider()));
+        step.state
+            .awaiting
+            .bind(Arc::clone(self.agents.store.provider()));
         step.state.awaiting.persist().await?;
         step.state.open_children.persist().await?;
         step.state.archive_pending.persist().await?;

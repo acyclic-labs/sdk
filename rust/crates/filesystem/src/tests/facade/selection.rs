@@ -22,12 +22,9 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
         )
         .await?
         .value;
-    for paths in [
-        "/../file".to_owned(),
-        "/bad\0name".to_owned(),
-    ]
-    .into_iter()
-    .flat_map(|invalid| [vec![invalid.clone()], vec!["/".to_owned(), invalid]])
+    for paths in ["/../file".to_owned(), "/bad\0name".to_owned()]
+        .into_iter()
+        .flat_map(|invalid| [vec![invalid.clone()], vec!["/".to_owned(), invalid]])
     {
         let owned = (paths.capacity() * std::mem::size_of::<String>()
             + paths.iter().map(String::capacity).sum::<usize>()) as u64;

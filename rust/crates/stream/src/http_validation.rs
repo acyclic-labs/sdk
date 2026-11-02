@@ -236,8 +236,7 @@ fn validate_commit_result(value: &Value) -> Result {
             Some(skipped) => array(skipped)?.as_slice(),
             None => &[],
         };
-        if appends.len().saturating_add(forks.len()) == 0
-        {
+        if appends.len().saturating_add(forks.len()) == 0 {
             return Err("invalid receipt size");
         }
         for skipped in skipped {

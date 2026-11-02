@@ -395,8 +395,13 @@ async fn skill_prefix<S: SkillReader>(
         if prefix.len() as u64 > credit {
             return Err(Error::Storage("prefix reader exceeded bound".into()));
         }
-        if selected.as_ref().is_some_and(|previous| previous != &pinned) {
-            return Err(Error::Storage("prefix reader changed its pinned source".into()));
+        if selected
+            .as_ref()
+            .is_some_and(|previous| previous != &pinned)
+        {
+            return Err(Error::Storage(
+                "prefix reader changed its pinned source".into(),
+            ));
         }
         if frontmatter_end(&prefix).is_ok()
             || limits.header_bytes.is_some()
@@ -406,7 +411,8 @@ async fn skill_prefix<S: SkillReader>(
             break (prefix, pinned);
         }
         selected = Some(pinned);
-        credit = credit.checked_mul(2)
+        credit = credit
+            .checked_mul(2)
             .ok_or_else(|| Error::Invalid("frontmatter length overflows".into()))?;
     };
     Ok((prefix, pinned))

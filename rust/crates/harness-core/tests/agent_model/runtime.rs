@@ -69,7 +69,10 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             Box::pin(async move {
                 let wait = if let Some((approval, status_bytes, escaped)) = self.1 {
                     let phase = if approval {
-                        Phase::WaitingApproval { id: intent("x"), binding: None }
+                        Phase::WaitingApproval {
+                            id: intent("x"),
+                            binding: None,
+                        }
                     } else {
                         Phase::WaitingHost { host: "x".into() }
                     };
@@ -88,7 +91,10 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                         - 1;
                     let text = if escaped { "\"" } else { "x" }.repeat(status_bytes - envelope);
                     if approval {
-                        Wait::Approval { id: IntentId::try_from(text)?, binding: None }
+                        Wait::Approval {
+                            id: IntentId::try_from(text)?,
+                            binding: None,
+                        }
                     } else {
                         Wait::Host(text)
                     }
@@ -822,7 +828,10 @@ async fn committed_checkpoints_carry_final_tails() -> Result {
             Out::Conversation(b"first".to_vec()),
             Out::Conversation(b"second".to_vec()),
         ],
-        wait: Wait::Approval { id: intent("decision"), binding: None },
+        wait: Wait::Approval {
+            id: intent("decision"),
+            binding: None,
+        },
         drops: None,
     }]);
     let host = AgentHost::new(
@@ -1369,7 +1378,10 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
-                        Wait::Approval { id: intent("decision"), binding: None }
+                        Wait::Approval {
+                            id: intent("decision"),
+                            binding: None,
+                        }
                     } else {
                         Wait::Input
                     },
