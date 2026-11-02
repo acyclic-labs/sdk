@@ -415,6 +415,61 @@ pub(crate) fn native_work_error_code(
     }
 }
 
+/// Borrows the original cause so native custody and portable adapters agree.
+#[cfg(feature = "filesystem")]
+pub(crate) fn workspace_error_code(cause: &acyclic_fs::WorkspaceError) -> crate::wire::ErrorCode {
+    use crate::wire::ErrorCode;
+    use acyclic_fs::WorkspaceError as Workspace;
+    match cause {
+        Workspace::AccessDenied => ErrorCode::Unauthorized,
+        Workspace::NotFound => ErrorCode::NotFound,
+        Workspace::RetentionConflict
+        | Workspace::StaleGeneration
+        | Workspace::StaleSource
+        | Workspace::StaleIdentity => ErrorCode::Conflict,
+        Workspace::Name(_)
+        | Workspace::Path(_)
+        | Workspace::NamespacePath(_)
+        | Workspace::ReadLimitExceeded
+        | Workspace::NotRegularFile
+        | Workspace::NotDirectory
+        | Workspace::IsDirectory
+        | Workspace::DirectoryNotEmpty
+        | Workspace::ForeignGeneration
+        | Workspace::IncompatibleWorkspace
+        | Workspace::NoCommonAncestor
+        | Workspace::LineageLimit
+        | Workspace::JoinLimit
+        | Workspace::StaleTarget
+        | Workspace::InvalidMergeResolution
+        | Workspace::ChangeSetContinuity
+        | Workspace::ChangedPathLimit
+        | Workspace::EmptyContentSet
+        | Workspace::NotFork
+        | Workspace::ContentLengthOverflow
+        | Workspace::Work(_)
+        | Workspace::WorkMerge { .. } => ErrorCode::Invalid,
+        Workspace::Cancelled(_) => ErrorCode::Cancelled,
+        Workspace::Filesystem(cause) => filesystem_error_code(cause),
+        Workspace::Engine(_) => ErrorCode::Storage,
+    }
+}
+
+#[cfg(feature = "filesystem")]
+fn filesystem_error_code(cause: &acyclic_fs::FsError) -> crate::wire::ErrorCode {
+    use crate::wire::ErrorCode;
+    use acyclic_fs::FsError as Filesystem;
+    match cause {
+        Filesystem::InvalidAccessPolicy => ErrorCode::Unauthorized,
+        Filesystem::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
+        Filesystem::Authority(acyclic_fs::AuthorityStoreError::Missing) => ErrorCode::NotFound,
+        Filesystem::Cancelled(_) => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        Filesystem::NativeKernel(cause) => native_work_error_code(cause),
+        _ => ErrorCode::Storage,
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 #[cfg(feature = "machines")]
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
@@ -530,31 +585,15 @@ impl Error {
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWorkspace { source, .. }
-                if matches!(
-                    source.as_ref(),
-                    acyclic_fs::WorkspaceError::NotFound
-                        | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
-                            acyclic_fs::AuthorityStoreError::Missing,
-                        ))
-                ) =>
-            {
-                ErrorCode::NotFound
-            }
+            Self::NativeWorkspace { source, .. } => workspace_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeFilesystem { source, .. }
-                if matches!(source.as_ref(), acyclic_fs::FsError::InvalidAccessPolicy) =>
-            {
-                ErrorCode::Unauthorized
-            }
+            Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
-            | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
-            | Self::NativeStageUncertain { .. }
-            | Self::NativeFilesystem { .. } => ErrorCode::Storage,
+            | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(

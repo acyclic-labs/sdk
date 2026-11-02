@@ -92,46 +92,21 @@ fn content_identity_path_io(
 }
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {
+    use crate::wire::ErrorCode;
     match error {
-        WorkspaceError::AccessDenied
-        | WorkspaceError::Filesystem(acyclic_fs::FsError::InvalidAccessPolicy) => {
-            Error::Unauthorized(error.to_string())
-        }
+        WorkspaceError::Cancelled(error) => Error::from(error),
+        WorkspaceError::Engine(value) => Error::Storage(value),
         WorkspaceError::Filesystem(acyclic_fs::FsError::UnauthenticatedAccessFacts) => {
             Error::FilesystemAccessConfiguration("unauthenticated principal facts")
         }
-        WorkspaceError::NotFound
-        | WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
-            acyclic_fs::AuthorityStoreError::Missing,
-        )) => Error::NotFound("workspace path".into()),
-        WorkspaceError::RetentionConflict
-        | WorkspaceError::StaleGeneration
-        | WorkspaceError::StaleSource
-        | WorkspaceError::StaleIdentity => Error::Conflict(error.to_string()),
-        WorkspaceError::Name(_)
-        | WorkspaceError::Path(_)
-        | WorkspaceError::NamespacePath(_)
-        | WorkspaceError::ReadLimitExceeded
-        | WorkspaceError::NotRegularFile
-        | WorkspaceError::NotDirectory
-        | WorkspaceError::IsDirectory
-        | WorkspaceError::DirectoryNotEmpty
-        | WorkspaceError::ForeignGeneration
-        | WorkspaceError::IncompatibleWorkspace
-        | WorkspaceError::NoCommonAncestor
-        | WorkspaceError::LineageLimit
-        | WorkspaceError::JoinLimit
-        | WorkspaceError::StaleTarget
-        | WorkspaceError::InvalidMergeResolution
-        | WorkspaceError::ChangeSetContinuity
-        | WorkspaceError::ChangedPathLimit
-        | WorkspaceError::EmptyContentSet
-        | WorkspaceError::NotFork
-        | WorkspaceError::ContentLengthOverflow
-        | WorkspaceError::Work(_)
-        | WorkspaceError::WorkMerge { .. } => Error::Invalid(error.to_string()),
-        WorkspaceError::Cancelled(error) => Error::from(error),
-        WorkspaceError::Filesystem(error) => Error::Storage(error.to_string()),
-        WorkspaceError::Engine(value) => Error::Storage(value),
+        error => match crate::contract_errors::workspace_error_code(&error) {
+            ErrorCode::Unauthorized => Error::Unauthorized(error.to_string()),
+            ErrorCode::Unsupported => Error::Unsupported(error.to_string()),
+            ErrorCode::NotFound => Error::NotFound("workspace path".into()),
+            ErrorCode::Conflict => Error::Conflict(error.to_string()),
+            ErrorCode::Invalid => Error::Invalid(error.to_string()),
+            ErrorCode::Cancelled => Error::Cancelled,
+            _ => Error::Storage(error.to_string()),
+        },
     }
 }
