@@ -592,6 +592,10 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
 }
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
+    let only_soft = request
+        .mutations
+        .iter()
+        .all(|mutation| matches!(mutation, CommitMutation::SoftAppend { .. }));
     for mutation in &request.mutations {
         if let CommitMutation::Fork {
             source,
@@ -609,11 +613,30 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
                         .cmp(destination.as_str().bytes().chain(std::iter::once(b'/')))
                         .is_lt()
                 });
+                let mut exclusions = exclude.iter().peekable();
                 request.mutations[index..]
                     .iter()
                     .map(|other| crate::CommitMutation::path(other).as_str())
                     .map_while(|path| path.strip_prefix(destination.as_str())?.strip_prefix('/'))
-                    .any(|relative| !exclude.iter().any(|excluded| relative == excluded.as_str()))
+                    .any(|relative| {
+                        // Both inputs are canonical and ordered. Each exclusion
+                        // is visited once, independent of the number of writes.
+                        while let Some(excluded) = exclusions.peek() {
+                            #[cfg(test)]
+                            EXCLUSION_COMPARISONS.set(EXCLUSION_COMPARISONS.get() + 1);
+                            match excluded.as_str().cmp(relative) {
+                                std::cmp::Ordering::Less => {
+                                    exclusions.next();
+                                }
+                                std::cmp::Ordering::Equal => {
+                                    exclusions.next();
+                                    return false;
+                                }
+                                std::cmp::Ordering::Greater => return true,
+                            }
+                        }
+                        true
+                    })
             })
         {
             return Err(StreamError::InvalidArgument);
@@ -636,12 +659,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
                 return Err(StreamError::InvalidArgument);
             }
             CommitMutation::SoftAppend { path, closed, .. }
-                if condition.is_some()
-                    || closed.as_ref() == Some(path)
-                    || request
-                        .mutations
-                        .iter()
-                        .all(|other| matches!(other, CommitMutation::SoftAppend { .. })) =>
+                if condition.is_some() || closed.as_ref() == Some(path) || only_soft =>
             {
                 return Err(StreamError::InvalidArgument);
             }
@@ -652,11 +670,78 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
 }
 
 #[cfg(test)]
+std::thread_local! {
+    static EXCLUSION_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::OwnedBytes as Bytes;
     use crate::StreamProviderExt as _;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
+
+    #[test]
+    fn fork_exclusion_validation_visits_each_supplied_entry_once() -> Result<(), StreamError> {
+        for count in [64, 128, 20_000] {
+            let destination = StreamPath::new("fork")?;
+            let mut exclude = vec![StreamPath::new("aaa")?];
+            let mut mutations = Vec::new();
+            for index in 0..count {
+                let name = format!("child{index:05}");
+                exclude.push(StreamPath::new(&name)?);
+                mutations.push(CommitMutation::Append {
+                    path: StreamPath::new(format!("fork/{name}"))?,
+                    records: vec![Bytes::from_static(b"child").into()],
+                });
+            }
+            // Textual-prefix siblings must not be selected as descendants.
+            for sibling in ["fork-", "fork0"] {
+                mutations.push(CommitMutation::Append {
+                    path: StreamPath::new(sibling)?,
+                    records: vec![Bytes::from_static(b"sibling").into()],
+                });
+            }
+            mutations.push(CommitMutation::Fork {
+                source: StreamPath::new("source")?,
+                destination: destination.clone(),
+                at_tail: 0,
+                exclude,
+                records: Vec::new(),
+            });
+            let mut request = CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: IdempotencyKey::new("fork-exclusion-work")?,
+                conditions: vec![CommitCondition::Absent { path: destination }],
+                mutations,
+            };
+            normalize_commit(&mut request)?;
+            EXCLUSION_COMPARISONS.set(0);
+            validate_commit_shape(&request)?;
+            let work = EXCLUSION_COMPARISONS.get();
+            assert!(work <= 2 * count, "exclusions rescanned: {work}");
+            let CommitMutation::Fork { exclude, .. } = &mut request.mutations[0] else {
+                return Err(StreamError::InvalidArgument);
+            };
+            if count == 64 {
+                // Restore the former search as a finite cost negative control.
+                let mut original_work = 0;
+                for relative in exclude.iter() {
+                    assert!(exclude.iter().any(|excluded| {
+                        original_work += 1;
+                        excluded == relative
+                    }));
+                }
+                assert!(original_work > 2 * count);
+            }
+            exclude.pop();
+            assert_eq!(
+                validate_commit_shape(&request),
+                Err(StreamError::InvalidArgument)
+            );
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn recovery_binding_refuses_changed_facts_and_unfunded_hash_work()
