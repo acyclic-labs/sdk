@@ -160,7 +160,7 @@ pub(super) fn verify_archive_sources(
         if !checkout.starts_with(source) {
             return Err("released archive source escapes checkout package".into());
         }
-        if !members.matches(member, &checkout)? {
+        if !members.matches(digest, &checkout)? {
             return Err(format!(
                 "released archive source bytes differ from checkout: {relative}"
             ));
@@ -171,7 +171,7 @@ pub(super) fn verify_archive_sources(
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?,
         );
-        source_inputs.insert(logical, digest.clone());
+        source_inputs.insert(logical, digest.sha256.clone());
         has_manifest |= original_manifest;
     }
     if !has_manifest {

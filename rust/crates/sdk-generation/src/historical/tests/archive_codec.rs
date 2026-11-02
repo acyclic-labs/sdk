@@ -192,6 +192,7 @@ fn stage_bytes(
 #[test]
 fn staged_archive_matches_retained_decoder_and_immutable_publication() {
     let members = BTreeMap::from([
+        ("0-empty".into(), Vec::new()),
         ("Cargo.toml".into(), b"[package]".to_vec()),
         ("a/./long".into(), vec![42; 128 * 1024]),
         (format!("src/{}", "long".repeat(40)), vec![255; 19]),
@@ -206,8 +207,13 @@ fn staged_archive_matches_retained_decoder_and_immutable_publication() {
         )
         .unwrap();
         let staged = stage_bytes(&bytes, ArchiveLimits::default()).unwrap();
+        staged.assert_storage_contract(&original);
         assert_eq!(
-            staged.files,
+            staged
+                .files
+                .iter()
+                .map(|(name, member)| (name.clone(), member.sha256.clone()))
+                .collect::<BTreeMap<_, _>>(),
             original
                 .iter()
                 .map(|(name, body)| (name.clone(), crate::sha256_bytes(body)))
@@ -228,9 +234,10 @@ fn staged_archive_matches_retained_decoder_and_immutable_publication() {
             .unwrap_err()
             .contains("immutable"));
     }
+    staged_archive_refuses_late_corruption_duplicates_and_every_limit_before_publication();
+    staged_archive_retains_snapshot_and_detects_source_replacement();
 }
 
-#[test]
 fn staged_archive_refuses_late_corruption_duplicates_and_every_limit_before_publication() {
     let members = BTreeMap::from([("a".into(), vec![0; 4096]), ("b".into(), vec![1; 8])]);
     let plain = encode(&members, false);
@@ -294,7 +301,6 @@ fn staged_archive_refuses_late_corruption_duplicates_and_every_limit_before_publ
     }
 }
 
-#[test]
 fn staged_archive_retains_snapshot_and_detects_source_replacement() {
     let bytes = encode(&BTreeMap::from([("src/lib.rs".into(), vec![42])]), true);
     let input = tempfile::NamedTempFile::new().unwrap();
@@ -318,7 +324,10 @@ fn staged_archive_retains_snapshot_and_detects_source_replacement() {
         .check_source(&release, input.path())
         .unwrap_err()
         .contains("changed"));
-    assert_eq!(staged.files["src/lib.rs"], crate::sha256_bytes(&[42]));
+    assert_eq!(
+        staged.files["src/lib.rs"].sha256,
+        crate::sha256_bytes(&[42])
+    );
 }
 
 #[test]
