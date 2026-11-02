@@ -24,19 +24,25 @@ export async function fuzz(data) {
     }
     const child = new EventEmitter();
     const channel = new Duplex({ read() {}, write(_chunk, _encoding, done) { done(); } });
+    let delivery;
     try {
       report.attach(child, channel);
       const completed = report.request(Infinity);
-      for (let offset = 0; offset < bytes.length;) {
-        const end = fragmented ? Math.min(bytes.length, offset + 1 + bytes[offset]) : bytes.length;
-        channel.push(bytes.subarray(offset, end));
-        offset = end;
-      }
-      channel.push(null);
+      delivery = (async () => {
+        for (let offset = 0; offset < bytes.length;) {
+          const end = fragmented ? Math.min(bytes.length, offset + 1 + bytes[offset]) : bytes.length;
+          channel.push(bytes.subarray(offset, end));
+          offset = end;
+          await new Promise(setImmediate);
+        }
+        channel.push(null);
+      })();
       await completed;
+      await report.closeTransport(() => {});
       results.push({ capability: report.capability, termination: report.termination });
       assert.ok(report.termination.report_outcome, "source loss must settle the original request");
     } finally {
+      await delivery;
       child.emit("exit", 0, null);
       channel.destroy();
     }
