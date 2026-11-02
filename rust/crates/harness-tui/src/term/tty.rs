@@ -51,7 +51,10 @@ impl InputReadiness for InputWait {
             } else {
                 &mut sources[..1]
             };
-            let timeout = timeout.map(Timespec::try_from).transpose().map_err(|_| io::ErrorKind::InvalidInput)?;
+            let timeout = timeout
+                .map(Timespec::try_from)
+                .transpose()
+                .map_err(|_| io::ErrorKind::InvalidInput)?;
             match poll(sources, timeout.as_ref()) {
                 Ok(count) => Ok(count != 0),
                 Err(rustix::io::Errno::INTR) => Ok(true),
@@ -338,9 +341,9 @@ mod darwin {
                         Err(error) => Err(error.into()),
                     }
                 }
-                Self::Select(writable) => {
-                    writable.wait([Some(file.as_fd())], Some(remaining)).map(|_| ())
-                }
+                Self::Select(writable) => writable
+                    .wait([Some(file.as_fd())], Some(remaining))
+                    .map(|_| ()),
             }
         }
     }
