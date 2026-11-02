@@ -855,13 +855,16 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
 async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
     use crate::{conversation::VolumeOperation, runtime::Bindings};
 
-    let code = "await console.log({agent:'worker'}); console.log('drained'); export default null";
-    let (mut executor, _, _) = executor(code, allowed()?, false)?;
+    let code = "await console.log({agent:'worker'}); for (let i = 0; i < 17; i++) console.log(i); console.log('drained'); export default null";
+    let approval_policy = crate::approvals::ApprovalPolicy::accept_all("owner");
+    let policy: Arc<dyn ToolPolicy> = Arc::new(approval_policy.bind()?);
+    let (mut executor, model, unused_tool) = executor(code, policy.clone(), false)?;
     executor
         .tools
         .register((crate::tool::files::read()?, None), &mut None, None)?;
-    let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536)
+        .await?
+        .with_approval_policy(approval_policy)?;
     let journal = storage.journal();
     let operation = OperationId::new();
     let content = storage.content_bindings();
@@ -869,6 +872,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         Capabilities::new([
             "tool:call:code".into(),
             "tool:call:read".into(),
+            capability::INTERACTION_ROUTE.into(),
             content
                 .volume
                 .capability(VolumeOperation::Read, &mut None)?,
@@ -883,9 +887,19 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     .build()?
     .agent_context(&Capabilities::default(), content)?;
     executor = executor
-        .with_tool_authority(scope, allowed()?)?
+        .with_tool_authority(scope, policy)?
         .with_task_context(&task, operation)?;
-    let execution = StockExecution::ordinary(&executor);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&executor)
+    };
     execution
         .ensure_started(
             journal.as_ref(),
@@ -900,7 +914,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         operation,
         "checkpoint:private",
         &json!({"version": 1, "private": true}),
-        None,
+        Some(&io),
     )
     .await?;
     assert!(internal.path().starts_with(".system/execution/"));
@@ -910,7 +924,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         "program".into(),
         "code".into(),
         json!({"code":code}),
-        None,
+        Some(&work),
     )?;
     let ExecutionProgress::Ready(result) = execution
         .code(
@@ -945,7 +959,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         "select-logs".into(),
         "code".into(),
         json!({"code":select}),
-        None,
+        Some(&work),
     )?;
     let ExecutionProgress::Ready(selected) = execution
         .code(
@@ -961,13 +975,20 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     let values = crate::tools::code_mode::output(&selected.value)?
         .as_array()
         .expect("selected logs");
-    assert_eq!(values.len(), 2);
+    // The original publication spans the directory iterator's page boundary.
+    // Selection adds its own call logs, which must not enter that pinned cut.
+    assert_eq!(values.len(), 19);
     for value in values {
         assert_eq!(value["kind"], "code.log");
         assert_eq!(value["call_id"], "program");
     }
     assert_eq!(values[0]["values"], json!([{ "agent": "worker" }]));
-    assert_eq!(values[1]["values"], json!(["drained"]));
+    for (index, value) in values[1..18].iter().enumerate() {
+        assert_eq!(value["values"], json!([index]));
+    }
+    assert_eq!(values[18]["values"], json!(["drained"]));
+    assert!(model.requests().is_empty());
+    assert_eq!(unused_tool.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
