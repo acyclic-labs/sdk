@@ -339,20 +339,19 @@ impl vte::Perform for ReplyHandler<'_> {
         if params.iter().any(|parameter| parameter.len() != 1) {
             return;
         }
-        let values: Vec<_> = params
-            .iter()
-            .filter_map(|parameter| match parameter {
-                [value] => Some(*value),
-                _ => None,
-            })
-            .collect();
-        match (action, intermediates, values.as_slice()) {
-            ('c', b"?", [_, attributes @ ..]) => {
+        let mut values = params.iter();
+        match (action, intermediates, values.next(), values.next()) {
+            ('c', b"?", Some(_), first_attribute) => {
                 self.replies.sentinel = true;
-                self.replies.sixel = Some(attributes.contains(&4));
+                self.replies.sixel =
+                    Some(first_attribute.into_iter().chain(values).any(|a| a == [4]));
             }
-            ('u', b"?", [flags]) => self.replies.keyboard_flags = Some(*flags),
-            ('y', b"?$", [mode, value]) if modes().any(|known| known == *mode) && *value <= 4 => {
+            ('u', b"?", Some([flags]), None) => self.replies.keyboard_flags = Some(*flags),
+            ('y', b"?$", Some([mode]), Some([value]))
+                if values.next().is_none()
+                    && modes().any(|known| known == *mode)
+                    && *value <= 4 =>
+            {
                 let state = match value {
                     0 => ModeState::Unsupported,
                     1 => ModeState::Set,

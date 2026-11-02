@@ -1,7 +1,40 @@
 //! Allocation bounds for the production streaming input decoder.
 #![cfg(feature = "tui")]
 
-use acyclic_harness_tui::term::{Decoder, Multiplexer};
+use acyclic_harness_tui::term::{Decoder, ModeState, Multiplexer};
+
+#[test]
+fn csi_replies_borrow_parameters_and_reuse_frame_storage() {
+    let replies = b"\x1b[?62;1;4;6;22c\x1b[?3u\x1b[?2026;2$y";
+    let mut decoder = Decoder::default();
+    decoder.feed(replies).unwrap();
+    for chunk in [1, replies.len()] {
+        let allocations = acyclic_test_support::measure(|| {
+            for bytes in replies.chunks(chunk) {
+                decoder.feed(bytes).unwrap();
+            }
+        });
+        assert_eq!(allocations.count_total, 0);
+        assert!(decoder.replies().sentinel);
+        assert_eq!(decoder.replies().sixel, Some(true));
+        assert_eq!(decoder.replies().keyboard_flags, Some(3));
+        assert_eq!(decoder.replies().modes.get(&2026), Some(&ModeState::Reset));
+        assert!(decoder.take_events().is_empty());
+    }
+
+    let admitted = decoder.replies().clone();
+    for malformed in [
+        b"\x1b[?0;9u".as_slice(),
+        b"\x1b[?2026;1;9$y",
+        b"\x1b[?2026;1:9$y",
+        b"\x1b[?60000;1$y",
+        b"\x1b[?2026;9$y",
+        b"\x1b[?62;1:4c",
+    ] {
+        decoder.feed(malformed).unwrap();
+        assert_eq!(decoder.replies(), &admitted);
+    }
+}
 
 #[test]
 fn multiplexer_frames_append_without_temporary_allocations() {
