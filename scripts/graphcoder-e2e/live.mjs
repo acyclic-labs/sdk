@@ -10,7 +10,7 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
-import { executionSucceeded, fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
+import { executionSucceeded, requireReportCapability, fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
@@ -89,7 +89,9 @@ export async function runCase(binary, login, root, name, signal) {
       format === "text" ? "" : JSON.stringify({ prompt, id: messageId }) + "\n");
     captures.push({ argv: args, ...result });
     step = "assert GraphCoder answer";
-    return answer(result, format, expected, messageId);
+    const value = answer(result, format, expected, messageId);
+    requireReportCapability(result, recovery);
+    return value;
   };
   const hooks = async () => {
     hooksPending = false;
@@ -104,6 +106,7 @@ export async function runCase(binary, login, root, name, signal) {
       { id: "spawn", text: task, answer: "SPAWNED" },
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
+    requireReportCapability(captures.at(-1), recovery);
   };
   const phases = [];
   const prepare = async () => {

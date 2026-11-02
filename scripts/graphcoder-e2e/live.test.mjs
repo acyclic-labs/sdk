@@ -12,6 +12,8 @@ const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-resu
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
 const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
+const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
+const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
 
 test("successful execution cannot erase the original returned native cause", () => {
@@ -49,16 +51,24 @@ test("reply-only cases reject recorded tool failure despite successful native co
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "live-reply-tools-"));
   try {
-    for (const captured of [undefined, ...shellResults]) {
-      const name = captured?.status ?? "no-tools", directory = join(root, name);
+    for (const [captured, capability, journey] of [[undefined, "ready", "session"],
+      ...shellResults.map(captured => [captured, "ready", "session"]),
+      [undefined, "absent", "session"], [undefined, "foreign", "session"],
+      [undefined, "absent", "child-result"]]) {
+      const name = `${captured?.status ?? "no-tools"}-${capability}-${journey}`, directory = join(root, name);
       await mkdir(directory);
       const program = join(directory, "reply.mjs");
       // This native child speaks only the driver's text protocol. Tool events
       // are original shipping captures, replayed through the real recorder.
       await writeFile(program, `#!${process.execPath}
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
+const capability = ${JSON.stringify(capability)};
+if (capability !== "absent") writeSync(Number(process.env.ACYCLIC_REPORT_FD), JSON.stringify({
+  ...${JSON.stringify(nativeReady)}, generation: capability === "ready" ? process.env.ACYCLIC_REPORT_GENERATION : ${JSON.stringify(nativeReady.generation)},
+}) + "\\n");
 const settings = process.argv[process.argv.indexOf("--settings-root") + 1];
 const event = ${JSON.stringify(captured?.event ?? null)};
 if (event) {
@@ -67,18 +77,31 @@ if (event) {
   if (recorded.error) throw recorded.error;
   if (recorded.status !== 0) throw new Error(recorded.stderr);
 }
-const prompt = process.argv[process.argv.indexOf("-p") + 1];
-process.stdout.write(prompt.match(/LIVE_[a-f0-9]+/)[0] + "\\n");
+if (process.argv.includes("--input-format")) {
+  let marker, turn = 0;
+  createInterface({input:process.stdin}).on("line", line => {
+    const input = JSON.parse(line);
+    marker ??= input.prompt.match(/LIVE_[a-f0-9]+/)[0];
+    process.stdout.write(JSON.stringify({ ...${JSON.stringify(committedReply)},
+      id: input.id, inbox: ++turn, text: turn === 1 ? "SPAWNED" : marker }) + "\\n");
+  });
+} else {
+  const prompt = process.argv[process.argv.indexOf("-p") + 1];
+  process.stdout.write(prompt.match(/LIVE_[a-f0-9]+/)[0] + "\\n");
+}
 `);
       await chmod(program, 0o700);
-      const result = await runCase(program, root, directory, "session", new AbortController().signal);
+      const result = await runCase(program, root, directory, journey, new AbortController().signal);
       assert.equal(result.captures.length, 1);
       assert.equal(result.captures[0].code, 0, result.captures[0].stderr);
       assert.equal(result.captures[0].signal, null);
-      assert.equal(result.status, captured?.status === "fail" ? "fail" : "pass", result.error);
+      assert.equal(result.status, captured?.status === "fail" || capability !== "ready" ? "fail" : "pass", result.error);
       if (captured?.status === "fail") {
         assert.deepEqual(result.hooks, [captured.event]);
         assert.match(result.failure.error, /unexpected tool error.*exit_code=1/);
+      } else if (capability !== "ready") {
+        assert.equal(result.captures[0].report_capability.ready, false);
+        assert.match(result.failure.error, /step=admit selected native report capability/);
       }
       assert.deepEqual([result.phases.at(-1).phase, result.phases.at(-1).outcome], ["retired", "completed"]);
     }

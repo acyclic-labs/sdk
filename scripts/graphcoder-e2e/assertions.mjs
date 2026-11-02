@@ -11,6 +11,13 @@ export function executionSucceeded(result) {
   assert.equal(result.signal, null, "executable was interrupted");
 }
 
+// A selected native execution also owns the original report-ready exchange.
+// Output, exit and a diagnostic ACK cannot substitute for that capability.
+export function requireReportCapability(result, recovery) {
+  assert.equal(result.report_capability?.ready, true,
+    `step=admit selected native report capability; recovery=${recovery}`);
+}
+
 // JSONL replies carry either a committed answer or an explicit message error.
 // The same contract applies to live, scripted and multi-turn acceptance.
 export function messageReply(value, id) {
