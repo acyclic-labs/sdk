@@ -138,7 +138,12 @@ impl Tty {
         let mut events = self.decoder.take_events();
         while events.is_empty() {
             let mut bytes = [0; 1024];
-            let count = receive(&self.state, &mut self.input, &mut bytes, self.decoder.input_deadline(deadline))?;
+            let count = receive(
+                &self.state,
+                &mut self.input,
+                &mut bytes,
+                self.decoder.input_deadline(deadline),
+            )?;
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
             if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -319,14 +324,12 @@ mod tests {
                 },
             };
             let mut bytes = [0; 8];
-            assert_eq!(receive(&state, &mut wait, &mut bytes, Some(Instant::now()))?, 0);
-            assert!(wait.active.is_empty());
-            let result = receive(
-                &state,
-                &mut wait,
-                &mut bytes,
-                Some(Instant::now() + Duration::from_secs(5)),
+            assert_eq!(
+                receive(&state, &mut wait, &mut bytes, Some(Instant::now()))?,
+                0
             );
+            assert!(wait.active.is_empty());
+            let result = receive(&state, &mut wait, &mut bytes, None);
             let active = std::mem::take(&mut wait.active);
             drop(wait);
             match mode {
@@ -381,12 +384,7 @@ mod tests {
                 Ok(())
             },
         };
-        let result = receive(
-            &tty.state,
-            &mut wait,
-            &mut [0; 1],
-            Some(Instant::now() + Duration::from_secs(5)),
-        );
+        let result = receive(&tty.state, &mut wait, &mut [0; 1], None);
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
         assert_eq!(wait.active, [true]);
         Ok(())
