@@ -33,7 +33,7 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 8 adds explicit generation-linked file/context restoration requests.
 /// Version 9 retains the original action binding in a waiting approval's status
 /// and actor checkpoint.
-pub const RECORD_VERSION: u32 = 9;
+pub const RECORD_VERSION: u32 = 10;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -524,17 +524,13 @@ pub enum Phase {
         /// Host name.
         host: String,
     },
-    /// A turn's `wait` waits for its children to settle, holding no delivery:
-    /// each child's [`ChildSettled`] or [`ChildDone`] wakes it.
-    WaitingChildren {
-        /// Whether the first awaited child to settle resumes the turn, rather
-        /// than the last.
-        any: bool,
-    },
-    /// Waiting for a deadline.
-    WaitingAlarm {
+    /// A turn waits, holding no delivery, for its condition (see
+    /// [`super::Until`]): each awaited agent's [`ChildSettled`] or
+    /// [`ChildDone`] counts toward it, and its deadline, when set, resumes
+    /// the turn regardless.
+    Waiting {
         /// Unix milliseconds.
-        deadline_unix_ms: u64,
+        deadline_unix_ms: Option<u64>,
     },
     /// Terminal.
     Done {
@@ -553,8 +549,7 @@ impl Phase {
             Self::Running
             | Self::WaitingApproval { .. }
             | Self::WaitingHost { .. }
-            | Self::WaitingChildren { .. }
-            | Self::WaitingAlarm { .. } => true,
+            | Self::Waiting { .. } => true,
         }
     }
 }
@@ -752,8 +747,7 @@ impl AgentRecord for StatusRecord {
             Phase::Idle
             | Phase::Running
             | Phase::WaitingApproval { binding: None, .. }
-            | Phase::WaitingChildren { .. }
-            | Phase::WaitingAlarm { .. } => Ok(()),
+            | Phase::Waiting { .. } => Ok(()),
         }
     }
 }

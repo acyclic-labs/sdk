@@ -15,6 +15,7 @@ struct Kernel {
     settle: fn(Control, Wait) -> (Control, bool),
     cascade: fn(Control, usize) -> Cascade,
     alarm: fn(Control, bool, bool, usize) -> Option<u64>,
+    satisfy: fn(Control) -> Control,
 }
 
 const PRODUCTION: Kernel = Kernel {
@@ -23,6 +24,7 @@ const PRODUCTION: Kernel = Kernel {
     settle: production::settle,
     cascade: production::cascade,
     alarm: production::alarm,
+    satisfy: production::satisfy,
 };
 
 #[derive(Clone, Copy)]
@@ -38,7 +40,7 @@ fn any_wait() -> Wait {
     match kani::any::<u8>() % 5 {
         0 => Wait::Continue,
         1 => Wait::Approval,
-        2 => Wait::Until(kani::any()),
+        2 => Wait::Await(kani::any()),
         3 => Wait::Input,
         _ => Wait::Done,
     }
@@ -71,6 +73,18 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
             model.approval_queued |=
                 matches!(model.control.mode, Mode::Approval) && kani::any::<bool>();
         }
+        // An arrival may complete the awaited monotone condition; it queues
+        // either way, and only the shell's satisfy call may resume the turn.
+        if kind == Admit::Input && kani::any::<bool>() {
+            let before = model.control;
+            model.control = (kernel.satisfy)(model.control);
+            if !matches!(before.mode, Mode::Await(_)) || !before.turn || before.closed {
+                assert!(
+                    model.control == before,
+                    "satisfy changed a control it does not own"
+                );
+            }
+        }
     }
     if model.control.closed {
         let cascade = (kernel.cascade)(model.control, model.pending);
@@ -94,6 +108,12 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
     );
     if matches!(model.control.mode, Mode::Done) {
         assert!(picked == Pick::Nothing, "turn after completion");
+    }
+    if matches!(model.control.mode, Mode::Await(_)) {
+        assert!(
+            picked == Pick::Nothing || picked == Pick::Resume,
+            "an arrival started a step during a condition wait"
+        );
     }
     match picked {
         Pick::Nothing => return,
@@ -134,7 +154,8 @@ fn check_alarm(kernel: Kernel, model: &Model) {
         match control.mode {
             Mode::Done => false,
             Mode::Approval => control.turn && model.approval_queued,
-            Mode::Running | Mode::Alarm(_) => control.turn,
+            Mode::Running => control.turn,
+            Mode::Await(deadline) => control.turn && deadline.is_some(),
             Mode::Idle => model.queued > 0,
         }
     };

@@ -123,10 +123,7 @@ impl TurnDriver for Waiter {
                     Ok(step(
                         b"waiting",
                         Vec::new(),
-                        Wait::Children {
-                            children: BTreeSet::from([child]),
-                            any: false,
-                        },
+                        Wait::Until(Until::all(BTreeSet::from([child]))),
                     ))
                 }
                 Some(_) => {

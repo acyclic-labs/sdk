@@ -536,6 +536,7 @@ mod tests {
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),
                     awaiting: open_children.clone(),
+                    need: u32::MAX,
                     awaited: true,
                     open_children: open_children.clone(),
                     queued: Default::default(),
@@ -658,7 +659,7 @@ mod tests {
                     }),
                 },
                 Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
-                Phase::WaitingAlarm { deadline_unix_ms: u64::MAX }];
+                Phase::Waiting { deadline_unix_ms: Some(u64::MAX) }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);

@@ -12,18 +12,15 @@ use super::{
 };
 use crate::{
     Error, InteractionId, Result,
-    agent::{AgentId, AgentPath},
+    agent::AgentId,
     conversation::Limits,
     interaction::{
         ApprovalBinding, ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome,
     },
 };
-use std::{
-    collections::BTreeSet,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// Requests are immutable, so every decision binds their first and only version.
@@ -106,9 +103,11 @@ pub struct AgentApprovals {
     yielded: AtomicBool,
     /// The turn's children, which a `wait` call dispatches only once settled.
     children: Option<Arc<dyn crate::agent::TurnChildren>>,
-    /// The children the call the turn last stopped at waits for, and whether
-    /// any one suffices.
-    awaiting: Mutex<Option<(BTreeSet<AgentPath>, bool)>>,
+    /// The turn resumed because its wait's timeout passed: the first `wait`
+    /// call it reaches takes this release and dispatches.
+    released: AtomicBool,
+    /// The condition the call the turn last stopped at waits for.
+    awaiting: Mutex<Option<crate::agent::Until>>,
 }
 
 impl AgentApprovals {
@@ -122,23 +121,31 @@ impl AgentApprovals {
             effects: None,
             yielded: AtomicBool::new(false),
             children: None,
+            released: AtomicBool::new(false),
             awaiting: Mutex::new(None),
         }
     }
 
-    /// Holds each `wait` call of the turn until the children it names settle
-    /// (see [`crate::tools::awaited`]); the turn commits that wait
-    /// instead of holding its delivery.
+    /// Holds each `wait` call of the turn until enough of the children it
+    /// names settle (see [`crate::tools::awaited`]); the turn commits that
+    /// wait instead of holding its delivery. `released` is whether the turn
+    /// resumes from a wait whose timeout passed (its agent still in
+    /// [`crate::agent::Phase::Waiting`]): that wait's call then dispatches.
     #[must_use]
-    pub fn awaiting(mut self, children: Arc<dyn crate::agent::TurnChildren>) -> Self {
+    pub fn awaiting(
+        mut self,
+        children: Arc<dyn crate::agent::TurnChildren>,
+        released: bool,
+    ) -> Self {
         self.children = Some(children);
+        self.released = AtomicBool::new(released);
         self
     }
 
-    /// The children the turn stopped waiting for, and whether any one
-    /// suffices: its driver commits [`crate::agent::Wait::Children`].
+    /// The condition the turn stopped on: its driver commits
+    /// [`crate::agent::Wait::Until`].
     #[must_use]
-    pub fn awaited(&self) -> Option<(BTreeSet<AgentPath>, bool)> {
+    pub fn awaited(&self) -> Option<crate::agent::Until> {
         self.awaiting
             .lock()
             .ok()
@@ -192,38 +199,34 @@ impl AgentApprovals {
                 return Ok(None);
             }
         }
+        // The decision precedes the hold: a wait is decided once before it
+        // starts, so no approval pause can re-hold it and restart its timeout.
+        let outcome = self.outcome(id, journal, io).await?;
         if let (
+            Some(InteractionOutcome::Approved {}),
             Some(children),
             ApprovalSubject::Tool {
                 tool, arguments, ..
             },
-        ) = (&self.children, &subject)
-            && let Some(awaited) = crate::tools::awaited(&**children, tool, arguments).await?
+        ) = (&outcome, &self.children, &subject)
+            && let Some(awaited) =
+                crate::tools::awaited(&**children, tool, arguments, &self.released).await?
         {
             self.wait(None)?;
-            *self
-                .awaiting
-                .lock()
-                .map_err(|_| Error::Storage("approvals lock".into()))? = Some(awaited);
+            *locked(&self.awaiting)? = Some(awaited);
             return Ok(None);
         }
-        self.outcome(id, journal, io).await
+        Ok(outcome)
     }
 
     /// The request the turn now waits on, its original action binding, and
     /// whether the parent decides it. Lock loss ends the step with an error.
     pub fn pending(&self) -> Result<Option<(String, bool, ApprovalBinding)>> {
-        self.pending
-            .lock()
-            .map(|pending| pending.clone())
-            .map_err(|_| Error::Storage("approvals lock".into()))
+        Ok(locked(&self.pending)?.clone())
     }
 
     fn wait(&self, pending: Option<(String, bool, ApprovalBinding)>) -> Result<()> {
-        *self
-            .pending
-            .lock()
-            .map_err(|_| Error::Storage("approvals lock".into()))? = pending;
+        *locked(&self.pending)? = pending;
         Ok(())
     }
 
@@ -464,4 +467,11 @@ pub async fn decide(
     .await?;
     super::files::create_exact(files, &path, encoded, policy.limits.file_bytes).await?;
     Ok(())
+}
+
+/// The one lock of this owner's turn state; a poisoned lock ends the step.
+fn locked<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+    mutex
+        .lock()
+        .map_err(|_| Error::Storage("approvals lock".into()))
 }

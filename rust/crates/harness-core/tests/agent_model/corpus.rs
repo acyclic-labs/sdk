@@ -117,8 +117,8 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
     for (name, phase, cursor) in [
         (
             "status-alarm",
-            Phase::WaitingAlarm {
-                deadline_unix_ms: 1_700_000_000_000,
+            Phase::Waiting {
+                deadline_unix_ms: Some(1_700_000_000_000),
             },
             3,
         ),

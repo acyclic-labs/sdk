@@ -208,7 +208,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             &driver,
             &path,
             Some(state.clone()),
-            2,
+            (2, 0),
             wake(),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -249,7 +249,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             &driver,
             &path,
             Some(state),
-            2,
+            (2, 0),
             wake(),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -595,7 +595,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         &driver,
         &path,
         Some(state),
-        0,
+        (0, 0),
         requested("r1", &path),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -627,7 +627,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         &driver,
         &path,
         Some(first.state),
-        0,
+        (0, 0),
         requested("r2", &path),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -735,7 +735,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
                 &driver,
                 &path,
                 Some(state),
-                0,
+                (0, 0),
                 wake,
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -847,7 +847,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         &driver,
         &parent,
         Some(state),
-        0,
+        (0, 0),
         requested("p1", &parent),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -894,7 +894,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         &driver,
         &child,
         Some(state),
-        0,
+        (0, 0),
         requested("c1", &child),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -999,7 +999,7 @@ async fn admitted_root_after_its_child(
             &driver(child_scope),
             &child,
             Some(AgentState::adopted(child.clone(), &adoption).expect("adopts")),
-            0,
+            (0, 0),
             requested("c1", &child),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1035,7 +1035,7 @@ async fn admitted_root_after_its_child(
             &driver,
             &root,
             Some(AgentState::adopted(root.clone(), &adoption).expect("adopts")),
-            0,
+            (0, 0),
             first,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1069,7 +1069,7 @@ async fn admitted_root_after_its_child(
             &driver,
             &root,
             Some(stepped.state),
-            0,
+            (0, 0),
             second,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1222,7 +1222,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 &driver,
                 &path,
                 Some(state),
-                2,
+                (2, 0),
                 requested("r1", &parent),
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -1404,7 +1404,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                 &driver,
                 &path,
                 Some(state),
-                2,
+                (2, 0),
                 requested("r1", &parent),
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -1828,7 +1828,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &driver,
             &path,
             Some(AgentState::adopted(path.clone(), &adoption)?),
-            2,
+            (2, 0),
             requested("goal", &path),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1859,7 +1859,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &driver,
             &path,
             Some(first.state),
-            2,
+            (2, 0),
             Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )

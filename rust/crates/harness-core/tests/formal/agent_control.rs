@@ -9,6 +9,9 @@
 //! - no turn runs or is retained after completion or archive;
 //! - no lost wake-up: whenever work is runnable without new input, an alarm is set;
 //! - every alarm is a real deadline (at least `CONTINUE_NOW`).
+//! - a condition wait starts no step for its arrivals; only its condition
+//!   (`satisfy`) or its deadline resumes it, and `satisfy` touches no other
+//!   control.
 
 #[path = "../../src/agent/kernel.rs"]
 mod production;
