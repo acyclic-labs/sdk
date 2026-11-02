@@ -136,12 +136,6 @@ pub(crate) fn body_named<'a>(
 ) -> Result<Request<'a>> {
     let adapter = provider.config.adapter;
     let (conversation, instruction) = request.split_summary_instruction()?;
-    let summary = instruction
-        .map(|content| match content {
-            ModelContent::Text(text) => Ok(std::borrow::Cow::Borrowed(text.as_str())),
-            content => text_content(content, files).map(std::borrow::Cow::Owned),
-        })
-        .transpose()?;
     let rendered = acyclic_model_render::Provenance {
         family: adapter,
         provider: target.provider.clone(),
@@ -251,6 +245,14 @@ pub(crate) fn body_named<'a>(
     for media in deferred_media {
         sequence::push(adapter, &mut messages, media)?;
     }
+    // File resolution follows request order: source messages precede the
+    // transient instruction, even though the renderer receives them separately.
+    let summary = instruction
+        .map(|content| match content {
+            ModelContent::Text(text) => Ok(std::borrow::Cow::Borrowed(text.as_str())),
+            content => text_content(content, files).map(std::borrow::Cow::Owned),
+        })
+        .transpose()?;
     if let Some(profile) = &provider.profile {
         let desired = profile.fixed_effort().or(profile.baseline_effort());
         if effective_effort != desired {

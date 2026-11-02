@@ -127,6 +127,129 @@ fn with_parts(
 }
 
 #[tokio::test]
+async fn summary_files_keep_source_then_instruction_resolution_order() -> Result<()> {
+    struct SummaryFiles {
+        source: FileRef,
+        source_reader: Reader,
+        instruction_reader: Reader,
+    }
+    impl ContentResidencyVerifier for SummaryFiles {
+        fn read<'a>(
+            &'a self,
+            file: &'a FileRef,
+            maximum: u64,
+            ceiling: Option<&'a acyclic_harness::Capabilities>,
+            io: Option<&'a ContentIo>,
+        ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            let reader = if file == &self.source {
+                &self.source_reader
+            } else {
+                &self.instruction_reader
+            };
+            reader.read(file, maximum, ceiling, io)
+        }
+    }
+    for (adapter, _) in fixtures() {
+        for native in [false, true] {
+            let (mut provider, transport) = provider(adapter, 200);
+            let source_bytes = if native {
+                b"\x89PNG\r\n\x1a\n\xff".as_slice()
+            } else {
+                b"original source text".as_slice()
+            };
+            let instruction = "Summarize the original source.";
+            let source = file(
+                source_bytes,
+                if native { "image/png" } else { "text/plain" },
+            )?;
+            let reader = Arc::new(SummaryFiles {
+                source: source.clone(),
+                source_reader: Reader {
+                    data: source_bytes.to_vec(),
+                    reads: AtomicUsize::new(0),
+                },
+                instruction_reader: Reader {
+                    data: instruction.as_bytes().to_vec(),
+                    reads: AtomicUsize::new(0),
+                },
+            });
+            provider.files.reader = Some(reader.clone());
+            let policy = if native {
+                use acyclic_harness_core::model::{
+                    ImageDetail, NativeMediaIntent, NativeMediaPolicy,
+                };
+                FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                    intent: NativeMediaIntent::Image {
+                        detail: ImageDetail::Auto,
+                    },
+                    maximum_bytes: source_bytes.len() as u64,
+                    maximum_work: source_bytes.len() as u64,
+                    configuration: None,
+                }))
+            } else {
+                FileProjectionPolicy::BoundedFull
+            };
+            let mut request = with_parts(
+                &provider,
+                vec![ModelContentPart::File {
+                    file: source,
+                    policy,
+                }],
+            )?
+            .request()
+            .clone();
+            request.summary = true;
+            request.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file: file(instruction.as_bytes(), "text/plain")?,
+                    policy: FileProjectionPolicy::BoundedFull,
+                }),
+            });
+            let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+            let mut files =
+                crate::files::resolve(&provider.files, prepared.request(), None).await?;
+            let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
+            assert!(files.0.next().is_none());
+            assert_eq!(reader.source_reader.reads.load(Ordering::SeqCst), 1);
+            assert_eq!(reader.instruction_reader.reads.load(Ordering::SeqCst), 1);
+
+            let mut inline = prepared.request().clone();
+            inline.messages.last_mut().unwrap().content = ModelContent::Text(instruction.into());
+            let source = if native {
+                use base64::Engine as _;
+                vec![crate::files::ResolvedFile::Native(
+                    base64::engine::general_purpose::STANDARD.encode(source_bytes),
+                )]
+            } else {
+                inline.messages[0].content = ModelContent::Text("original source text".into());
+                Vec::new()
+            };
+            let expected = projection::body_with_files(
+                &provider,
+                &inline,
+                &mut crate::files::FileText(source.into_iter()),
+            )?;
+            assert_eq!(actual, expected);
+
+            // The old instruction-first consumer either swaps both text files
+            // or encounters a native/text type mismatch before rendering.
+            let reversed = crate::files::resolve(&provider.files, prepared.request(), None).await?;
+            let mut reversed: Vec<_> = reversed.0.collect();
+            reversed.reverse();
+            let wrong = projection::body_with_files(
+                &provider,
+                prepared.request(),
+                &mut crate::files::FileText(reversed.into_iter()),
+            );
+            assert!(wrong.is_err() || wrong.unwrap() != expected);
+            assert!(transport.sent.lock().unwrap().is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> Result<()> {
     for (adapter, _) in fixtures() {
         let (mut provider, script) = provider(adapter, 200);
