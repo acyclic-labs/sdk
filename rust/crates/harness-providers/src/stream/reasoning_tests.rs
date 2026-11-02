@@ -1,7 +1,7 @@
 use super::{parser_dispatch, provider, request};
 use crate::{
     Adapter, Result,
-    stream::{State, finish, parse},
+    stream::{State, advance, finish, parse},
 };
 use acyclic_harness_core::{conversation::Limits, model::*};
 use proptest::prelude::*;
@@ -56,7 +56,13 @@ fn scenario(
             )?;
         }
     }
-    state.terminal = true;
+    let terminal = match adapter {
+        Adapter::Responses => r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        _ => r#"{"type":"message_stop"}"#,
+    };
+    let (events, control) = advance(&mut state, adapter, terminal)?;
+    assert!(events.is_empty());
+    assert!(control.is_break());
     Ok((finish(state, adapter, parser_dispatch())?, native, provider))
 }
 
