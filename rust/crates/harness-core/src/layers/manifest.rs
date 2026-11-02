@@ -3,7 +3,6 @@ use acyclic_fs::{
     AsyncObjectStore, FilesystemCommit, Fs, Generation, OperationFailure, OperationReceipt,
     StreamAuthorityStore, WorkBudget, WorkCounters, WorkspaceError,
 };
-use acyclic_stream::StreamProvider;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -65,7 +64,7 @@ pub struct ManifestFailure {
     pub failure: OperationFailure<WorkspaceError>,
 }
 
-impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>
+impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStore + 'static>
     Manifest<'_, StreamAuthorityStore<P>, O>
 {
     /// Adds every source-head condition to the SAME caller commit, spending
