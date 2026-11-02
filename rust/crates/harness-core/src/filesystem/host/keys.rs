@@ -99,7 +99,7 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         WorkspaceError::Filesystem(acyclic_fs::FsError::UnauthenticatedAccessFacts) => {
             Error::FilesystemAccessConfiguration("unauthenticated principal facts")
         }
-        error => match crate::contract_errors::workspace_error_code(&error) {
+        error => match crate::contract::workspace_error_code(&error) {
             ErrorCode::Unauthorized => Error::Unauthorized(error.to_string()),
             ErrorCode::Unsupported => Error::Unsupported(error.to_string()),
             ErrorCode::NotFound => Error::NotFound("workspace path".into()),

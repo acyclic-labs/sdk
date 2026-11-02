@@ -511,6 +511,8 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
 
 #[path = "contract_errors.rs"]
 mod errors;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use errors::workspace_error_code;
 pub use errors::{
     CleanupFailure, Error, HeadlessOutcome, InteractionRejection, ModelTransportFailure, Result,
 };
