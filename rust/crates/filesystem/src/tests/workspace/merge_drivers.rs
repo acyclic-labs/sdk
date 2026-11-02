@@ -357,6 +357,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
     assert_eq!(pages.plan().target_head(), plan.target_head());
     let mut conflict_rows = Vec::new();
     let mut selected_paths = Vec::new();
+    let mut conflict_paths = Vec::new();
     loop {
         let peeked = pages.peek_conflict().map_err(|failure| failure.error)?;
         let expected = peeked.value.cloned();
@@ -392,6 +393,31 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?
                 .value;
+            let conflict_path = pages
+                .conflict_path(row.value(), side)
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+            match row.value() {
+                crate::MergeConflict::File(_) => {
+                    assert_eq!(conflict_path.is_some(), record.is_some());
+                }
+                crate::MergeConflict::Binding { .. } => {
+                    // The location exists even on the base side where no file
+                    // occupies that binding. A file alias is not its location.
+                    assert_eq!(
+                        conflict_path
+                            .as_ref()
+                            .map(|path| namespace_path_text(path.value()))
+                            .transpose()?
+                            .as_deref(),
+                        Some("/added")
+                    );
+                }
+            }
+            if let Some(path) = conflict_path {
+                conflict_paths.push(path);
+            }
             let file_id =
                 record
                     .as_ref()
@@ -511,7 +537,14 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             "/shared" | "/deleted" | "/added"
         ));
     }
-    drop((clean, conflict_rows, selected_paths));
+    assert_eq!(conflict_paths.len(), 8);
+    for path in &conflict_paths {
+        assert!(matches!(
+            namespace_path_text(path.value())?.as_str(),
+            "/shared" | "/deleted" | "/added"
+        ));
+    }
+    drop((clean, conflict_rows, selected_paths, conflict_paths));
 
     // Output admission may suspend after peek. That cached identity cannot
     // bypass cancellation when the encoder later attempts to consume it.
