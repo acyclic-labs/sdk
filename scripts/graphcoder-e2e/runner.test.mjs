@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
@@ -155,6 +155,65 @@ test("handled failures retain exact task and reason identity across subsequent a
 
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
   for (const schedule of [[], [0], [63], [255, 0, 7, 1]]) await fuzzTerminalFrames(Buffer.from(schedule));
+});
+
+const queryCapturePath = fileURLToPath(new URL("./fixtures/live-terminal-query-refusal.json", import.meta.url));
+const queryCapture = JSON.parse(readFileSync(queryCapturePath, "utf8"));
+test("captured query refusal requires explicit status-row admission", () => {
+  const history = new FailureHistory(), visible = queryCapture.visible;
+  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
+  assert.equal(queryFailure(visible), notice);
+  assert.equal(history.unexpected(visible, {}), notice);
+  assert.equal(history.unexpected(visible, { task_failure: notice }), notice);
+  history.accept(visible, { query_failure: "storage failure: diff command:" });
+  assert.equal(history.unexpected(visible, {}), undefined);
+  const changed = visible.replace(notice, notice + " changed");
+  assert.equal(history.unexpected(changed, {}), notice + " changed");
+  assert.equal(queryFailure(notice + "\nordinary status"), undefined,
+    "transcript text cannot stand in for the original status row");
+});
+
+test("observed producer frame asserts captured content with one screen projection", async () => {
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
+  }
+  const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
+  const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
+  const write = TerminalFrames.prototype.write;
+  let reads = 0;
+  const projections = [];
+  Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
+  TerminalFrames.prototype.write = function (bytes, frame) {
+    return write.call(this, bytes, () => {
+      const before = reads;
+      try { return frame(); } finally { projections.push(reads - before); }
+    });
+  };
+  try {
+    for (const rejects of [false, true]) {
+      const processes = new TerminalProcess();
+      let capture;
+      try {
+        const running = pty(processes, process.execPath, {
+          id: "observed-frame", workspace: root,
+          args: ["-e", "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
+          onRequest() { return () => {}; },
+        }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
+          assert: { contains: [rejects ? "INTENTIONALLY_ABSENT_DIFF_CONTENT" : "workspace diff query is u"] }, send: "finish\n" }] },
+        result => { capture = result; });
+        if (rejects) await assert.rejects(running, /step=assert observed terminal frame/);
+        else assert.equal((await running).code, 0);
+        assert.equal(capture.stdout, queryCapture.stdout, "retain the original captured bytes");
+        assert.equal(processes.children.size, 0);
+      } finally { await processes.close(); }
+    }
+    assert.ok(projections.includes(1), "the original frame must be inspected");
+    assert.ok(projections.every(count => count <= 1), "one screen projection serves matching and assertion");
+  } finally {
+    TerminalFrames.prototype.write = write;
+    Object.defineProperty(Terminal.prototype, "buffer", buffer);
+    rmSync(root, { recursive: true });
+  }
 });
 
 test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
