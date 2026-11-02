@@ -392,17 +392,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 } else {
                     let transaction = active_io.sdk(opened.begin_transaction(
                         operation, active_io, active_io.cancellation()).await)?;
-                    // Staging credit cannot exceed this volume's capacity;
-                    // the publisher's independent byte credit still applies.
-                    let volume_capacity = opened.volume_config().limits.maximum_generation_bytes;
-                    let staging_bytes = maximum_bytes.map_or(volume_capacity, |maximum| maximum.max(1).min(volume_capacity));
+                    // The shared blob builder enforces the original optional
+                    // source allowance and chunks independently of total size.
                     let content = active_io.sdk(transaction.stage_content(
-                        &mut source, staging_bytes, active_io, active_io.cancellation()).await)
+                        &mut source, maximum_bytes, active_io, active_io.cancellation()).await)
                         .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;
-                    if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
-                        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                            "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
-                    }
                     staged = Some((transaction, content));
                 }
                 let provisional = provisional.with_content_identity(source.hash.finalize().into(), source.length)?;

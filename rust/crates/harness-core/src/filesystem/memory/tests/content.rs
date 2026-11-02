@@ -3,8 +3,8 @@ use crate::IdempotencyKey;
 
 #[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
-    // Hosted agents admit the portable file ceiling, which exceeds the
-    // volume's staging capacity even when the actual artifact is small.
+    // Publisher allowance and immutable chunk sizes are independent of
+    // the total logical content size.
     let storage =
         MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
             .await?;
@@ -73,7 +73,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
         Err(Error::Conflict(_))
     ));
     assert_eq!(storage.read(&original).await?.as_ref(), bytes.as_slice());
-    // Intersecting staging capacity must not widen a smaller publisher credit.
+    // Optional publication must not widen an explicitly smaller allowance.
     let limited = FilesystemContentPublisher::new(
         storage.host.clone(),
         &storage.volume,
@@ -102,7 +102,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
             .observe_staged_once(
                 refused,
                 None,
-                4,
+                Some(4),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -167,7 +167,7 @@ async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -
                 .observe_staged_once(
                     operation,
                     None,
-                    4096,
+                    Some(4096),
                     crate::conversation::ContentAccess::default()
                 )?
                 .await?
