@@ -7,6 +7,7 @@ mod retirement;
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkingCut {
+    version: u32,
     operation: OperationId,
     input_digest: [u8; 32],
     step: u32,
@@ -21,7 +22,8 @@ impl WorkingCut {
     fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
         preparation_digest(
             &(
-                "working-context-cut/v1",
+                "working-context-cut/v2",
+                self.version,
                 self.operation,
                 self.input_digest,
                 self.step,
@@ -69,7 +71,7 @@ pub(super) struct WorkingCompaction<'a> {
     pub(super) prior: usize,
     pub(super) source: &'a crate::context::Context,
     pub(super) retained: &'a crate::context::Context,
-    pub(super) compaction: &'a FileRef,
+    pub(super) proof: &'a crate::context::CompactionReference,
 }
 
 impl<'a> StockExecution<'a> {
@@ -246,7 +248,10 @@ impl<'a> StockExecution<'a> {
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
         let cut = retain_preparation(load_json::<WorkingCut>(journal, reference, io).await?)?;
-        match (journal.working_checkpoint_authority(), cut.proof) {
+        if cut.version != 1 {
+            return Err(self.invalid_working_cut());
+        }
+        let authenticated = match (journal.working_checkpoint_authority(), cut.proof) {
             (Some(verifier), Some((first, second))) => {
                 let digest = cut.payload_digest(io)?;
                 let mut signature = [0; 64];
@@ -255,10 +260,11 @@ impl<'a> StockExecution<'a> {
                 with_history_io(io, |work| {
                     verifier.verify_working_checkpoint(digest, &signature, work)
                 })?;
+                true
             }
-            (None, None) => {}
+            (None, None) => false,
             _ => return Err(self.invalid_working_cut()),
-        }
+        };
         for file in [&cut.source, &cut.retained, &cut.compaction] {
             with_history_io(io, |work| self.stock.limits.validate_file(file, work))?;
             if file.volume() != reference.volume()
@@ -267,29 +273,32 @@ impl<'a> StockExecution<'a> {
                 return Err(self.invalid_working_cut());
             }
         }
-        let source = retain_preparation(
-            load_json::<crate::context::Context>(journal, &cut.source, io).await?,
-        )?;
         let original_context = retain_preparation(
             load_json::<crate::context::Context>(journal, &cut.retained, io).await?,
         )?;
-        let proof = retain_preparation(
-            load_json::<crate::context::CompactionReference>(journal, &cut.compaction, io).await?,
-        )?;
-        crate::context::validate_projected_context(&source, self.stock.limits, io)?;
-        crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
-        crate::context::validate_compaction(&proof, &source, &original_context, io)?;
-        if proof
-            .summary
-            .as_ref()
-            .is_none_or(|summary| summary.operation_id != cut.operation || summary.step != cut.step)
-        {
-            return Err(self.invalid_working_cut());
+        if authenticated {
+            crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
+        } else {
+            let source = retain_preparation(
+                load_json::<crate::context::Context>(journal, &cut.source, io).await?,
+            )?;
+            let proof = retain_preparation(
+                load_json::<crate::context::CompactionReference>(journal, &cut.compaction, io)
+                    .await?,
+            )?;
+            self.validate_working_compaction(
+                &source,
+                &original_context,
+                &proof,
+                (cut.operation, cut.step),
+                io,
+            )?;
         }
         #[cfg(feature = "filesystem")]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let reference = crate::model::clone_file(reference, io)?;
         let retained_cut = WorkingCut {
+            version: cut.version,
             operation: cut.operation,
             input_digest: cut.input_digest,
             step: cut.step,
@@ -300,9 +309,7 @@ impl<'a> StockExecution<'a> {
             proof: cut.proof,
         };
         let context = crate::context::copy_context(&original_context, io)?;
-        drop(source);
         drop(original_context);
-        drop(proof);
         drop(cut);
         #[cfg(feature = "filesystem")]
         let hold = {
@@ -329,15 +336,29 @@ impl<'a> StockExecution<'a> {
         &self,
         journal: &dyn ExecutionJournal,
         prepared: WorkingCompaction<'_>,
-    ) -> Result<FileRef> {
+    ) -> Result<(FileRef, FileRef)> {
         let WorkingCompaction {
             input,
             step,
             prior,
             source,
             retained,
-            compaction,
+            proof,
         } = prepared;
+        // Only this producer may attest semantic admission. Later signed reads
+        // need the retained bytes, rather than the evicted source and proof.
+        self.validate_working_compaction(
+            source,
+            retained,
+            proof,
+            (input.operation_id, step),
+            self.io,
+        )?;
+        let compaction_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("context:{step}:compaction"), work)
+        })?;
+        let compaction =
+            stage_json(journal, input.operation_id, &compaction_key, proof, self.io).await?;
         let key = |suffix| {
             with_history_io(self.io, |work| {
                 preparation_format(format_args!("context:{step}:working-{suffix}"), work)
@@ -360,13 +381,14 @@ impl<'a> StockExecution<'a> {
         )
         .await?;
         let mut cut = WorkingCut {
+            version: 1,
             operation: input.operation_id,
             input_digest: self.request_digest(input)?,
             step,
             prior_messages: self.absolute_prior_count(prior).await?,
             source,
             retained,
-            compaction: crate::model::clone_file(compaction, self.io)?,
+            compaction: crate::model::clone_file(&compaction, self.io)?,
             proof: None,
         };
         if let Some(verifier) = journal.working_checkpoint_authority() {
@@ -381,14 +403,36 @@ impl<'a> StockExecution<'a> {
             second.copy_from_slice(&proof[32..]);
             cut.proof = Some((first, second));
         }
-        stage_json(
+        let checkpoint = stage_json(
             journal,
             input.operation_id,
             &key("checkpoint")?,
             &cut,
             self.io,
         )
-        .await
+        .await?;
+        Ok((compaction, checkpoint))
+    }
+
+    fn validate_working_compaction(
+        &self,
+        source: &crate::context::Context,
+        retained: &crate::context::Context,
+        proof: &crate::context::CompactionReference,
+        identity: (OperationId, u32),
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        crate::context::validate_projected_context(source, self.stock.limits, io)?;
+        crate::context::validate_projected_context(retained, self.stock.limits, io)?;
+        crate::context::validate_compaction(proof, source, retained, io)?;
+        if proof
+            .summary
+            .as_ref()
+            .is_none_or(|summary| (summary.operation_id, summary.step) != identity)
+        {
+            return Err(self.invalid_working_cut());
+        }
+        Ok(())
     }
 
     pub(super) async fn validate_compacted_working_cut(

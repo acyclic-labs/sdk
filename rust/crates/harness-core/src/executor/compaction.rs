@@ -53,20 +53,9 @@ impl StockExecution<'_> {
         }
         let (compacted, reference) =
             crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
-        let compaction_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
-        })?;
-        let compaction = stage_json(
-            journal,
-            input.operation_id,
-            &compaction_key,
-            &reference,
-            self.io,
-        )
-        .await?;
-        let working = if pre_stage {
-            Some(
-                self.stage_working_cut(
+        let (compaction, working) = if pre_stage {
+            let (compaction, working) = self
+                .stage_working_cut(
                     journal,
                     working_tail::WorkingCompaction {
                         input,
@@ -74,13 +63,18 @@ impl StockExecution<'_> {
                         prior,
                         source: &context,
                         retained: &compacted,
-                        compaction: &compaction,
+                        proof: &reference,
                     },
                 )
-                .await?,
-            )
+                .await?;
+            (compaction, Some(working))
         } else {
-            projection.working
+            let key = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
+            })?;
+            let compaction =
+                stage_json(journal, input.operation_id, &key, &reference, self.io).await?;
+            (compaction, projection.working)
         };
         let (compacted, request) = self
             .prepare_compacted_request(input, step, compacted, pre_stage)

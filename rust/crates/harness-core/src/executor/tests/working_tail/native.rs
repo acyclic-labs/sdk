@@ -65,15 +65,7 @@ async fn private_cut() -> Result<CutFixture> {
             .await?,
     };
     let (retained, proof) = crate::context::compact_projection(&source, 3, Some(summary), None)?;
-    let proof = stage_json(
-        journal.as_ref(),
-        input.operation_id,
-        "fixture:proof",
-        &proof,
-        None,
-    )
-    .await?;
-    let reference = StockExecution::ordinary(&executor)
+    let (_, reference) = StockExecution::ordinary(&executor)
         .stage_working_cut(
             journal.as_ref(),
             crate::executor::working_tail::WorkingCompaction {
@@ -82,7 +74,7 @@ async fn private_cut() -> Result<CutFixture> {
                 prior: 2,
                 source: &source,
                 retained: &retained,
-                compaction: &proof,
+                proof: &proof,
             },
         )
         .await?;
