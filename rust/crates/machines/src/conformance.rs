@@ -115,10 +115,12 @@ pub async fn verify_attached(backend: &dyn AttachedBackend) -> Result<(), String
             .set_suspension_policy(device.id, SuspensionPolicy::Manual, key(0x54)?)
             .await,
     ];
-    if !refused
-        .iter()
-        .all(|result| matches!(result, Err(ProviderError::Unsupported(_))))
-    {
+    if !refused.iter().all(|result| {
+        matches!(
+            result.as_ref().map_err(ProviderError::classification),
+            Err(ProviderError::Unsupported(_))
+        )
+    }) {
         return Err("attached device accepted a provisioning lifecycle operation".into());
     }
     backend.set_online(device.id, false).await?;
@@ -129,9 +131,13 @@ pub async fn verify_attached(backend: &dyn AttachedBackend) -> Result<(), String
     let executed = provider
         .exec(device.id, probe(device.contract.platform)?)
         .await;
-    if !matches!(woken, Err(ProviderError::Unavailable))
-        || !matches!(executed, Err(ProviderError::Unavailable))
-    {
+    if !matches!(
+        woken.as_ref().map_err(ProviderError::classification),
+        Err(ProviderError::Unavailable)
+    ) || !matches!(
+        executed.as_ref().map_err(ProviderError::classification),
+        Err(ProviderError::Unavailable)
+    ) {
         return Err("an Offline device was not Unavailable to wake and exec".into());
     }
     backend.set_online(device.id, true).await?;
@@ -194,7 +200,7 @@ async fn exec_admitted(
             }
             Ok(())
         }
-        Err(ProviderError::Unsupported(_)) => Ok(()),
+        Err(error) if matches!(error.classification(), ProviderError::Unsupported(_)) => Ok(()),
         Err(error) => Err(error.to_string()),
     }
 }
@@ -431,7 +437,10 @@ async fn verify_provider(
             if destroyed != MutationOutcome::MachineDestroyed(observation.id) {
                 return Err("capability conformance cleanup substituted its outcome".into());
             }
-        } else if !matches!(admission, Err(ProviderError::Unsupported(_))) {
+        } else if !matches!(
+            admission.as_ref().map_err(ProviderError::classification),
+            Err(ProviderError::Unsupported(_))
+        ) {
             return Err("unsupported capability intent did not fail explicitly".into());
         }
     }
@@ -640,7 +649,10 @@ async fn live_fork(
     let count = NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN);
     let admission = provider.fork_machine(machine.id, count, key(0x30)?).await;
     let Some(expected) = machine.contract.fork_fidelity() else {
-        return if matches!(admission, Err(ProviderError::Unsupported(_))) {
+        return if matches!(
+            admission.as_ref().map_err(ProviderError::classification),
+            Err(ProviderError::Unsupported(_))
+        ) {
             Ok(())
         } else {
             Err("live fork without a declared capability did not fail as unsupported".into())
@@ -709,8 +721,12 @@ async fn live_fork(
     {
         return Err("live fork source did not keep running".into());
     }
-    if provider.destroy_machine(machine.id, key(0x33)?).await
-        != Err(ProviderError::FailedPrecondition(Precondition::LiveForks))
+    if provider
+        .destroy_machine(machine.id, key(0x33)?)
+        .await
+        .as_ref()
+        .map_err(ProviderError::classification)
+        != Err(&ProviderError::FailedPrecondition(Precondition::LiveForks))
     {
         return Err("a fork source with live forks was not refused as LiveForks".into());
     }

@@ -439,7 +439,11 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
     };
     let (machines, shutdown, server) = serve_operation_service(base.clone()).await?;
     assert!(matches!(
-        machines.watch_operation(operation).await,
+        machines
+            .watch_operation(operation)
+            .await
+            .as_ref()
+            .map_err(ProviderError::classification),
         Err(ProviderError::Rejected(_))
     ));
     let _ = shutdown.send(());

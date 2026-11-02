@@ -350,7 +350,11 @@ async fn servers_without_live_fork_report_unsupported()
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     assert!(matches!(
-        machines.fork_machine(machine, NonZeroU32::MIN, key).await,
+        machines
+            .fork_machine(machine, NonZeroU32::MIN, key)
+            .await
+            .as_ref()
+            .map_err(ProviderError::classification),
         Err(ProviderError::Unsupported(_))
     ));
     let _ = shutdown.send(());
@@ -381,8 +385,12 @@ async fn interrupted_mutation_retains_key_until_explicit_recovery()
         let key = service.expected_key;
         let (provider, shutdown, server) = serve_operation_service(service).await?;
         assert_eq!(
-            provider.suspend(machine, key).await,
-            Err(ProviderError::Indeterminate(key))
+            provider
+                .suspend(machine, key)
+                .await
+                .unwrap_err()
+                .classification(),
+            &ProviderError::Indeterminate(key)
         );
         assert_eq!(script.lock().expect("script").calls, ["watch"]);
         assert_eq!(
@@ -413,8 +421,12 @@ async fn watch_errors_never_consume_an_inspection_or_reopen()
         let key = service.expected_key;
         let (provider, shutdown, server) = serve_operation_service(service).await?;
         assert_eq!(
-            provider.suspend(machine, key).await,
-            Err(ProviderError::Indeterminate(key))
+            provider
+                .suspend(machine, key)
+                .await
+                .unwrap_err()
+                .classification(),
+            &ProviderError::Indeterminate(key)
         );
         let _ = shutdown.send(());
         server.await??;

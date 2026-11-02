@@ -1,17 +1,5 @@
 use super::*;
 
-pub(super) fn command_error(machine: MachineId, value: &tonic::Status) -> ProviderError {
-    match value.code() {
-        tonic::Code::Unavailable
-        | tonic::Code::DeadlineExceeded
-        | tonic::Code::Cancelled
-        | tonic::Code::Unknown
-        | tonic::Code::Internal => ProviderError::CommandIndeterminate(machine),
-        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
-        _ => ProviderError::Rejected(value.message().into()),
-    }
-}
-
 pub(super) fn command_stream_error(
     machine: MachineId,
     exited: bool,
