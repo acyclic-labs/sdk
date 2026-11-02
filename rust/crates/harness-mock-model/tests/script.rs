@@ -179,10 +179,23 @@ fn guards_use_last_content_and_mismatch_never_consumes() {
 
 #[test]
 fn counts_do_not_consume_model_steps_but_can_be_scripted_explicitly() {
-    let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"count_bytes":true,"steps":[
+    let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"bytes_per_token":4,"steps":[
         {"text":["answer"]}, {"when":{"path":"count","user":"crash"},"json":{"input_tokens":64},"hold":true}
     ]}}})).unwrap());
-    assert_eq!(engine.input_tokens("case", &json!({})), Some(66));
+    assert_eq!(engine.input_tokens("case", &json!({})), Some(65));
+    for length in 0..8 {
+        let body = json!("x".repeat(length));
+        assert_eq!(
+            engine.input_tokens("case", &body),
+            Some(64 + (length as u64 + 2).div_ceil(4))
+        );
+    }
+    assert!(
+        serde_json::from_value::<Script>(
+            json!({"cases":{"case":{"bytes_per_token":0,"steps":[]}}})
+        )
+        .is_err()
+    );
     assert!(engine.take("case", "count", &json!({})).is_none());
     let (index, step) = engine
         .take(

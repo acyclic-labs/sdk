@@ -61,7 +61,7 @@ fn answer(
         endpoint,
         "count" | "responses/input_tokens" | "messages/count_tokens"
     );
-    let tokens = host.engine.input_tokens(namespace, &body).unwrap_or(0);
+    let tokens = host.engine.input_tokens(namespace, &body);
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
         let status = step.status.unwrap_or(200);
         let bound = bind_result(step, &body);
@@ -77,7 +77,7 @@ fn answer(
         } else if let Some(events) = bound
             .as_ref()
             .ok()
-            .and_then(|bound| events_with_usage(endpoint, bound, tokens))
+            .and_then(|bound| events_with_usage(endpoint, bound, tokens.unwrap_or(0)))
         {
             let chunks = stream::iter(
                 events
@@ -101,7 +101,7 @@ fn answer(
         };
         (Some(index), reply)
     } else if count {
-        match host.engine.input_tokens(namespace, &body) {
+        match tokens {
             Some(tokens) => (
                 None,
                 response(
