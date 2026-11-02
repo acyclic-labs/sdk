@@ -15,8 +15,8 @@ pub struct ServiceReadiness(File);
 pub enum ServiceStartOutcome {
     /// The service answers requests.
     Ready,
-    /// The service exited without starting, as it does when another service
-    /// holds the lock; that service answers instead.
+    /// The service closed its readiness channel without reporting a result.
+    /// This does not establish that another service answers requests.
     Exited,
     /// The service could not start, for the reason it reported.
     Failed(String),
@@ -27,7 +27,8 @@ const FAILURE_FRAME: u8 = b'!';
 
 impl ServiceReadiness {
     /// Blocks until the service signals that it answers requests, reports why
-    /// it could not start, or exits without either.
+    /// it could not start, or closes its channel without either. Unrecognized
+    /// readiness frames return `InvalidData` without waiting for channel close.
     pub fn wait(mut self) -> io::Result<ServiceStartOutcome> {
         let operation = obs::span!(
             INFO,
@@ -62,7 +63,11 @@ fn receive(reader: &mut impl Read) -> io::Result<ServiceStartOutcome> {
                 .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
             Ok(ServiceStartOutcome::Failed(reason))
         }
-        Ok(_) => Ok(ServiceStartOutcome::Ready),
+        Ok(1) if frame[0] == READY_FRAME => Ok(ServiceStartOutcome::Ready),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "step=service-readiness-frame; recovery=inspect the service's original readiness output",
+        )),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(ServiceStartOutcome::Exited),
         Err(error) => Err(error),
     }
