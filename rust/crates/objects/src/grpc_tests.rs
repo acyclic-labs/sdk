@@ -19,6 +19,7 @@ struct Replica {
     applied: AppliedRevisions,
     pending: Mutex<Vec<OwnedBytes>>,
     requested: Mutex<Option<tokio::sync::oneshot::Sender<MetadataMap>>>,
+    returned_revision: Mutex<Option<Revision>>,
 }
 
 impl Replica {
@@ -37,6 +38,7 @@ impl Replica {
             applied,
             pending: Mutex::default(),
             requested: Mutex::default(),
+            returned_revision: Mutex::default(),
         }))
     }
 
@@ -84,7 +86,13 @@ impl Blobs for Replica {
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let served = self.applied.current();
         let mut head = self.view.head(digest).await?;
-        head.revision = Some(served);
+        head.revision = Some(
+            self.returned_revision
+                .lock()
+                .expect("returned revision")
+                .clone()
+                .unwrap_or(served),
+        );
         Ok(head)
     }
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
@@ -567,6 +575,37 @@ async fn a_read_without_its_revision_is_refused_under_a_minimum() -> TestResult 
             .observed(Ok(tonic::Response::new(())), Some(&empty))
             .is_ok()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reply_cannot_substitute_another_revision_authority() -> TestResult {
+    let replica = Replica::new().await?;
+    let objects = client(&replica);
+    let (digest, committed) = written(&objects, b"retained minimum").await?;
+    replica.catch_up().await?;
+    let original = objects.revisions().floor(&RevisionCut::default())?;
+    let foreign = AppliedRevisions::in_process().at(committed.index);
+    let reset = Revision {
+        incarnation: committed.incarnation.wrapping_add(1),
+        ..committed
+    };
+    for unproven in [foreign, reset] {
+        *replica.returned_revision.lock().expect("returned revision") = Some(unproven);
+        assert_eq!(
+            objects.head(digest).await.map_err(|error| error.code),
+            Err(wire::ErrorCode::Unavailable),
+            "a successful RPC must prove the original forwarded minimum"
+        );
+        assert_eq!(
+            objects.revisions().floor(&RevisionCut::default())?,
+            original,
+            "an unproven reply must not replace or contaminate its original floor"
+        );
+    }
+    // The same public RPC succeeds once its original authority is returned.
+    *replica.returned_revision.lock().expect("returned revision") = None;
+    assert_eq!(objects.head(digest).await?.digest, digest);
     Ok(())
 }
 
