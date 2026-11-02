@@ -310,6 +310,7 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
         .await?
         .value;
     child.write_text("/cache.tmp", "child").await?;
+    child.write_text("/clean.txt", "clean").await?;
     parent.write_text("/cache.tmp", "parent").await?;
     let child_head = child
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -344,6 +345,33 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
     else {
         return Err("same-name creations did not conflict".into());
     };
+    assert_eq!(
+        parent
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        parent_head.id()
+    );
+    assert_eq!(
+        child
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        child_head.id()
+    );
+    assert!(
+        parent
+            .read(
+                "/clean.txt",
+                16,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
     let binding = plan
         .conflicts
         .iter()
@@ -364,6 +392,33 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
     else {
         return Err("child-wins binding was not ready".into());
     };
+    assert_eq!(
+        parent
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        parent_head.id()
+    );
+    assert_eq!(
+        child
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        child_head.id()
+    );
+    assert!(
+        parent
+            .read(
+                "/clean.txt",
+                16,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
     assert!(matches!(
         publisher
             .publish(operation, root_id, &root, &resolutions, &fence)
@@ -383,6 +438,19 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
             .value
             .as_ref(),
         b"child"
+    );
+    assert_eq!(
+        parent
+            .read(
+                "/clean.txt",
+                16,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await?
+            .value
+            .as_ref(),
+        b"clean"
     );
     Ok(())
 }

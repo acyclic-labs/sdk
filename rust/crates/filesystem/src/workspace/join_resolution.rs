@@ -37,7 +37,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     ) -> Result<MergePlan, WorkspaceError> {
         let mut typed = Vec::with_capacity(conflicts.len());
         for conflict in conflicts {
-            typed.push(self.conflict_view(conflict).await?);
+            typed.push(self.describe_conflict(conflict).await?);
         }
         Ok(MergePlan {
             base: self.base.id,
@@ -48,7 +48,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         })
     }
 
-    pub(super) async fn conflict_view(
+    /// Describes one exact conflict from this plan's retained generations.
+    /// Directory projections can load a selected entry without expanding every
+    /// conflict or reading the contents of unrelated conflicting files.
+    pub async fn describe_conflict(
         &self,
         conflict: MergeConflict,
     ) -> Result<crate::ConflictView, WorkspaceError> {
@@ -201,7 +204,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
     ) -> Result<Option<String>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let maximum = self.maximum_changes.max(1);
+        // The projection needs one spelling, irrespective of this identity's
+        // other hard links. The shared reverse traversal stops at that row.
+        let maximum = 1;
         let mut paths = self
             .target_head
             .paths_for_file_id(file_id, maximum, WorkBudget::UNBOUNDED, &cancellation)
@@ -310,25 +315,85 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .workspace
             .volume
             .fs
-            .apply_workspace_join(crate::facade::WorkspaceJoinRequest {
-                target: &self.target_head.workspace.volume,
-                base: self.base,
-                source: &self.source_head,
-                expected_target: options.if_target,
-                expected_head: self.target_authority_head,
-                history: self.history,
-                operation_id: options.idempotency_key.operation_id(),
-                permit,
-                maximum_generations: self.maximum_generations,
-                maximum_changes: self.maximum_changes,
-                maximum_conflicts: self.maximum_conflicts,
-                resolutions: crate::facade::WorkspaceJoinResolutions::Map(&resolutions),
-            })
+            .apply_workspace_join(self.join_request(options, &resolutions, permit))
             .await?;
         self.map_join_outcome(outcome)
     }
 
-    pub(super) fn map_join_outcome(
+    pub(crate) async fn prepare_with_accounting(
+        &self,
+        options: ApplyOptions,
+        resolutions: &BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>,
+        permit: crate::PublicationPermit,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<JoinPreparation, WorkspaceError> {
+        if options.if_target != self.target_head.id {
+            return Err(WorkspaceError::StaleTarget);
+        }
+        self.target_head
+            .workspace
+            .volume
+            .fs
+            .prepare_workspace_join_with_accounting(
+                self.join_request(options, resolutions, permit),
+                accounting,
+                cancellation,
+            )
+            .await
+    }
+
+    /// Prepares a retained read projection of the original three-way merge.
+    /// Unresolved regions stay separate from the clean checkpoint and cannot
+    /// enter the publication path as implicit target-side selections.
+    pub(crate) async fn preview_with_accounting(
+        &self,
+        options: ApplyOptions,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<JoinPreparation, WorkspaceError> {
+        if options.if_target != self.target_head.id {
+            return Err(WorkspaceError::StaleTarget);
+        }
+        self.target_head
+            .workspace
+            .volume
+            .fs
+            .preview_workspace_join_with_accounting(
+                self.join_request(
+                    options,
+                    &BTreeMap::new(),
+                    crate::PublicationPermit::Unrestricted,
+                ),
+                accounting,
+                cancellation,
+            )
+            .await
+    }
+
+    fn join_request<'a>(
+        &'a self,
+        options: ApplyOptions,
+        resolutions: &'a BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>,
+        permit: crate::PublicationPermit,
+    ) -> crate::facade::WorkspaceJoinRequest<'a, A, O> {
+        crate::facade::WorkspaceJoinRequest {
+            target: &self.target_head.workspace.volume,
+            base: self.base,
+            source: &self.source_head,
+            expected_target: options.if_target,
+            expected_head: self.target_authority_head,
+            history: self.history,
+            operation_id: options.idempotency_key.operation_id(),
+            permit,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            resolutions: crate::facade::WorkspaceJoinResolutions::Map(resolutions),
+        }
+    }
+
+    pub(crate) fn map_join_outcome(
         &self,
         outcome: crate::facade::WorkspaceJoinOutcome,
     ) -> Result<JoinOutcome<A, O>, WorkspaceError> {

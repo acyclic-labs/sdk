@@ -13,6 +13,7 @@ enum MergeFileTableOutcome {
     Conflicted {
         conflicts: Vec<MergeConflict>,
         truncated: bool,
+        preview: Option<ObjectId>,
     },
 }
 
@@ -36,21 +37,26 @@ pub(crate) async fn merge_file_tables_with_accounting<S: AsyncObjectStore>(
     match outcome {
         MergeFileTableOutcome::Prepared(table) => Ok(Some(table)),
         MergeFileTableOutcome::Conflicted { conflicts, .. } => {
-            let bytes = conflicts
-                .capacity()
-                .checked_mul(std::mem::size_of::<MergeConflict>())
-                .ok_or(WorkError::Overflow)?;
-            let bytes = conflicts.iter().try_fold(bytes, |bytes, conflict| {
-                let nested = match conflict {
-                    MergeConflict::File(_) => 0,
-                    MergeConflict::Binding { name, .. } => name.retained_bytes(),
-                };
-                bytes.checked_add(nested).ok_or(WorkError::Overflow)
-            })?;
-            Owned::new(conflicts, allocation, bytes as u64).retire(accounting)?;
+            let bytes = merge_conflict_bytes(&conflicts)?;
+            Owned::new(conflicts, allocation, bytes).retire(accounting)?;
             Ok(None)
         }
     }
+}
+
+fn merge_conflict_bytes(conflicts: &Vec<MergeConflict>) -> Result<u64, WorkError> {
+    let bytes = conflicts
+        .capacity()
+        .checked_mul(std::mem::size_of::<MergeConflict>())
+        .ok_or(WorkError::Overflow)?;
+    let bytes = conflicts.iter().try_fold(bytes, |bytes, conflict| {
+        let nested = match conflict {
+            MergeConflict::File(_) => 0,
+            MergeConflict::Binding { name, .. } => name.retained_bytes(),
+        };
+        bytes.checked_add(nested).ok_or(WorkError::Overflow)
+    })?;
+    u64::try_from(bytes).map_err(|_| WorkError::Overflow)
 }
 
 #[allow(
@@ -277,7 +283,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                 cancellation,
             )
             .await?;
-            if !state.conflicts.value.is_empty() || state.truncated {
+            if state.truncated || (!state.conflicts.value.is_empty() && !resolutions.is_preview()) {
                 return Ok(None);
             }
             let transitions =
@@ -331,7 +337,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
         state.file_folds.retire(accounting)?;
         state.replacements.retire(accounting)?;
         match result {
-            Ok(None) => {
+            Ok(preview) if !state.conflicts.value.is_empty() || state.truncated => {
                 let Owned {
                     value: conflicts,
                     allocation,
@@ -341,6 +347,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                     MergeFileTableOutcome::Conflicted {
                         conflicts,
                         truncated: state.truncated,
+                        preview,
                     },
                     allocation,
                 ))

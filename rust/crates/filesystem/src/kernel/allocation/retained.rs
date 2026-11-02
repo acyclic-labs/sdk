@@ -68,17 +68,12 @@ pub(crate) struct ReadOwner<T> {
     accounting: ReadAccounting,
 }
 
-impl<T: Default> ReadOwner<T> {
-    pub(crate) fn new(accounting: KernelAccounting<'_>) -> Result<Self, crate::FsError> {
-        let accounting = ReadAccounting::consume(accounting)?;
-        Ok(Self {
-            value: T::default(),
-            accounting,
-        })
-    }
-}
-
 impl<T> ReadOwner<T> {
+    pub(crate) fn new(accounting: KernelAccounting<'_>, value: T) -> Result<Self, crate::FsError> {
+        let accounting = ReadAccounting::consume(accounting)?;
+        Ok(Self { value, accounting })
+    }
+
     pub(crate) fn borrow(&mut self) -> (&mut T, KernelAccounting<'_>) {
         (&mut self.value, self.accounting.borrow())
     }
@@ -393,7 +388,7 @@ mod tests {
         );
         caller.charge_items(1)?;
         let before = caller.spent();
-        let mut reader = ReadOwner::<Option<Observe>>::new(caller)?;
+        let mut reader = ReadOwner::new(caller, None::<Observe>)?;
         assert_eq!(reader.borrow().1.spent(), before);
         reader.borrow().1.charge_items(1)?;
         assert!(matches!(
@@ -415,7 +410,7 @@ mod tests {
         // lease remains funded after the reader itself is gone.
         let cancel = crate::CancellationToken::new();
         let caller = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
-        let mut reader = ReadOwner::<Option<Observe>>::new(caller)?;
+        let mut reader = ReadOwner::new(caller, None::<Observe>)?;
         let (state, mut accounting) = reader.borrow();
         let page = RetainedAllocation::claim(73, 1, &mut accounting)?;
         let ledger = match &page {
@@ -467,7 +462,7 @@ mod tests {
                     .map_err(|(error, _)| crate::FsError::from(error))?;
             let caller = KernelAccounting::native(&original, &caller_cancel);
             let before = original.receipt();
-            let mut reader = ReadOwner::<()>::new(caller)?;
+            let mut reader = ReadOwner::new(caller, ())?;
             assert_eq!(
                 original.receipt(),
                 before,

@@ -9,30 +9,81 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<Option<FileRecord>, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        self.workspace_merge_record_with_accounting(
+            workspace,
+            generation,
+            &MergeConflict::File(file_id),
+            &mut accounting,
+            &cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn workspace_merge_record_with_accounting(
+        &self,
+        workspace: &Volume<A, O>,
+        generation: GenerationId,
+        conflict: &MergeConflict,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileRecord>, WorkspaceError> {
+        // The output is scalar. Retire temporary reads on success, refusal and
+        // withdrawal while preserving the caller's scratch and retained credit.
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        accounting.check()?;
         let root = self
             .read_join_root_with_accounting(
                 generation.object_id(),
                 workspace.config,
-                &mut accounting,
-                &cancellation,
+                accounting,
+                cancellation,
             )
             .await
             .map_err(WorkspaceError::engine)?;
-        let result = lookup_file_record_async_with_accounting(
+        let table = root.value.file_table;
+        root.retire(accounting).map_err(WorkspaceError::engine)?;
+        let limits = DecodeLimits::for_volume(workspace.config);
+        let id = match conflict {
+            MergeConflict::File(id) => *id,
+            MergeConflict::Binding { directory_id, .. } => *directory_id,
+        };
+        let (record, _allocation) = lookup_file_record_async_with_accounting(
             &self.inner.objects,
-            root.value.file_table,
-            file_id,
-            DecodeLimits::for_volume(workspace.config),
-            &mut accounting,
-            &cancellation,
+            table,
+            id,
+            limits,
+            accounting,
+            cancellation,
+            None,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?;
+        let MergeConflict::Binding { name, .. } = conflict else {
+            return Ok(record);
+        };
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let Some(id) = record
+            .binding_with_accounting(&self.inner.objects, name, limits, accounting, cancellation)
+            .await
+            .map_err(WorkspaceError::engine)?
+        else {
+            return Ok(None);
+        };
+        lookup_file_record_async_with_accounting(
+            &self.inner.objects,
+            table,
+            id,
+            limits,
+            accounting,
+            cancellation,
             None,
         )
         .await
         .map(|(record, _allocation)| record)
-        .map_err(WorkspaceError::engine);
-        root.retire(&mut accounting)
-            .map_err(WorkspaceError::engine)?;
-        result
+        .map_err(WorkspaceError::engine)
     }
     pub(crate) async fn workspace_conflict_bytes(
         &self,

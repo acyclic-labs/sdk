@@ -113,13 +113,22 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         .await?
     };
     let link_count = resolve_three(&base.link_count, &ours.link_count, &theirs.link_count);
-    let (Some(metadata), Some(link_count)) = (metadata, link_count) else {
+    let (metadata, link_count) = if let (Some(metadata), Some(link_count)) = (metadata, link_count)
+    {
+        (metadata, link_count)
+    } else {
         state.conflict(
             MergeConflict::File(directory_id),
             maximum_conflicts,
             accounting,
         )?;
-        return Ok(None);
+        if !requested.is_preview() {
+            return Ok(None);
+        }
+        (
+            metadata.unwrap_or(ours.metadata),
+            link_count.unwrap_or(ours.link_count),
+        )
     };
     let maximum = state.remaining_changes.max(1);
     let (ours_diff, allocation) = diff_tree_entries_with_accounting(
@@ -308,7 +317,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                         .ok_or(WorkError::Overflow)?;
                 }
             }
-            if conflicted {
+            if conflicted && !requested.is_preview() {
                 return Ok(None);
             }
             let entries = if mutations.value.is_empty() {

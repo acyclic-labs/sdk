@@ -71,6 +71,38 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let plan = unbounded!(agent.join_into(&main), plan())?;
     let expected = plan.target_head();
     let idempotency_key = IdempotencyKey::new();
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (_, expected_head) = fs
+        .workspace_head_state(&main.volume, &mut accounting, &cancellation)
+        .await?;
+    let source = unbounded!(agent, head())?;
+    let resolutions = std::collections::BTreeMap::new();
+    let prepared = fs
+        .prepare_workspace_join_with_accounting::<WorkspaceError>(
+            crate::facade::WorkspaceJoinRequest {
+                target: &main.volume,
+                base: plan.base,
+                source: &source,
+                expected_target: expected,
+                expected_head,
+                history: crate::JoinHistory::Merge,
+                operation_id: idempotency_key.operation_id(),
+                permit: crate::PublicationPermit::Unrestricted,
+                maximum_generations: u32::MAX,
+                maximum_changes: u32::MAX,
+                maximum_conflicts: u32::MAX,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(&resolutions),
+            },
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+    assert!(prepared.candidate_root().is_some());
+    assert_eq!(unbounded!(main, head())?.id(), expected);
+    assert_eq!(unbounded!(agent, head())?.id(), source.id());
+    drop(prepared);
     assert!(unbounded!(main, read("/agent", 16)).is_err());
     let outcome = plan
         .apply(
