@@ -37,6 +37,14 @@ macro_rules! skill {
 /// Every seed file by its path in the tree, sorted by path.
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
+    (
+        "plugins/spawn/plugin.ts",
+        include_bytes!("plugins/spawn/plugin.ts"),
+    ),
+    (
+        "plugins/spawn/spawn.ts",
+        include_bytes!("plugins/spawn/spawn.ts"),
+    ),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
