@@ -20,14 +20,16 @@ export interface ActorForkOptions extends ActorsCallOptions {
 /** Plain ID scoped to its namespace. A saved reference carries no transport. */
 export class NamespaceActorId {
   readonly #reference: ActorReference;
+  readonly #text: string;
   readonly #name: string | undefined;
   constructor(reference: ActorReference, name?: string) {
     this.#reference = ActorReference.decode(reference.encode());
-    if (name !== undefined && name !== decoder.decode(reference.id)) throw new TypeError("name differs from actor id");
+    this.#text = decoder.decode(this.#reference.id);
+    if (name !== undefined && name !== this.#text) throw new TypeError("name differs from actor id");
     this.#name = name;
   }
   get name(): string | undefined { return this.#name; }
-  toString(): string { return decoder.decode(this.#reference.id); }
+  toString(): string { return this.#text; }
   equals(other: NamespaceActorId): boolean { return this.#reference.equals(other.#reference); }
   get reference(): ActorReference { return ActorReference.decode(this.#reference.encode()); }
 }
@@ -51,13 +53,16 @@ export class ActorNamespaceBinding {
   newUniqueId(): NamespaceActorId {
     return this.#id(randomId(), false);
   }
-  idFromReference(reference: ActorReference): NamespaceActorId {
+  #assertScope(reference: ActorReference): void {
     const expected = new ActorReference(this.#scope.account, this.#scope.namespace, reference.id);
     if (!reference.equals(expected)) throw new TypeError("actor reference is outside namespace binding");
+  }
+  idFromReference(reference: ActorReference): NamespaceActorId {
+    this.#assertScope(reference);
     return new NamespaceActorId(reference);
   }
   get(id: NamespaceActorId, options: ActorGetOptions = {}): ActorStub {
-    this.idFromReference(id.reference);
+    this.#assertScope(id.reference);
     if (options.locationHint !== undefined) actorLocationHint(options.locationHint);
     return new ActorStub(id, this.#transport, this.#binding, options.locationHint);
   }
@@ -72,6 +77,8 @@ type PendingCall = {
 /** Ordered calls on one stub; a failed call permanently breaks that stub. */
 export class ActorStub {
   readonly #id: NamespaceActorId;
+  readonly #account: Uint8Array;
+  readonly #namespace: Semantic.ActorNamespace;
   readonly #transport: ActorInvocationTransport;
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
@@ -88,6 +95,9 @@ export class ActorStub {
     if (typeof binding !== "string" || binding.length === 0) throw new TypeError("binding name is required");
     if (hint !== undefined) actorLocationHint(hint);
     this.#id = id; this.#transport = transport; this.#binding = binding; this.#hint = hint;
+    const reference = id.reference;
+    this.#account = reference.account;
+    this.#namespace = decoder.decode(reference.namespace) as Semantic.ActorNamespace;
     this.#failure = new Promise<never>((_resolve, reject) => { this.#reject = reject; });
     void this.#failure.catch(() => undefined);
   }
@@ -161,9 +171,8 @@ export class ActorStub {
     this.#broken = true; this.#lifetime.abort(error); this.#reject(error);
   }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeActorRequest {
-    const reference = this.reference;
-    return { actorId: this.#id.toString() as Semantic.ActorId, namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace,
-      accountId: reference.account, method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
+    return { actorId: this.#id.toString() as Semantic.ActorId, namespace: this.#namespace,
+      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
       ...(this.#hint === undefined ? {} : {locationHint:this.#hint}),
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
@@ -199,7 +208,7 @@ export class ActorStub {
     if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
     signal.throwIfAborted();
     await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,
-      namespace: decoder.decode(reference.namespace) as Semantic.ActorNamespace, accountId: reference.account,
+      namespace: this.#namespace, accountId: reference.account,
       subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
     return target;
   }
