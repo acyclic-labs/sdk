@@ -70,7 +70,7 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) 
     `step=admit committed merge of the settled child's branch in its parent workspace; recovery=${recovery}`);
 }
 
-export async function runCase(binary, login, root, name, signal) {
+export async function runCase(binary, login, root, name, signal, { model = "openai/gpt-6-luna", catalog } = {}) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   const settings = join(directory, "settings");
@@ -80,10 +80,11 @@ export async function runCase(binary, login, root, name, signal) {
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   const messageId = "live";
   let step = "prepare workspace and isolated settings", env, childHooks, begin, receipt, hooksPending = false;
+  const providerArgs = ["--model", model, ...(catalog ? ["--catalog", catalog] : [])];
   const invoke = async (prompt, format, expected) => {
     hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
-      "--model", "openai/gpt-6-luna", "--operation", operation,
+      ...providerArgs, "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
     const result = await processes.run(binary, args, { cwd: workspace, env, scopeReport: true },
       format === "text" ? "" : JSON.stringify({ prompt, id: messageId }) + "\n");
@@ -101,7 +102,7 @@ export async function runCase(binary, login, root, name, signal) {
   const collaborate = async (task, followup) => {
     hooksPending = true;
     const fixture = { workspace, env, args: ["--workspace", workspace,
-      "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
+      "--settings-root", settings, ...providerArgs] };
     await conversation(processes, binary, fixture, { operation, turns: [
       { id: "spawn", text: task, answer: "SPAWNED" },
       { id: "report", text: followup, answer: marker },
@@ -113,7 +114,7 @@ export async function runCase(binary, login, root, name, signal) {
     await mkdir(workspace, { recursive: true });
     env = environment(settings);
     // Reuse only the admitted login path after stripping provider keys.
-    env.CODEX_HOME = login;
+    if (login) env.CODEX_HOME = login;
     const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
     await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
       PostToolUse: [{ hooks: [{ type: "command", command: process.execPath, args: [recorder, hookFile] }] }],
@@ -205,7 +206,9 @@ async function campaign(signal) {
   assert.ok(/^[1-9][0-9]*$/.test(count ?? "") && Number.isSafeInteger(samples),
     `step=admit explicit positive sample count; recovery=${recovery}`);
   const login = process.env.LIVE_CODEX_HOME ?? process.env.E2E_LIVE_CODEX_HOME;
-  assert.ok(binary && isAbsolute(binary) && output && login && isAbsolute(login), `step=admit arguments and existing login path; recovery=${recovery}`);
+  const catalog = process.env.E2E_LIVE_CATALOG, model = process.env.E2E_LIVE_MODEL ?? "openai/gpt-6-luna";
+  assert.ok(binary && isAbsolute(binary) && output && (catalog ? isAbsolute(catalog) : login && isAbsolute(login)),
+    `step=admit arguments and provider catalog or existing login path; recovery=${recovery}`);
   const names = selected.length ? selected : liveCases;
   assert.equal(new Set(names).size, names.length, `step=reject duplicate cases; recovery=${recovery}`);
   for (const name of names) assert.ok(liveCases.includes(name), `step=admit case ${name}; recovery=${recovery}`);
@@ -215,11 +218,11 @@ async function campaign(signal) {
   sampling: for (let sample = 1; sample <= samples; sample++) {
     for (const name of names) {
       if (signal.aborted) break sampling;
-      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal) });
+      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal, { model, catalog }) });
       if (signal.aborted) break sampling;
     }
   }
-  const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
+  const report = { tier: catalog ? "real-provider-catalog" : "real-codex-login", model, platform: process.platform,
     measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
     cells: summarizeCases(names, results), results,
     ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
