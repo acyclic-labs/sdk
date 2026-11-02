@@ -134,7 +134,7 @@ impl StockExecution<'_> {
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
         let completed_message = self.has_completed_message(&events)?;
         let mut text = String::new();
-        for event in events {
+        for event in stock_into_iter(events, self.io)? {
             match event {
                 ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(
@@ -144,16 +144,20 @@ impl StockExecution<'_> {
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
+                    self.retire_step_text(delta)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    text.clear();
-                    stock_string_push(
-                        &mut text,
-                        &completed,
-                        self.stock.limits.render_bytes,
-                        "summary output exceeds caller render budget",
-                        self.io,
-                    )?;
+                    if completed.len() as u64 > self.stock.limits.render_bytes {
+                        self.retire_step_text(completed)?;
+                        self.retire_step_text(text)?;
+                        return Err(stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Invalid,
+                            "summary output exceeds caller render budget",
+                        ));
+                    }
+                    self.retire_step_text(text)?;
+                    text = completed;
                 }
                 ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
@@ -162,8 +166,8 @@ impl StockExecution<'_> {
                         "summary requested a tool operation",
                     ));
                 }
-                ModelEvent::Content { .. }
-                | ModelEvent::TextPart { .. }
+                ModelEvent::Content { delta } => self.retire_step_text(delta)?,
+                ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }
                 | ModelEvent::Completed { .. } => {}

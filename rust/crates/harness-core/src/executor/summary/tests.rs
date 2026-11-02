@@ -36,3 +36,107 @@ proptest! {
         prop_assert!(validate_model_content_scope(&journal, Limits::default(), None, None).is_ok());
     }
 }
+
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[test]
+fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Result<()> {
+    let mut stock = StockExecutor::new(
+        Model::new("test".into(), "summary-collection".into(), "1".into())?,
+        Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    stock.limits.render_bytes = 8;
+    for native in [false, true] {
+        let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+            let execution = StockExecution {
+                io: Some(io),
+                ..StockExecution::ordinary(&stock)
+            };
+            // These are generated collection operands, not provider fixtures.
+            let mut events = Vec::new();
+            stock_vec_push(
+                &mut events,
+                ModelEvent::Content {
+                    delta: stock_string_copy("ignored", Some(io))?,
+                },
+                Some(io),
+            )?;
+            stock_vec_push(
+                &mut events,
+                ModelEvent::MessageCompleted {
+                    text: stock_string_copy("earlier", Some(io))?,
+                },
+                Some(io),
+            )?;
+            let final_text = stock_string_copy("summary!", Some(io))?;
+            let original = final_text.as_ptr();
+            let capacity = final_text.capacity() as u64;
+            stock_vec_push(
+                &mut events,
+                ModelEvent::MessageCompleted { text: final_text },
+                Some(io),
+            )?;
+            let copied = io.receipt().bytes_copied;
+            let text = execution.collect_summary_text(events)?;
+            assert_eq!(text, "summary!");
+            assert_eq!(text.as_ptr(), original);
+            assert_eq!(
+                io.receipt().bytes_copied,
+                copied,
+                "completed summary collection copied its already owned text"
+            );
+            assert_eq!(io.owned_bytes()?, capacity);
+            execution.retire_step_text(text)?;
+            assert_eq!(io.owned_bytes()?, 0);
+            Ok::<_, Error>(())
+        })
+        .map_err(|(cause, _)| Error::Storage(cause))?;
+        observed.0?;
+        assert_eq!(observed.2, 0);
+        if native {
+            assert_eq!(
+                observed.5,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+    }
+    let execution = StockExecution::ordinary(&stock);
+    assert_eq!(
+        execution.collect_summary_text(vec![
+            ModelEvent::Content {
+                delta: "sum".into()
+            },
+            ModelEvent::Content {
+                delta: "mary".into()
+            },
+        ])?,
+        "summary"
+    );
+    for events in [
+        vec![ModelEvent::MessageCompleted {
+            text: "too large".into(),
+        }],
+        vec![ModelEvent::Content {
+            delta: "too large".into(),
+        }],
+        vec![ModelEvent::MessageCompleted {
+            text: String::new(),
+        }],
+        vec![ModelEvent::ToolCall(crate::model::ToolCall::new(
+            "call".into(),
+            "shell".into(),
+            serde_json::Value::Null,
+        ))],
+    ] {
+        assert!(matches!(
+            execution.collect_summary_text(events),
+            Err(Error::Invalid(_))
+        ));
+    }
+    Ok(())
+}
