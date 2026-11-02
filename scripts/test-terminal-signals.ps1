@@ -1,5 +1,12 @@
-param([Parameter(Mandatory=$true)][string]$Binary, [switch]$FrameRegions)
+param(
+    [Parameter(Mandatory=$true)][string]$Binary,
+    [switch]$FrameRegions,
+    [ValidateSet('break','close','blocked','input-close')][string]$Scenario
+)
 $ErrorActionPreference = 'Stop'
+if ($FrameRegions -and $Scenario) {
+    throw 'scenario selection conflicts with frame regions; recovery: pass either -FrameRegions or -Scenario input-close'
+}
 $Binary = (Resolve-Path -LiteralPath $Binary).ProviderPath
 $artifactRoot = Join-Path (Split-Path -Parent $PSScriptRoot) ('target/terminal-signals-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $artifactRoot | Out-Null
@@ -72,6 +79,14 @@ public static class TerminalSignalConPty {
                 uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"region measurement child exit");
                 Require(File.Exists(report),"physical region report");
                 Console.Write(File.ReadAllText(report));
+                return;
+            }
+            if(scenario=="input-close") {
+                string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario input-close";
+                Require(WaitForSingleObject(process.process,1500)==0,"input close child deadline"+recovery);
+                uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"input close child exit"+recovery);
+                Require(File.Exists(report),"native input close acknowledgement"+recovery);
+                Console.WriteLine(File.ReadAllText(report));
                 return;
             }
             var timer=Stopwatch.StartNew();
@@ -168,7 +183,7 @@ $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 $previousRegionReport = $env:ACYCLIC_TERMINAL_REGION_REPORT
 try {
-    $scenarios = if ($FrameRegions) { @('regions') } else { @('break','close','blocked') }
+    $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('regions') } else { @('break','close','blocked','input-close') }
     foreach ($scenario in $scenarios) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report

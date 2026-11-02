@@ -1,7 +1,7 @@
 //! Checked console operations. The terminal owner controls worker lifetimes.
 use std::io;
 use std::mem::zeroed;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::WaitForSingleObject,
+        Threading::{SetEvent, WaitForMultipleObjects},
     },
 };
 
@@ -134,25 +134,23 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
 
 /// Read VT bytes directly into the caller's buffer. A native call consumes at
 /// most u32::MAX bytes; larger buffers continue in the caller's next read.
-pub fn console_read(input: usize, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
+pub fn console_read(
+    input: usize,
+    closed: &ConsoleClose,
+    bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<usize> {
     let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     if bytes.is_empty() {
         return Ok(0);
     }
     loop {
-        let now = Instant::now();
-        if now >= deadline {
+        if !closed.wait(input, deadline)? {
             return Ok(0);
         }
-        let timeout = u32::try_from((deadline - now).as_millis()).unwrap_or(u32::MAX - 1);
         // SAFETY: the OS checks the handle; event and count are writable stack
         // storage, and ReadFile receives at most the borrowed slice capacity.
         unsafe {
-            match WaitForSingleObject(input as HANDLE, timeout) {
-                WAIT_TIMEOUT => return Ok(0),
-                WAIT_OBJECT_0 => {}
-                _ => return Err(io::Error::last_os_error()),
-            }
             let mut event: INPUT_RECORD = zeroed();
             let mut count = 0;
             if PeekConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
@@ -182,6 +180,56 @@ pub fn console_read(input: usize, bytes: &mut [u8], deadline: Instant) -> io::Re
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());
+            }
+        }
+    }
+}
+
+/// Retained close event for one console owner and its original input reader.
+/// Closing is permanent: an event published before wait arming stays visible.
+pub struct ConsoleClose {
+    event: OwnedHandle,
+}
+
+impl ConsoleClose {
+    /// Allocate one initially unsignalled event for the owning console.
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            event: super::io::create_event().map_err(io::Error::from_raw_os_error)?,
+        })
+    }
+
+    /// Publish the original owner's terminal close fence.
+    pub fn signal(&self) -> io::Result<()> {
+        // SAFETY: the owned manual-reset event remains live throughout the call.
+        if unsafe { SetEvent(self.event.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn wait(&self, input: usize, deadline: Instant) -> io::Result<bool> {
+        let handles = [self.event.as_raw_handle() as HANDLE, input as HANDLE];
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            let remaining = deadline - now;
+            // Round up to the OS millisecond unit; never turn a remaining
+            // fraction into an immediate readiness recheck. The OS maximum
+            // is a wait chunk, not an earlier caller deadline.
+            let milliseconds =
+                remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+            let timeout = milliseconds.min(u128::from(u32::MAX - 1)) as u32;
+            // SAFETY: both original handles are retained by their owners;
+            // this fixed array lives through the wait. Close has priority
+            // when both sources are ready.
+            match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout) } {
+                WAIT_OBJECT_0 => return Err(io::ErrorKind::NotConnected.into()),
+                ready if ready == WAIT_OBJECT_0 + 1 => return Ok(true),
+                WAIT_TIMEOUT => {}
+                _ => return Err(io::Error::last_os_error()),
             }
         }
     }

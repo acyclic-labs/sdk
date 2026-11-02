@@ -35,13 +35,33 @@ struct State<W: Write> {
     generation: u64,
 }
 
-pub(crate) struct Owner<W: Write> {
+/// The same owner publishes close before waiting for driver restoration.
+pub(crate) trait CloseWake: Send + Sync {
+    fn close(&self) -> io::Result<()>;
+}
+
+#[cfg(test)]
+impl CloseWake for () {
+    fn close(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) struct Owner<W: Write, N = ()> {
     state: Mutex<State<W>>,
     wake: Condvar,
     cancel: fn(&JoinHandle<()>),
+    closed: N,
 }
 
+#[cfg(test)]
 impl<W: Write + Send + 'static> Owner<W> {
+    pub(crate) fn new(guard: RestoreGuard<W>, cancel: fn(&JoinHandle<()>)) -> Arc<Self> {
+        Self::notifying(guard, cancel, ())
+    }
+}
+
+impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
     /// Read profile metadata without borrowing the guard for driver work.
     /// Lock order: owner only; unknown ownership conservatively disables hints.
     pub(crate) fn supports_scroll_regions(&self) -> bool {
@@ -104,7 +124,11 @@ impl<W: Write + Send + 'static> Owner<W> {
                 .map_err(|_| io::ErrorKind::Other.into())
         }
     }
-    pub(crate) fn new(guard: RestoreGuard<W>, cancel: fn(&JoinHandle<()>)) -> Arc<Self> {
+    pub(crate) fn notifying(
+        guard: RestoreGuard<W>,
+        cancel: fn(&JoinHandle<()>),
+        closed: N,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
                 guard: Some(guard),
@@ -120,6 +144,7 @@ impl<W: Write + Send + 'static> Owner<W> {
             }),
             wake: Condvar::new(),
             cancel,
+            closed,
         })
     }
 
@@ -329,7 +354,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         this: &Arc<Self>,
         os_restore: fn(&mut W) -> io::Result<()>,
     ) -> io::Result<()> {
-        {
+        let notified = {
             let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
             while state.closing {
                 state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
@@ -339,7 +364,8 @@ impl<W: Write + Send + 'static> Owner<W> {
             }
             state.closed = true;
             state.closing = true;
-        }
+            this.closed.close()
+        };
         let result = this.quiesce(true).and_then(|()| {
             let result = Self::execute(
                 this,
@@ -363,7 +389,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         // restore action above may publish restored, after native completion.
         state.closing = false;
         this.wake.notify_all();
-        result
+        result.and(notified)
     }
 }
 
@@ -735,19 +761,61 @@ mod tests {
             assert_restored(&owner);
         });
     }
+    struct InputClose {
+        ready: Mutex<bool>,
+        changed: Condvar,
+        silent: bool,
+    }
+
+    impl CloseWake for Arc<InputClose> {
+        fn close(&self) -> io::Result<()> {
+            if !self.silent {
+                *self.ready.lock().map_err(|_| io::ErrorKind::Other)? = true;
+                self.changed.notify_all();
+            }
+            Ok(())
+        }
+    }
+
     fn input_close_model(broken: bool) {
         loom::model(move || {
-            let owner = Owner::new(
+            let input = Arc::new(InputClose {
+                ready: Mutex::new(false),
+                changed: Condvar::new(),
+                silent: broken,
+            });
+            let owner = Owner::notifying(
                 RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
                 |_| {},
+                Arc::clone(&input),
             );
             assert!(owner.check_open().is_ok());
             let closing = Arc::clone(&owner);
             let worker = thread::spawn(move || Owner::close(&closing, |_| Ok(())));
             let _ = owner.check_open(); // Either side of the concurrent close is valid.
-            worker.join().unwrap().unwrap();
-            let next_read = if broken { Ok(()) } else { owner.check_open() };
-            assert!(next_read.is_err(), "input ignored the terminal close fence");
+            if !broken {
+                let mut ready = input
+                    .ready
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                while !*ready {
+                    ready = input
+                        .changed
+                        .wait(ready)
+                        .unwrap_or_else(|error| error.into_inner());
+                }
+            }
+            assert!(worker.join().is_ok_and(|result| result.is_ok()));
+            // The negative observes the omitted publication directly instead
+            // of hanging a native read until its deadline.
+            assert!(
+                *input
+                    .ready
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+                "input lost the original close publication"
+            );
+            assert!(owner.check_open().is_err());
         });
     }
     #[test]
