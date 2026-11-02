@@ -176,7 +176,6 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(hold) = admission.as_mut() {
         let retained = std::mem::size_of::<HttpRequest>()
-            + std::mem::size_of::<Body>()
             + url.capacity()
             + bytes.capacity()
             + headers.len() * std::mem::size_of::<(String, String)>()
@@ -184,7 +183,12 @@ pub(crate) async fn count(
                 .iter()
                 .map(|(key, value)| key.capacity() + value.capacity())
                 .sum::<usize>();
-        crate::native::retain(hold, retained as u64)?;
+        crate::native::retain(
+            hold,
+            (retained as u64)
+                .checked_add(crate::http::owned_bytes::control_bytes::<Body>()?)
+                .ok_or_else(|| boundary(work, "token count retained capacity overflow"))?,
+        )?;
     }
     #[cfg(target_arch = "wasm32")]
     let admission = None;
@@ -195,6 +199,10 @@ pub(crate) async fn count(
     let exchange = HttpRequest { url, headers, body };
     send_count(provider, exchange, count, count_custody, work).await
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "body_tests.rs"]
+mod body_tests;
 
 pub(crate) async fn send_count(
     provider: &ResolvedModel,
