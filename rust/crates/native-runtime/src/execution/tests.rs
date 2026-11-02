@@ -428,20 +428,44 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
     let workspace = root.path().join("workspace");
     let nested = workspace.join("nested");
     let read = root.path().join("source");
+    let external = root.path().join("external");
+    let external_nested = external.join("nested");
+    let descendant = external_nested.join("leaf");
+    let neighbor = root.path().join("external-neighbor");
+    let unrelated = root.path().join("unrelated");
     std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir_all(&descendant).unwrap();
+    std::fs::create_dir(&neighbor).unwrap();
     std::fs::write(&read, "read-only root").unwrap();
+    std::fs::write(&unrelated, "unrelated root").unwrap();
     let ceiling = ExecutionGrant::new(
         &workspace,
         ExecutionAccess::WorkspaceWrite,
-        [read.clone()],
+        [
+            read.clone(),
+            external,
+            external_nested.clone(),
+            unrelated.clone(),
+        ],
         ExecutionNetwork::On,
     )
     .unwrap();
-    for (path, operations) in [(&workspace, 4), (&nested, 6)] {
+    // An unrelated stale root confers no authority on this proof and must
+    // never be rebound. The original broad ancestor still authorizes new
+    // descendants after its separately granted nested root is replaced.
+    std::fs::remove_file(&unrelated).unwrap();
+    std::fs::rename(&external_nested, root.path().join("previous")).unwrap();
+    std::fs::create_dir_all(&descendant).unwrap();
+    for (path, selection, operations, allocations) in [
+        (&workspace, &read, 4, 0),
+        (&nested, &read, 6, 1),
+        (&workspace, &descendant, 6, 1),
+        (&nested, &descendant, 8, 2),
+    ] {
         let requested = ExecutionGrant::new(
             path,
             ExecutionAccess::ReadOnly,
-            [read.clone()],
+            [selection.clone()],
             ExecutionNetwork::Off,
         )
         .unwrap();
@@ -463,10 +487,7 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
             let result = ceiling.check_attenuation_controlled(&requested, Some(&meter));
             if limit == operations && failure.is_none() {
                 result.unwrap();
-                assert_eq!(
-                    meter.used_allocations.load(Ordering::Acquire),
-                    u64::from(path == &nested),
-                );
+                assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations,);
             } else {
                 let error = result.unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -502,17 +523,42 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
             .unwrap_err();
         assert!(error.to_string().contains("exceeds its authority ceiling"));
         assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
-        if path == &nested {
+        if allocations != 0 {
             let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
             denied.deny_allocations.store(true, Ordering::Release);
             let error = ceiling
                 .check_attenuation_controlled(&requested, Some(&denied))
                 .unwrap_err();
             assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-            assert_eq!(denied.used_operations.load(Ordering::Acquire), 2);
-            assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
+            let before_allocation = if path == &nested { 2 } else { 4 };
+            assert_eq!(
+                denied.used_operations.load(Ordering::Acquire),
+                before_allocation,
+            );
+            assert_eq!(
+                denied.read_attempts.load(Ordering::Acquire),
+                before_allocation,
+            );
             assert_eq!(denied.memory.load(Ordering::Acquire), 0);
         }
+    }
+    // A shared textual prefix is not a component ancestor. Neither that
+    // sibling nor the parent of every selected root acquires read authority.
+    for selection in [neighbor.as_path(), root.path()] {
+        let requested = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::ReadOnly,
+            [selection.to_path_buf()],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        let meter = crate::tests::ReadBudgetMeter::new(2, 0);
+        let error = ceiling
+            .check_attenuation_controlled(&requested, Some(&meter))
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds its authority ceiling"));
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     }
 }
 

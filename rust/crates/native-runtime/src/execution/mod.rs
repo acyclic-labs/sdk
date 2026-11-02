@@ -87,6 +87,15 @@ struct Grant {
     filter: Vec<linux::Instruction>,
 }
 
+impl Grant {
+    fn read_root(&self, path: &Path) -> Option<&BoundPath> {
+        self.read
+            .binary_search_by(|root| root.path.as_path().cmp(path))
+            .ok()
+            .map(|index| &self.read[index])
+    }
+}
+
 #[derive(Debug)]
 struct BoundPath {
     path: PathBuf,
@@ -322,25 +331,28 @@ impl ExecutionGrant {
         for path in &requested.policy.read {
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
-            if let Ok(index) = self
-                .policy
-                .read
-                .binary_search_by(|root| root.path.cmp(&path.path))
-            {
-                if self.policy.read[index].contains(path, meter)? {
+            if let Some(root) = self.policy.read_root(&path.path) {
+                if root.contains(path, meter)? {
                     continue;
                 }
             }
             if self.policy.workspace.contains(path, meter)? {
                 continue;
             }
-            let mut permitted = false;
-            for root in &self.policy.read {
-                if root.contains(path, meter)? {
-                    permitted = true;
-                    break;
-                }
-            }
+            // Only a component ancestor can confer authority. Search the
+            // existing sorted roots instead of scanning unrelated roots.
+            // The last match is the shallowest ancestor, preserving the
+            // original sorted proof order for overlapping declared roots.
+            let root = path
+                .path
+                .ancestors()
+                .skip(1)
+                .filter_map(|ancestor| self.policy.read_root(ancestor))
+                .last();
+            let permitted = match root {
+                Some(root) => root.contains(path, meter)?,
+                None => false,
+            };
             if !permitted {
                 return Err(refused("execution grant exceeds its authority ceiling"));
             }
