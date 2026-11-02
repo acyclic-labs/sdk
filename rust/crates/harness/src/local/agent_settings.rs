@@ -12,6 +12,10 @@ pub(super) struct Settings {
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) sampling: Option<Sampling>,
     pub(super) compaction: crate::context::CompactionPolicy,
+    /// Original agent module links, retained for the selected revision.
+    pub(super) links: Vec<config::Link>,
+    /// Provider settings use this same immutable home, not a fresh resolution.
+    pub(super) source: Arc<Source>,
 }
 
 /// Resolves a model selection the settings name.
@@ -31,8 +35,104 @@ pub(super) struct Volumes<'a> {
 /// Imports resolve in the home over the seed; `sys/` only in the seed.
 struct Tree<'a> {
     volumes: &'a Volumes<'a>,
+    pin: &'a Pin,
+}
+
+/// One settings read's original authority and immutable generation.
+struct Pin {
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
+}
+
+/// Retained provenance for agent and provider settings. Hook loading only
+/// needs the read pin, without this allocation, encoding or hash.
+/// This source reference is not a committed model epoch.
+pub(super) struct Source {
+    pin: Pin,
+    stack: [u8; 32],
+    generation_label: String,
+}
+
+/// The provider module's result, retaining its original source association.
+pub(super) struct ProviderSettings {
+    pub(super) profile: config::ProviderProfile,
+    pub(super) links: Vec<config::Link>,
+    pub(super) stack: [u8; 32],
+}
+
+impl Pin {
+    async fn new(volumes: &Volumes<'_>) -> Result<Self> {
+        let read = ContentGrant::verify_directory_read(
+            volumes.verifier,
+            volumes.signed,
+            volumes.home,
+            "",
+            &mut None,
+        )?;
+        let workspace = crate::filesystem::workspace_ref(
+            volumes.home.provider().clone(),
+            &volumes.home.storage_name(&mut None)?,
+        )?;
+        let generation = volumes.files.resolve(&workspace, None).await?.generation;
+        Ok(Self { read, generation })
+    }
+}
+
+impl Source {
+    async fn new(volumes: &Volumes<'_>) -> Result<Arc<Self>> {
+        let pin = Pin::new(volumes).await?;
+        let generation_label = serde_json::to_string(&pin.generation)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let stack = crate::layers::stack_digest([
+            (crate::layers::SEED, crate::seed::digest().as_slice()),
+            (crate::layers::HOME, generation_label.as_bytes()),
+        ]);
+        Ok(Arc::new(Self {
+            pin,
+            stack,
+            generation_label,
+        }))
+    }
+
+    /// Evaluate a provider entry using the same pinned tree as agent settings.
+    /// The original model selection supplies its path and base; no family is
+    /// inferred from a provider name, endpoint or credential.
+    pub(super) async fn provider(
+        self: &Arc<Self>,
+        volumes: &Volumes<'_>,
+        path: &str,
+        base: serde_json::Value,
+    ) -> Result<ProviderSettings> {
+        if !path.starts_with("plugins/") || !config::composes(path) {
+            return Err(Error::Invalid(format!(
+                "provider settings admission failed: {path} is not a provider entry; recovery: select plugins/<provider>/provider.ts"
+            )));
+        }
+        let tree = Tree {
+            volumes,
+            pin: &self.pin,
+        };
+        let home = tree.home(path).await?;
+        let seed_generation = blake3::Hash::from_bytes(*crate::seed::digest()).to_hex();
+        let layers = [
+            Layer {
+                name: crate::layers::SEED,
+                generation: seed_generation.as_str(),
+                bytes: crate::seed::file(path),
+            },
+            Layer {
+                name: crate::layers::HOME,
+                generation: &self.generation_label,
+                bytes: home.as_ref().map(|(_, bytes)| bytes.as_slice()),
+            },
+        ];
+        let (profile, links) = config::provider::admit(path, &layers, &tree, base).await?;
+        Ok(ProviderSettings {
+            profile,
+            links,
+            stack: self.stack,
+        })
+    }
 }
 
 impl Tree<'_> {
@@ -54,9 +154,9 @@ impl Tree<'_> {
             .files
             .read_private_path_indexed(
                 self.volumes.home,
-                &self.read,
+                &self.pin.read,
                 path,
-                Some(&self.generation),
+                Some(&self.pin.generation),
                 self.volumes.maximum_bytes,
                 ContentAccess::default(),
             )
@@ -106,7 +206,11 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree::new(volumes).await?;
+    let source = Source::new(volumes).await?;
+    let tree = Tree {
+        volumes,
+        pin: &source.pin,
+    };
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -114,7 +218,7 @@ pub(super) async fn admit(
     };
     let home = tree.entry(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], &tree, started, resolve, compaction)
+        return settle(&[seed], volumes, &source, started, resolve, compaction)
             .await
             .map_err(Refused::seed);
     };
@@ -126,17 +230,25 @@ pub(super) async fn admit(
             bytes: Some(&bytes),
         },
     ];
-    let (settings, status, error) =
-        match settle(&layers, &tree, started.clone(), resolve, compaction).await {
-            Ok(settings) => (settings, AdmissionStatus::Applied, None),
-            Err(Refused(status, error)) => (
-                settle(&layers[..1], &tree, started, resolve, compaction)
-                    .await
-                    .map_err(Refused::seed)?,
-                status,
-                Some(error),
-            ),
-        };
+    let (settings, status, error) = match settle(
+        &layers,
+        volumes,
+        &source,
+        started.clone(),
+        resolve,
+        compaction,
+    )
+    .await
+    {
+        Ok(settings) => (settings, AdmissionStatus::Applied, None),
+        Err(Refused(status, error)) => (
+            settle(&layers[..1], volumes, &source, started, resolve, compaction)
+                .await
+                .map_err(Refused::seed)?,
+            status,
+            Some(error),
+        ),
+    };
     record(
         volumes,
         agent,
@@ -146,28 +258,6 @@ pub(super) async fn admit(
     )
     .await?;
     Ok(settings)
-}
-
-impl<'a> Tree<'a> {
-    async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
-        let read = ContentGrant::verify_directory_read(
-            volumes.verifier,
-            volumes.signed,
-            volumes.home,
-            "",
-            &mut None,
-        )?;
-        let workspace = crate::filesystem::workspace_ref(
-            volumes.home.provider().clone(),
-            &volumes.home.storage_name(&mut None)?,
-        )?;
-        let generation = volumes.files.resolve(&workspace, None).await?.generation;
-        Ok(Self {
-            volumes,
-            read,
-            generation,
-        })
-    }
 }
 
 /// Records the outcome of the home's `path` at `version` in the journal,
@@ -227,7 +317,8 @@ pub(super) async fn plugins(
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
-    let tree = Tree::new(volumes).await?;
+    let pin = Pin::new(volumes).await?;
+    let tree = Tree { volumes, pin: &pin };
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -288,7 +379,8 @@ impl From<Error> for Refused {
 
 async fn settle(
     layers: &[Layer<'_>],
-    tree: &Tree<'_>,
+    volumes: &Volumes<'_>,
+    source: &Arc<Source>,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
     compaction: (
@@ -296,12 +388,16 @@ async fn settle(
         &Option<crate::context::CompactionPolicy>,
     ),
 ) -> std::result::Result<Settings, Refused> {
+    let tree = Tree {
+        volumes,
+        pin: &source.pin,
+    };
     let selection = format!("{}/{}", started.0.provider, started.0.name);
     let invalid = |error: String| Refused(AdmissionStatus::Invalid, error);
-    let (value, _) = config::compose(
+    let (value, links) = config::compose(
         config::AGENT,
         layers,
-        tree,
+        &tree,
         serde_json::json!({ "model": selection }),
     )
     .await
@@ -382,6 +478,8 @@ async fn settle(
         compaction,
         model,
         sampling: settings.sampling,
+        links,
+        source: Arc::clone(source),
     })
 }
 
@@ -402,7 +500,7 @@ mod tests {
         for (path, source) in [
             (
                 "plugins.ts",
-                "import {enabled} from './switch'; export default {guard: {enabled}};",
+                "import {enabled} from './switch.ts'; export default {guard: {enabled}};",
             ),
             ("switch.ts", "export const enabled = true;"),
             (
@@ -412,6 +510,14 @@ mod tests {
             (
                 "plugins/guard/hooks/before-tool.sh",
                 "printf '%s' '{\"decision\":\"deny\"}'",
+            ),
+            (
+                "plugins/openai/provider.ts",
+                "import {temperature} from './sampling.ts'; export default base => ({...base, sampling: {...base.sampling, temperature}});",
+            ),
+            (
+                "plugins/openai/sampling.ts",
+                "export const temperature = 0.25;",
             ),
         ] {
             write(&harness, path, source).await?;
@@ -424,7 +530,36 @@ mod tests {
             journal: &harness.journal,
             maximum_bytes: u64::MAX,
         };
-        let original = Tree::new(&volumes).await?;
+        let disabled = crate::context::CompactionPolicy::Disabled;
+        let selected = admit(
+            &volumes,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            harness.clock.as_ref(),
+        )
+        .await?;
+        assert!(!selected.links.is_empty());
+        let original_source = selected.source;
+        let original = Tree {
+            volumes: &volumes,
+            pin: &original_source.pin,
+        };
+        let tools: Vec<serde_json::Value> =
+            serde_json::from_slice(crate::seed::file("sys/native/openai/tools.json").unwrap())
+                .unwrap();
+        let tools: Vec<_> = tools.into_iter().map(|definition|
+            serde_json::json!({"name": definition["name"], "definition": definition})
+        ).collect();
+        let base = serde_json::json!({
+            "tools": tools,
+            "cache": {"breakpoints": ["header", "segments"], "ttl": "5m"},
+            "compaction": "native-when-available",
+            "summaryHeader": "keep",
+            "effort": {"low": {}, "medium": {}, "high": {}},
+            "sampling": {"temperature": null, "topP": null, "maxOutputTokens": null},
+        });
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -432,6 +567,14 @@ mod tests {
                 "export default {name: 'changed', description: 'Changed'};",
             ),
             ("plugins/guard/hooks/before-tool.sh", "\0"),
+            (
+                "plugins/openai/sampling.ts",
+                "export const temperature = 0.75;",
+            ),
+            (
+                "plugins/openai/provider.ts",
+                "import {temperature} from './sampling.ts'; export default base => ({...base, tools: base.tools.map((tool, i) => i ? tool : {...tool, definition: {...tool.definition, description: 'User replacement'}}), sampling: {...base.sampling, temperature}});",
+            ),
         ] {
             write(&harness, path, source).await?;
         }
@@ -445,10 +588,66 @@ mod tests {
         let enabled = crate::plugins::load(&original, &layers, &enabler).await?;
         assert_eq!(enabled.names, ["guard"]);
         assert!(!enabled.rules.is_empty());
-        let current = Tree::new(&volumes).await?;
+        let current_source = Source::new(&volumes).await?;
+        let current = Tree {
+            volumes: &volumes,
+            pin: &current_source.pin,
+        };
         let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
         assert!(disabled.names.is_empty());
         assert!(disabled.rules.is_empty());
+
+        let path = "plugins/openai/provider.ts";
+        let admitted = original_source
+            .provider(&volumes, path, base.clone())
+            .await?;
+        let changed = current_source
+            .provider(&volumes, path, base.clone())
+            .await?;
+        assert_eq!(admitted.profile.sampling.temperature, Some(0.25));
+        assert_eq!(changed.profile.sampling.temperature, Some(0.75));
+        assert_eq!(
+            admitted.profile.tools,
+            config::provider::decode(base.clone())?.tools
+        );
+        assert_ne!(changed.profile.tools[0], admitted.profile.tools[0]);
+        assert_eq!(changed.profile.tools[1..], admitted.profile.tools[1..]);
+        assert_eq!(admitted.links.len(), 2);
+        assert_eq!(
+            admitted.links[1].generation,
+            original_source.generation_label
+        );
+        assert_ne!(
+            admitted.links[1].module_digest,
+            changed.links[1].module_digest
+        );
+        assert_ne!(admitted.stack, changed.stack);
+        assert!(
+            original_source
+                .provider(&volumes, config::AGENT, base.clone())
+                .await
+                .is_err()
+        );
+
+        write(
+            &harness,
+            path,
+            "export default base => ({...base, sampling: {...base.sampling, topP: 0}});",
+        )
+        .await?;
+        let refused_source = Source::new(&volumes).await?;
+        assert!(
+            refused_source
+                .provider(&volumes, path, base.clone())
+                .await
+                .is_err()
+        );
+        // Invalid replacement and later imports cannot corrupt an admitted
+        // source or make it silently fall back to the current home's bytes.
+        let retained = original_source.provider(&volumes, path, base).await?;
+        assert_eq!(retained.profile, admitted.profile);
+        assert_eq!(retained.links, admitted.links);
+        assert_eq!(retained.stack, admitted.stack);
         Ok(())
     }
 }

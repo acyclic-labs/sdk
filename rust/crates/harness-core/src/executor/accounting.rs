@@ -139,8 +139,12 @@ impl StockExecution<'_> {
                     self.stock.sampling,
                     profile.map(|profile| profile.sampling()),
                 )
-                .map_err(|error| {
-                    stock_boundary(self.io, crate::wire::ErrorCode::Invalid, &error.to_string())
+                .map_err(|_| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "sampling admission failed: invalid settings or a pinned-profile conflict; recovery: select valid sampling that agrees with the model profile",
+                    )
                 })
             })
             .copied()

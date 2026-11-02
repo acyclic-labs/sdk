@@ -420,11 +420,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     let agents = bound.agents();
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
-    let root_template = acyclic_harness::seed::TREE
-        .iter()
-        .find(|(path, _)| *path == "templates/orchestrator/AGENT.md")
-        .unwrap()
-        .1;
+    let root_template = acyclic_harness::seed::file("templates/orchestrator/AGENT.md").unwrap();
     let child_template =
         std::str::from_utf8(root_template)?.replace("context: top_level", "context: fork");
     let set_template = |agent: AgentPath| {
