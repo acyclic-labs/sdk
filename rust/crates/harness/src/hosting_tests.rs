@@ -809,6 +809,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             page: AgentPageRequest::new(1, 1, None)?,
         },
     ] {
+        let before = stream.requests();
         assert!(
             matches!(
                 call(&client, "agents", &query).await?,
@@ -816,6 +817,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
                     if code == Error::Stream(StreamError::Capacity).code()
             ),
             "an empty page must reserve its complete canonical envelope"
+        );
+        assert_eq!(
+            stream.requests().since(before),
+            Default::default(),
+            "insufficient empty-page credit must refuse before source requests"
         );
     }
     let spawn = AgentCommand::Spawn {
