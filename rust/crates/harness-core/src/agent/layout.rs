@@ -390,6 +390,18 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
+        let mut deepest = root.clone();
+        for _ in root.depth()..64 {
+            deepest = deepest.child(&AgentId::from_bytes([4; 16]))?;
+        }
+        assert!(deepest.child(&AgentId::from_bytes([5; 16])).is_err());
+        assert!(
+            AgentPath::try_from(format!(
+                "{deepest}/children/{}",
+                AgentId::from_bytes([5; 16])
+            ))
+            .is_err()
+        );
         let leaf = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,
