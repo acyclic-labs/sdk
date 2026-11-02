@@ -76,6 +76,9 @@ pub fn composes(path: &str) -> bool {
 
 /// `sys/types/config.d.ts`: the settings and record declarations, generated
 /// from the kernel's own decode types.
+///
+/// Export these declarations for an external TypeScript checker with
+/// `cargo run --locked -p acyclic-harness-core --example config-types`.
 #[must_use]
 pub fn typescript() -> &'static str {
     static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
