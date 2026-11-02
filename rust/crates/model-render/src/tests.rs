@@ -77,7 +77,13 @@ fn model_fields() -> Fields {
     fields
 }
 fn header_for(family: Family, provider: &str) -> Header {
-    Header::new(target(family, provider), RENDERER_VERSION, &model_fields(), None).unwrap()
+    Header::new(
+        target(family, provider),
+        RENDERER_VERSION,
+        &model_fields(),
+        None,
+    )
+    .unwrap()
 }
 fn tail() -> Tail {
     Tail::new(&model_fields()).unwrap()
@@ -681,8 +687,13 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
                 .unwrap(),
         )
         .unwrap();
-    let server_header =
-        Header::new(target(Family::Gemini, "provider"), RENDERER_VERSION, &fields, None).unwrap();
+    let server_header = Header::new(
+        target(Family::Gemini, "provider"),
+        RENDERER_VERSION,
+        &fields,
+        None,
+    )
+    .unwrap();
     let mut output = Vec::new();
     let mut visited = 0;
     let source = item(Family::Gemini, ItemKind::Message, "source");
@@ -692,7 +703,13 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     assert_eq!(visited, 0);
     assert!(output.is_empty());
     // The exact same header remains valid for ordinary generation.
-    render(&server_header, [&source], &Tail::new(&fields).unwrap(), &mut output).unwrap();
+    render(
+        &server_header,
+        [&source],
+        &Tail::new(&fields).unwrap(),
+        &mut output,
+    )
+    .unwrap();
     assert!(!output.is_empty());
     output.clear();
     assert!(
@@ -706,6 +723,49 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
         .is_err()
     );
     assert!(output.is_empty());
+    // Removing server tools removes exactly their summary restriction.
+    fields.retain(|name| name != "tools");
+    let stripped = Header::new(
+        target(Family::Gemini, "provider"),
+        RENDERER_VERSION,
+        &fields,
+        None,
+    )
+    .unwrap();
+    render_summary(
+        &stripped,
+        std::iter::empty::<&WireItem>(),
+        "summary",
+        &closer,
+        &mut output,
+    )
+    .unwrap();
+    let stripped: Value = serde_json::from_slice(&output).unwrap();
+    assert!(stripped.get("tools").is_none());
+    assert_eq!(
+        stripped["toolConfig"]["functionCallingConfig"]["mode"],
+        "NONE"
+    );
+    // A foreign trailer must refuse before consuming items or touching the sink.
+    for family in FAMILIES {
+        for foreign in FAMILIES.into_iter().filter(|other| *other != family) {
+            output.clear();
+            let mut visited = 0;
+            let selected = std::iter::once(&source).inspect(|_| visited += 1);
+            assert!(
+                render_summary(
+                    &header(family),
+                    selected,
+                    "summary",
+                    &summary_tail(foreign),
+                    &mut output
+                )
+                .is_err()
+            );
+            assert_eq!(visited, 0);
+            assert!(output.is_empty());
+        }
+    }
     // Declarations for another protocol cannot enter this header.
     let anthropic =
         ToolDeclarations::<Value>::new(Family::Anthropic, vec![ToolDeclaration::WebSearch])

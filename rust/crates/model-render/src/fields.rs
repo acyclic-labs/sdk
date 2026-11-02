@@ -123,6 +123,7 @@ impl Fields {
         }
         if !keep("tools") {
             self.tools = None;
+            self.server_tools = false;
         }
     }
 

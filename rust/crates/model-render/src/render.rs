@@ -110,7 +110,7 @@ fn entry(
 #[derive(Clone, Debug)]
 pub struct Tail {
     bytes: Vec<u8>,
-    summary: bool,
+    summary: Option<Family>,
 }
 impl Tail {
     /// The ordinary trailer for `fields`' call controls.
@@ -118,7 +118,7 @@ impl Tail {
     /// # Errors
     /// Model JSON encoding failed.
     pub fn new(fields: &Fields) -> Result<Self, RenderError> {
-        Self::encode(fields.call_controls(), None)
+        Self::encode(fields.call_controls(), None, None)
     }
 
     /// The same trailer with tool invocation disabled in the target family's
@@ -140,12 +140,13 @@ impl Tail {
         let controls = fields
             .call_controls()
             .filter(|(field, _)| !matches!(*field, "tool_choice" | "toolConfig"));
-        Self::encode(controls, Some((name, &none)))
+        Self::encode(controls, Some((name, &none)), Some(family))
     }
 
     fn encode<'a>(
         controls: impl Iterator<Item = (&'static str, &'a Value)>,
         suppression: Option<(&'static str, &'a Value)>,
+        summary: Option<Family>,
     ) -> Result<Self, RenderError> {
         let mut bytes = vec![b']'];
         for (name, value) in controls.chain(suppression) {
@@ -153,10 +154,7 @@ impl Tail {
             entry(&mut bytes, name, value)?;
         }
         bytes.push(b'}');
-        Ok(Self {
-            bytes,
-            summary: suppression.is_some(),
-        })
+        Ok(Self { bytes, summary })
     }
 
     /// Bytes outside the cacheable conversation prefix.
@@ -276,7 +274,7 @@ pub fn render<S: Segment>(
     tail: &Tail,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
-    if tail.summary {
+    if tail.summary.is_some() {
         return Err(RenderError::InvalidItem(
             "a summary trailer requires a summary instruction",
         ));
@@ -305,9 +303,9 @@ pub fn render_summary<S: Segment>(
     if instruction.is_empty() {
         return Err(RenderError::InvalidItem("missing summary instruction"));
     }
-    if !tail.summary {
+    if tail.summary != Some(header.target.family) {
         return Err(RenderError::InvalidItem(
-            "summary generation requires the summary trailer",
+            "summary generation requires the matching protocol summary trailer",
         ));
     }
     if !header.summary_permitted {
