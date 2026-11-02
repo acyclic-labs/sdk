@@ -1049,7 +1049,14 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let cut = store.load(&address).await?;
     let child = actor("paused-child-zero")?;
     let mut fork = PreparedPublish::foreign(key("paused-child-zero")?);
-    for effect in store.fork(&cut, &child, BTreeMap::new())? {
+    for effect in store.fork(
+        &cut,
+        &child,
+        cut.state()
+            .ok_or("missing paused parent")?
+            .subscriptions()
+            .clone(),
+    )? {
         fork.join(effect)?;
     }
     store.submit(fork).await?;
@@ -1080,7 +1087,14 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     let parent_epoch = cut.state().ok_or("missing paused parent")?.epoch();
     let child = actor("paused-child-placed")?;
     let mut fork = PreparedPublish::foreign(key("paused-child-placed")?);
-    for effect in store.fork(&cut, &child, BTreeMap::new())? {
+    for effect in store.fork(
+        &cut,
+        &child,
+        cut.state()
+            .ok_or("missing paused parent")?
+            .subscriptions()
+            .clone(),
+    )? {
         fork.join(effect)?;
     }
     store.submit(fork).await?;
