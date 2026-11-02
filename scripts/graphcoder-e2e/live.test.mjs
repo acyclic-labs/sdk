@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { Processes } from "./process.mjs";
@@ -207,6 +207,25 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     const recorded = JSON.parse(await readFile(hook.args[1], "utf8"));
     assert.deepEqual(recorded, original);
     requireTools([recorded], ["spawn"]);
+    // A native command rejection happens before tool assertions. The actual
+    // recorder's output must still reach the failed attempt's raw evidence.
+    const failedRoot = join(root, "failed-answer");
+    await mkdir(join(failedRoot, "shell"), { recursive: true });
+    await writeFile(join(failedRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    const rejected = await runCase(process.execPath, root, failedRoot, "shell", new AbortController().signal);
+    assert.equal(rejected.status, "fail");
+    assert.deepEqual(rejected.hooks, [original]);
+    assert.deepEqual(rejected.failure.assertion, result.failure.assertion);
+    // A damaged recording is independent of the same original command exit.
+    const damagedRoot = join(root, "damaged-recording");
+    await mkdir(join(damagedRoot, "shell"), { recursive: true });
+    await writeFile(join(damagedRoot, "shell/hooks.jsonl"), "{");
+    const damaged = await runCase(process.execPath, root, damagedRoot, "shell", new AbortController().signal);
+    assert.deepEqual(damaged.failure.assertion, result.failure.assertion);
+    assert.match(damaged.hooks_failure.error, /SyntaxError/);
+    assert.equal(damaged.hooks_failure.step, "case-hooks");
+    assert.equal(damaged.phases.at(-1).phase, "retired");
+    assert.equal(damaged.phases.at(-1).outcome, "completed");
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });
