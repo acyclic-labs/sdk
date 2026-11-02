@@ -418,20 +418,6 @@ pub(super) fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, MountSourceErr
     })
 }
 
-pub(super) fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
-    let target = HSTRING::from_wide(&decode_utf16_name(target)?);
-    let extended = PRJ_EXTENDED_INFO {
-        InfoType: PRJ_EXT_INFO_TYPE_SYMLINK,
-        NextInfoOffset: 0,
-        Anonymous: PRJ_EXTENDED_INFO_0 {
-            Symlink: PRJ_EXTENDED_INFO_0_0 {
-                TargetName: PCWSTR::from_raw(target.as_ptr()),
-            },
-        },
-    };
-    Some((target, extended))
-}
-
 pub(super) fn windows_time(field: MetadataField<i64>) -> Option<i64> {
     let MetadataField::Value(unix_nanoseconds) = field else {
         return None;

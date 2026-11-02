@@ -45,7 +45,7 @@ pub(super) fn projected_entry(
             .source
             .as_ref()
             .read_link(&directory.child(component.clone()), projection.work)?;
-        if symlink_extended(&target.bytes).is_none() {
+        if crate::kernel::types::utf16le_units(&target.bytes).is_none() {
             return Ok(None);
         }
         Some(target)
