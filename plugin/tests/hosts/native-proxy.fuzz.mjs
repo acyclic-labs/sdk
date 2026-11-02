@@ -8,7 +8,7 @@ export function fuzz(data) {
  const text=Buffer.from(data).toString('utf8');
  const check=operation=> {
   try {operation();}
-  catch(error) {assert.ok(error.code==='ERR_ASSERTION'||error.message?.startsWith('step='),error.stack);}
+  catch(error) {assert.ok(error.code==='ERR_ASSERTION'||error.code==='UNSUPPORTED_NATIVE_PROVIDER'||error.message?.startsWith('step='),error.stack);}
  };
  check(()=>parseNativeProxy(text));
  let live;

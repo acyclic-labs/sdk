@@ -50,8 +50,9 @@ export function nativeProvider(native,live) {
    'step=admit live native configuration; recovery=supply only model, profile and provider, never credentials');
   const provider={'@openai/codex':'openai','@anthropic-ai/claude-code':'anthropic',
    '@earendil-works/pi-coding-agent':'openai-codex'}[native.package.name];
-  if(!(proxy&&native.package.name==='@earendil-works/pi-coding-agent'))
-   assert.equal(live.provider,provider,'step=admit live native provider; recovery=select the pinned host native login provider');
+  if(!(proxy&&native.package.name==='@earendil-works/pi-coding-agent')&&live.provider!==provider)
+   throw Object.assign(new Error('step=admit live native provider: the selected host does not support this provider; recovery=select the pinned host native provider'),
+    {code:'UNSUPPORTED_NATIVE_PROVIDER'});
   if(!proxy)assert.ok(typeof live.model==='string'&&/^[a-z0-9][a-z0-9.-]*$/.test(live.model),
    'step=admit live native model; recovery=supply the explicitly approved exact model ID');
   if(!proxy)assert.ok(isAbsolute(live.profile??''),'step=admit live native login; recovery=supply an existing dedicated native login profile by absolute path');

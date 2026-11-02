@@ -21,7 +21,11 @@ test('native proxy admission retains host families and rejects configuration bef
  }
  assert.equal(nativeProvider(native('@openai/codex'),{provider:'openai',model:'selected-model',proxy}),'openai');
  for(const provider of ['anthropic','gemini'])
-  assert.throws(()=>nativeProvider(native('@openai/codex'),{provider,model:'selected-model',proxy}),/step=admit live native provider/);
+  assert.throws(()=>nativeProvider(native('@openai/codex'),{provider,model:'selected-model',proxy}),
+   error=>error.code==='UNSUPPORTED_NATIVE_PROVIDER'&&error.message.startsWith('step=admit live native provider'));
+ for(const provider of ['openai','gemini'])
+  assert.throws(()=>nativeProvider(native('@anthropic-ai/claude-code'),{provider,model:'selected-model',proxy}),
+   error=>error.code==='UNSUPPORTED_NATIVE_PROVIDER');
  for(const changed of [{proxy:'https://127.0.0.1/'+cap},{proxy:'http://example.com/'+cap},
   {proxy:proxy+'/'},{proxy:proxy+'?key=unadmitted'},{proxy:proxy+'#fragment'},
   {proxy:proxy.replace(cap,'short')},{profile:'/unadmitted'},{apiKey:'unadmitted'},
