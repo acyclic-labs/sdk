@@ -16,6 +16,8 @@ export function fuzz(data) {
  assert.deepEqual(pollingSites('scripts/control.ps1', source).map(site => site.start), [source.lastIndexOf('Sleep')]);
  assert.throws(() => pollingSites('scripts/control.ps1', comment.slice(0, -2)), /unterminated block comment/);
  const word = 'value' + Buffer.from(data).toString('hex');
+ const settings = `settings: [${word}#fragment, {timeout: 1}]`;
+ assert.deepEqual(pollingSites('scripts/control.yaml', settings).map(site => site.start), [settings.indexOf('timeout')]);
  for (const command of ['\\sleep', 'sl\\eep', 'sl\\\neep', 's\\l\\e\\e\\p']) {
   const source = `${command} ${word}`;
   assert.ok(pollingSites('scripts/control.sh', source).some(site => site.kind === 'timer-or-readiness'), source);
