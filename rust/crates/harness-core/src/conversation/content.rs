@@ -474,6 +474,25 @@ impl serde::Serialize for ContentChanges {
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
+    /// Publishes a finite source under the same identity as `stage_once`.
+    /// EOF certifies the complete content. A source error or cancellation must
+    /// leave no successful publication; dropping the future drops its source
+    /// borrow. Providers stage bounded immutable chunks and publish once.
+    fn stage_stream_once<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _source: &'a mut dyn ContentSource,
+        _media_type: &'a str,
+        _display_name: &'a str,
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "stream publication unavailable; recovery: bind a streaming ContentPublisher",
+        ))
+    }
     /// Observes only the successful request at its original publication cut.
     /// Callers authenticate the original complete invocation before recovery.
     fn observe_changes<'a, 'io: 'a>(
@@ -607,6 +626,16 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             "generation-checked publication is unavailable",
         ))
     }
+}
+
+/// Pull-based finite content, borrowed by its original publication. A pending
+/// read must retain its producer's event; producer loss returns an IO error.
+/// No task, channel, timer or allocation per read is required by this boundary.
+pub trait ContentSource: futures::io::AsyncRead + Unpin + acyclic_stream::ProviderTask {}
+
+impl<T: futures::io::AsyncRead + Unpin + acyclic_stream::ProviderTask + ?Sized> ContentSource
+    for T
+{
 }
 
 /// Resolves an owner-mediated reader when a volume has not been explicitly bound.

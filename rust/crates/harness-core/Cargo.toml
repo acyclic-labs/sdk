@@ -24,6 +24,7 @@ path = "tests/main.rs"
 
 [features]
 research = []
+provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]
 conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
@@ -51,6 +52,8 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
+oxrdf = { version = "=0.3.5", default-features = false, optional = true }
+oxttl = { version = "=0.2.5", default-features = false, optional = true }
 arrow-array = { version = "=57.0.0", optional = true }
 arrow-schema = { version = "=57.0.0", optional = true }
 arrow-ipc = { version = "=57.0.0", default-features = false, optional = true }

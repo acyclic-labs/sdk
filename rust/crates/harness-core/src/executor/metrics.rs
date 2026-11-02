@@ -17,6 +17,34 @@ pub use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
+/// Streaming W3C PROV-O projection over these same original observations.
+#[cfg(feature = "provenance-export")]
+pub mod provenance;
+
+/// Bounded read-receipt projection; coverage is explicit rather than inferred.
+#[cfg(feature = "research")]
+pub use super::read_set;
+
+#[cfg(feature = "research")]
+pub(super) fn read_observation(
+    agent: &str,
+    operation: OperationId,
+    observation: &super::read_set::Observation,
+) -> Result<Batch> {
+    let mut row = Row::new(
+        agent,
+        Some(operation),
+        observation.sequence,
+        "journal",
+        "file_read",
+    );
+    row.source = Some(serde_json::to_string(&observation.source).map_err(export_error)?);
+    row.source_type = Some("file_generation");
+    row.target = Some(agent.into());
+    row.target_type = Some("agent");
+    batch(Table::Edges, &[row])
+}
+
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -745,6 +773,11 @@ mod tests {
                 let mut bytes = Vec::new();
                 assert!(write(&foreign, &mut bytes, format).is_err());
                 assert!(bytes.is_empty(), "schema refusal must precede publication");
+                #[cfg(feature = "provenance-export")]
+                {
+                    assert!(provenance::write(&foreign, &mut bytes).is_err());
+                    assert!(bytes.is_empty());
+                }
             }
             for format in [Format::Arrow, Format::Parquet] {
                 assert!(
@@ -753,6 +786,10 @@ mod tests {
                 );
             }
         }
+        #[cfg(feature = "provenance-export")]
+        assert!(provenance::write(&batch(Table::Agents, &[row])?, Refused).is_err());
+        #[cfg(feature = "research")]
+        assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0).is_err());
         Ok(())
     }
 
