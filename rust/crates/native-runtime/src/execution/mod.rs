@@ -413,6 +413,8 @@ impl ExecutionGrant {
     /// blocking the caller's executor. The task owns both grants and the
     /// original meter until its terminal producer retires the proof. Dropping
     /// the wait never attaches a grant or starts a guest.
+    /// Task admission failures are execution refusals; cancellation retains
+    /// its original `Interrupted` error kind.
     pub async fn check_attenuation_async(
         &self,
         requested: &Self,
@@ -429,9 +431,11 @@ impl ExecutionGrant {
                     .map_err(failure)
             },
             meter.map(|meter| (meter, false)),
-        )?
+        )
+        .map_err(failure)?
         .offloaded()
-        .await?
+        .await
+        .map_err(failure)?
     }
 
     fn check_authority(
