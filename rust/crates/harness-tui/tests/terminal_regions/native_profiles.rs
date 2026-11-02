@@ -100,8 +100,13 @@ pub(super) mod linux {
     }
     impl Session {
         fn new(mut child: Child, errors: io::PipeReader) -> io::Result<Self> {
+            use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
             use rustix::process::{Pid, PidfdFlags, pidfd_open};
-            let lifetime = match pidfd_open(Pid::from_child(&child), PidfdFlags::empty()) {
+            let admission = (|| {
+                fcntl_setfl(&errors, fcntl_getfl(&errors)? | OFlags::NONBLOCK)?;
+                pidfd_open(Pid::from_child(&child), PidfdFlags::empty())
+            })();
+            let lifetime = match admission {
                 Ok(lifetime) => lifetime,
                 Err(error) => {
                     let _ = child.kill();
@@ -109,7 +114,7 @@ pub(super) mod linux {
                     return Err(io::Error::new(
                         io::Error::from(error).kind(),
                         format!(
-                            "emulator lifetime admission failed: {error}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                            "emulator event admission failed: {error}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
                         ),
                     ));
                 }
@@ -143,12 +148,20 @@ pub(super) mod linux {
                 }
                 if !fds[0].revents().is_empty() {
                     let mut bytes = [0; 4096];
-                    let count = rustix::io::read(stderr, &mut bytes)?;
+                    // A descendant may still own the diagnostic writer after
+                    // the original process exits. Diagnostics cannot delay loss.
+                    let diagnostic = match rustix::io::read(stderr, &mut bytes) {
+                        Ok(count) => String::from_utf8_lossy(&bytes[..count]),
+                        Err(rustix::io::Errno::AGAIN) => std::borrow::Cow::Borrowed(""),
+                        Err(error) => {
+                            std::borrow::Cow::Owned(format!("diagnostic read failed: {error}"))
+                        }
+                    };
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         format!(
                             "emulator producer closed or reported an error: {}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
-                            String::from_utf8_lossy(&bytes[..count])
+                            diagnostic
                         ),
                     ));
                 }
@@ -400,6 +413,9 @@ pub(super) mod linux {
     #[test]
     fn emulator_loss_wins_over_a_ready_consumer() {
         let (errors, writer) = io::pipe().unwrap();
+        // Retain the same write endpoint as an emulator descendant can do.
+        // Its empty, open pipe must not become another producer-loss wait.
+        let retained_writer = writer.try_clone().unwrap();
         let child = Command::new("sh")
             .args(["-c", "read hold"])
             .stdin(Stdio::piped())
@@ -419,6 +435,7 @@ pub(super) mod linux {
             io::ErrorKind::BrokenPipe,
             "a queued consumer byte cannot mask original producer loss"
         );
+        drop(retained_writer);
     }
     fn oracle(tool: &str) {
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
