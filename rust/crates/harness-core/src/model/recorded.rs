@@ -746,15 +746,19 @@ mod tests {
                 let refused = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(error, _)| error)?;
                 let baseline = refused.live_allocation_bytes();
-                assert!(matches!(
-                    trial.recorded_tool_result(operation, call_id, Some(&refused)),
-                    Err(Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded { .. }
-                        ),
-                        ..
-                    })
-                ));
+                let denial = trial.recorded_tool_result(operation, call_id, Some(&refused));
+                assert!(
+                    matches!(
+                        &denial,
+                        Err(Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::BudgetExceeded { .. }
+                            ),
+                            ..
+                        })
+                    ),
+                    "original copy denial was {denial:?}"
+                );
                 assert_eq!(refused.live_allocation_bytes(), baseline);
                 assert_eq!(trial.lock().tools.len(), 1);
 
