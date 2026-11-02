@@ -35,11 +35,16 @@ type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
 
 /// The private-volume binding of agent `path`, and its filesystem host.
 async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
+    private_on(path, Fs::memory()).await
+}
+
+async fn private_on(
+    path: &AgentPath,
+    filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+) -> Result<(Host, VolumeBinding)> {
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::<MemoryAuthorityBackend, MemoryObjectBackend>::new(
-        Fs::memory(),
-        &provider,
-        None,
+        filesystem, &provider, None,
     )?;
     let owner = acyclic_harness_core::AgentId::from_bytes(path.id().to_bytes());
     let volume = VolumeRef::new(
@@ -625,7 +630,14 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         ScriptedTurn::Text("second".into()),
         ScriptedTurn::Text("after cancellation".into()),
     ]));
-    let (filesystem, binding) = private(&path).await?;
+    let (filesystem, binding) = private_on(
+        &path,
+        Fs::from_memory_providers(
+            stream.clone(),
+            Arc::new(acyclic_objects::MemoryObjects::memory()),
+        ),
+    )
+    .await?;
     let notice_issuer = AuthorityRoot::new(
         "agents",
         [7; 32],
@@ -670,19 +682,22 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             LIMITS,
             Default::default(),
         ));
-        Ok(AgentHost::new(
+        Ok(AgentHost::with_spawn_volumes(
             stream.clone(),
             driver,
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock.clone(),
+            Arc::new(
+                acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone()),
+            ),
         )?)
     };
     let host = reopen()?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
     assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("adoption drains");
     let event = |name: &str, wake| Notice {
         source: "filesystem".into(),
         kind: "files.changed".into(),
@@ -702,7 +717,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             }),
         };
         host.send(&path, &super::user(), &wide).await?;
-        host.drain(&path).await?;
+        host.drain(&path).await.expect("wide quiet notice drains");
     }
     for name in ["alpha", "beta"] {
         host.send(
@@ -714,7 +729,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             },
         )
         .await?;
-        host.drain(&path).await?;
+        host.drain(&path)
+            .await
+            .expect("coalesced quiet notice drains");
     }
     assert!(model.requests().is_empty());
     let stage_waking = |name: &str| {
@@ -749,7 +766,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     };
     let waking = stage_waking("run").await?;
     host.send(&path, &super::user(), &waking).await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("waking notice freezes");
     let frozen = host.state(&path).await?;
     assert!(
         model.requests().is_empty(),
@@ -759,7 +776,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(selected.range, 1..5);
     // An exact delivered-intent replay cannot extend or replace the frozen range.
     host.send(&path, &super::user(), &waking).await?;
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("waking notice replay drains");
     assert_eq!(host.state(&path).await?.turn, frozen.turn);
     host.send(
         &path,
@@ -770,7 +789,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         },
     )
     .await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("later quiet notice drains");
     assert_eq!(
         turn_notices(&host.state(&path).await?)?,
         Some(selected.clone())
@@ -780,7 +799,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     drop(host);
     let host = reopen()?;
     clock.0.store(CONTINUE_NOW, Ordering::SeqCst);
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("recovered frozen turn settles");
     let settled = host.state(&path).await?;
     assert_eq!(
         settled.phase,
@@ -807,7 +828,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(entry.notices, Some(selected.clone()));
     host.send(&path, &super::user(), &stage_waking("again").await?)
         .await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("next waking turn settles");
     assert_eq!(host.state(&path).await?.pending_notices, None);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
@@ -904,15 +925,19 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         },
     )
     .await?;
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("cancellable quiet notice drains");
     assert!(host.state(&path).await?.pending_notices.is_some());
     host.send(&path, &super::user(), &super::cancel("drop-events"))
         .await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("cancellation drains");
     assert_eq!(host.state(&path).await?.pending_notices, None);
     host.send(&path, &super::user(), &stage_waking("after-cancel").await?)
         .await?;
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("post-cancellation turn settles");
     let requests = model.requests();
     assert_eq!(requests.len(), 3);
     let after_cancel = batches(&requests[2]);
