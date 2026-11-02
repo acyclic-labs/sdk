@@ -48,8 +48,13 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     let status = files.status.path().to_path_buf();
     let (started, began) = tokio::sync::oneshot::channel();
     let (release, released) = mpsc::sync_channel(1);
+    let coordinator = std::thread::current().id();
     let mut pending = Box::pin(files.apply(move |files| {
-        let _ = started.send(std::thread::current().id());
+        let producer = std::thread::current().id();
+        let _ = started.send(producer);
+        if producer == coordinator {
+            return Err(Error::Invalid("carrier I/O ran on its coordinator".into()));
+        }
         released.recv().map_err(storage)?;
         files.served.answer(
             &files.status,
@@ -63,7 +68,10 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     }));
     let producer = tokio::select! {
         producer = began => producer.map_err(storage)?,
-        _ = &mut inline_caller => panic!("the original write must wait for its release event"),
+        result = &mut inline_caller => {
+            result?;
+            panic!("the original write must wait for its release event");
+        },
     };
     drop(inline_caller);
     assert_ne!(producer, std::thread::current().id());
