@@ -84,7 +84,7 @@ struct Grant {
     read: Vec<BoundPath>,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
-    filter: Vec<linux::Instruction>,
+    filter: &'static [linux::Instruction],
 }
 
 impl Grant {
@@ -458,7 +458,7 @@ impl PreparedExecution {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
-        self.platform.encode(&self.grant.policy.filter, body)
+        self.platform.encode(self.grant.policy.filter, body)
     }
 }
 

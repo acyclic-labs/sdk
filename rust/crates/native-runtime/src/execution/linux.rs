@@ -375,7 +375,7 @@ impl Prepared {
 
     fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
         sys::working_directory(self.cwd.as_raw_fd()).map_err(io::Error::from_raw_os_error)?;
-        entry::enter(self.ruleset.as_raw_fd(), &grant.policy.filter)
+        entry::enter(self.ruleset.as_raw_fd(), grant.policy.filter)
             .map_err(io::Error::from_raw_os_error)
     }
 }
@@ -402,60 +402,128 @@ const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
     Instruction { code, jt, jf, k }
 }
 
-pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<Vec<Instruction>> {
+/// Counting and emission use the same generator during constant evaluation.
+/// The zero-capacity pass computes storage; every emitted array is exact-sized.
+struct Filter<const N: usize> {
+    instructions: [Instruction; N],
+    len: usize,
+}
+
+impl<const N: usize> Filter<N> {
+    const fn new() -> Self {
+        Self {
+            instructions: [instruction(0, 0, 0, 0); N],
+            len: 0,
+        }
+    }
+
+    const fn push(&mut self, instruction: Instruction) {
+        if N != 0 {
+            self.instructions[self.len] = instruction;
+        }
+        self.len += 1;
+    }
+
+    const fn extend(&mut self, instructions: &[Instruction]) {
+        let mut at = 0;
+        while at < instructions.len() {
+            self.push(instructions[at]);
+            at += 1;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FilterNetwork {
+    Off,
+    On,
+    Tcp,
+}
+
+pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<&'static [Instruction]> {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        const OFF_LEN: usize = compile_filter::<0>(FilterNetwork::Off).len;
+        const ON_LEN: usize = compile_filter::<0>(FilterNetwork::On).len;
+        const TCP_LEN: usize = compile_filter::<0>(FilterNetwork::Tcp).len;
+        static OFF: [Instruction; OFF_LEN] =
+            compile_filter::<OFF_LEN>(FilterNetwork::Off).instructions;
+        static ON: [Instruction; ON_LEN] = compile_filter::<ON_LEN>(FilterNetwork::On).instructions;
+        static TCP: [Instruction; TCP_LEN] =
+            compile_filter::<TCP_LEN>(FilterNetwork::Tcp).instructions;
+        let code: &'static [Instruction] = match network {
+            ExecutionNetwork::Off => &OFF,
+            ExecutionNetwork::On => &ON,
+            ExecutionNetwork::TcpPorts(ports) if ports.is_empty() => &OFF,
+            ExecutionNetwork::TcpPorts(_) => &TCP,
+        };
+        Ok(code)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = network;
+        Err(unavailable(
+            "seccomp execution boundary requires x86_64 or aarch64",
+        ))
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     #[cfg(target_arch = "x86_64")]
     let arch = 0xc000_003e;
     #[cfg(target_arch = "aarch64")]
     let arch = 0xc000_00b7;
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    return Err(unavailable(
-        "seccomp execution boundary requires x86_64 or aarch64",
-    ));
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    {
-        let mut code = vec![
-            instruction(LOAD, 0, 0, 4),
-            instruction(EQUAL, 1, 0, arch),
-            instruction(RETURN, 0, 0, 0x8000_0000), // kill on another syscall ABI
-            instruction(LOAD, 0, 0, 0),
-        ];
-        // Reject the x32 ABI before comparing native syscall numbers.
-        code.extend([
-            instruction(0x35, 0, 1, 0x4000_0000),
-            instruction(RETURN, 0, 0, DENY),
-        ]);
-        // The common data path returns before the less frequent control
-        // checks. Every other admitted operation is classified below; a new
-        // kernel syscall never acquires authority by being absent from a list.
-        for call in [libc::SYS_read, libc::SYS_write] {
-            verdict(&mut code, call, ALLOW)?;
-        }
-        // clone3 has an indirect flag pointer, so force libc's ordinary clone
-        // fallback. It is never continued after a racy userspace inspection.
-        verdict(
-            &mut code,
-            libc::SYS_clone3,
-            0x0005_0000 | libc::ENOSYS as u32,
-        )?;
-        code.extend([
-            instruction(EQUAL, 0, 4, number(libc::SYS_clone)?),
-            instruction(LOAD, 0, 0, 16),
-            instruction(AND, 0, 0, 0x7e02_8080), // namespace + CLONE_PARENT
-            instruction(EQUAL, 1, 0, 0),
-            instruction(RETURN, 0, 0, DENY),
-            instruction(LOAD, 0, 0, 0),
-        ]);
-        control_filter(&mut code)?;
-        socket_filter(&mut code, network)?;
-        for call in allowed_syscalls() {
-            verdict(&mut code, *call, ALLOW)?;
-        }
-        code.push(instruction(RETURN, 0, 0, DENY));
-        Ok(code)
+    let mut code = Filter::new();
+    code.extend(&[
+        instruction(LOAD, 0, 0, 4),
+        instruction(EQUAL, 1, 0, arch),
+        instruction(RETURN, 0, 0, 0x8000_0000), // kill on another syscall ABI
+        instruction(LOAD, 0, 0, 0),
+    ]);
+    // Reject the x32 ABI before comparing native syscall numbers.
+    code.extend(&[
+        instruction(0x35, 0, 1, 0x4000_0000),
+        instruction(RETURN, 0, 0, DENY),
+    ]);
+    // The common data path returns before the less frequent control
+    // checks. Every other admitted operation is classified below; a new
+    // kernel syscall never acquires authority by being absent from a list.
+    verdict(&mut code, libc::SYS_read, ALLOW);
+    verdict(&mut code, libc::SYS_write, ALLOW);
+    // clone3 has an indirect flag pointer, so force libc's ordinary clone
+    // fallback. It is never continued after a racy userspace inspection.
+    verdict(
+        &mut code,
+        libc::SYS_clone3,
+        0x0005_0000 | libc::ENOSYS as u32,
+    );
+    code.extend(&[
+        instruction(EQUAL, 0, 4, number(libc::SYS_clone)),
+        instruction(LOAD, 0, 0, 16),
+        instruction(AND, 0, 0, 0x7e02_8080), // namespace + CLONE_PARENT
+        instruction(EQUAL, 1, 0, 0),
+        instruction(RETURN, 0, 0, DENY),
+        instruction(LOAD, 0, 0, 0),
+    ]);
+    control_filter(&mut code);
+    socket_filter(&mut code, network);
+    let calls = allowed_syscalls();
+    let mut at = 0;
+    while at < calls.len() {
+        verdict(&mut code, calls[at], ALLOW);
+        at += 1;
     }
+    code.push(instruction(RETURN, 0, 0, DENY));
+    assert!(N == 0 || code.len == N, "invalid execution filter length");
+    assert!(
+        code.len <= u16::MAX as usize,
+        "execution filter exceeds native length"
+    );
+    code
 }
 
-fn control_filter(code: &mut Vec<Instruction>) -> io::Result<()> {
+const fn control_filter<const N: usize>(code: &mut Filter<N>) {
     // No file-owner signal routing, leases or new fcntl commands. Only
     // descriptor-local state and locks on already granted files are admitted.
     const COMMANDS: &[u32] = &[
@@ -466,37 +534,35 @@ fn control_filter(code: &mut Vec<Instruction>) -> io::Result<()> {
     code.push(instruction(
         EQUAL,
         0,
-        u8::try_from(2 * COMMANDS.len() + 2)
-            .map_err(|_| refused("invalid descriptor-control filter"))?,
-        number(libc::SYS_fcntl)?,
+        jump(2 * COMMANDS.len() + 2),
+        number(libc::SYS_fcntl),
     ));
     code.push(instruction(LOAD, 0, 0, 24));
-    for command in COMMANDS {
-        code.extend([
-            instruction(EQUAL, 0, 1, *command),
+    let mut at = 0;
+    while at < COMMANDS.len() {
+        code.extend(&[
+            instruction(EQUAL, 0, 1, COMMANDS[at]),
             instruction(RETURN, 0, 0, ALLOW),
         ]);
+        at += 1;
     }
     code.push(instruction(RETURN, 0, 0, DENY));
     // prlimit64 can otherwise change another host process's resource limits.
-    code.extend([
-        instruction(EQUAL, 0, 4, number(libc::SYS_prlimit64)?),
+    code.extend(&[
+        instruction(EQUAL, 0, 4, number(libc::SYS_prlimit64)),
         instruction(LOAD, 0, 0, 16),
         instruction(EQUAL, 0, 1, 0),
         instruction(RETURN, 0, 0, ALLOW),
         instruction(RETURN, 0, 0, DENY),
     ]);
-    Ok(())
 }
 
-fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io::Result<()> {
-    if matches!(network, ExecutionNetwork::Off)
-        || matches!(network, ExecutionNetwork::TcpPorts(ports) if ports.is_empty())
-    {
-        for call in [libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect] {
-            verdict(code, call, DENY)?;
-        }
-        return Ok(());
+const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetwork) {
+    if matches!(network, FilterNetwork::Off) {
+        verdict(code, libc::SYS_socket, DENY);
+        verdict(code, libc::SYS_socketpair, DENY);
+        verdict(code, libc::SYS_connect, DENY);
+        return;
     }
     // Local sockets could delegate forbidden filesystem/network work to an
     // unconstrained host service. Only Internet address families are admitted.
@@ -508,86 +574,91 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
         instruction(LOAD, 0, 0, 24),
         instruction(AND, 0, 0, 0xf),
     ];
-    let protocol: &[Instruction] = match network {
-        ExecutionNetwork::TcpPorts(_) => {
-            // Deferred Fast Open reaches that same implicit-connect path on
-            // ordinary write, without MSG_FASTOPEN. No socket crosses exec,
-            // and guests cannot create this deferred state through setsockopt.
-            code.extend([
-                instruction(EQUAL, 0, 6, number(libc::SYS_setsockopt)?),
-                instruction(LOAD, 0, 0, 24),
-                instruction(EQUAL, 0, 3, libc::IPPROTO_TCP as u32),
-                instruction(LOAD, 0, 0, 32),
-                instruction(EQUAL, 0, 1, libc::TCP_FASTOPEN_CONNECT as u32),
+    let protocol: &[Instruction] = if matches!(network, FilterNetwork::Tcp) {
+        // Deferred Fast Open reaches that same implicit-connect path on
+        // ordinary write, without MSG_FASTOPEN. No socket crosses exec,
+        // and guests cannot create this deferred state through setsockopt.
+        code.extend(&[
+            instruction(EQUAL, 0, 6, number(libc::SYS_setsockopt)),
+            instruction(LOAD, 0, 0, 24),
+            instruction(EQUAL, 0, 3, libc::IPPROTO_TCP as u32),
+            instruction(LOAD, 0, 0, 32),
+            instruction(EQUAL, 0, 1, libc::TCP_FASTOPEN_CONNECT as u32),
+            instruction(RETURN, 0, 0, DENY),
+            instruction(LOAD, 0, 0, 0),
+        ]);
+        // Older Landlock implementations do not mediate Fast Open's
+        // implicit connect. Read only by-value flags, never a guest pointer.
+        let sends = [
+            (libc::SYS_sendto, 40),
+            (libc::SYS_sendmsg, 32),
+            (libc::SYS_sendmmsg, 40),
+        ];
+        let mut at = 0;
+        while at < sends.len() {
+            let (call, flags) = sends[at];
+            code.extend(&[
+                instruction(EQUAL, 0, 5, number(call)),
+                instruction(LOAD, 0, 0, flags),
+                instruction(AND, 0, 0, libc::MSG_FASTOPEN as u32),
+                instruction(EQUAL, 1, 0, 0),
                 instruction(RETURN, 0, 0, DENY),
                 instruction(LOAD, 0, 0, 0),
             ]);
-            // Older Landlock implementations do not mediate Fast Open's
-            // implicit connect. Read only by-value flags, never a guest pointer.
-            for (call, flags) in [
-                (libc::SYS_sendto, 40),
-                (libc::SYS_sendmsg, 32),
-                (libc::SYS_sendmmsg, 40),
-            ] {
-                code.extend([
-                    instruction(EQUAL, 0, 5, number(call)?),
-                    instruction(LOAD, 0, 0, flags),
-                    instruction(AND, 0, 0, libc::MSG_FASTOPEN as u32),
-                    instruction(EQUAL, 1, 0, 0),
-                    instruction(RETURN, 0, 0, DENY),
-                    instruction(LOAD, 0, 0, 0),
-                ]);
-            }
-            for call in [
-                libc::SYS_bind,
-                libc::SYS_listen,
-                libc::SYS_accept,
-                libc::SYS_accept4,
-            ] {
-                verdict(code, call, DENY)?;
-            }
-            &[
-                instruction(EQUAL, 1, 0, libc::SOCK_STREAM as u32),
-                instruction(RETURN, 0, 0, DENY),
-                instruction(LOAD, 0, 0, 32),
-                instruction(EQUAL, 2, 0, 0),
-                instruction(EQUAL, 1, 0, libc::IPPROTO_TCP as u32),
-                instruction(RETURN, 0, 0, DENY),
-            ]
+            at += 1;
         }
-        ExecutionNetwork::On => &[
+        verdict(code, libc::SYS_bind, DENY);
+        verdict(code, libc::SYS_listen, DENY);
+        verdict(code, libc::SYS_accept, DENY);
+        verdict(code, libc::SYS_accept4, DENY);
+        &[
+            instruction(EQUAL, 1, 0, libc::SOCK_STREAM as u32),
+            instruction(RETURN, 0, 0, DENY),
+            instruction(LOAD, 0, 0, 32),
+            instruction(EQUAL, 2, 0, 0),
+            instruction(EQUAL, 1, 0, libc::IPPROTO_TCP as u32),
+            instruction(RETURN, 0, 0, DENY),
+        ]
+    } else {
+        &[
             instruction(EQUAL, 2, 0, libc::SOCK_STREAM as u32),
             instruction(EQUAL, 1, 0, libc::SOCK_DGRAM as u32),
             instruction(RETURN, 0, 0, DENY),
-        ],
-        ExecutionNetwork::Off => return Err(refused("inconsistent network filter")),
+        ]
     };
     code.push(instruction(
         EQUAL,
         0,
-        u8::try_from(socket.len() + protocol.len())
-            .map_err(|_| refused("invalid socket filter"))?,
-        number(libc::SYS_socket)?,
+        jump(socket.len() + protocol.len()),
+        number(libc::SYS_socket),
     ));
-    code.extend(socket.into_iter().chain(protocol.iter().copied()));
+    code.extend(&socket);
+    code.extend(protocol);
     code.push(instruction(LOAD, 0, 0, 0));
-    verdict(code, libc::SYS_socketpair, DENY)?;
-    Ok(())
+    verdict(code, libc::SYS_socketpair, DENY);
 }
 
-fn number(value: libc::c_long) -> io::Result<u32> {
-    u32::try_from(value).map_err(|_| refused("invalid syscall number"))
+const fn number(value: libc::c_long) -> u32 {
+    assert!(
+        value >= 0 && value as u64 <= u32::MAX as u64,
+        "invalid syscall number"
+    );
+    value as u32
 }
 
-fn verdict(code: &mut Vec<Instruction>, call: libc::c_long, result: u32) -> io::Result<()> {
-    code.extend([
-        instruction(EQUAL, 0, 1, number(call)?),
+const fn jump(value: usize) -> u8 {
+    assert!(value <= u8::MAX as usize, "invalid execution filter jump");
+    value as u8
+}
+
+const fn verdict<const N: usize>(code: &mut Filter<N>, call: libc::c_long, result: u32) {
+    code.extend(&[
+        instruction(EQUAL, 0, 1, number(call)),
         instruction(RETURN, 0, 0, result),
     ]);
-    Ok(())
 }
 
-fn allowed_syscalls() -> &'static [libc::c_long] {
+const fn allowed_syscalls() -> &'static [libc::c_long] {
     &[
         // Data and memory operate only on this address space or descriptors
         // acquired under Landlock. No external IPC object identifiers enter.
