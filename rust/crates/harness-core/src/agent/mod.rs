@@ -46,6 +46,7 @@ mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
 mod messaging;
+mod slots;
 mod steering;
 pub use messaging::{MessageDelivery, peer_send_allowed};
 pub use steering::{
@@ -74,13 +75,13 @@ pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{
-    ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, Out, Progress, Queued,
-    SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait,
-    Wake, requested_child, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_QUEUED, MAX_QUEUED_BYTES, Out,
+    Progress, Queued, SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput,
+    TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
