@@ -62,18 +62,22 @@ impl MachineBinding {
     /// foreign target or unsupported version. The provisioning plan at zero
     /// cannot certify a settled binding even if its value decodes.
     pub fn decode(target: &str, record: &acyclic_stream::Record) -> Result<Self> {
-        let refuse = |reason: &str| {
+        let refuse = |reason: std::fmt::Arguments<'_>| {
             Error::Storage(format!(
                 "Machine binding {reason}; recovery: read the original authorized target binding at from=1, limit=1"
             ))
         };
         if record.sequence != 1 {
-            return Err(refuse("is not at the settled source position"));
+            return Err(refuse(format_args!(
+                "is not at the settled source position"
+            )));
         }
         let binding: Self = crate::contract::json_from_slice(&record.value)
-            .map_err(|error| refuse(&format!("does not decode: {error}")))?;
+            .map_err(|error| refuse(format_args!("does not decode: {error}")))?;
         if binding.version != MACHINE_BINDING_VERSION || binding.target != target {
-            return Err(refuse("has an unsupported version or a different target"));
+            return Err(refuse(format_args!(
+                "has an unsupported version or a different target"
+            )));
         }
         Ok(binding)
     }
