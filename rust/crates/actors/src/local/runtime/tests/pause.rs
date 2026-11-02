@@ -275,7 +275,8 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     assert!(futures::poll!(late.as_mut()).is_pending());
     drop(late);
     handler.gate.add_permits(1);
-    let (_delivery_outcome, resumed) = futures::join!(delivery, runtime.pause(&address, false));
+    let (delivered, resumed) = futures::join!(delivery, runtime.pause(&address, false));
+    delivered?;
     resumed?;
     handler.gate.add_permits(1);
     runtime.drain_actor(&address).await?;
