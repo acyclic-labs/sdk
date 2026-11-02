@@ -98,6 +98,32 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         let (mut context_input, base, working) =
             session.response_base(&journal, &input, 1, &tail).await?;
         let reference = working.as_ref().expect("selected base has a working cut");
+        let (cut, _cut_hold) = load_json::<Value>(&journal, reference, None).await?;
+        let compaction: FileRef = serde_json::from_value(cut["compaction"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let (proof, _proof_hold) =
+            load_json::<crate::context::CompactionReference>(&journal, &compaction, None).await?;
+        let before = journal.4.load(Ordering::SeqCst);
+        session
+            .validate_compacted_working_cut(&journal, &input, 0, reference, &proof)
+            .await?;
+        assert_eq!(
+            journal.4.load(Ordering::SeqCst) - before,
+            4,
+            "cut validation reread an already authenticated compaction proof"
+        );
+        // Restoring the old separate read breaks the same exact work bound.
+        journal.load(&compaction, None)?.await?;
+        assert_ne!(journal.4.load(Ordering::SeqCst) - before, 4);
+        let mut changed = proof.clone();
+        changed.source_digest[0] ^= 1;
+        assert!(
+            session
+                .validate_compacted_working_cut(&journal, &input, 0, reference, &changed)
+                .await
+                .is_err(),
+            "a different compaction proof reused the authenticated cut"
+        );
         assert_eq!(context_input, original_input);
         assert_eq!(base.messages.last(), tail.last());
         let current = base.current_input_index.unwrap() as usize;

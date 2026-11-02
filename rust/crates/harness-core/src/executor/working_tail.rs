@@ -239,6 +239,15 @@ impl<'a> StockExecution<'a> {
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
     ) -> Result<RetainedCut<'a>> {
+        self.checked_working_cut(journal, reference, None).await
+    }
+
+    async fn checked_working_cut(
+        &self,
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+        expected: Option<&crate::context::CompactionReference>,
+    ) -> Result<RetainedCut<'a>> {
         #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         #[cfg(feature = "filesystem")]
@@ -283,6 +292,7 @@ impl<'a> StockExecution<'a> {
             .summary
             .as_ref()
             .is_none_or(|summary| summary.operation_id != cut.operation || summary.step != cut.step)
+            || expected.is_some_and(|expected| expected != &proof)
         {
             return Err(self.invalid_working_cut());
         }
@@ -399,20 +409,13 @@ impl<'a> StockExecution<'a> {
         reference: &FileRef,
         proof: &crate::context::CompactionReference,
     ) -> Result<()> {
-        let retained = self.load_working_cut(journal, reference).await?;
+        let retained = self
+            .checked_working_cut(journal, reference, Some(proof))
+            .await?;
         if retained.cut.operation != input.operation_id
             || retained.cut.step != step
             || retained.cut.input_digest != self.request_digest(input)?
         {
-            return Err(self.invalid_working_cut());
-        }
-        let stored = load_json::<crate::context::CompactionReference>(
-            journal,
-            &retained.cut.compaction,
-            self.io,
-        )
-        .await?;
-        if &stored.0 != proof {
             return Err(self.invalid_working_cut());
         }
         Ok(())
