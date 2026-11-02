@@ -118,7 +118,7 @@ fn charge(tokens: u64, rate: Option<u64>) -> Option<u128> {
 
 struct UsageEstimate<'a> {
     call: ModelUsageProjection<'a>,
-    #[cfg(feature = "research")]
+    #[cfg(any(feature = "research", feature = "metrics-export"))]
     input_cost: Option<u128>,
 }
 
@@ -225,7 +225,7 @@ impl ModelUsageRecord {
 
     // Both views use the one price admission, without duplicating billing or
     // allocating an owned call. The counterfactual is evaluated only on demand.
-    #[cfg(feature = "research")]
+    #[cfg(any(feature = "research", feature = "metrics-export"))]
     pub(crate) fn estimate_with_cache_savings<'a>(
         &'a self,
         price: Option<&'a ModelPriceRecord>,
@@ -257,7 +257,7 @@ impl ModelUsageRecord {
             currency: None,
             token_nano_units: None,
         };
-        #[cfg(feature = "research")]
+        #[cfg(any(feature = "research", feature = "metrics-export"))]
         let mut input_cost = None;
         if let Some(price) = price {
             price.validate_for(self)?;
@@ -268,7 +268,7 @@ impl ModelUsageRecord {
                 .completed
                 .then(|| {
                     let input = self.input_family(price)?;
-                    #[cfg(feature = "research")]
+                    #[cfg(any(feature = "research", feature = "metrics-export"))]
                     {
                         input_cost = Some(input);
                     }
@@ -287,7 +287,7 @@ impl ModelUsageRecord {
                 usage: Cow::Borrowed(self),
                 estimated_cost,
             },
-            #[cfg(feature = "research")]
+            #[cfg(any(feature = "research", feature = "metrics-export"))]
             input_cost,
         })
     }

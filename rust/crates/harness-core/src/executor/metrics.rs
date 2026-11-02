@@ -608,12 +608,10 @@ fn model_call<'a>(
     usage: super::ModelUsageRecord,
     price: Option<&ModelPriceRecord>,
 ) -> Result<Row<'a>> {
-    row.cache_savings_nano_units = price
-        .map(|price| usage.cache_savings(price))
-        .transpose()
-        .map_err(export_error)?
-        .flatten();
-    let projection = usage.estimate(price).map_err(export_error)?;
+    let (projection, savings) = usage
+        .estimate_with_cache_savings(price)
+        .map_err(export_error)?;
+    row.cache_savings_nano_units = savings;
     let cost = projection.estimated_cost;
     row.price_revision = cost.price_revision.map(|value| value.into_owned());
     row.price_effective_at = cost.effective_at;
