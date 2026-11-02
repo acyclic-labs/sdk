@@ -420,8 +420,8 @@ fn release_model(
     Ok(())
 }
 
-// Version 3 settles approval refusals through the ordinary tool-failure kind.
-pub(super) const OBSERVATION_VERSION: u32 = 4;
+// Version 5 pins cumulative steering in the existing prepared projection.
+pub(super) const OBSERVATION_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]

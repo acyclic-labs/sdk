@@ -30,16 +30,26 @@ const LIMITS: TurnLimits = TurnLimits {
     history_turns: 8,
 };
 
+fn within() -> acyclic_actors::addressing::ActorReference {
+    acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+        .expect("actor binding")
+}
+
 /// A memory filesystem host with agent `path`'s private volume.
 type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
 
 /// The private-volume binding of agent `path`, and its filesystem host.
 async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
+    private_on(path, Fs::memory()).await
+}
+
+async fn private_on(
+    path: &AgentPath,
+    filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+) -> Result<(Host, VolumeBinding)> {
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::<MemoryAuthorityBackend, MemoryObjectBackend>::new(
-        Fs::memory(),
-        &provider,
-        None,
+        filesystem, &provider, None,
     )?;
     let owner = acyclic_harness_core::AgentId::from_bytes(path.id().to_bytes());
     let volume = VolumeRef::new(
@@ -201,7 +211,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let model = Arc::new(ScriptedModelProvider::new([]));
         let host = FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
+            within(),
             filesystem,
             issuer,
             TurnAdmission::LocalRoot,
@@ -217,6 +227,8 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             .open(
                 &state,
                 OperationId::from_bytes([220; 16]),
+                0,
+                0,
                 &ModelContent::Text("test".into()),
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -271,8 +283,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -368,6 +379,498 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
+async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_prefix() -> Result {
+    use acyclic_harness_core::conversation::{ContentAccess, ContentPublisher};
+    let stream = Arc::new(MemoryStream::default());
+    let path = super::create(&stream, id(216)).await?;
+    let (filesystem, binding) = private(&path).await?;
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "agents".into(),
+        },
+    )
+    .into();
+    let authority = acyclic_harness_core::filesystem::agent_authority(
+        &issuer,
+        &TurnAdmission::LocalRoot,
+        &path,
+        std::slice::from_ref(&binding),
+        &[],
+    )
+    .await?;
+    let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &binding.volume,
+        &authority.verifier,
+        &authority.scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
+    drop(authority);
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    let host = FilesystemTurnHost::new(
+        stream.clone(),
+        within(),
+        filesystem,
+        issuer,
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    );
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+    let operation = OperationId::from_bytes([216; 16]);
+    let open = host
+        .open(
+            &state,
+            operation,
+            0,
+            1,
+            &ModelContent::Text("initial".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+    let foreign = OperationId::from_bytes([217; 16]);
+    assert!(matches!(
+        boundary.messages(foreign, 0, None).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    boundary.admitted(operation, 0).await?;
+    // Replayed admission must still belong to this original turn. A foreign
+    // operation cannot use the already-admitted step to bypass that check.
+    assert!(matches!(
+        boundary.admitted(foreign, 0).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    for (name, wake, paths) in [
+        ("quiet-old", false, vec!["a"]),
+        ("quiet-latest", false, vec!["b", "a"]),
+        ("waking", true, vec!["w"]),
+    ] {
+        let notice = acyclic_harness_core::conversation::wire::Notice {
+            source: "events".into(),
+            kind: "source.changed".into(),
+            body: serde_json::json!({"name": name, "paths": paths}),
+            wake,
+            coalesce_key: Some("changes".into()),
+        };
+        let notice = if wake {
+            let bytes = acyclic_harness_core::contract::canonical_json_bytes(&notice)?;
+            let file = publisher
+                .stage_once(
+                    OperationId::from_bytes([218; 16]),
+                    "inputs/waking.json",
+                    &bytes,
+                    NOTICE_MEDIA_TYPE,
+                    "notice",
+                    ContentAccess::default(),
+                )?
+                .await?
+                .0;
+            NoticePayload::Waking(Box::new(file))
+        } else {
+            NoticePayload::Quiet(notice)
+        };
+        let record = InboxRecord::Notice {
+            id: intent(name),
+            notice,
+        };
+        submit(&*stream, send(&path, &super::user(), &record)?).await?;
+    }
+    let messages = boundary.messages(operation, 1, None).await?;
+    assert_eq!(messages.len(), 1);
+    for message in &messages {
+        assert!(matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::Notices { notices })
+                if notices.len() == 2
+                    && notices[0].body == serde_json::json!({
+                        "name": "quiet-latest", "paths": ["a", "b"]
+                    })
+                    && !notices[0].wake
+                    && notices[1].body == serde_json::json!({
+                        "name": "waking", "paths": ["w"]
+                    })
+                    && notices[1].wake
+        ));
+        message
+            .content
+            .validate_limits(Default::default(), &mut None)?;
+    }
+    let cut = boundary.selection(operation, 1)?;
+    assert!(matches!(
+        boundary.selection(foreign, 1),
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    assert!(matches!(
+        boundary.admitted(foreign, 1).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    assert_eq!(
+        cut,
+        BoundaryCut {
+            from: 1,
+            through: 4
+        }
+    );
+    submit(
+        &*stream,
+        send(
+            &path,
+            &super::user(),
+            &InboxRecord::Notice {
+                id: intent("quiet-after-cut"),
+                notice: NoticePayload::Quiet(acyclic_harness_core::conversation::wire::Notice {
+                    source: "events".into(),
+                    kind: "source.changed".into(),
+                    body: serde_json::json!({"name": "later", "paths": ["c"]}),
+                    wake: false,
+                    coalesce_key: Some("changes".into()),
+                }),
+            },
+        )?,
+    )
+    .await?;
+    // A retry renders the original frozen batch, even with a newer same-key event.
+    assert_eq!(boundary.messages(operation, 1, Some(cut)).await?, messages);
+    assert!(boundary.transcript(operation).await?.is_none());
+    boundary.admitted(operation, 1).await?;
+    let transcript = boundary
+        .transcript(operation)
+        .await?
+        .ok_or("no transcript")?;
+    assert_eq!(transcript.through, cut.through);
+    assert!(matches!(
+        boundary.transcript(foreign).await,
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    let later = boundary.messages(operation, 2, None).await?;
+    assert_eq!(later.len(), 1);
+    assert!(matches!(
+        &later[0].content,
+        ModelContent::Part(ModelContentPart::Notices { notices })
+            if notices.len() == 1
+                && notices[0].body == serde_json::json!({"name": "later", "paths": ["c"]})
+    ));
+    // Commit the original prepared candidate and actual model admission. A
+    // later prepared range has no ModelStarted and must not become visible.
+    use acyclic_harness_core::executor::{ExecutionEvent, ModelPurpose};
+    use acyclic_harness_core::model::{ModelMessage, PreparedModelRequest};
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            compose_tools: false,
+            model: Model::new("test".into(), "text".into(), "1".into())?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("initial".into()),
+            }],
+            tools: Vec::new(),
+            sampling: Default::default(),
+            max_output_tokens: None,
+        },
+        Default::default(),
+        None,
+    )?;
+    open.journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: request.request_digest(),
+            },
+            None,
+        )?
+        .await?;
+    // This uses the same private staging and authenticated observation writer
+    // as dispatch; no provider response or boundary replay supplies recovery.
+    let bytes = acyclic_harness_core::contract::canonical_json_bytes(request.request())?;
+    let request_file = open
+        .journal
+        .stage(operation, "request", &bytes, "application/json", None)?
+        .await?;
+    for step in [1, 2] {
+        let snapshot = if step == 1 {
+            // The prior exact snapshot, already staged for this boundary.
+            let bytes = open.journal.load(&transcript.file, None)?.await?;
+            Some(SteeringSnapshot {
+                through: cut.through,
+                messages: acyclic_harness_core::contract::json_from_slice(&bytes)?,
+            })
+        } else {
+            boundary.prepared_snapshot(operation, step)?
+        };
+        let projection = serde_json::json!({
+            "context": {"messages": request.request().messages, "metadata": {}, "current_input_index": 0},
+            "canonical": null, "checkpoint": null, "working": null, "accounting": null,
+            "steering": snapshot,
+        });
+        let bytes = acyclic_harness_core::contract::canonical_json_bytes(&projection)?;
+        let key = format!("prepared:{step}");
+        let file = open
+            .journal
+            .stage(operation, &key, &bytes, "application/json", None)?
+            .await?;
+        let selected = if step == 1 {
+            cut
+        } else {
+            boundary.selection(operation, step)?
+        };
+        open.journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::ContextPrepared {
+                    step,
+                    projection: file,
+                    steering: Some(selected),
+                },
+                None,
+            )?
+            .await?;
+        if step == 1 {
+            open.journal
+                .append(
+                    operation,
+                    "model:1:started",
+                    &ExecutionEvent::ModelStarted {
+                        step,
+                        purpose: ModelPurpose::Response,
+                        request_digest: request.request_digest(),
+                        request: request_file.clone(),
+                    },
+                    None,
+                )?
+                .await?;
+        }
+    }
+    drop(open);
+    let reopened = host
+        .open(
+            &state,
+            operation,
+            0,
+            1,
+            &ModelContent::Text("initial".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let restored = reopened
+        .journal
+        .model_boundary()
+        .ok_or("no recovered boundary")?;
+    assert!(restored.transcript(operation).await?.is_none());
+    // Cancellation during prefix replay must restore the later durable admission.
+    restored.messages(operation, 0, None).await?;
+    restored.admitted(operation, 0).await?;
+    let snapshot = reopened.journal.steering_snapshot(operation).await?;
+    restored.restore_snapshot(operation, snapshot)?;
+    let recovered = restored
+        .transcript(operation)
+        .await?
+        .ok_or("lost admitted steering")?;
+    assert_eq!(
+        recovered, transcript,
+        "unadmitted later preparation is excluded"
+    );
+    let bytes = reopened.journal.load(&recovered.file, None)?.await?;
+    let recovered: Vec<ModelMessage> = acyclic_harness_core::contract::json_from_slice(&bytes)?;
+    assert_eq!(recovered, messages);
+    assert!(
+        model.requests().is_empty(),
+        "boundary observation never dispatches"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admission() -> Result {
+    use acyclic_harness_core::{
+        conversation::{ContentAccess, ContentPublisher, ContentResidencyVerifier},
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        model::FileProjectionPolicy,
+    };
+    let stream = Arc::new(MemoryStream::default());
+    let path = super::create(&stream, id(221)).await?;
+    let (filesystem, binding) = private(&path).await?;
+    let peer = VolumeRef::new(
+        binding.volume.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([222; 16])),
+        &mut None,
+    )?;
+    filesystem.create_volume(&peer).await?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "agents".into(),
+    };
+    let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    let peer_scope = issuer.bootstrap_scope(
+        "peer",
+        &Capabilities::new([peer.capability(VolumeOperation::Write, &mut None)?]),
+        Some(acyclic_harness_core::AgentId::from_bytes([222; 16])),
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let writer = FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &peer,
+        &verifier,
+        &peer_scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
+    let file = writer
+        .stage_once(
+            OperationId::from_bytes([223; 16]),
+            "attachment.txt",
+            b"peer attachment",
+            "text/plain",
+            "attachment",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let bytes = encode_user_input(&ModelContent::Parts(vec![
+        ModelContentPart::Text {
+            text: "use this file".into(),
+            native: None,
+        },
+        ModelContentPart::File {
+            file: file.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        },
+    ]))?;
+    let envelope = writer
+        .stage_once(
+            OperationId::from_bytes([224; 16]),
+            "input.json",
+            &bytes,
+            USER_INPUT_MEDIA_TYPE,
+            "input",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    submit(
+        &*stream,
+        send(
+            &path,
+            &super::user(),
+            &InboxRecord::Message(Message {
+                from: super::user(),
+                id: intent("peer-input"),
+                body: Box::new(envelope.clone()),
+                attachments: None,
+            }),
+        )?,
+    )
+    .await?;
+    let own = binding.volume.clone();
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path, &adoption).expect("adopts");
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    for allowed in [None, Some(false), Some(true)] {
+        let mut grants = vec![
+            INTERACTION_ROUTE.to_owned(),
+            own.capability(VolumeOperation::Read, &mut None)?,
+            own.capability(VolumeOperation::Write, &mut None)?,
+            envelope.read_capability(&mut None)?,
+        ];
+        if allowed == Some(true) {
+            grants.push(file.read_capability(&mut None)?);
+        }
+        let scope =
+            issuer.bootstrap_scope("recipient", &Capabilities::new(grants), None, &mut None)?;
+        // The former envelope-only reader cannot open the revealed file.
+        if allowed != Some(true) {
+            let reader = FilesystemContentVerifier::new(
+                filesystem.clone(),
+                &verifier,
+                &scope,
+                LIMITS.maximum_bytes,
+                None,
+            )?;
+            assert!(
+                reader
+                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .await
+                    .is_err()
+            );
+        }
+        let admission = if allowed.is_some() {
+            TurnAdmission::Admitted {
+                audience: audience.clone(),
+                scope: scope.clone(),
+            }
+        } else {
+            TurnAdmission::LocalRoot
+        };
+        let host = FilesystemTurnHost::new(
+            stream.clone(),
+            within(),
+            filesystem.clone(),
+            issuer.clone(),
+            admission,
+            executors(model.clone())?,
+            LIMITS,
+            Default::default(),
+        );
+        let operation = OperationId::from_bytes([225; 16]);
+        let input = ModelContent::Text("initial".into());
+        let open = host
+            .open(
+                &state,
+                operation,
+                0,
+                1,
+                &input,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+        assert!(boundary.messages(operation, 0, None).await?.is_empty());
+        boundary.admitted(operation, 0).await?;
+        let messages = boundary.messages(operation, 1, None).await;
+        if allowed == Some(false) {
+            assert!(matches!(
+                messages,
+                Err(acyclic_harness_core::Error::Unauthorized(_))
+            ));
+            assert!(boundary.transcript(operation).await?.is_none());
+            continue;
+        }
+        let messages = messages?;
+        assert_eq!(messages.len(), 1);
+        let files: Vec<_> = messages[0].content.file_refs().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].volume(), &own);
+        assert_ne!(files[0], &file);
+        let reader = FilesystemContentVerifier::new(
+            filesystem.clone(),
+            &verifier,
+            &scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
+        let bytes = reader
+            .read(files[0], files[0].descriptor().byte_length(), None, None)?
+            .await?;
+        assert_eq!(bytes.as_ref(), b"peer attachment");
+    }
+    assert!(model.requests().is_empty(), "selection does not dispatch");
+    Ok(())
+}
+
+#[tokio::test]
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
 
@@ -394,8 +897,16 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("first".into()),
         ScriptedTurn::Text("second".into()),
+        ScriptedTurn::Text("after cancellation".into()),
     ]));
-    let (filesystem, binding) = private(&path).await?;
+    let (filesystem, binding) = private_on(
+        &path,
+        Fs::from_memory_providers(
+            stream.clone(),
+            Arc::new(acyclic_objects::MemoryObjects::memory()),
+        ),
+    )
+    .await?;
     let notice_issuer = AuthorityRoot::new(
         "agents",
         [7; 32],
@@ -426,8 +937,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             filesystem.clone(),
             AuthorityRoot::new(
                 "agents",
@@ -442,19 +952,22 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             LIMITS,
             Default::default(),
         ));
-        Ok(AgentHost::new(
+        Ok(AgentHost::with_spawn_volumes(
             stream.clone(),
             driver,
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock.clone(),
+            Arc::new(
+                acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone()),
+            ),
         )?)
     };
     let host = reopen()?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
     assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("adoption drains");
     let event = |name: &str, wake| Notice {
         source: "filesystem".into(),
         kind: "files.changed".into(),
@@ -474,7 +987,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             }),
         };
         host.send(&path, &super::user(), &wide).await?;
-        host.drain(&path).await?;
+        host.drain(&path).await.expect("wide quiet notice drains");
     }
     for name in ["alpha", "beta"] {
         host.send(
@@ -486,7 +999,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             },
         )
         .await?;
-        host.drain(&path).await?;
+        host.drain(&path)
+            .await
+            .expect("coalesced quiet notice drains");
     }
     assert!(model.requests().is_empty());
     let stage_waking = |name: &str| {
@@ -521,7 +1036,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     };
     let waking = stage_waking("run").await?;
     host.send(&path, &super::user(), &waking).await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("waking notice freezes");
     let frozen = host.state(&path).await?;
     assert!(
         model.requests().is_empty(),
@@ -531,7 +1046,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(selected.range, 1..5);
     // An exact delivered-intent replay cannot extend or replace the frozen range.
     host.send(&path, &super::user(), &waking).await?;
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("waking notice replay drains");
     assert_eq!(host.state(&path).await?.turn, frozen.turn);
     host.send(
         &path,
@@ -542,7 +1059,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         },
     )
     .await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("later quiet notice drains");
     assert_eq!(
         turn_notices(&host.state(&path).await?)?,
         Some(selected.clone())
@@ -552,7 +1069,9 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     drop(host);
     let host = reopen()?;
     clock.0.store(CONTINUE_NOW, Ordering::SeqCst);
-    host.drain(&path).await?;
+    host.drain(&path)
+        .await
+        .expect("recovered frozen turn settles");
     let settled = host.state(&path).await?;
     assert_eq!(
         settled.phase,
@@ -579,7 +1098,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(entry.notices, Some(selected.clone()));
     host.send(&path, &super::user(), &stage_waking("again").await?)
         .await?;
-    host.drain(&path).await?;
+    host.drain(&path).await.expect("next waking turn settles");
     assert_eq!(host.state(&path).await?.pending_notices, None);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
@@ -667,6 +1186,47 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         .validate(&path)
         .is_err()
     );
+    host.send(
+        &path,
+        &super::user(),
+        &InboxRecord::Notice {
+            id: intent("cancelled"),
+            notice: NoticePayload::Quiet(event("cancelled", false)),
+        },
+    )
+    .await?;
+    host.drain(&path)
+        .await
+        .expect("cancellable quiet notice drains");
+    assert!(host.state(&path).await?.pending_notices.is_some());
+    host.send(&path, &super::user(), &super::cancel("drop-events"))
+        .await?;
+    host.drain(&path).await.expect("cancellation drains");
+    assert_eq!(host.state(&path).await?.pending_notices, None);
+    host.send(&path, &super::user(), &stage_waking("after-cancel").await?)
+        .await?;
+    host.drain(&path)
+        .await
+        .expect("post-cancellation turn settles");
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let after_cancel = batches(&requests[2]);
+    assert_eq!(
+        after_cancel.len(),
+        4,
+        "three immutable prior blocks and new input"
+    );
+    assert_eq!(after_cancel[3].len(), 1);
+    assert_eq!(
+        after_cancel[3][0].body["paths"],
+        serde_json::json!(["after-cancel"])
+    );
+    assert!(
+        !after_cancel
+            .iter()
+            .flatten()
+            .any(|notice| notice.body["revision"] == "cancelled")
+    );
     Ok(())
 }
 
@@ -681,8 +1241,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
+        within(),
         host,
         AuthorityRoot::new(
             "agents",
@@ -807,8 +1366,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -939,8 +1497,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     host.create_volume(&own).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
+        within(),
         host,
         AuthorityRoot::new(
             "agents",
@@ -1092,8 +1649,7 @@ async fn admitted_root_after_its_child(
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host.clone(),
                 issuer.clone(),
                 TurnAdmission::Admitted {
@@ -1324,8 +1880,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 Arc::new(MemoryStream::default()),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host,
                 root,
                 TurnAdmission::Admitted { audience, scope },
@@ -1503,8 +2058,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let stream = Arc::new(Refusing::default());
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host,
                 root,
                 TurnAdmission::Admitted {
@@ -1849,11 +2403,16 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &'a self,
             agent: &'a AgentState,
             turn: OperationId,
+            inbox: u64,
+            cursor: u64,
             input: &'a ModelContent,
             cancellation: acyclic_actors::guest::CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
-                let mut open = self.original.open(agent, turn, input, cancellation).await?;
+                let mut open = self
+                    .original
+                    .open(agent, turn, inbox, cursor, input, cancellation)
+                    .await?;
                 open.goal = open.goal.map(|original| {
                     Arc::new(EditedGoal {
                         original,
@@ -1926,8 +2485,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         let driver = ExecutorDriver::new(EditingHost {
             original: FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host.clone(),
                 issuer,
                 TurnAdmission::LocalRoot,

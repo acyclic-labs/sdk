@@ -36,7 +36,7 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
         #[cfg(not(target_arch = "wasm32"))]
         true,
     ] {
-        for old_drain in [false, true] {
+        for mode in 0..3 {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             #[cfg(not(target_arch = "wasm32"))]
@@ -53,15 +53,19 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
                 PreparationIo::from_budget(budget, &cancellation)?
             };
             let mut messages = crate::model::clone_messages(&source, Some(&io))?;
-            let expected = (messages.capacity() * std::mem::size_of::<ModelMessage>()) as u64
+            let mut expected = (messages.capacity() * std::mem::size_of::<ModelMessage>()) as u64
                 + source
                     .last()
                     .ok_or_else(|| Error::Invalid("missing tail".into()))?
                     .content
                     .retained_payload_bytes()?;
+            let mut steering = SteeringHistory::default();
+            if mode == 2 {
+                steering.admit(0..1, Some(&io))?;
+            }
             let before = io.owned_bytes()?;
             let mut offset = 0;
-            if old_drain {
+            if mode == 0 {
                 // Dropping history alone leaves the original ledger charged.
                 drop(messages.drain(..2));
                 assert!(
@@ -69,15 +73,35 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
                     "drain-only control released custody"
                 );
             } else {
-                retire_prefix(&mut messages, &mut offset, 2, Some(&io))?;
+                retire_prefix(
+                    &mut messages,
+                    &mut offset,
+                    2,
+                    (mode == 2).then_some(&mut steering),
+                    Some(&io),
+                )?;
                 assert_eq!(offset, 2);
+                if mode == 2 {
+                    assert_eq!(steering.retired.as_slice(), &source[..1]);
+                    expected += (steering.ranges.capacity()
+                        * std::mem::size_of::<std::ops::Range<usize>>()
+                        + steering.retired.capacity() * std::mem::size_of::<ModelMessage>())
+                        as u64
+                        + source[0].content.retained_payload_bytes()?;
+                }
                 assert_eq!(
                     io.owned_bytes()?,
                     expected,
                     "retirement leaked sparse-map or payload capacity"
                 );
                 assert!(io.owned_bytes()? < before);
-                retire_prefix(&mut messages, &mut offset, 2, Some(&io))?;
+                retire_prefix(
+                    &mut messages,
+                    &mut offset,
+                    2,
+                    (mode == 2).then_some(&mut steering),
+                    Some(&io),
+                )?;
                 assert_eq!(
                     io.owned_bytes()?,
                     expected,
@@ -87,6 +111,7 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
             assert_eq!(messages.as_slice(), &source[2..]);
             let hold = io.guard_owned(io.owned_bytes()?)?;
             drop(messages);
+            drop(steering);
             drop(hold);
             assert_eq!(io.owned_bytes()?, 0);
             drop(io);
@@ -123,7 +148,7 @@ fn invalid_or_unfunded_retirement_leaves_values_and_offset_intact() -> Result<()
         let original = messages.clone();
         let mut offset = 0;
         for through in [4, 2] {
-            assert!(retire_prefix(&mut messages, &mut offset, through, Some(&io)).is_err());
+            assert!(retire_prefix(&mut messages, &mut offset, through, None, Some(&io)).is_err());
             assert_eq!(
                 messages, original,
                 "failed retirement destroyed unfunded values"
@@ -132,7 +157,7 @@ fn invalid_or_unfunded_retirement_leaves_values_and_offset_intact() -> Result<()
             assert_eq!(io.owned_bytes()?, 0);
         }
         offset = 3;
-        assert!(retire_prefix(&mut messages, &mut offset, 2, Some(&io)).is_err());
+        assert!(retire_prefix(&mut messages, &mut offset, 2, None, Some(&io)).is_err());
         assert_eq!(offset, 3);
         assert_eq!(messages, original);
         drop(messages);

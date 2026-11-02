@@ -60,6 +60,93 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {
+        self.boundary.as_deref()
+    }
+
+    fn steering_snapshot(
+        &self,
+        operation: OperationId,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::agent::SteeringSnapshot>>> {
+        Box::pin(async move {
+            self.require_operation(operation, None)?;
+            let step = {
+                let mut cache = self.verified.lock().await;
+                self.refresh_cached_summary(operation, &mut cache, None)
+                    .await?;
+                cache.summary().latest_response
+            };
+            let Some(step) = step else { return Ok(None) };
+            let select = |event: &ExecutionEvent| {
+                matches!(
+                    event,
+                    ExecutionEvent::ContextPrepared { .. }
+                        | ExecutionEvent::ModelStarted {
+                            purpose: crate::executor::ModelPurpose::Response,
+                            ..
+                        }
+                )
+            };
+            let (_, records) = self
+                .indexed_step(
+                    crate::executor::ExecutionRecordQuery {
+                        operation,
+                        step,
+                        call_id: None,
+                        include_started: false,
+                        maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(
+                            Limits::default(),
+                        ),
+                        maximum: 2,
+                        select: &select,
+                    },
+                    None,
+                )
+                .await?
+                .ok_or_else(|| Error::Storage("admitted steering index is unavailable".into()))?;
+            let mut context = None;
+            let mut started = false;
+            for record in &records {
+                match &record.event {
+                    ExecutionEvent::ContextPrepared {
+                        projection,
+                        steering,
+                        ..
+                    } => {
+                        if context.replace((projection, steering)).is_some() {
+                            return Err(Error::Storage(
+                                "admitted response repeats its context".into(),
+                            ));
+                        }
+                    }
+                    ExecutionEvent::ModelStarted { .. } => started = true,
+                    _ => {
+                        return Err(Error::Storage(
+                            "admitted response index selected an unrelated record".into(),
+                        ));
+                    }
+                }
+            }
+            let (projection, cut) = context.filter(|_| started).ok_or_else(|| {
+                Error::Storage("admitted response has no original prepared context".into())
+            })?;
+            let bytes = self.load_content(projection, None).await?;
+            let (projection, _): (crate::executor::ResponseProjection, _) =
+                decode_json(&bytes, None)?;
+            if projection
+                .steering
+                .as_ref()
+                .map(|snapshot| snapshot.through)
+                != cut.map(|cut| cut.through)
+            {
+                return Err(Error::Storage(
+                    "admitted steering differs from its frozen range".into(),
+                ));
+            }
+            Ok(projection.steering)
+        })
+    }
+
     fn cache_identity(&self) -> Option<crate::executor::ExecutionJournalCacheId> {
         Some(self.cache_identity)
     }

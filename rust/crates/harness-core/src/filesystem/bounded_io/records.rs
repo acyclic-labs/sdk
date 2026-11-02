@@ -70,6 +70,14 @@ impl PreparationRecord for crate::executor::ResponseProjection {
         crate::core::owned_sum([
             size_of::<Self>() as u64,
             payload,
+            self.steering.as_ref().map_or(Ok(0), |steering| {
+                let bytes = crate::core::owned_buffer::<crate::model::ModelMessage>(
+                    steering.messages.capacity(),
+                )?;
+                steering.messages.iter().try_fold(bytes, |bytes, message| {
+                    crate::core::owned_sum([bytes, message.content.retained_payload_bytes()?])
+                })
+            })?,
             self.canonical
                 .as_ref()
                 .map_or(Ok(0), FileRef::logical_owned_bytes)?,

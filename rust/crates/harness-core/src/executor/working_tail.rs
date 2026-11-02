@@ -2,7 +2,7 @@
 use super::*;
 
 mod history;
-mod retirement;
+pub(super) mod retirement;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]

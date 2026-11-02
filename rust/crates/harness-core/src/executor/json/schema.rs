@@ -22,6 +22,7 @@ macro_rules! schema {
 schema!(NONE => None, "", [], [], []);
 schema!(ROOT => Root, "", [], [], []);
 schema!(UNKNOWN, "", [], [], []);
+schema!(SCHEDULE => Schedule, "", [], ["body" => ROOT : 0], []);
 // ApprovalSubject::Tool arguments use deserialize_json_value: serde's private
 // marker keys stay literal. Their derived HeapLayout accounts their tree;
 // unlike question/form Values, they have no RawValue expansion to inspect.
@@ -29,7 +30,7 @@ schema!(INTERACTION => Interaction, "type", ["question" => 1, "form" => 2], ["re
 schema!(CONTROL_RESPONSE => ControlResponse, "", [], ["result" => ROOT : 0], []);
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
 schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
-schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0], []);
+schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0, "steering" => CONTEXT : 0], []);
 schema!(MESSAGE_SEGMENT => MessageSegment, "", [], ["suffix" => MESSAGES : 0], []);
 schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
 schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);

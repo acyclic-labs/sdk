@@ -145,7 +145,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Absent { path: path.clone() });
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
-            Out::Checkpoint | Out::Roster(_) | Out::Notices(_) => {}
+            Out::Checkpoint | Out::Roster(_) | Out::Steered(_) | Out::Notices(_) => {}
             Out::Send { to, record } => {
                 if matches!(
                     record,
@@ -156,7 +156,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     ));
                 }
                 builder.recipient(to)?;
-                if matches!(record, InboxRecord::Message(_)) && to != path {
+                if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
+                    && to != path
+                {
                     builder.offer(to.inbox()?, to.closed()?, record.encode()?);
                 } else {
                     builder.append(to.inbox()?, record.encode()?);

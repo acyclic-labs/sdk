@@ -95,6 +95,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
                         messages: messages.clone(),
                         ..Default::default()
                     },
+                    steering: None,
                     canonical: None,
                     checkpoint: None,
                     working: None,

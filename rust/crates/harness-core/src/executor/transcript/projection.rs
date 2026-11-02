@@ -23,6 +23,7 @@ impl ResponseProjection {
                 metadata: stored.context.metadata,
                 current_input_index: stored.context.current_input_index,
             },
+            steering: None,
             canonical: None,
             checkpoint: None,
             working: stored.working,
@@ -30,6 +31,7 @@ impl ResponseProjection {
         };
         drop((
             stored.context.messages,
+            stored.steering,
             stored.canonical,
             stored.checkpoint,
             stored.accounting,

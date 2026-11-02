@@ -492,6 +492,10 @@ mod tests {
                 outcome: crate::agent::TurnOutcome::Cancelled,
                 goal: Some(crate::OperationId::from_bytes([255; 16])),
                 targets: Some(file()),
+                steering: Some(crate::agent::SteeringTranscript {
+                    through: u64::MAX,
+                    file: file(),
+                }),
                 tool_results: Some(format!(
                     "tools/.results/{}",
                     crate::OperationId::from_bytes([255; 16])
@@ -528,6 +532,7 @@ mod tests {
                     brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    steered_through: u64::MAX,
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
@@ -671,7 +676,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))), notices: None };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
@@ -694,10 +699,13 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "unknown"] {
+        for version in (0..crate::agent::records::RECORD_VERSION)
+            .map(|version| version.to_string())
+            .chain(std::iter::once("unknown".to_owned()))
+        {
             for bytes in [valid.bytes.clone(), Vec::new().into()] {
                 let mut checkpoint = valid.clone();
-                checkpoint.codec.version = version.into();
+                checkpoint.codec.version.clone_from(&version);
                 checkpoint.bytes = bytes;
                 assert!(matches!(
                     checkpoint_state(&checkpoint),

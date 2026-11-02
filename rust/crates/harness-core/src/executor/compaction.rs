@@ -87,6 +87,7 @@ impl StockExecution<'_> {
             .await?;
         let compacted = ResponseProjection {
             context: compacted,
+            steering: projection.steering,
             canonical: None,
             checkpoint: None,
             working,

@@ -180,6 +180,7 @@ struct SegmentView<'a> {
 #[derive(Serialize)]
 struct ProjectionView<'a> {
     context: ContextView<'a>,
+    steering: &'a Option<crate::agent::SteeringSnapshot>,
     canonical: &'a Option<FileRef>,
     checkpoint: &'a Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -670,6 +671,7 @@ pub(super) async fn stage_projection(
                 metadata: &projection.context.metadata,
                 current_input_index: projection.context.current_input_index,
             },
+            steering: &projection.steering,
             canonical: &projection.canonical,
             checkpoint: &projection.checkpoint,
             working: &projection.working,
@@ -697,6 +699,7 @@ pub(super) async fn working_reference(
     let working = stored.working;
     drop((
         stored.context,
+        stored.steering,
         stored.canonical,
         stored.checkpoint,
         stored.accounting,

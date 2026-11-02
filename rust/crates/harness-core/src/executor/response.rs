@@ -25,6 +25,7 @@ impl StockExecution<'_> {
         Ok((
             ResponseProjection {
                 context,
+                steering: None,
                 canonical: None,
                 checkpoint: None,
                 working,
@@ -41,12 +42,13 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         tail: u64,
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<(
         ResponseProjection,
         Option<ContextAccounting>,
         crate::model::PreparedModelRequest,
     )> {
-        let (projection, prepared) = self
+        let (mut projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
@@ -60,6 +62,10 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
+        projection.steering = boundary
+            .map(|boundary| boundary.prepared_snapshot(input.operation_id, step))
+            .transpose()?
+            .flatten();
         let reference = transcript::stage_projection(
             journal,
             input.operation_id,
@@ -81,6 +87,9 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    steering: boundary
+                        .map(|boundary| boundary.selection(input.operation_id, step))
+                        .transpose()?,
                 },
                 self.io,
             )?
@@ -97,6 +106,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -105,6 +115,7 @@ impl StockExecution<'_> {
             ExecutionEvent::ContextPrepared {
                 step: recorded,
                 projection,
+                ..
             } if *recorded == step => Some(projection),
             _ => None,
         });
@@ -121,7 +132,7 @@ impl StockExecution<'_> {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                self.capture_response(journal, input, step, prior_messages, tail)
+                self.capture_response(journal, input, step, prior_messages, tail, boundary)
                     .await?
             }
             Some(reference) => {

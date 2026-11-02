@@ -97,6 +97,7 @@ impl StockExecution<'_> {
         };
         let projection = ResponseProjection {
             context: projection,
+            steering: None,
             canonical,
             checkpoint: None,
             working: None,
@@ -133,6 +134,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    steering: None,
                 },
                 self.io,
             )?
@@ -157,6 +159,7 @@ impl StockExecution<'_> {
             ExecutionEvent::ContextPrepared {
                 step: recorded,
                 projection,
+                ..
             } if *recorded == step => Some(projection),
             _ => None,
         });
