@@ -137,6 +137,7 @@ impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {
 pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
     match error {
         crate::FsError::Object(error) => error,
+        crate::FsError::Authority(error) => error.into(),
         crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),
         crate::FsError::Cancelled(_) => crate::storage::ObjectStoreError::Cancelled,
         crate::FsError::AccountingHandoffActive => {
