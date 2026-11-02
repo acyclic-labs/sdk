@@ -777,6 +777,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 sequence: result,
                 entry,
                 origin: Some(origin),
+                steering: None,
             } = answer
             else {
                 return Err("goal did not return its terminal conversation entry".into());

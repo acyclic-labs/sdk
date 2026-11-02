@@ -1323,7 +1323,7 @@ mod tests {
         };
         use acyclic_stream::{
             CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
-            StreamProvider as _,
+            StreamProviderExt as _,
         };
         let provider = MemoryStream::default();
         let adopted = ForkAdopted {

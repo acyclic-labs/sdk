@@ -478,6 +478,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
     let bytes = encode_user_input(&ModelContent::Parts(vec![
         ModelContentPart::Text {
             text: "use this file".into(),
+            native: None,
         },
         ModelContentPart::File {
             file: file.clone(),
