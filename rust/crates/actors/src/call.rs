@@ -478,5 +478,6 @@ impl Journal {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod model;
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod model;
