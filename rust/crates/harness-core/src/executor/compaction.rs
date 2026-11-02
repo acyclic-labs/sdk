@@ -1,7 +1,7 @@
 use super::*;
 
 /// The backstop's one fixed marker, in place of every evicted range.
-pub(crate) const BACKSTOP_MARKER: &str = "[context backstop: earlier messages were evicted to fit the model's context window; they remain in this agent's history]";
+pub(crate) const BACKSTOP_MARKER: &str = crate::seed::CONTEXT_BACKSTOP;
 
 impl StockExecution<'_> {
     pub(super) fn compaction_message_limit(

@@ -11,17 +11,14 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<(crate::context::ContextSummary, String)> {
         let (source, instruction) = material;
-        // A summary session disables recursive compaction. Resolve its writer
-        // before admission, independently of that session's compaction policy.
-        let destination = self
-            .original_context()
-            .map(|context| match self.compaction()?.destination {
-                Some(destination) => destination.require(self.io).map(|writer| (context, writer)),
-                None => context
-                    .private_summaries(self.io)
-                    .map(|writer| (context, writer)),
-            })
-            .transpose()?;
+        // Validate the original task's summary authority before model admission,
+        // even though the summary session disables recursive compaction.
+        if let Some(context) = self.original_context() {
+            match self.compaction()?.destination {
+                Some(destination) => destination.require(self.io)?,
+                None => context.private_summaries(self.io)?,
+            };
+        }
         crate::context::validate_projected_context(&source, self.stock.limits, self.io)?;
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
@@ -75,7 +72,6 @@ impl StockExecution<'_> {
             .await?;
         let text = self.collect_summary_text(events)?;
         self.publish_summary(
-            destination,
             journal,
             operation_id,
             step,
@@ -179,10 +175,6 @@ impl StockExecution<'_> {
 
     async fn publish_summary(
         &self,
-        destination: Option<(
-            &crate::runtime::TaskContext,
-            crate::runtime::PrivateContent<'_>,
-        )>,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         step: u32,
@@ -190,41 +182,20 @@ impl StockExecution<'_> {
         text: String,
     ) -> Result<(crate::context::ContextSummary, String)> {
         let (source_messages, source_digest) = source;
-        let output = if let Some((context, summaries)) = destination {
-            let path = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("summaries/{operation_id}/{step}.txt"),
-                    work,
-                )
-            })?;
-            // A turn may compact more than once. Its file receipt must not alias
-            // another step or any of the task's tool publications.
-            let publication = summary_publication(operation_id, step, self.io)?;
-            let (output, _) = context
-                .stage_private_file_once(
-                    summaries,
-                    publication,
-                    &path,
-                    text.as_bytes(),
-                    ("text/plain", "summary.txt"),
-                    self.io,
-                )
-                .await?;
-            output
-        } else {
-            let output_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
-            })?;
-            journal
-                .stage(
-                    operation_id,
-                    &output_key,
-                    text.as_bytes(),
-                    "text/plain",
-                    self.io,
-                )?
-                .await?
-        };
+        let output_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
+        })?;
+        // Every producer uses the immutable publication authenticated by the
+        // response commit; task-local mutable paths cannot carry that receipt.
+        let output = journal
+            .stage(
+                operation_id,
+                &output_key,
+                text.as_bytes(),
+                "text/plain",
+                self.io,
+            )?
+            .await?;
         let summary = crate::context::ContextSummary {
             operation_id,
             step,
@@ -235,35 +206,6 @@ impl StockExecution<'_> {
         stage_summary_provenance(journal, &summary, self.io).await?;
         Ok((summary, text))
     }
-}
-
-fn summary_publication(
-    operation: OperationId,
-    step: u32,
-    io: Option<&PreparationIo>,
-) -> Result<OperationId> {
-    const DOMAIN: &[u8] = b"harness/v2/summary-content\0";
-    #[cfg(feature = "filesystem")]
-    let charge = acyclic_fs::WorkCounters {
-        bytes_hashed: DOMAIN.len() as u64 + 16 + 4,
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.preflight(charge)?;
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(DOMAIN);
-    hasher.update(&operation.into_bytes());
-    hasher.update(&step.to_le_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.charge(charge)?;
-    }
-    let _ = io;
-    Ok(OperationId::from_bytes(bytes))
 }
 
 #[cfg(test)]

@@ -12,6 +12,9 @@ use crate::{
 /// The common agent instruction, shared by every host: the seed `AGENT.md`.
 pub(crate) const AGENT_PROMPT: &str = include_str!("AGENT.md");
 
+/// Mechanical eviction text. Only the kernel can substitute this for a range.
+pub(crate) const CONTEXT_BACKSTOP: &str = include_str!("context-backstop.md");
+
 /// Exact lab-trained tool declarations, by family: `sys/native/<family>/tools.json`.
 pub(crate) const ANTHROPIC_TOOLS: &str = include_str!("../tools/native/anthropic.json");
 pub(crate) const OPENAI_TOOLS: &str = include_str!("../tools/native/openai.json");
@@ -37,6 +40,14 @@ macro_rules! skill {
 /// Every seed file by its path in the tree, sorted by path.
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
+    (
+        "plugins/compaction/hooks/after-usage.ts",
+        include_bytes!("plugins/compaction/hooks/after-usage.ts"),
+    ),
+    (
+        "plugins/compaction/plugin.ts",
+        include_bytes!("plugins/compaction/plugin.ts"),
+    ),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
@@ -44,6 +55,7 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("fresh-context-review"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
+    ("sys/context-backstop.md", CONTEXT_BACKSTOP.as_bytes()),
     ("sys/kernel.md", include_bytes!("kernel.md")),
     (
         "sys/native/anthropic/profile.md",
