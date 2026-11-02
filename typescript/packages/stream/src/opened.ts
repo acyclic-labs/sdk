@@ -85,14 +85,15 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
     if (this.#closing === undefined) {
       this.#abort.abort();
       this.#closing = this.#source.then(async source => {
+        let failed = false;
         let failure: unknown;
-        try { await source.close(); } catch (error) { failure = error; }
+        try { await source.close(); } catch (error) { failed = true; failure = error; }
         try { await source.records.return?.(); }
         catch (error) {
-          if (failure !== undefined) throw new AggregateError([failure, error], "stream cursor and adapter failed while closing");
+          if (failed) throw new AggregateError([failure, error], "stream cursor and adapter failed while closing");
           throw error;
         }
-        if (failure !== undefined) throw failure;
+        if (failed) throw failure;
       }, error => {
         // Only this owner's cancellation establishes a quiet close. Setup
         // failures retain their original cause, including failed disposal.

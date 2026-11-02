@@ -1,4 +1,4 @@
-//! Pull ownership for WebAssembly streaming boundaries.
+//! Ownership and cancellation for local streaming boundaries.
 
 use futures::stream::LocalBoxStream;
 

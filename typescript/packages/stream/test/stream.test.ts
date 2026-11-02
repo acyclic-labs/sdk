@@ -66,6 +66,20 @@ const worker = (value: import("../src/index.js").JsonValue): { readonly worker: 
 };
 
 describe("website Stream contract", () => {
+  test("close preserves an undefined original cursor cleanup failure", async () => {
+    const provider = new MemoryStreamProvider();
+    await provider.append("close/undefined", [new Uint8Array([1])]);
+    const source = provider.follow("close/undefined", { from: 1n });
+    await source.opened;
+    const close = source.close.bind(source);
+    source.close = async () => { await close(); throw undefined; };
+    const facade = source.map(record => record);
+    await facade.opened;
+    await expect(facade.close()).rejects.toBeUndefined();
+    await expect(facade[Symbol.asyncDispose]()).rejects.toBeUndefined();
+    expect(await source.next()).toEqual({ done: true, value: undefined });
+  });
+
   test("early facade close retains failure disposing its original WASM cursor", async () => {
     const provider = new MemoryStreamProvider();
     await provider.append("close/cleanup", [new Uint8Array([1])]);
