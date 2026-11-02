@@ -285,16 +285,14 @@ mod tests {
             // this actual syscall's cause, independently of task outcomes.
             let (reader, _writer) = std::io::pipe()?;
             #[cfg(unix)]
-            let descriptor: std::os::fd::OwnedFd = reader.into();
+            use std::os::fd::AsFd as _;
             #[cfg(windows)]
-            let descriptor: std::os::windows::io::OwnedHandle = reader.into();
-            let file = std::fs::File::from(descriptor);
-            let error = acyclic_native_runtime::sync_file(
-                &file,
-                acyclic_native_runtime::Durability::Full,
-                None,
-            )
-            .unwrap_err();
+            use std::os::windows::io::AsHandle as _;
+            #[cfg(unix)]
+            let descriptor = reader.as_fd();
+            #[cfg(windows)]
+            let descriptor = reader.as_handle();
+            let error = acyclic_native_runtime::order_descriptor_once(descriptor).unwrap_err();
             let code = error
                 .raw_os_error()
                 .expect("original flush OS failure code");
