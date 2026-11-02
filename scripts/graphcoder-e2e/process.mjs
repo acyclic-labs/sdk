@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { close, closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync, write, writev } from "node:fs";
+import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { finished, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -11,6 +11,7 @@ import { ProcessReport } from "./process-report.mjs";
 import { listenReportPipe } from "./report-pipe.mjs";
 import { Lines } from "./lines.mjs";
 import { decodeCompletion } from "../../typescript/packages/sdk/native/process-completion.mjs";
+import { transcript } from "./transcript.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -126,7 +127,14 @@ export class Processes {
       child.kill(scopeKillSignal);
     };
     this.started++;
-    const written = Promise.all([transcript(child.stdout, stdoutFd, observe, "stdout"), transcript(child.stderr, stderrFd, observe, "stderr")]);
+    const writes = [transcript(child.stdout, stdoutFd, observe, "stdout"), transcript(child.stderr, stderrFd, observe, "stderr")];
+    // Stop the original producer on either failed sink, then join BOTH actual
+    // descriptors. Promise.all would lose the other writer's retirement.
+    let writeFailure;
+    for (const writing of writes) writing.catch(error => { writeFailure ??= error; kill(); });
+    const written = Promise.allSettled(writes).then(() => {
+      if (writeFailure) throw writeFailure;
+    });
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
@@ -172,14 +180,12 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(error => { if (scopeCapture) this.#observationFailure ??= error; });
-    if (observe || scopeCapture) {
-      // Retain only active original terminal joins. A child can be physically
-      // reaped while its transcript and final observer are still pending.
-      const joined = Promise.allSettled([written, reaped, closed]);
-      const joins = this.#terminalJoins ??= new Set();
-      joins.add(joined);
-      joined.then(() => joins.delete(joined));
-    }
+    // A reaped child can still own pending transcript handles. Retain only
+    // active original joins, including captures without a progress observer.
+    const joined = Promise.allSettled([written, reaped, closed]);
+    const joins = this.#terminalJoins ??= new Set();
+    joins.add(joined);
+    joined.then(() => joins.delete(joined));
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
     return { child, input, exited, closed, reportReady: report?.ready,
@@ -350,39 +356,6 @@ export function conptyArgs(binary, args) {
   const operation = flags.get("--operation");
   return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
     ...(operation === undefined ? [] : ["--operation", operation])];
-}
-
-// A stream's bytes go straight to its transcript file; nothing is decoded or
-// kept in memory. Resolves once the file holds every byte. On a file failure
-// the source keeps draining so the child is never blocked on a full pipe.
-function transcript(stream, fd, observe, channel) {
-  let first = true;
-  const completed = observe ? callback => (error, count, buffers) => {
-    if (!error && count > 0 && first) { first = false; observe(`${channel}-first-write`); }
-    callback(error, count, buffers);
-  } : undefined;
-  // Observe the SAME file writer's first successful byte transfer. This is
-  // transcript write completion, not the OS pipe-read timestamp. Later writes
-  // use the original callback directly; no reader, payload copy or history.
-  const file = createWriteStream(null, { fd, ...(observe ? { fs: {
-    close,
-    write(fd, buffer, offset, length, position, callback) {
-      return write(fd, buffer, offset, length, position, first ? completed(callback) : callback);
-    },
-    writev(fd, buffers, position, callback) {
-      return writev(fd, buffers, position, first ? completed(callback) : callback);
-    },
-  } } : {}) });
-  stream.pipe(file);
-  if (observe) stream.once("end", () => observe(`${channel}-eof`));
-  // A source destroyed without an end never ends its pipe: end the file so
-  // its finish still arrives.
-  stream.once("close", () => { observe?.(`${channel}-close`); if (!stream.readableEnded) file.end(); });
-  return new Promise((resolve, reject) => {
-    file.once("finish", observe ? () => { observe(`${channel}-finish`); resolve(); } : resolve);
-    file.once("error", error => { stream.unpipe(file); stream.resume(); reject(error); });
-    stream.once("error", reject);
-  });
 }
 
 // A settled process result. Its output is the explicit historical query of
