@@ -5,9 +5,13 @@ use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     approvals::ApprovalPolicy,
     context::CompactionPolicy,
+    local::agent_conversation::Conversation,
     test_support::{PromptOutcome, prompt_settled},
 };
-use acyclic_harness_core::model::NativePart;
+use acyclic_harness_core::{
+    executor::{ExecutionEvent, ExecutionPayloadField},
+    model::{NativePart, replay_key},
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CALL: &[u8] = include_bytes!("fixtures/gemini-flash-shell.sse");
@@ -212,11 +216,16 @@ async fn replay(capture: &'static Capture) -> Result<()> {
     } else {
         PROMPT
     };
-    let output = match prompt_settled(&harness, "signed-call", prompt).await? {
-        PromptOutcome::Settled(_, output) => output,
+    let (entry, output) = match prompt_settled(&harness, "signed-call", prompt).await? {
+        PromptOutcome::Settled(entry, output) => (entry, output),
         PromptOutcome::Failed(reason) => panic!("recorded tool turn failed: {reason}"),
     };
     assert_eq!(output.steps, 2);
+    let conversation = Conversation::open(harness.connect().await?)?;
+    let saved = admitted_requests(&conversation, entry.inbox).await?;
+    assert_eq!(saved.len(), 2);
+    assert_signed_replay_identity(&saved[1])?;
+    drop(conversation);
     let captured = std::str::from_utf8(capture.call)
         .unwrap()
         .lines()
@@ -283,6 +292,13 @@ async fn replay(capture: &'static Capture) -> Result<()> {
     Arc::try_unwrap(harness).ok().unwrap().disconnect().await?;
 
     let harness = Arc::new(LocalHarness::open(open()?).await?);
+    let conversation = Conversation::open(harness.connect().await?)?;
+    let restored = admitted_requests(&conversation, entry.inbox).await?;
+    assert_eq!(restored, saved, "reopen retains original admitted bytes");
+    for bytes in &restored {
+        assert_saved_request_key(bytes)?;
+    }
+    drop(conversation);
     assert!(matches!(
         prompt_settled(&harness, "after-reopen", "continue").await?,
         PromptOutcome::Settled(..)
@@ -338,6 +354,83 @@ async fn replay(capture: &'static Capture) -> Result<()> {
             &same.reasoning_origin(Some("other-account"), None)
         )
         .is_none()
+    );
+    Ok(())
+}
+
+// Read the same authenticated, digest-verified projection used by recording
+// export. Both loops consume finite pages/chunks of the settled original input;
+// neither waits for a live producer or reconstructs provider wire input.
+async fn admitted_requests(conversation: &Conversation, input: u64) -> Result<Vec<Vec<u8>>> {
+    let mut requests = Vec::new();
+    let mut after = 0;
+    loop {
+        let query = conversation.execution_page(input, after, false).await?;
+        assert_eq!(query.input, input);
+        assert!(query.settled);
+        let page = query.page.expect("settled input retains its journal");
+        for record in page.items {
+            if !matches!(record.event, ExecutionEvent::ModelStarted { .. }) {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            loop {
+                let (chunk, length) = conversation
+                    .execution_payload(
+                        input,
+                        record.sequence,
+                        ExecutionPayloadField::AdmittedRequest,
+                        bytes.len() as u64,
+                    )
+                    .await?;
+                assert!(!chunk.is_empty(), "original payload must advance");
+                bytes.extend_from_slice(&chunk);
+                if bytes.len() as u64 >= length {
+                    assert_eq!(bytes.len() as u64, length);
+                    break;
+                }
+            }
+            requests.push(bytes);
+        }
+        let Some(next) = page.next else { break };
+        assert!(next > after, "original journal page must advance");
+        after = next;
+    }
+    Ok(requests)
+}
+
+fn assert_saved_request_key(bytes: &[u8]) -> Result<[u8; 32]> {
+    let input: ModelRequest = serde_json::from_slice(bytes).unwrap();
+    let admitted = PreparedModelRequest::prepare(input, Limits::default(), None)?;
+    let key = admitted.replay_key()?;
+    assert_eq!(key, replay_key(bytes)?);
+    Ok(key)
+}
+
+fn assert_signed_replay_identity(bytes: &[u8]) -> Result<()> {
+    let key = assert_saved_request_key(bytes)?;
+    let mut input: ModelRequest = serde_json::from_slice(bytes).unwrap();
+    let call = input
+        .messages
+        .iter_mut()
+        .flat_map(|message| {
+            let parts: &mut [ModelContentPart] = match &mut message.content {
+                ModelContent::Text(_) => &mut [],
+                ModelContent::Part(part) => std::slice::from_mut(part),
+                ModelContent::Parts(parts) => parts,
+            };
+            parts
+        })
+        .find_map(|part| match part {
+            ModelContentPart::ToolCall(call) if call.native.is_some() => Some(call),
+            _ => None,
+        })
+        .expect("the actual continuation contains its signed call");
+    call.native = None;
+    assert_ne!(
+        key,
+        replay_key(&serde_json::to_vec(&input).unwrap())?,
+        "losing original native continuity cannot replay the same answer"
     );
     Ok(())
 }
