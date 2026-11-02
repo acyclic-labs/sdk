@@ -91,14 +91,15 @@ impl CheckoutPublisher {
             config.limits,
         )
         .map_err(storage)?;
-        let captured = capture
+        let (captured, _captured_allocation) = capture
             .lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
             .await
             .map_err(storage)?
             .value;
         let Some(payload) = captured
+            .entries
             .first()
-            .and_then(Option::as_ref)
+            .and_then(|entry| entry.record.as_ref())
             .map(|record| record.payload)
         else {
             return Ok(false);
@@ -114,14 +115,15 @@ impl CheckoutPublisher {
                     .await
                     .map_err(storage)?
                     .value;
-                let records = staged
+                let (records, _staged_allocation) = staged
                     .lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
                     .await
                     .map_err(storage)?
                     .value;
                 Ok(records
+                    .entries
                     .first()
-                    .and_then(Option::as_ref)
+                    .and_then(|entry| entry.record.as_ref())
                     .is_some_and(|record| record.payload == payload))
             }
             _ => Ok(false),

@@ -150,7 +150,7 @@ async fn same_payloads(
             .await
             .map_err(storage)?
             .value;
-        let records = generation
+        let (records, _allocation) = generation
             .lookup_paths(
                 std::slice::from_ref(&path),
                 acyclic_fs::WorkBudget::UNBOUNDED,
@@ -161,8 +161,9 @@ async fn same_payloads(
             .value;
         payloads.push(
             records
+                .entries
                 .first()
-                .and_then(Option::as_ref)
+                .and_then(|entry| entry.record.as_ref())
                 .map(|record| record.payload),
         );
     }
