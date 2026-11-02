@@ -27,6 +27,11 @@ lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
 `pi --mode json -p`. Native instruction/config discovery and tools run there.
 Native built-in subagents keep their host behavior and **are not harness forks**.
 
+Codex and Claude permission hooks consult the harness approval chain only for
+the plugin's exact `spawn` tool. Other tools retain the host's permission
+handling. Fork, merge and filesystem commit use the workspace boundary; the
+plugin does not intercept native shell, read, write or edit permission prompts.
+
 The root launcher forwards the same explicit native policy arguments to managed
 children. Spawn cannot override them. Codex requires explicit `--sandbox` and
 `--ask-for-approval`; Claude requires explicit `--settings` and
