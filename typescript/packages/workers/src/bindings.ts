@@ -1,4 +1,4 @@
-import { ActorNamespaceBinding, materializeActorState, validateDeploymentBinding, type ActorsClient, type ActorStateBinding, type ActorStateHost, type semantic } from "@acyclic-labs/actors";
+import { ActorNamespaceBinding, admitDeploymentBindings, materializeActorState, type ActorsClient, type ActorStateBinding, type ActorStateHost, type semantic } from "@acyclic-labs/actors";
 import { materializeGuestAdmission, type GuestAdmissionHost } from "@acyclic-labs/auth";
 import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
 import { WorkerServiceBinding } from "./service.js";
@@ -40,16 +40,12 @@ function kind(binding: semantic.Binding) {
  * Complete canonical admission and producer availability checks before any host
  * factory runs. Resource producers keep the original grant and invocation. */
 export async function materializeBindings<A = never, H = never, M = never, S = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S>): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S>>>> {
-  const selected = declarations.map(binding => {
-    if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
-    return Object.freeze({ ...binding, targetAccount: new Uint8Array(binding.targetAccount) });
-  });
+  const selected = await admitDeploymentBindings(declarations);
   const names = new Set<string>();
   const kinds: ReturnType<typeof kind>[] = [];
   for (const binding of selected) {
     if (names.has(binding.name)) throw new TypeError("duplicate binding name");
     names.add(binding.name);
-    await validateDeploymentBinding(binding);
     const selection = kind(binding);
     const producer = selection === "platformAuthority" || selection === "hostAccess" ? authority.guestAdmission : authority[selection];
     if (producer === undefined) throw new TypeError(`binding materialization: missing ${selection} producer; recovery: supply the original admitted host producer before guest entry`);

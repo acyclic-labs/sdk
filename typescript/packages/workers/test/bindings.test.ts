@@ -39,10 +39,12 @@ test("deployment declarations become scoped namespace and private service handle
 test("binding admission snapshots caller bytes and scope before awaiting Rust", async () => {
   const target = account.slice();
   const declaration = {...namespace,targetAccount:target};
-  let admitted: number[] = [];
-  const pending = materializeBindings([declaration], {
+  const secondTarget = account.slice();
+  const second = {...namespace,name:"SECOND",targetAccount:secondTarget};
+  const admitted: number[][] = [];
+  const pending = materializeBindings([declaration,second], {
     namespace(binding) {
-      admitted = Array.from(binding.targetAccount);
+      admitted.push(Array.from(binding.targetAccount));
       return {async invokeActor(request) {
         expect(request.accountId).toEqual(account);
         expect(request.namespace).toBe("ClassOne");
@@ -53,10 +55,13 @@ test("binding admission snapshots caller bytes and scope before awaiting Rust", 
   });
   // Negative control: retaining caller backing bytes changes the admitted scope.
   target.fill(120); declaration.actorNamespace = "ClassTwo";
+  secondTarget.fill(121); second.actorNamespace = "ClassThree";
   const env = await pending;
-  expect(admitted).toEqual(Array.from(account));
-  const binding = env.OBJECTS as ActorNamespaceBinding;
-  await binding.getByName("same").rpc("call",new Uint8Array());
+  expect(admitted).toEqual([Array.from(account),Array.from(account)]);
+  for (const name of ["OBJECTS","SECOND"]) {
+    const binding = env[name] as ActorNamespaceBinding;
+    await binding.getByName("same").rpc("call",new Uint8Array());
+  }
 });
 
 // Exercise both public wrappers through the same Fetch contract controls.
