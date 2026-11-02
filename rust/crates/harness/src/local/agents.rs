@@ -315,15 +315,14 @@ impl LocalHarness {
     fn executors(self: &Arc<Self>) -> Arc<dyn TurnExecutors> {
         match &self.agent {
             Some(model) => Arc::new(
-                self.preset
-                    .executors(
-                        model.clone(),
-                        self.tools().clone(),
-                        (self.limits, self.compaction.clone()),
-                        Arc::new(LocalContext(Arc::downgrade(self))),
-                    )
-                    .with_agent_tools(&self.agent_tools)
-                    .with_profiles(crate::profile::Profiles::builtin()),
+                crate::filesystem::StockExecutors::new(
+                    model.clone(),
+                    self.tools().clone(),
+                    (self.limits, self.compaction.clone()),
+                    Arc::new(LocalContext(Arc::downgrade(self))),
+                )
+                .with_agent_tools(&self.agent_tools)
+                .with_profiles(crate::profile::Profiles::builtin()),
             ),
             None => Arc::new(NativeHost),
         }

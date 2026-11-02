@@ -157,22 +157,24 @@ where
     ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
         Box::pin(async move {
             let execution = self.execution;
-            let tools = self
-                .preset
-                .tools(|_| execution.workspace, execution.tools)?;
+            let selected = crate::tools::default_names();
+            let tools =
+                crate::tools::registry(&selected, |_| execution.workspace, execution.tools)?;
             let context = match execution.context {
                 Some(context) => context,
-                None => Arc::new(Grants(self.preset.tool_grants(&tools)?)),
+                None => Arc::new(Grants(crate::tools::call_grants(
+                    &tools,
+                    selected.iter().map(String::as_str),
+                )?)),
             };
-            let executors = self
-                .preset
-                .executors(
-                    execution.model,
-                    tools,
-                    (execution.limits, execution.compaction),
-                    context,
-                )
-                .with_profiles(crate::profile::Profiles::builtin());
+            let executors = crate::filesystem::StockExecutors::new(
+                execution.model,
+                tools,
+                (execution.limits, execution.compaction),
+                context,
+            )
+            .with_agent_tools(&selected)
+            .with_profiles(crate::profile::Profiles::builtin());
             let Placement {
                 filesystem,
                 provider,

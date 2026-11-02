@@ -160,19 +160,15 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
-            executors: Arc::new(
-                preset
-                    .executors(
-                        (
-                            Model::new("conformance".into(), "answer".into(), "1".into())?,
-                            Arc::new(Answer),
-                        ),
-                        ToolRegistry::default(),
-                        (limits, CompactionPolicy::Disabled),
-                        Arc::new(Grants(Vec::new())),
-                    )
-                    .with_agent_tools(&[]),
-            ),
+            executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
+                (
+                    Model::new("conformance".into(), "answer".into(), "1".into())?,
+                    Arc::new(Answer),
+                ),
+                ToolRegistry::default(),
+                (limits, CompactionPolicy::Disabled),
+                Arc::new(Grants(Vec::new())),
+            )),
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
                 history_turns: 8,
