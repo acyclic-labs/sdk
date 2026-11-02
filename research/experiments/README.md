@@ -61,9 +61,11 @@ source cut. A changed provider or cut is a comparability failure; keep that
 assignment and its incurred cost in the descriptive table. Do not silently
 turn unmatched observations into a paired difference.
 
-Predeclare execution order independently of results. With two replicates per
-cut, run baseline then treatment in replicate 0, and treatment then baseline in
-replicate 1. Each arm still forks the same saved source cut; never fork the
+Predeclare execution order independently of results. The shared
+`experiments::plan::AssignmentPlan::new(2, 2)` supplies baseline then treatment in
+replicate 0, and treatment then baseline in replicate 1. Use its lazy iterator or
+direct assignment index; do not rebuild or adapt an arm list after an outcome.
+Each arm still forks the same saved source cut; never fork the
 second arm from the first arm's result. Retain the assigned order even when the
 first arm fails. This counterbalances order within a cut without a history
 scan or an adaptive stopping rule; it does not make the replicates independent.
