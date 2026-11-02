@@ -558,7 +558,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
         .read(ReadRequest {
             path: StreamPath::new("events").expect("path"),
             key: None,
-            from: 1,
+            from: receipt.start,
             limit: 1,
             at_least: covered,
         })
