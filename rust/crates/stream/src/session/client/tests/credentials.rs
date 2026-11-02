@@ -359,12 +359,12 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
             break;
         }
     }
-    drop(dense);
     client.register_credential(u32::MAX, credential)?;
     let mut frames = client.subscribe(subscription(u32::MAX)).await?;
     let mut records = client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 0))
         .await?;
+    drop(dense);
     for sequence in 0..=1 {
         if sequence == 1 {
             // Close the real TCP connection. Reopening must replay only actual
