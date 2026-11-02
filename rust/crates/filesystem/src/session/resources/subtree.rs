@@ -79,6 +79,23 @@ mod tests {
     use futures::StreamExt;
     use std::sync::Arc;
 
+    fn credential(resource: &str) -> Vec<u8> {
+        use acyclic_auth::contract::*;
+        acyclic_auth::testing::root(|block| {
+            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: resource.to_owned(),
+                            prefix: true,
+                        },
+                        actions: vec!["fs/list".into()],
+                    }),
+                }],
+            };
+        })
+    }
+
     #[test]
     fn volume_changes_subtree_boundaries_use_full_paths_after_index_selection() {
         let volume = VolumeId::from_bytes([17; 16]);
@@ -87,7 +104,7 @@ mod tests {
             if folded {
                 config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
             }
-            let path = |text| {
+            let path = |text: &str| {
                 NamespacePath::from_text_in_profile(text, config.profile, config.limits).unwrap()
             };
             let selected = Selection::new(volume, &path("/watched"), config).unwrap();
@@ -141,7 +158,6 @@ mod tests {
     async fn volume_changes_subtree_retains_commit_revision_replay_and_revocation()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::{CancellationToken, EmbeddedCapabilities, WorkBudget};
-        use acyclic_auth::contract::*;
         let streams = Arc::new(MemoryStream::default());
         let fs = crate::Fs::new(
             crate::distributed::StreamAuthorityStore::new(streams.clone()),
@@ -191,19 +207,7 @@ mod tests {
             .map_err(|failure| failure.error)?;
         let volume = workspace.id().volume_id();
         let resource = crate::session::resource(volume, "")?;
-        let credential = acyclic_auth::testing::root(|block| {
-            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
-                grants: vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: resource.clone(),
-                            prefix: true,
-                        },
-                        actions: vec!["fs/list".into()],
-                    }),
-                }],
-            };
-        });
+        let parent_credential = credential(&resource);
         let request = |from, preceding| -> Result<_, StreamError> {
             Ok(ResourceFollowRequest {
                 resource: resource.clone(),
@@ -211,7 +215,7 @@ mod tests {
                 preceding,
                 filter: FollowFilter::default(),
                 authorization: acyclic_stream::session::testing::resource_authorization(
-                    &credential,
+                    &parent_credential,
                     &resource,
                 )?,
             })
@@ -270,6 +274,7 @@ mod tests {
         let FollowUpdate::Record(record) = selected.next().await.ok_or("missing change")?? else {
             return Err("selected change was skipped".into());
         };
+        eprintln!("subtree publication Changes={}", hex::encode(&record.value));
         let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
         let context = crate::PublicationContext::from_bytes(changes.context.as_ref())?;
         assert_eq!(context.generation, generation.id());
@@ -300,6 +305,55 @@ mod tests {
             return Err("replay skipped its original record".into());
         };
         assert_eq!(replayed, record);
+        for index in 0..3 {
+            let child = workspace
+                .fork::<_, _, crate::WorkspaceError>(
+                    format!("subtree-child-{index}"),
+                    crate::ForkOptions::from_generation(
+                        generation.clone(),
+                        crate::IdempotencyKey::new(),
+                    ),
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    &mut |_| {
+                        std::future::ready(Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+            let child_resource = crate::session::resource(child.id().volume_id(), "")?;
+            let child_credential = credential(&child_resource);
+            let inherited = provider.follow_subtree(
+                ResourceFollowRequest {
+                    resource: child_resource.clone(),
+                    from: record.sequence,
+                    preceding: None,
+                    filter: FollowFilter::default(),
+                    authorization: acyclic_stream::session::testing::resource_authorization(
+                        &child_credential,
+                        &child_resource,
+                    )?,
+                },
+                path()?,
+            )?;
+            let mut inherited = inherited.open.await?;
+            assert!(matches!(
+                inherited.next().await.ok_or("missing fork opening")??,
+                FollowUpdate::Opening { .. }
+            ));
+            let FollowUpdate::Record(shared) =
+                inherited.next().await.ok_or("missing inherited change")??
+            else {
+                return Err("inherited publication was skipped".into());
+            };
+            assert_eq!(shared, record, "fork changed the original source evidence");
+            assert_ne!(child.id().volume_id(), context.volume);
+        }
         let resumed = provider.follow_subtree(
             request(record.sequence + 1, Some(record.commit_id))?,
             path()?,
