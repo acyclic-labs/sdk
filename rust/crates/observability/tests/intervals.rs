@@ -2,8 +2,8 @@
 #![cfg(all(feature = "research", not(target_arch = "wasm32")))]
 
 use acyclic_observability::{
-    Export, ExportReceiver, ExportRecord, IntervalError, IntervalOrigin, OperationInterval,
-    Operations, Outcome,
+    Export, ExportReceiver, ExportRecord, IntervalError, IntervalOrigin, Metrics,
+    OperationInterval, Operations, Outcome,
 };
 use std::{
     future::Future,
@@ -29,70 +29,82 @@ fn take(receiver: &mut ExportReceiver) -> Result<ExportRecord, Box<dyn std::erro
 fn original_intervals_preserve_overlap_and_terminal_disposition()
 -> Result<(), Box<dyn std::error::Error>> {
     for details in [false, true] {
-        let origin = IntervalOrigin {
-            domain: [1; 16],
-            instant: Instant::now(),
-        };
-        let (export, mut output) = Export::channel(Arc::new(Semaphore::new(5)), details);
-        let dispatch =
-            tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
-        let root = tracing::dispatcher::with_default(&dispatch, || {
-            let root = tracing::info_span!(
-                "acyclic.test.interval.root",
-                outcome = tracing::field::Empty
-            );
-            let first = tracing::info_span!(parent: &root, "acyclic.test.interval.first", outcome = tracing::field::Empty);
-            let second = tracing::info_span!(parent: &root, "acyclic.test.interval.second", outcome = tracing::field::Empty);
-            acyclic_observability::record_outcome(&second, None);
-            acyclic_observability::record_outcome(&first, Some("refused"));
-            // Creation-time terminal and abandoned producer are the other two
-            // completion paths. Neither requires a timer or retained owner.
-            drop(
-                tracing::info_span!(parent: &root, "acyclic.test.interval.created", outcome = "ok"),
-            );
-            drop(
-                tracing::info_span!(parent: &root, "acyclic.test.interval.abandoned", outcome = tracing::field::Empty),
-            );
-            acyclic_observability::record_outcome(&root, None);
-            root
-        });
-        let second = take(&mut output)?;
-        let first = take(&mut output)?;
-        let created = take(&mut output)?;
-        let abandoned = take(&mut output)?;
-        let finished = take(&mut output)?;
-        assert_eq!(second.sample().outcome, Outcome::Ok);
-        assert_eq!(first.sample().outcome, Outcome::Err);
-        assert_eq!(created.sample().outcome, Outcome::Ok);
-        assert_eq!(abandoned.sample().outcome, Outcome::Incomplete);
-        for record in [&second, &first, &created, &abandoned, &finished] {
-            let sample = record.sample();
-            assert_eq!(sample.interval.is_some(), details);
-            if let Some(interval) = sample.interval {
-                let coordinates = origin.project(interval)?;
-                assert_eq!(
-                    coordinates.finished_ns - coordinates.started_ns,
-                    sample.elapsed.as_nanos()
+        for composition in 0..3 {
+            let origin = IntervalOrigin {
+                domain: [1; 16],
+                instant: Instant::now(),
+            };
+            let (export, mut output) = Export::channel(Arc::new(Semaphore::new(5)), details);
+            let dispatch = match composition {
+                0 => {
+                    tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)))
+                }
+                1 => tracing::Dispatch::new(
+                    tracing_subscriber::registry().with(Operations((Metrics::default(), export))),
+                ),
+                _ => tracing::Dispatch::new(
+                    tracing_subscriber::registry().with(Operations((export, Metrics::default()))),
+                ),
+            };
+            let root = tracing::dispatcher::with_default(&dispatch, || {
+                let root = tracing::info_span!(
+                    "acyclic.test.interval.root",
+                    outcome = tracing::field::Empty
                 );
+                let first = tracing::info_span!(parent: &root, "acyclic.test.interval.first", outcome = tracing::field::Empty);
+                let second = tracing::info_span!(parent: &root, "acyclic.test.interval.second", outcome = tracing::field::Empty);
+                acyclic_observability::record_outcome(&second, None);
+                acyclic_observability::record_outcome(&first, Some("refused"));
+                // Creation-time terminal and abandoned producer are the other two
+                // completion paths. Neither requires a timer or retained owner.
+                drop(
+                    tracing::info_span!(parent: &root, "acyclic.test.interval.created", outcome = "ok"),
+                );
+                drop(
+                    tracing::info_span!(parent: &root, "acyclic.test.interval.abandoned", outcome = tracing::field::Empty),
+                );
+                acyclic_observability::record_outcome(&root, None);
+                root
+            });
+            let second = take(&mut output)?;
+            let first = take(&mut output)?;
+            let created = take(&mut output)?;
+            let abandoned = take(&mut output)?;
+            let finished = take(&mut output)?;
+            assert_eq!(second.sample().outcome, Outcome::Ok);
+            assert_eq!(first.sample().outcome, Outcome::Err);
+            assert_eq!(created.sample().outcome, Outcome::Ok);
+            assert_eq!(abandoned.sample().outcome, Outcome::Incomplete);
+            for record in [&second, &first, &created, &abandoned, &finished] {
+                let sample = record.sample();
+                assert_eq!(sample.interval.is_some(), details);
+                if let Some(interval) = sample.interval {
+                    let coordinates = origin.project(interval)?;
+                    assert_eq!(
+                        coordinates.finished_ns - coordinates.started_ns,
+                        sample.elapsed.as_nanos()
+                    );
+                }
             }
+            assert_eq!(first.sample().parent_id, root.id().as_ref());
+            assert_eq!(second.sample().parent_id, first.sample().parent_id);
+            if details {
+                let first =
+                    origin.project(first.sample().interval.ok_or("missing first interval")?)?;
+                let second =
+                    origin.project(second.sample().interval.ok_or("missing second interval")?)?;
+                assert!(first.started_ns <= second.started_ns);
+                assert!(second.finished_ns <= first.finished_ns);
+            }
+            // Completion was published while the root handle remained live. Its
+            // later retirement must not emit a second interval or keep output open.
+            drop(dispatch);
+            drop(root);
+            assert!(matches!(
+                pin!(output.recv()).poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(None)
+            ));
         }
-        assert_eq!(first.sample().parent_id, root.id().as_ref());
-        assert_eq!(second.sample().parent_id, first.sample().parent_id);
-        if details {
-            let first = origin.project(first.sample().interval.ok_or("missing first interval")?)?;
-            let second =
-                origin.project(second.sample().interval.ok_or("missing second interval")?)?;
-            assert!(first.started_ns <= second.started_ns);
-            assert!(second.finished_ns <= first.finished_ns);
-        }
-        // Completion was published while the root handle remained live. Its
-        // later retirement must not emit a second interval or keep output open.
-        drop(dispatch);
-        drop(root);
-        assert!(matches!(
-            pin!(output.recv()).poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(None)
-        ));
     }
     Ok(())
 }
