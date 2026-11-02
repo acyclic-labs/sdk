@@ -37,22 +37,24 @@ impl<S> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let (_victim_allocation, victims, offset) = {
+        let (victims, offset) = {
             let mut index = self.index_mut();
             if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
                 return Ok(());
             }
-            let (allocation, mut victims) = staged_vector(index.order.len(), work.original)?;
-            index.spill_victims(&mut victims);
-            (allocation, victims, index.spill_end)
+            let victims = work.vec_owned(index.order.len())?;
+            let mut victims = Retained::from_owned(victims, &mut work.accounting())
+                .map_err(crate::async_storage::object_error)?;
+            index.spill_victims(&mut victims.value);
+            (victims, index.spill_end)
         };
-        let spilled = victims.iter().fold(0_u64, |sum, (_, bytes)| {
+        let spilled = victims.value.iter().fold(0_u64, |sum, (_, bytes)| {
             sum.saturating_add(byte_length(bytes))
         });
         let mut selection = SpillSelection {
             store: self,
             spill,
-            victims: &victims,
+            victims: &victims.value,
             committed: false,
         };
         let result = async {
@@ -81,7 +83,7 @@ impl<S> StagedObjects<S> {
                 usize::try_from(spilled).map_err(|_| crate::WorkError::Overflow)?,
                 work.original,
             )?;
-            for (_, bytes) in &victims {
+            for (_, bytes) in &victims.value {
                 buffer.extend_from_slice(bytes);
             }
             if let Some(copy) = copy {
@@ -148,7 +150,7 @@ impl<S> StagedObjects<S> {
         }
         .await;
         result?;
-        self.index_mut().mark_spilled(&victims, offset);
+        self.index_mut().mark_spilled(&victims.value, offset);
         selection.committed = true;
         Ok(())
     }

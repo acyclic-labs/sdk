@@ -270,7 +270,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
 }
 
 #[tokio::test]
-async fn native_spill_denial_precedes_physical_write_and_restores_victims()
+async fn spill_denial_precedes_physical_write_and_restores_victims()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let store = StagedObjects::open(
@@ -284,10 +284,35 @@ async fn native_spill_denial_precedes_physical_write_and_restores_victims()
         store.index_mut().admit_resident(id, bytes)?;
         ids.push(id);
     }
+    let mut spill_file = store.spill_io.write().await;
+    for allocation_operations in [0, 1] {
+        let mut unfunded = AuthorityWork::new(
+            WorkBudget {
+                allocation_operations,
+                ..native_write_budget()
+            },
+            &token,
+        );
+        assert!(matches!(
+            store.spill_locked(&mut spill_file, &mut unfunded).await,
+            Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }))
+        ));
+        assert_eq!(
+            unfunded.spent().allocation_operations,
+            allocation_operations
+        );
+        assert_eq!(unfunded.spent().backend_write_operations, 0);
+        assert_eq!(unfunded.spent().object_bytes_written, 0);
+        assert_eq!(store.index().order.len(), ids.len());
+        assert_eq!(store.index().spilled_objects, 0);
+        assert!(spill_file.is_none());
+    }
     let mut budget = native_write_budget();
     budget.backend_write_operations = 0;
     let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-    let mut spill_file = store.spill_io.write().await;
     assert!(
         store
             .spill_locked(&mut spill_file, &mut AuthorityWork::native(&denied, &token))

@@ -586,6 +586,16 @@ async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
                 ),
                 std::task::Poll::Pending
             ));
+            let mut independent = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
+            let read = store.read(first, 3 * 1_048_576, &mut independent);
+            tokio::pin!(read);
+            assert!(matches!(
+                std::future::Future::poll(
+                    read.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                ),
+                std::task::Poll::Ready(Ok(value)) if value.bytes.len() == 3 * 1_048_576
+            ));
             let index = store.index();
             assert!(index.order.is_empty(), "the spill selected both residents");
             assert_eq!(index.resident_bytes, 6 * 1_048_576);
