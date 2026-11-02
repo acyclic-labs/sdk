@@ -254,20 +254,18 @@ pub(crate) fn compile_module(path: &str, source: &[u8]) -> std::result::Result<M
     )
     .build_with_scoping(scoping, &mut program);
     refuse_errors!(transformed.diagnostics);
-    let script = oxc_codegen::Codegen::new().build(&program).code;
-    // Imports left after type erasure: re-read them from the emitted module.
-    let mut imports = {
-        let emitted =
-            oxc_parser::Parser::new(&allocator, &script, oxc_span::SourceType::mjs()).parse();
-        refuse_errors!(emitted.diagnostics);
-        emitted
-            .module_record
-            .requested_modules
-            .keys()
-            .map(|specifier| resolve(path, specifier.as_str()))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    // Type erasure has already removed type-only imports and re-exports.
+    // Link the remaining declarations from this same tree, without parsing
+    // the emitted source into a second arena tree and module record.
+    let mut imports = program
+        .body
+        .iter()
+        .filter_map(|statement| statement.as_module_declaration()?.source())
+        .map(|source| resolve(path, source.value.as_str()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     imports.sort();
+    imports.dedup();
+    let script = oxc_codegen::Codegen::new().build(&program).code;
     Ok(Module {
         script,
         imports,

@@ -17,6 +17,12 @@ impl Tree for Files {
 
 const TREE: Files = Files(&[
     ("models.ts", "export const fast: string = 'p/fast';"),
+    (
+        "reexports.ts",
+        "export { fast } from './models.ts';\n\
+         export * from './models.ts';\n\
+         export type { Unused } from './type-only-missing.ts';",
+    ),
     ("sys/defaults.json", r#"{"temperature": 0.5}"#),
     ("loop/a.ts", "import './b.ts'; export default 1;"),
     ("loop/b.ts", "import './a.ts'; export default 2;"),
@@ -33,7 +39,7 @@ async fn error(source: &str, surface: Surface) -> String {
 async fn layers_fold_values_and_functions_with_static_imports() -> Result<()> {
     let seed = "import type { AgentConfig } from 'sys/types/config';\n\
                 export default (base: AgentConfig): AgentConfig => base;";
-    let home = "import { fast } from './models.ts';\n\
+    let home = "import { fast } from './reexports.ts';\n\
                 import defaults from 'sys/defaults.json';\n\
                 interface Unused { x: number }\n\
                 export default (base: { model: string }) => ({ ...base, model: fast, sampling: defaults });";
