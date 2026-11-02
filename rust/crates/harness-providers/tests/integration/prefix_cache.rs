@@ -289,7 +289,7 @@ fn resolve(
                 response_field: TokenCountField::InputTokens,
                 framing_tokens: 0,
             }),
-            max_event_bytes: 1 << 16,
+            max_event_bytes: Some(1 << 16),
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
             timeouts: acyclic_harness_providers::TimeoutSpec { total_ms: None },
         },

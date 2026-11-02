@@ -34,7 +34,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         )),
     };
     assert!(matches!(
-        crate::http_failure(fragmented, recorded.len(), None).await,
+        crate::http_failure(fragmented, Some(recorded.len()), None).await,
         Error::ModelContextOverflow
     ));
     assert!(matches!(

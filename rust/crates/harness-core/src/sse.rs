@@ -304,7 +304,7 @@ where
 /// Ordinary data-only projection of the same complete event decoder.
 pub fn decode<'a>(
     body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: Option<usize>,
 ) -> BoxProviderStream<'a, Result<String>> {
     Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
 }

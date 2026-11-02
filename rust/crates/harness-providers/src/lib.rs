@@ -172,7 +172,7 @@ async fn http_failure(
 
 async fn read_http_failure(
     response: HttpResponse,
-    maximum: usize,
+    maximum: Option<usize>,
     work: acyclic_harness_core::NativeWork<'_>,
 ) -> Error {
     use futures::StreamExt as _;
