@@ -23,9 +23,9 @@ proptest! {
         prop_assert_eq!((allocation.count_total, allocation.bytes_total), (0, 0));
         let owned = acyclic_test_support::measure(|| drop(std::hint::black_box(Box::new(counters))));
         prop_assert!(owned.count_total > 0);
-        prop_assert!(matches!(AgentResourceCounters { step_commits: u64::MAX, ..counters }.step(0, 0), Err(Error::Record("agent resource counters overflow"))));
-        prop_assert!(matches!(AgentResourceCounters { conversation_records: u64::MAX, ..AgentResourceCounters::default() }.step(1, 0), Err(Error::Record("agent resource counters overflow"))));
-        prop_assert!(matches!(AgentResourceCounters { conversation_bytes: u64::MAX, ..AgentResourceCounters::default() }.step(0, 1), Err(Error::Record("agent resource counters overflow"))));
+        prop_assert!(matches!(AgentResourceCounters { step_commits: u64::MAX, ..counters }.step(0, 0), Err(Error::Record("agent resource counters overflow"))), "commit overflow must be refused");
+        prop_assert!(matches!(AgentResourceCounters { conversation_records: u64::MAX, ..AgentResourceCounters::default() }.step(1, 0), Err(Error::Record("agent resource counters overflow"))), "record overflow must be refused");
+        prop_assert!(matches!(AgentResourceCounters { conversation_bytes: u64::MAX, ..AgentResourceCounters::default() }.step(0, 1), Err(Error::Record("agent resource counters overflow"))), "byte overflow must be refused");
     }
 
     // Unknown and observed zero must not alias; neither may a core, NUMA node,
@@ -64,7 +64,7 @@ mod committed {
     };
     use acyclic_actors::guest::CancellationToken;
     use acyclic_stream::{
-        CommitCondition, CommitOutcome, MemoryStream, ReadRequest, StreamProvider,
+        CommitCondition, CommitOutcome, MemoryStream, ReadRequest, StreamProviderExt as _,
     };
     use futures::TryStreamExt;
 
