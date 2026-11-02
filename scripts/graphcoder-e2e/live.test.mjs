@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { Processes } from "./process.mjs";
@@ -143,6 +143,7 @@ test("a real command must publish exact bytes and a successful shell status", as
     const refused = await runCase(process.execPath, root, path, "session", new AbortController().signal);
     assert.equal(refused.status, "fail");
     assert.ok(["ENOTDIR", "EEXIST"].includes(refused.code), refused.error);
+    assert.match(refused.failure.error, new RegExp(refused.code));
     assert.equal(refused.phase, "preparation");
     assert.equal(refused.seconds, undefined);
     assert.deepEqual(refused.captures, []);
@@ -186,6 +187,9 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     // preparation has written its actual settings. No model is launched.
     const result = await runCase(process.execPath, root, root, "session", new AbortController().signal);
     assert.equal(result.status, "fail");
+    assert.deepEqual(result.failure.assertion, {
+      operator: "strictEqual", actual: String(result.captures[0].code), expected: "0",
+    });
     const settings = JSON.parse(await readFile(join(root, "session/settings/.claude/settings.json"), "utf8"));
     const [{ hooks: [hook] }] = settings.hooks.PostToolUse;
     const original = childResults[0].events[0];
@@ -203,6 +207,36 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     const recorded = JSON.parse(await readFile(hook.args[1], "utf8"));
     assert.deepEqual(recorded, original);
     requireTools([recorded], ["spawn"]);
+    // A native command rejection happens before tool assertions. The actual
+    // recorder's output must still reach the failed attempt's raw evidence.
+    const failedRoot = join(root, "failed-answer");
+    await mkdir(join(failedRoot, "shell"), { recursive: true });
+    await writeFile(join(failedRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    const rejected = await runCase(process.execPath, root, failedRoot, "shell", new AbortController().signal);
+    assert.equal(rejected.status, "fail");
+    assert.deepEqual(rejected.hooks, [original]);
+    assert.deepEqual(rejected.failure.assertion, result.failure.assertion);
+    // A damaged recording is independent of the same original command exit.
+    const damagedRoot = join(root, "damaged-recording");
+    await mkdir(join(damagedRoot, "shell"), { recursive: true });
+    await writeFile(join(damagedRoot, "shell/hooks.jsonl"), "{");
+    const damaged = await runCase(process.execPath, root, damagedRoot, "shell", new AbortController().signal);
+    assert.deepEqual(damaged.failure.assertion, result.failure.assertion);
+    assert.match(damaged.hooks_failure.error, /SyntaxError/);
+    assert.equal(damaged.hooks_failure.step, "case-hooks");
+    assert.equal(damaged.phases.at(-1).phase, "retired");
+    assert.equal(damaged.phases.at(-1).outcome, "completed");
+    // Native launch/capture rejection is independent of existing recorder
+    // evidence: a missing result object must not suppress the unread log.
+    const missingRoot = join(root, "missing-capture");
+    await mkdir(join(missingRoot, "shell"), { recursive: true });
+    await writeFile(join(missingRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    const missing = await runCase(join(root, "absent-executable"), root, missingRoot, "shell", new AbortController().signal);
+    assert.equal(missing.status, "fail");
+    assert.equal(missing.code, "ENOENT");
+    assert.deepEqual(missing.captures, []);
+    assert.deepEqual(missing.hooks, [original]);
+    assert.match(missing.failure.error, /ENOENT/);
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });

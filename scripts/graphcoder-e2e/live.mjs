@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
-import { publishReport } from "./report.mjs";
+import { failedCase, failureReport, publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 import { fileBytes, toolOutcome } from "./assertions.mjs";
 
@@ -79,8 +79,9 @@ export async function runCase(binary, login, root, name, signal) {
   const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
-  let step = "prepare workspace and isolated settings", env, childHooks, begin;
+  let step = "prepare workspace and isolated settings", env, childHooks, begin, hooksPending = false;
   const invoke = async (prompt, format = "text") => {
+    hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
       "--model", "openai/gpt-6-luna", "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
@@ -90,10 +91,12 @@ export async function runCase(binary, login, root, name, signal) {
     return answer(result, format);
   };
   const hooks = async () => {
+    hooksPending = false;
     try { return (await readFile(hookFile, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   };
   const collaborate = async (task, followup) => {
+    hooksPending = true;
     const fixture = { id: name, workspace, env, args: ["--workspace", workspace,
       "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
     await conversation(processes, binary, fixture, { operation, turns: [
@@ -157,12 +160,21 @@ export async function runCase(binary, login, root, name, signal) {
     return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds,
       setup_seconds: receipt.preparation_seconds, total_seconds: receipt.total_seconds, phases, captures, hooks: childHooks };
   } catch (error) {
-    return { case: name, platform: process.platform, status: "fail", code: error.code,
+    let result = { case: name, platform: process.platform, status: "fail", code: error.code,
+      failure: failureReport(error),
       phase: phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run"),
       ...(begin === undefined ? {} : { seconds: (performance.now() - begin) / 1000 }),
       setup_seconds: phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
       total_seconds: (performance.now() - setupBegin) / 1000, phases,
       error: `step=${step}: ${error.message}; recovery=${recovery}`, captures, hooks: childHooks };
+    // The original process and retirement have joined. A rejected answer can
+    // precede the tool assertions, but cannot discard their recorded evidence.
+    // A failed read is retained separately and is never retried.
+    if (hooksPending) {
+      try { result.hooks = await hooks(); }
+      catch (evidenceError) { result = failedCase(result, failureReport(evidenceError), "hooks", recovery); }
+    }
+    return result;
   }
 }
 
