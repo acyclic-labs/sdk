@@ -33,7 +33,7 @@ fn agrees(
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let cache = Cache::default();
-    let mode = bytes.first().copied().unwrap_or_default() % 10;
+    let mode = bytes.first().copied().unwrap_or_default() % 11;
     let literal = json!({
         "text": String::from_utf8_lossy(bytes),
         "bytes": bytes,
@@ -118,8 +118,18 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     Form::Value,
                     false,
                 ),
-                _ => (
+                9 => (
                     "throw 'settings refused';".to_owned(),
+                    Value::Null,
+                    Form::Value,
+                    false,
+                ),
+                _ => (
+                    [
+                        "Number.isFinite = () => true; export default NaN;",
+                        "Object.getPrototypeOf = () => Object.prototype; export default new Map();",
+                    ][bytes.get(1).copied().unwrap_or_default() as usize % 2]
+                        .to_owned(),
                     Value::Null,
                     Form::Value,
                     false,
@@ -194,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
-        for mode in 0..10 {
+        for mode in 0..11 {
             let variants = if mode == 4 { 8 } else { 4 };
             for variant in 0..variants {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
