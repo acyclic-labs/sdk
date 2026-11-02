@@ -415,7 +415,8 @@ impl PreparedPublish {
     /// Add one effect. A hard effect joins the commit's hard effect, keeping
     /// conditions canonical (one per path, sorted) and merging appends to the
     /// same path in order; disagreeing cuts on one path are refused. A soft
-    /// effect is appended as given, so it applies or is skipped on its own.
+    /// effect, which needs mutations, is appended as given, so it applies or
+    /// is skipped on its own.
     /// No effect may name the actor's own state stream, its journal or its
     /// invocation reply.
     pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
@@ -423,6 +424,9 @@ impl PreparedPublish {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
             ));
+        }
+        if !effect.admissible() {
+            return Err(Error::Invalid("soft effect without mutations"));
         }
         for mutation in &effect.mutations {
             if self

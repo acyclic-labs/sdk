@@ -172,7 +172,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             let mut history = io.history_io();
             let mut work = Some(&mut history as &mut dyn crate::store::HistoryIo);
             let (key, held) = crate::distributed::digest_key(&[13; 32], &mut work)?;
-            let (request, quota) = crate::distributed::commit_request(key, held, &mut work);
+            let (request, quota) = crate::distributed::commit_request(key, held, &mut work)?;
             let mut commit = acyclic_fs::FilesystemCommit::new(request);
             let context = if mode == 1 { &foreign } else { &original };
             let mut existing = context.claim(32, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
@@ -307,7 +307,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     };
     let key = acyclic_stream::IdempotencyKey::unique();
     let mut work = None;
-    let (mut request, mut quota) = crate::distributed::commit_request(key.clone(), 0, &mut work);
+    let (mut request, mut quota) = crate::distributed::commit_request(key.clone(), 0, &mut work)?;
     // The caller's original batch owns its key and members before the Cut is added.
     request.effects[0].conditions.extend([
         CommitCondition::Absent {

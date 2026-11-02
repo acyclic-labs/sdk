@@ -396,8 +396,9 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
 }
 
 /// Decode a guest's canonical transition on its host. Effects arrive exactly
-/// as the guest wrote them. They omit the host-owned commit deadline, and an
-/// effect without a mutation is refused.
+/// as the guest wrote them. They omit the host-owned commit deadline, and each
+/// effect must be admissible: a hard guard joins the host's commit, while a
+/// soft effect without mutations could not show on replay whether it applied.
 pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     let wire: TransitionWire = canonical(bytes, "transition", TRANSITION_DOMAIN)?;
     let alarm = match wire.alarm.ok_or_else(|| invalid("alarm"))? {
@@ -407,16 +408,13 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
         AlarmWire::Keep(false) | AlarmWire::Clear(false) => return Err(invalid("alarm")),
     };
     let effects = wire.effects.ok_or_else(|| invalid("effects"))?;
-    if effects.idempotency_key.as_ref() != EFFECTS_KEY
-        || effects.deadline_unix_millis.is_some()
-        || effects
-            .effects
-            .iter()
-            .any(|effect| effect.mutations.is_empty())
-    {
+    if effects.idempotency_key.as_ref() != EFFECTS_KEY || effects.deadline_unix_millis.is_some() {
         return Err(invalid("effects"));
     }
     let effects = wire_codec::commit_from_wire(effects).map_err(|_| invalid("effects"))?;
+    if !effects.effects.iter().all(acyclic_stream::CommitEffect::admissible) {
+        return Err(invalid("effects"));
+    }
     Ok(Transition {
         response: wire.response,
         checkpoint: checkpoint(wire.checkpoint.ok_or_else(|| invalid("checkpoint"))?),
@@ -537,7 +535,13 @@ mod tests {
             decode_transition(&encode(&orphaned, TRANSITION_DOMAIN)),
             Err(GuestError::Decode(_))
         ));
-        // No-effect transitions are representable; only unretained guards refuse.
+        // A hard guard joins the host's commit, so it is admissible as written.
+        let mut guarded = transition.clone();
+        guarded.effects[0].mutations.clear();
+        guarded.effects[0].soft = false;
+        assert_eq!(decode_transition(&encode_transition(&guarded)?)?, guarded);
+        // No-effect transitions are representable; only soft effects without
+        // mutations refuse, since replay could not show whether they applied.
         let mut empty = transition.clone();
         empty.effects.clear();
         assert_eq!(decode_transition(&encode_transition(&empty)?)?, empty);
