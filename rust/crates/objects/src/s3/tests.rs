@@ -2,6 +2,9 @@ use super::*;
 use crate::{Medium, Store};
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 
+mod recording;
+mod upload_ownership;
+
 #[tokio::test]
 #[ignore = "requires a disposable S3 bucket configured with STORAGE_S3_* variables"]
 async fn s3_ranges_and_shared_conformance() -> Result<(), Box<dyn std::error::Error>> {
