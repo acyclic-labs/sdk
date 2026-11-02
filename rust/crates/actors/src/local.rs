@@ -250,6 +250,7 @@ pub struct PreparedPublish {
     state: Option<State>,
     reply: Option<StreamPath>,
     journal: Option<StreamPath>,
+    failure_owner: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
@@ -328,6 +329,7 @@ impl PreparedPublish {
             state: None,
             reply: None,
             journal: None,
+            failure_owner: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -370,8 +372,22 @@ impl PreparedPublish {
     }
     /// Add one participant, keeping conditions canonical (one per path, sorted)
     /// and merging appends to the same path in order. The actor's own state
-    /// stream cannot be named; disagreeing cuts on one path are refused.
+    /// stream and host-owned failure subtree cannot be named; disagreeing cuts
+    /// on one path are refused.
     pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
+        if self
+            .own
+            .as_ref()
+            .or(self.failure_owner.as_ref())
+            .is_some_and(|owner| disposition::targets_failures(&effect.mutation, owner))
+        {
+            return Err(Error::Invalid("effect changes the host's failures"));
+        }
+        self.join_host(effect)
+    }
+
+    // Only the host's failure publisher may contribute reserved failure records.
+    fn join_host(&mut self, effect: Effect) -> Result<(), Error> {
         if self.sealed {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
@@ -987,6 +1003,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         request.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
                             != original.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
                     })
+                    || prepared.own.as_ref().or(prepared.failure_owner.as_ref()).is_some_and(|owner| {
+                        request.mutations.iter().filter(|mutation| disposition::targets_failures(mutation, owner)).count()
+                            != original.mutations.iter().filter(|mutation| disposition::targets_failures(mutation, owner)).count()
+                    })
                 {
                     return Err(Error::Invalid("composition changed the actor publication"));
                 }
@@ -1091,6 +1111,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             state: Some(state),
             reply: None,
             journal: None,
+            failure_owner: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,

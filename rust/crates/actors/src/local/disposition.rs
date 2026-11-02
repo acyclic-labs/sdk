@@ -11,6 +11,20 @@ use prost::Message as _;
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
 const DIRECTORY: &str = ".failures";
 
+/// A fork replaces its destination subtree; appends write one exact stream.
+/// Compare borrowed components so admission adds no allocation or provider IO.
+pub(super) fn targets_failures(mutation: &CommitMutation, owner: &StreamPath) -> bool {
+    let path = mutation.path();
+    if matches!(mutation, CommitMutation::Fork { .. }) && super::covers(path, owner) {
+        return true;
+    }
+    path.as_str()
+        .strip_prefix(owner.as_str())
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .and_then(|suffix| suffix.strip_prefix(DIRECTORY))
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+}
+
 pub(super) fn fork_exclusions() -> Result<Vec<acyclic_stream::RelativePath>, Error> {
     Ok(vec![acyclic_stream::RelativePath::new(DIRECTORY)?])
 }
@@ -288,34 +302,33 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }),
             resolution: 0,
         });
-        self.prepare(
-            previous,
-            state,
-            vec![
-                Effect {
-                    conditions: vec![CommitCondition::Absent {
-                        path: status.clone(),
-                    }],
-                    mutation: CommitMutation::Append {
-                        path: status,
-                        records: vec![bytes.into()],
-                    },
+        let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
+        for effect in [
+            Effect {
+                conditions: vec![CommitCondition::Absent {
+                    path: status.clone(),
+                }],
+                mutation: CommitMutation::Append {
+                    path: status,
+                    records: vec![bytes.into()],
                 },
-                Effect {
-                    conditions: vec![CommitCondition::Absent {
-                        path: input_path.clone(),
+            },
+            Effect {
+                conditions: vec![CommitCondition::Absent {
+                    path: input_path.clone(),
+                }],
+                mutation: CommitMutation::Append {
+                    path: input_path,
+                    records: vec![AppendRecord {
+                        value: input.value.clone(),
+                        headers: input.headers.clone(),
                     }],
-                    mutation: CommitMutation::Append {
-                        path: input_path,
-                        records: vec![AppendRecord {
-                            value: input.value.clone(),
-                            headers: input.headers.clone(),
-                        }],
-                    },
                 },
-            ],
-            key,
-        )
+            },
+        ] {
+            prepared.join_host(effect)?;
+        }
+        Ok(prepared)
     }
 
     /// Resolve an exact selected failure for the supplied Actor once, without
@@ -347,8 +360,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }
         };
         let mut prepared = PreparedPublish::foreign(key);
+        prepared.failure_owner = Some(failed.state.clone());
         let status = status_path(&failed.path)?;
-        prepared.join(Effect {
+        prepared.join_host(Effect {
             conditions: vec![CommitCondition::Head {
                 path: status.clone(),
                 expected: 1,

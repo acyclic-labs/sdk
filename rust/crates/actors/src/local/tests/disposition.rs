@@ -3,6 +3,25 @@ use acyclic_stream::{
     AppendRecord, AppendRequest, ChildrenPageRequest, RevisionCut, testing::Counted,
 };
 
+struct FailureWriter(CommitMutation);
+
+impl crate::guest::Composition for FailureWriter {
+    fn seal<'a>(
+        &'a mut self,
+        mut request: CommitRequest,
+    ) -> crate::guest::GuestFuture<'a, CommitRequest> {
+        request.mutations.push(self.0.clone());
+        Box::pin(async move { Ok(request) })
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        _outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> crate::guest::GuestFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 async fn selected<P: StreamProvider>(
     provider: &P,
     path: &StreamPath,
@@ -165,6 +184,101 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     assert_eq!(failed.source(), &source);
     assert_eq!(failed.subscription(), "inbox");
     assert_eq!(failed.cause(), &cause);
+    // Every guest mutation route must preserve the original failure and its
+    // terminal fence, including forks at either side of the reserved root.
+    let failures = store.failures_path(&owner)?;
+    let mut mutations = vec![
+        CommitMutation::Append {
+            path: entry.origin.clone(),
+            records: vec![entry.value.clone().into()],
+        },
+        CommitMutation::SoftAppend {
+            path: failed.input_path()?,
+            records: vec![Bytes::from_static(b"corrupt").into()],
+            closed: None,
+        },
+    ];
+    for destination in [
+        failures,
+        child.path.clone(),
+        snapshot.path.clone(),
+        state_root()?,
+    ] {
+        mutations.push(CommitMutation::Fork {
+            source: source.clone(),
+            destination,
+            at_tail: 1,
+            records: Vec::new(),
+            exclude: Vec::new(),
+        });
+    }
+    let before = provider.requests();
+    for mutation in mutations {
+        let effect = Effect {
+            conditions: vec![CommitCondition::Present {
+                path: source.clone(),
+            }],
+            mutation: mutation.clone(),
+        };
+        let mut result = transition(2, AlarmChange::Keep);
+        result.effects.push(effect.clone());
+        assert!(matches!(
+            store.prepare_publish(
+                &snapshot,
+                epoch,
+                &record(0),
+                Some(&input),
+                result,
+                key("failure/guest-write")?
+            ),
+            Err(Error::Invalid("effect changes the host's failures"))
+        ));
+        let mut publication = store.prepare_failed_input(
+            &snapshot,
+            epoch,
+            &record(0),
+            &input,
+            &cause,
+            key("failure/join-write")?,
+        )?;
+        let original = publication.request().clone();
+        assert!(matches!(
+            publication.join(effect),
+            Err(Error::Invalid("effect changes the host's failures"))
+        ));
+        assert_eq!(
+            publication.request(),
+            &original,
+            "refusal cannot add conditions"
+        );
+        publication.composition = Some(Box::new(FailureWriter(mutation)));
+        assert!(matches!(
+            store.submit(publication).await,
+            Err(Error::Invalid("composition changed the actor publication"))
+        ));
+    }
+    let mut publication = store.prepare_publish(
+        &snapshot,
+        epoch,
+        &record(0),
+        Some(&input),
+        transition(2, AlarmChange::Keep),
+        key("failure/sibling")?,
+    )?;
+    publication.join(Effect {
+        conditions: Vec::new(),
+        mutation: CommitMutation::Append {
+            path: StreamPath::new(format!("{}/.failures-other/status", snapshot.path))?,
+            records: vec![Bytes::from_static(b"allowed").into()],
+        },
+    })?;
+    let work = provider.requests().since(before);
+    assert_eq!(
+        (work.data(), work.control()),
+        (0, 0),
+        "refuse before provider IO"
+    );
+    assert_eq!(selected(provider.as_ref(), &entry.origin, 0).await?, *entry);
     assert!(
         FailureEntry::decode(&source, entry).is_err(),
         "foreign selection cannot authorize disposition"

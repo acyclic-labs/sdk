@@ -75,7 +75,10 @@ current tails with `children_page` and `tail_stream = Some("status")`, decode
 `local::FailureEntry` with each child path, and follow the projected record's
 origin for changes. Values and headers remain in a separate
 co-committed input record, fetched only for inspection or replay. Forks exclude
-this host-owned failure subtree. An explicit `prepare_disposition` appends one
+this host-owned failure subtree. Guest effects and publication participants
+cannot append within it or fork over it, including through an ancestor path.
+Only the host failure/disposition publisher contributes its records. An
+explicit `prepare_disposition` appends one
 terminal under the original failure head condition: purge retires the entry;
 replay also appends the retained input and original owner wake in that same
 commit. Competing choices conflict. Accepted invocation identities require a
