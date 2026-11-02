@@ -1875,7 +1875,9 @@ fn is_roster(content: &crate::model::ModelContent) -> bool {
 /// supplies only the first turn; restore is model-free.
 #[tokio::test]
 async fn selected_restore_retains_files_and_settles_stale_heads_without_model_work() -> Result<()> {
-    use crate::agent::{RestoreMode, TurnOutcome};
+    use crate::agent::{
+        Delivered, InboxRecord, IntentId, NoticePayload, RestoreMode, Sender, TurnOutcome,
+    };
     use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
@@ -1912,6 +1914,29 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let client = Conversation::open(connection.clone())?;
     client.send("first", "hello").await?;
     settled(&agents, &root).await?;
+    let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
+    let actor = agents.actor(&root).map_err(agent)?;
+    let before = store.load(&actor).await.map_err(agent)?.follow_request();
+    let Delivered::Committed { inbox: notice } = agents
+        .send(
+            &root,
+            &Sender::Agent { path: root.clone() },
+            &InboxRecord::Notice {
+                id: IntentId::try_from("selection-notice").map_err(agent)?,
+                notice: NoticePayload::Quiet(crate::conversation::wire::Notice {
+                    source: "files".into(),
+                    kind: "files.changed".into(),
+                    body: serde_json::json!({"path":"/plan.md"}),
+                    wake: false,
+                    coalesce_key: None,
+                }),
+            },
+        )
+        .await
+        .map_err(agent)?
+    else {
+        return Err(Error::Invalid("notice recipient closed".into()));
+    };
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
     let snapshot = saved
         .volumes
@@ -2126,6 +2151,43 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     assert_eq!(context_only.context, saved.context);
     assert_eq!(context_only.volumes, refused.volumes);
     assert_eq!(client.project_heads().await?, expected);
+    client.rewind("rewind").await?;
+    settled(&agents, &root).await?;
+    client.clear_all("clear").await?;
+    settled(&agents, &root).await?;
+    assert_eq!(
+        agents.state(&root).await.map_err(agent)?.pending_notices,
+        Some(notice..notice + 1),
+        "model-free controls must retain the original pending Notice range"
+    );
+    // Read only this control sequence's original actor publications. The
+    // former freeze-before-restore path left an armed continuation here.
+    let end = store
+        .load(&actor)
+        .await
+        .map_err(agent)?
+        .follow_request()
+        .from;
+    let limit = u32::try_from(end - before.from).map_err(agent)?;
+    assert!(limit > 0);
+    let mut publications = agents
+        .provider()
+        .read(ReadRequest {
+            key: None,
+            path: before.path,
+            from: before.from,
+            limit,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(agent)?;
+    while let Some(record) = publications.try_next().await.map_err(agent)? {
+        let state = acyclic_actors::local::State::decode(&record.value).map_err(agent)?;
+        assert!(
+            state.alarm().deadline_unix_ms().is_none(),
+            "model-free control scheduled an avoidable continuation"
+        );
+    }
     assert_eq!(
         provider.request_count(),
         1,
