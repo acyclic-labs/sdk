@@ -1,3 +1,5 @@
+import { snapshotBytes } from "@acyclic-labs/auth";
+
 /** A host-installed, deployment-selected HTTPS capability.
  * The host retains the original invocation and Request signal through header
  * disclosure and every lazy body pull. Cancelling either lifetime cancels both
@@ -22,12 +24,17 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
     while (true) {
       const {value,done} = await reader.read();
       if (done) break;
-      chunks.push(value.slice()); length += value.byteLength;
+      const owned = snapshotBytes(value);
+      chunks.push(owned); length += owned.byteLength;
     }
     signal.throwIfAborted();
+    if (chunks.length === 1) return chunks[0]!;
     const body = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { body.set(chunk,offset); offset += chunk.byteLength; }
     return body;
+  } catch (error) {
+    void reader.cancel(error).catch(() => undefined);
+    throw error;
   } finally {
     signal.removeEventListener("abort",cancel);
     reader.releaseLock();

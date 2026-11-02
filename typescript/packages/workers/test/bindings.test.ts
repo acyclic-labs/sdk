@@ -10,8 +10,16 @@ const service: semantic.Binding = {name:"SERVICE",capability:"grant",resource:"w
 test("deployment declarations become scoped namespace and private service handles after Rust admission", async () => {
   let factories = 0;
   const requests: unknown[] = [];
+  let bodyCost: { copies: () => number; expected: Uint8Array; finalCopies: number } | undefined;
   const record = (request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest) => {
     expect(request.accountId).toEqual(account);
+    if (bodyCost) {
+      expect(bodyCost.copies()).toBe(bodyCost.finalCopies);
+      expect(request.body).toEqual(bodyCost.expected);
+      expect(request.body).toBeInstanceOf(Uint8Array);
+      const body = request.body as Uint8Array;
+      expect(body.buffer.byteLength).toBe(bodyCost.expected.byteLength);
+    }
     if (!(request.deploymentEnvelope instanceof Uint8Array)) throw new TypeError("binding envelope must own transferable bytes");
     // Transfer this request's envelope exactly as an IPC adapter can. A shared
     // empty backing buffer would leave the next request detached and unclonable.
@@ -81,6 +89,34 @@ test("deployment declarations become scoped namespace and private service handle
   expect([actorReads,workerReads]).toEqual([1,1]);
   expect(requests).toHaveLength(4);
   expect(requests.slice(0,2)).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
+  for (const handle of [actor,worker]) for (const count of [1,2]) {
+    const U8 = Uint8Array, expected = new U8([7,11,13,17,19,23].slice(0,3 * count));
+    const backing = new U8(1024 * 1024);
+    backing.set(expected,17);
+    let index = 0, allocations = 0;
+    const body = new ReadableStream<Uint8Array>({pull(controller) {
+      if (index === count) { backing.fill(0,17,17 + expected.byteLength); controller.close(); return; }
+      const start = 17 + 3 * index++;
+      const chunk = backing.subarray(start,start + 3);
+      // The shared snapshot must ignore caller helpers and backing extent.
+      Object.defineProperty(chunk,"slice",{value() {throw new Error("caller slice invoked");}});
+      controller.enqueue(chunk);
+    }},{highWaterMark:0});
+    const request = new Request("https://example.com/",{method:"POST",body,duplex:"half"} as RequestInit);
+    bodyCost = {copies:() => allocations,expected,finalCopies:count === 1 ? 0 : 1};
+    globalThis.Uint8Array = new Proxy(U8,{construct(target,args,newTarget) {
+      // snapshotBytes retains its intrinsic constructor. Count only the final
+      // collector allocation, before response materialization at the transport.
+      if (args[0] === expected.byteLength) allocations++;
+      return Reflect.construct(target,args,newTarget);
+    }});
+    try {
+      // Negative control: an extra selected-size collector allocation is visible.
+      new Uint8Array(expected.byteLength);
+      expect(allocations).toBe(1); allocations = 0;
+      expect(new U8(await (await handle.fetch(request)).arrayBuffer())).toEqual(expected);
+    } finally { globalThis.Uint8Array = U8; bodyCost = undefined; }
+  }
   factories = 0;
   for (const invalid of [
     {...namespace,resource:"actors:/Other"}, {...namespace,targetAccount:new Uint8Array()},
@@ -154,20 +190,29 @@ for (const kind of ["actor","worker"] as const) {
     }
   });
   test(`${kind} abort releases its reader without waiting for source cleanup`, async () => {
-    let read!: () => void, release!: () => void, cancelled = 0, calls = 0, outcome = "pending";
-    const reading = new Promise<void>(resolve => {read = resolve;});
-    const cleanup = new Promise<void>(resolve => {release = resolve;});
-    const body = new ReadableStream<Uint8Array>({pull() {read();},cancel() {cancelled++;return cleanup;}},{highWaterMark:0});
-    const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
-    const abort = new AbortController();
-    const request = new Request("https://example.com/",{method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit);
-    const pending = target.fetch(request).then(() => {outcome="fulfilled";},() => {outcome="rejected";});
-    await reading; abort.abort(new Error("cancelled"));
-    // One event-loop turn drains runnable promise jobs. There is no transport
-    // I/O and cleanup remains explicitly held: a pending result is a dependency.
-    await new Promise<void>(resolve => {setImmediate(resolve);});
-    try {expect(cancelled).toBe(1);expect(outcome).toBe("rejected");expect(request.body!.locked).toBe(false);expect(calls).toBe(0);}
-    finally {release();await pending;}
+    for (const refused of [false,true]) {
+      let read!: () => void, release!: () => void, cancelled = 0, calls = 0, outcome = "pending";
+      let failure: unknown;
+      const reading = new Promise<void>(resolve => {read = resolve;});
+      const cleanup = new Promise<void>(resolve => {release = resolve;});
+      const body = new ReadableStream<Uint8Array>({pull(controller) {
+        read();
+        if (refused) controller.enqueue(new Uint8Array(new SharedArrayBuffer(3)));
+      },cancel() {cancelled++;return cleanup;}},{highWaterMark:0});
+      const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
+      const abort = new AbortController();
+      const request = new Request("https://example.com/",{method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit);
+      const pending = target.fetch(request).then(() => {outcome="fulfilled";},error => {outcome="rejected";failure=error;});
+      await reading; if (!refused) abort.abort(new Error("cancelled"));
+      // One event-loop turn drains runnable promise jobs. There is no transport
+      // I/O and cleanup remains explicitly held: a pending result is a dependency.
+      await new Promise<void>(resolve => {setImmediate(resolve);});
+      try {
+        expect(cancelled).toBe(1);expect(outcome).toBe("rejected");expect(request.body!.locked).toBe(false);expect(calls).toBe(0);
+        if (refused) expect(failure).toBeInstanceOf(TypeError);
+      }
+      finally {release();await pending;}
+    }
   });
   test(`${kind} standard Fetch cancellation cancels a blocked body before transport`, async () => {
     for (const source of ["request","init"] as const) {
