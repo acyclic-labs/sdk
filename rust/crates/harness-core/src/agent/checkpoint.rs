@@ -318,14 +318,14 @@ mod tests {
         ))
     }
 
-    /// The widest adoption: deepest parent, longest built-in role pin, every
+    /// A fully populated adoption: deepest parent, immutable template, every
     /// volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
             profile: Some(crate::agent::CreationConfig {
                 context: crate::agent::SpawnContext::TopLevel,
-                template: None,
-                may_spawn: Vec::new(),
+                template: Some(file()),
+                may_spawn: vec!["worker".into(), "advisor".into(), "reviewer".into()],
                 allowed_tools: None,
             }),
             agent: id(u64::MAX),
@@ -696,7 +696,9 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "unknown"] {
+        for version in [
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "unknown",
+        ] {
             for bytes in [valid.bytes.clone(), Vec::new().into()] {
                 let mut checkpoint = valid.clone();
                 checkpoint.codec.version = version.into();
