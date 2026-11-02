@@ -10,6 +10,11 @@ use std::sync::Mutex;
 /// one. Use the original delivery and pause locks, with a real committed output.
 #[tokio::test]
 async fn pause_finishes_active_delivery_before_parking() -> TestResult {
+    pause_active_delivery(false).await?;
+    pause_active_delivery(true).await
+}
+
+async fn pause_active_delivery(producer_lost: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-finish", &[b"emit", b"emit"]).await?;
@@ -47,12 +52,27 @@ async fn pause_finishes_active_delivery_before_parking() -> TestResult {
     assert!(futures::poll!(pause.as_mut()).is_pending());
     assert!(!cancellation.is_cancelled(), "pause cancelled active work");
     assert_eq!(parked.load(Ordering::SeqCst), 0);
-    handler.gate.add_permits(1);
+    if producer_lost {
+        handler.gate.close();
+    } else {
+        handler.gate.add_permits(1);
+    }
     let (delivered, paused) = futures::join!(delivery, pause);
-    delivered?;
     paused.map_err(|()| "pause application failed")?;
     assert_eq!(parked.load(Ordering::SeqCst), 1);
-    assert_eq!(records(&*provider, "out/pause-finish").await?.len(), 1);
+    if producer_lost {
+        assert!(matches!(
+            delivered,
+            Err(Error::Handler(crate::guest::GuestError::Handler(ref message)))
+                if message == "test gate closed"
+        ));
+    } else {
+        delivered?;
+    }
+    assert_eq!(
+        records(&*provider, "out/pause-finish").await?.len(),
+        usize::from(!producer_lost)
+    );
     assert_eq!(handler.active.load(Ordering::SeqCst), 0);
     assert_eq!(
         runtime
@@ -63,10 +83,12 @@ async fn pause_finishes_active_delivery_before_parking() -> TestResult {
             .map(State::paused),
         Some(true)
     );
-    runtime.pause(&address, false).await?;
-    handler.gate.add_permits(1);
-    runtime.drain_actor(&address).await?;
-    assert_eq!(records(&*provider, "out/pause-finish").await?.len(), 2);
+    if !producer_lost {
+        runtime.pause(&address, false).await?;
+        handler.gate.add_permits(1);
+        runtime.drain_actor(&address).await?;
+        assert_eq!(records(&*provider, "out/pause-finish").await?.len(), 2);
+    }
     Ok(())
 }
 
@@ -248,7 +270,7 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     ));
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
     // Taking the error cannot wait for this held handler. A later pause can
-    // now cancel it and retain cleanup, rather than queue behind an error read.
+    // now retain its completion without queuing behind an error read.
     let mut late = Box::pin(runtime.pause(&address, true));
     assert!(futures::poll!(late.as_mut()).is_pending());
     drop(late);
@@ -349,9 +371,8 @@ async fn active_cleanup_and_queued_controls(
     assert!(!runtime.release(&address));
     handler.gate.add_permits(1);
     let (delivered, entered) = futures::join!(delivery, parked);
-    // The cancelled handler may fail or return its original transition; pause
-    // must await its actual cleanup in either case.
-    let _delivery_outcome = delivered;
+    // Pause preserves the original in-flight result before parking resources.
+    delivered?;
     entered.map_err(|_| "pause owner was cancelled with its waiter")?;
     drop(pause); // Alternatively lose the caller after the durable decision.
     assert_eq!(
