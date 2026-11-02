@@ -96,6 +96,15 @@ struct Accepted {
     prompt: Option<(IntentId, u64)>,
 }
 
+/// The admitted turn's owned input and original process custody, before spawn.
+struct ClaimedInput {
+    lease: HostProcessLease,
+    claim: TurnClaim,
+    view: PathBuf,
+    prompt: Vec<u8>,
+    session: Value,
+}
+
 /// The keys of children whose readiness fired, and the server's waker.
 #[derive(Default)]
 struct Ready(Mutex<Queue>);
@@ -337,16 +346,16 @@ impl NativeChildren {
         Ok(accepted)
     }
 
-    /// Launches the claimed input `reply` carries as `next`, removing it from
-    /// the reply; a reply carrying none launches nothing.
-    fn launch(&mut self, reference: &str, reply: &mut Value) -> Result<()> {
+    /// Takes the exchange's exact claimed input under its original lease.
+    /// Prompt storage moves into stdin ownership without copying its bytes.
+    fn claim(&mut self, reference: &str, reply: &mut Value) -> Result<Option<ClaimedInput>> {
         let turn = reply
             .as_object_mut()
             .and_then(|reply| reply.remove("next"))
             .filter(Value::is_object);
         self.record(reference, reply)?;
-        let Some(turn) = turn else {
-            return Ok(());
+        let Some(mut turn) = turn else {
+            return Ok(None);
         };
         if self.children.contains_key(reference) {
             return Err(Error::Conflict(
@@ -361,22 +370,46 @@ impl NativeChildren {
         // The view this exchange mounted the child at.
         let view = receipt.confirm(&turn)?;
         let lease = HostProcessLease::admit(&self.cwd, receipt, &turn)?;
-        let field = |name: &str| {
-            turn.get(name)
-                .cloned()
+        let mut field = |name: &str| {
+            turn.as_object_mut()
+                .and_then(|turn| turn.remove(name))
                 .ok_or_else(|| invalid(format!("child {name} absent")))
         };
         let claim: TurnClaim = serde_json::from_value(field("claim")?).map_err(storage)?;
-        let prompt = field("prompt")?
-            .as_str()
-            .ok_or_else(|| invalid("native prompt absent"))?
-            .as_bytes()
-            .to_vec();
+        let Value::String(prompt) = field("prompt")? else {
+            return Err(invalid("native prompt absent"));
+        };
+        let prompt = prompt.into_bytes();
+        let session = turn
+            .as_object_mut()
+            .and_then(|turn| turn.remove("session"))
+            .unwrap_or(Value::Null);
+        Ok(Some(ClaimedInput {
+            lease,
+            claim,
+            view,
+            prompt,
+            session,
+        }))
+    }
+
+    /// Launches the claimed input `reply` carries as `next`, removing it from
+    /// the reply; a reply carrying none launches nothing.
+    fn launch(&mut self, reference: &str, reply: &mut Value) -> Result<()> {
+        let Some(ClaimedInput {
+            lease,
+            claim,
+            view,
+            prompt,
+            session,
+        }) = self.claim(reference, reply)?
+        else {
+            return Ok(());
+        };
         let resume = if self.host == "pi" {
-            turn.pointer("/session/file")
-                .or_else(|| turn.pointer("/session/id"))
+            session.get("file").or_else(|| session.get("id"))
         } else {
-            turn.pointer("/session/id")
+            session.get("id")
         };
         let mut command = launch::child(
             &self.host,
@@ -384,9 +417,6 @@ impl NativeChildren {
             &view,
             resume.and_then(Value::as_str),
         )?;
-        command
-            .env("ACYCLIC_WORKSPACE", &view)
-            .env("ACYCLIC_TASK", receipt.task().to_string());
         let process = lease.funded_process()?;
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.

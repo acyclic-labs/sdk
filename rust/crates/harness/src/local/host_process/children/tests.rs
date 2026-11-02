@@ -36,7 +36,6 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
         let (mut running, view) = claim(
             &mut sessions,
-            cwd,
             "closed",
             SessionAction::Spawn {
                 prompt: "closed producer".into(),
@@ -93,7 +92,6 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
         for (reference, recovered) in [("recovered", true), ("stale", false)] {
             let (mut running, view) = claim(
                 &mut sessions,
-                cwd,
                 reference,
                 SessionAction::Spawn {
                     prompt: "captured reply".into(),
@@ -247,27 +245,33 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
 /// turn: its process slot and the view its exchange mounted.
 fn claim(
     sessions: &mut NativeChildren,
-    cwd: &Path,
     reference: &str,
     action: SessionAction,
 ) -> Result<(Running, PathBuf)> {
     // The accepting exchange itself carries the claimed input: no separate
     // observation or claim precedes the launch.
     let mut accepted = sessions.request(reference, action, true)?;
-    let claimed = accepted
-        .as_object_mut()
-        .and_then(|reply| reply.remove("next"))
-        .filter(Value::is_object)
+    let original = accepted["next"]["prompt"]
+        .as_str()
+        .ok_or("fixture child prompt absent")?;
+    let (allocation, length) = (original.as_ptr(), original.len());
+    let ClaimedInput {
+        lease,
+        claim,
+        view,
+        prompt,
+        ..
+    } = sessions
+        .claim(reference, &mut accepted)?
         .ok_or("fixture child input was not claimed")?;
-    let receipt = sessions.record(reference, &accepted)?.receipt.clone();
-    let view = receipt.confirm(&claimed)?;
-    let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
-    let running = Running::new(
-        lease.funded_process()?,
-        serde_json::from_value(claimed["claim"].clone())?,
-        reference,
-        &sessions.ready,
+    assert!(accepted.get("next").is_none());
+    assert_eq!(prompt.len(), length);
+    assert_eq!(
+        prompt.as_ptr(),
+        allocation,
+        "native claim copied the admitted prompt instead of transferring its allocation"
     );
+    let running = Running::new(lease.funded_process()?, claim, reference, &sessions.ready);
     Ok((running, view))
 }
 
@@ -287,7 +291,7 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
     ];
     let mut previous: Option<TurnClaim> = None;
     for (turn, action) in prompts.into_iter().enumerate() {
-        let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
+        let (mut running, view) = claim(&mut sessions, "idle", action)?;
         if let Some(previous) = &previous {
             assert_eq!(running.claim.agent, previous.agent);
             assert_ne!(running.claim.operation, previous.operation);
@@ -309,7 +313,6 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             )?;
             let (mut inner, inner_view) = claim(
                 &mut nested,
-                &view,
                 "idle",
                 SessionAction::Spawn {
                     prompt: "nested work".into(),
@@ -462,7 +465,6 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "held-stderr")?;
     let (mut running, view) = claim(
         &mut sessions,
-        cwd,
         "held",
         SessionAction::Spawn {
             prompt: "held stderr".into(),
