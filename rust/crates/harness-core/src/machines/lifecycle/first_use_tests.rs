@@ -66,6 +66,7 @@ forward! {
         events(machine: MachineId, after_sequence: Option<u64>, limit: u32) -> EventPage;
         follow_events(machine: MachineId, after_sequence: Option<u64>) -> EventStream;
         usage(machine: MachineId, start_unix_ms: u64, end_unix_ms: u64) -> UsageReceipt;
+        read_results(cursor: acyclic_machines::results::ResultCursor, credit: std::num::NonZeroU32) -> acyclic_machines::results::ResultPage;
         recover(key: MachinesKey) -> MutationOutcome;
         recover_operation(key: MachinesKey) -> MachinesOperationId;
         inspect_operation(operation: MachinesOperationId) -> OperationObservation;

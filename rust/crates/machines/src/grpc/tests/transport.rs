@@ -39,6 +39,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     observe!(set_suspension_policy, SetSuspensionPolicyRequest);
     observe!(destroy_machine, MachineMutationRequest);
     observe!(destroy_checkpoint, CheckpointMutationRequest);
+    observe!(read_results, ReadResultsRequest);
     observe!(recover, RecoverRequest);
     observe!(inspect_machine, InspectMachineRequest);
     observe!(inspect_checkpoint, InspectCheckpointRequest);

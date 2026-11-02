@@ -289,11 +289,21 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     ) -> Result<MachineBinding> {
         ensure_provider(target, parent.machine.as_resource().provider())?;
         let (operation, key) = intent("fork", agent, &target.name)?;
-        let (_, children) = target
+        let (_, results) = target
             .host
             .fork_machine(operation, &key, &parent.machine, std::num::NonZeroU32::MIN)
             .await?;
-        let child = children
+        let child = target
+            .host
+            .read_results(
+                acyclic_machines::results::ResultCursor {
+                    cut: results,
+                    from: 0,
+                },
+                std::num::NonZeroU32::MIN,
+            )
+            .await?
+            .machines
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("Machines forked no child".into()))?;

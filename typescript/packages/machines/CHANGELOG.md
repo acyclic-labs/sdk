@@ -2,7 +2,7 @@
 
 ## 0.2.0 - Unreleased
 
-- Breaking: `create`, `fork` and `forkMachine` all return the `created` outcome with `machines[]` and `provenance` (`null` for create; the fork source and `ForkFidelity` otherwise). The `forked` and `machine-forked` outcome kinds are removed. A checkpoint fork child's `contract.image` is the checkpoint on every read.
+- Breaking: `fork` and `forkMachine` return `forked` with provenance and an immutable result cut. `readResults(cursor, credit)` reads only the requested original child observations, including after recovery. Counts, revisions and cursor offsets use decimal strings to preserve the full u64 range. `create` retains its `created` outcome. A checkpoint fork child's `contract.image` is the checkpoint on every read.
 
 - Restore the approved shape-free Machines protocol 1.1. Create and checkpoint fork no longer select Elastic/Dedicated performance; the retired wire fields remain reserved.
 

@@ -182,6 +182,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
             .usage(machine, start_unix_ms, end_unix_ms)
             .await
     }
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().read_results(cursor, credit).await
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         self.record(RequestClass::Metadata);
         self.inner().recover(key).await

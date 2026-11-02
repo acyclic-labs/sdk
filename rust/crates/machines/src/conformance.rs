@@ -503,11 +503,22 @@ async fn verify_provider(
         .map_err(|error| error.to_string())?;
     let MutationOutcome::Forked {
         provenance,
-        machines: children,
+        results,
     } = forked
     else {
         return Err("fork returned the wrong outcome".into());
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: results,
+                from: 0,
+            },
+            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .machines;
     if provenance
         != (crate::Provenance {
             source: crate::ForkSource::Checkpoint(checkpoint.id),
@@ -638,11 +649,22 @@ async fn live_fork(
     let outcome = admission.map_err(|error| error.to_string())?;
     let MutationOutcome::Forked {
         provenance,
-        machines: children,
+        results,
     } = &outcome
     else {
         return Err("live fork returned the wrong outcome".into());
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: *results,
+                from: 0,
+            },
+            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .machines;
     if provenance.source != crate::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {
@@ -654,7 +676,7 @@ async fn live_fork(
     if first.id == second.id || first.id == machine.id || second.id == machine.id {
         return Err("live fork identities are not an exact fresh set".into());
     }
-    for child in children {
+    for child in &children {
         if child.state != MachineState::Running
             || child.contract != machine.contract
             || child.last_checkpoint.is_some()
@@ -718,12 +740,23 @@ async fn live_fork(
         .await
         .map_err(|error| error.to_string())?;
     let MutationOutcome::Forked {
-        machines: children,
+        results,
         provenance,
     } = &suspended
     else {
         return Err("suspended fork returned the wrong outcome".into());
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: *results,
+                from: 0,
+            },
+            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .machines;
     if provenance.source != crate::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {

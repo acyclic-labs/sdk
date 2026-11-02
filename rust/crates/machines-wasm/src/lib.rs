@@ -246,6 +246,15 @@ impl WasmSimulatedMachines {
             .await
     }
 
+    #[wasm_bindgen(js_name = readResults)]
+    pub async fn read_results(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "ReadResultsIn")] request: JsValue,
+    ) -> Result<<public::ResultPageOut as Tsify>::JsType, JsValue> {
+        self.public_call_value::<public::ResultPageOut>("readResults", request)
+            .await
+    }
+
     #[wasm_bindgen]
     pub async fn recover(
         &self,

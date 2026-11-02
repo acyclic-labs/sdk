@@ -6,10 +6,12 @@ pub mod codec_fuzz;
 mod error;
 mod image;
 mod observation;
+mod results;
 
 pub(super) use error::*;
 pub(super) use image::*;
 pub(super) use observation::*;
+pub(super) use results::*;
 
 pub(super) fn protocol() -> wire::ProtocolVersion {
     wire::ProtocolVersion {

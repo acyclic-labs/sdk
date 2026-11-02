@@ -1,6 +1,130 @@
 use super::*;
 
 #[tokio::test]
+async fn settled_fork_pages_keep_original_custody_and_credit_after_recovery()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::results::{ResultCursor, Settlement};
+    let provider = SimulatedMachines::default();
+    let MutationOutcome::Created(parent) = provider.create(request(key(0x40))).await? else {
+        unreachable!("original create");
+    };
+    let count = NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN);
+    let outcome = provider.fork_machine(parent.id, count, key(0x41)).await?;
+    let MutationOutcome::Forked { results, .. } = outcome else {
+        unreachable!("original fork");
+    };
+    assert_eq!(results.count, u64::from(count.get()));
+    let operation = provider.recover_operation(key(0x41)).await?;
+    assert_eq!(results.operation, operation);
+    let original = {
+        let state = provider.state.lock().await;
+        state
+            .replays
+            .get(&operation)
+            .ok_or("original replay missing")?
+            .results
+            .as_ptr() as usize
+    };
+    let cursor = ResultCursor {
+        cut: results,
+        from: 0,
+    };
+    let credit = NonZeroU32::new(3).unwrap_or(NonZeroU32::MIN);
+    let first = provider.read_results(cursor, credit).await?;
+    assert_eq!(first.machines.len(), 3);
+    assert_eq!(first.machines.capacity(), 3);
+    let child = first
+        .machines
+        .first()
+        .ok_or("original first child missing")?;
+    provider.destroy_machine(child.id, key(0x42)).await?;
+    assert_eq!(
+        provider.inspect_machine(child.id).await?.state,
+        MachineState::Destroyed
+    );
+    assert_eq!(provider.recover(key(0x41)).await?, outcome);
+    assert_eq!(
+        provider.fork_machine(parent.id, count, key(0x41)).await?,
+        outcome
+    );
+    assert_eq!(provider.read_results(cursor, credit).await?, first);
+    assert_eq!(child.state, MachineState::Running);
+    assert_eq!(
+        provider.destroy_machine(parent.id, key(0x43)).await,
+        Err(ProviderError::FailedPrecondition(Precondition::LiveForks))
+    );
+    let mut next = first.next;
+    let mut visited = first.machines.len();
+    while let Some(cursor) = next {
+        let page = provider.read_results(cursor, credit).await?;
+        assert!(page.machines.len() <= 3);
+        assert!(page.machines.capacity() <= 3);
+        visited += page.machines.len();
+        next = page.next;
+    }
+    assert_eq!(visited, 1_025);
+    let end = provider
+        .read_results(
+            ResultCursor {
+                from: results.count,
+                ..cursor
+            },
+            credit,
+        )
+        .await?;
+    assert!(end.machines.is_empty());
+    assert!(end.next.is_none());
+    let Settlement::NativeController(revision) = results.settlement else {
+        unreachable!("native owner")
+    };
+    for foreign in [
+        ResultCursor {
+            from: results.count + 1,
+            ..cursor
+        },
+        ResultCursor {
+            cut: crate::results::ResultCut {
+                count: results.count + 1,
+                ..results
+            },
+            ..cursor
+        },
+        ResultCursor {
+            cut: crate::results::ResultCut {
+                settlement: Settlement::NativeController(
+                    revision.checked_add(1).ok_or("revision overflow")?,
+                ),
+                ..results
+            },
+            ..cursor
+        },
+        ResultCursor {
+            cut: crate::results::ResultCut {
+                operation: provider.recover_operation(key(0x40)).await?,
+                ..results
+            },
+            ..cursor
+        },
+    ] {
+        assert!(provider.read_results(foreign, credit).await.is_err());
+    }
+    {
+        let mut state = provider.state.lock().await;
+        let replay = state
+            .replays
+            .get_mut(&operation)
+            .ok_or("original replay lost")?;
+        assert_eq!(replay.results.as_ptr() as usize, original);
+        assert_eq!(replay.results.len(), 1_025);
+        // Losing original backing cannot turn a retained cut into a shorter success.
+        replay.results.pop();
+    }
+    assert!(provider.read_results(cursor, credit).await.is_err());
+    assert_eq!(provider.recover(key(0x41)).await?, outcome);
+    Ok(())
+}
+
+#[tokio::test]
 async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     let provider = SimulatedMachines::default();
     let create_key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000008")
@@ -19,7 +143,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         .unwrap_or_else(|_| unreachable!());
     let Ok(MutationOutcome::Forked {
         provenance,
-        machines: children,
+        results: children,
     }) = provider
         .fork(
             checkpoint.id,
@@ -30,6 +154,17 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     else {
         unreachable!();
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: children,
+                from: 0,
+            },
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!())
+        .machines;
     assert_eq!(
         provenance,
         Provenance {
@@ -88,11 +223,22 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
     let first = provider.fork_machine(parent.id, two(), key(2)).await;
     let Ok(MutationOutcome::Forked {
         provenance,
-        machines: children,
+        results: children,
     }) = first.clone()
     else {
         unreachable!("live fork must succeed: {first:?}")
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: children,
+                from: 0,
+            },
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!())
+        .machines;
     assert_eq!(
         provenance,
         Provenance {
@@ -135,11 +281,22 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
         .unwrap_or_else(|_| unreachable!());
     let Ok(MutationOutcome::Forked {
         provenance,
-        machines: grandchildren,
+        results: grandchildren,
     }) = provider.fork_machine(child, NonZeroU32::MIN, key(3)).await
     else {
         unreachable!();
     };
+    let grandchildren = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: grandchildren,
+                from: 0,
+            },
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!())
+        .machines;
     assert_eq!(provenance.inherited, ForkFidelity::MemoryAndDisk);
     assert_eq!(grandchildren.len(), 1);
 }
@@ -151,11 +308,22 @@ async fn live_fork_sources_are_joined_after_their_children() {
         unreachable!()
     };
     let Ok(MutationOutcome::Forked {
-        machines: children, ..
+        results: children, ..
     }) = provider.fork_machine(parent.id, two(), key(0x11)).await
     else {
         unreachable!()
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: children,
+                from: 0,
+            },
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!())
+        .machines;
     assert_eq!(
         provider.destroy_machine(parent.id, key(0x12)).await,
         Err(ProviderError::FailedPrecondition(Precondition::LiveForks))
@@ -183,11 +351,22 @@ async fn live_fork_forks_a_suspended_source_without_waking_it() {
         .await
         .unwrap_or_else(|_| unreachable!());
     let Ok(MutationOutcome::Forked {
-        machines: children, ..
+        results: children, ..
     }) = provider.fork_machine(parent.id, two(), key(0x22)).await
     else {
         unreachable!()
     };
+    let children = provider
+        .read_results(
+            crate::results::ResultCursor {
+                cut: children,
+                from: 0,
+            },
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .unwrap_or_else(|_| unreachable!())
+        .machines;
     assert!(
         children
             .iter()

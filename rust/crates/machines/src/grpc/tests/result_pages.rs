@@ -1,0 +1,144 @@
+use super::*;
+use crate::results::{ResultCursor, ResultCut};
+
+// All positive fork metadata comes from the actual simulator's retained result.
+// Malformed protocol controls mutate only that captured original publication.
+#[tokio::test]
+async fn settled_fork_pages_recover_original_cut_without_aggregate_or_inspections()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
+    let original = SimulatedMachines::default();
+    let create_key = IdempotencyKey::from_digest([41; 32]);
+    let key = IdempotencyKey::from_digest([42; 32]);
+    let MutationOutcome::Created(parent) = original
+        .create(CreateMachine::new(
+            create_key,
+            Some(Image::custom([7; 32])?),
+            [8; 32],
+        ))
+        .await?
+    else {
+        unreachable!("original create")
+    };
+    let outcome = original
+        .fork_machine(
+            parent.id,
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
+            key,
+        )
+        .await?;
+    let MutationOutcome::Forked {
+        provenance,
+        results,
+    } = outcome
+    else {
+        unreachable!("original fork")
+    };
+    let admission = wire::MachineAdmissions {
+        operation: operation_request(results.operation).operation,
+        provenance: Some(provenance.into()),
+        count: results.count,
+    };
+    let terminal = wire::ForkedMachines {
+        provenance: admission.provenance.clone(),
+        results: Some(results.into()),
+    };
+    let (mut service, script, _) = scripted_operation_service(Vec::new(), Vec::new());
+    service.expected_key = key;
+    service.expected_operation = results.operation;
+    service.recovered = wire::RecoveredAdmission {
+        operation: admission.operation.clone(),
+        result: Some(Admission::Forked(admission.clone())),
+    };
+    let mut replies = vec![Some(Outcome::Forked(terminal.clone()))];
+    for changed in 0..5 {
+        let mut value = terminal.clone();
+        let cut = value.results.as_mut().ok_or("original cut missing")?;
+        match changed {
+            0 => {
+                cut.operation =
+                    operation_request(original.recover_operation(create_key).await?).operation
+            }
+            1 => cut.count += 1,
+            2 => cut.settlement = Some(wire::result_cut::Settlement::NativeRevision(0)),
+            3 => cut.settlement = None,
+            _ => value.provenance = None,
+        }
+        replies.push(Some(Outcome::Forked(value)));
+    }
+    replies.push(None);
+    for reply in &replies {
+        let mut state = operation_state(results.operation, wire::OperationStatus::Succeeded);
+        state.outcome = reply.clone().map(|result| wire::MutationOutcome {
+            result: Some(result),
+        });
+        script
+            .lock()
+            .expect("original script")
+            .watches
+            .push_back(WatchReply::Items(vec![WatchItem::State(state)]));
+    }
+    let (remote, shutdown, server) = serve_operation_service(service).await?;
+    let cursor = ResultCursor {
+        cut: results,
+        from: 0,
+    };
+    let page = original.read_results(cursor, NonZeroU32::MIN).await?;
+    original
+        .destroy_machine(
+            page.machines.first().ok_or("original child missing")?.id,
+            IdempotencyKey::from_digest([43; 32]),
+        )
+        .await?;
+    assert_eq!(remote.recover(key).await?, outcome);
+    for _ in 1..replies.len() {
+        assert_eq!(
+            remote.recover(key).await,
+            Err(ProviderError::Indeterminate(key))
+        );
+    }
+    assert_eq!(
+        script.lock().expect("original script").calls,
+        vec!["watch"; replies.len()]
+    );
+    let _ = shutdown.send(());
+    server.await??;
+
+    // The production cut writer and decoder retain the exact settlement owner.
+    assert_eq!(
+        ResultCut::try_from(wire::ResultCut::from(results))?,
+        results
+    );
+    assert_eq!(
+        ResultCursor::try_from(wire::ResultCursor::from(cursor))?,
+        cursor
+    );
+    let end = ResultCursor {
+        from: results.count,
+        ..cursor
+    };
+    let page = wire::ResultPage {
+        cursor: Some(end.into()),
+        machines: Vec::new(),
+        next: None,
+    };
+    assert!(
+        decode_result_page(page.clone(), end, NonZeroU32::MIN)?
+            .machines
+            .is_empty()
+    );
+    assert!(decode_result_page(page, cursor, NonZeroU32::MIN).is_err());
+    let over_credit = wire::ResultPage {
+        cursor: Some(cursor.into()),
+        machines: vec![wire::MachineState::default(); 2],
+        next: None,
+    };
+    assert!(decode_result_page(over_credit, cursor, NonZeroU32::MIN).is_err());
+    let mut invalid = admission;
+    invalid.count = 0;
+    assert!(decode_fork_admissions(&invalid).is_err());
+    invalid.count = results.count;
+    invalid.operation = None;
+    assert!(decode_fork_admissions(&invalid).is_err());
+    Ok(())
+}

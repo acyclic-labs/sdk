@@ -168,7 +168,7 @@ impl MachinesProvider for SimulatedMachines {
                 created_at_unix_ms: now,
                 changed_at_unix_ms: now,
             };
-            state.machines.insert(id, observation.clone());
+            state.machines.insert(id, MachineRecord::new(observation.clone(), None));
             event(state, id, EventFact::State(MachineState::Running), now)?;
             Ok(MutationOutcome::Created(observation))
         })
@@ -190,7 +190,7 @@ impl MachinesProvider for SimulatedMachines {
                     .await
                     .machines
                     .get(&machine)
-                    .cloned()
+                    .map(|value| value.observation.clone())
                     .ok_or_else(|| ProviderError::NotFound(machine.to_string()))
             }
         )
@@ -217,7 +217,7 @@ impl MachinesProvider for SimulatedMachines {
                         after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                         std::ops::Bound::Unbounded,
                     ))
-                    .map(|(_, value)| value)
+                    .map(|(_, value)| &value.observation)
                     .take(
                         usize::try_from(limit)
                             .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
@@ -271,7 +271,7 @@ impl MachinesProvider for SimulatedMachines {
                     let value = CheckpointObservation {
                         id,
                         source: machine,
-                        contract: source.contract,
+                        contract: source.observation.contract,
                         forkable: true,
                         created_at_unix_ms: now,
                     };
@@ -333,6 +333,7 @@ impl MachinesProvider for SimulatedMachines {
                         }
                         let add = usize::try_from(count_value)
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
+                        state.now.checked_add(u64::from(count_value)).ok_or_else(|| ProviderError::Rejected("fork clock extent overflow; recovery: restore an admissible original simulation clock".into()))?;
                         let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
@@ -351,11 +352,11 @@ impl MachinesProvider for SimulatedMachines {
                                 created_at_unix_ms: now,
                                 changed_at_unix_ms: now,
                             };
-                            state.machines.insert(id, value.clone());
+                            state.machines.insert(id, MachineRecord::new(value.clone(), None));
                             event(state, id, EventFact::State(MachineState::Running), now)?;
                             children.push(value);
                         }
-                        Ok(MutationOutcome::Forked {
+                        Ok(Completion::Fork {
                             provenance: Provenance {
                                 source: ForkSource::Checkpoint(checkpoint),
                                 inherited: ForkFidelity::MemoryAndDisk,
@@ -404,8 +405,11 @@ impl MachinesProvider for SimulatedMachines {
                                 "only a running or suspended machine can be forked".into(),
                             ));
                         }
+                        let live_forks = source.live_forks.checked_add(u64::from(count_value))
+                            .ok_or_else(|| ProviderError::Rejected("live fork count overflow; recovery: release original children before forking".into()))?;
                         let add = usize::try_from(count_value)
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
+                        state.now.checked_add(u64::from(count_value)).ok_or_else(|| ProviderError::Rejected("fork clock extent overflow; recovery: restore an admissible original simulation clock".into()))?;
                         let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
@@ -422,11 +426,12 @@ impl MachinesProvider for SimulatedMachines {
                                 created_at_unix_ms: now,
                                 changed_at_unix_ms: now,
                             };
-                            state.machines.insert(id, value.clone());
+                            state.machines.insert(id, MachineRecord::new(value.clone(), Some(machine)));
                             event(state, id, EventFact::State(MachineState::Running), now)?;
                             children.push(value);
                         }
-                        Ok(MutationOutcome::Forked {
+                        state.machines.get_mut(&machine).ok_or_else(|| ProviderError::NotFound(machine.to_string()))?.live_forks = live_forks;
+                        Ok(Completion::Fork {
                             provenance: Provenance {
                                 source: ForkSource::Machine(machine),
                                 inherited: fidelity,
@@ -539,14 +544,7 @@ impl MachinesProvider for SimulatedMachines {
             if current == MachineState::Destroyed {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
-            let live_children = state.replays.values().any(|replay| {
-                    matches!(&replay.outcome, MutationOutcome::Forked {
-                        provenance: Provenance { source: ForkSource::Machine(source), .. },
-                        machines: children,
-                    } if *source == machine && children.iter().any(|child| state.machines.get(&child.id)
-                        .is_some_and(|value| value.state != MachineState::Destroyed)))
-            });
-            if live_children {
+            if state.machines.get(&machine).is_some_and(|value| value.live_forks != 0) {
                 return Err(ProviderError::FailedPrecondition(Precondition::LiveForks));
             }
             let now = tick(state)?;
@@ -556,6 +554,10 @@ impl MachinesProvider for SimulatedMachines {
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             value.state = MachineState::Destroyed;
             value.changed_at_unix_ms = now;
+            if let Some(parent) = value.parent.take() {
+                let parent = state.machines.get_mut(&parent).ok_or_else(|| ProviderError::Rejected("original fork parent is missing; recovery: restore the original Machine state".into()))?;
+                parent.live_forks = parent.live_forks.checked_sub(1).ok_or_else(|| ProviderError::Rejected("original fork count underflow; recovery: restore the original Machine state".into()))?;
+            }
             event(
                 state,
                 machine,
@@ -727,6 +729,35 @@ impl MachinesProvider for SimulatedMachines {
             }
         )
     }
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        let state = self.state.lock().await;
+        let replay = state
+            .replays
+            .get(&cursor.cut.operation)
+            .ok_or_else(|| ProviderError::NotFound(cursor.cut.operation.to_string()))?;
+        let MutationOutcome::Forked { results, .. } = replay.outcome else {
+            return Err(ProviderError::Invalid(
+                "operation has no fork results; recovery: use the original fork cursor".into(),
+            ));
+        };
+        let crate::results::Settlement::NativeController(revision) = results.settlement else {
+            return Err(ProviderError::Rejected(
+                "native settlement owner differs; recovery: use the original fork provider".into(),
+            ));
+        };
+        let page =
+            crate::results::NativeResults::open(results.operation, revision, &replay.results)?
+                .page(cursor, credit)?;
+        Ok(crate::results::ResultPage {
+            cursor: page.cursor,
+            machines: page.machines.to_vec(),
+            next: page.next,
+        })
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         acyclic_observability::async_operation!(
             "acyclic.machines.recover",
@@ -737,7 +768,7 @@ impl MachinesProvider for SimulatedMachines {
                     .lock()
                     .await
                     .replays
-                    .get(&key)
+                    .get(&Self::operation(key))
                     .map(|value| value.outcome.clone())
                     .ok_or_else(|| ProviderError::NotFound(key.to_string()))
             }
@@ -749,7 +780,13 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if self.state.lock().await.replays.contains_key(&key) {
+                if self
+                    .state
+                    .lock()
+                    .await
+                    .replays
+                    .contains_key(&Self::operation(key))
+                {
                     Ok(Self::operation(key))
                 } else {
                     Err(ProviderError::NotFound(key.to_string()))
@@ -766,14 +803,7 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if self
-                    .state
-                    .lock()
-                    .await
-                    .replays
-                    .keys()
-                    .any(|key| Self::operation(*key) == operation)
-                {
+                if self.state.lock().await.replays.contains_key(&operation) {
                     Ok(OperationObservation {
                         id: operation,
                         phase: OperationPhase::Succeeded,
