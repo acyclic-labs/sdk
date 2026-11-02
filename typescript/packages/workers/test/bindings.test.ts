@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { materializeBindings } from "../src/bindings.js";
 import { ActorNamespaceBinding, type semantic } from "@acyclic-labs/actors";
 import { WorkerServiceBinding } from "../src/service.js";
+import { ResourceIdentity } from "@acyclic-labs/auth/addressing";
 const account = new TextEncoder().encode("account");
 const namespace: semantic.Binding = {name:"OBJECTS",capability:"grant",resource:"actors:/ClassOne",targetAccount:account,actorNamespace:"ClassOne"};
 const service: semantic.Binding = {name:"SERVICE",capability:"grant",resource:"workers:/worker",targetAccount:account,workerService:"worker"};
@@ -9,19 +10,26 @@ const service: semantic.Binding = {name:"SERVICE",capability:"grant",resource:"w
 test("deployment declarations become scoped namespace and private service handles after Rust admission", async () => {
   let factories = 0;
   const requests: unknown[] = [];
+  const record = (request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest) => {
+    expect(request.accountId).toEqual(account);
+    requests.push({...request, accountId: Uint8Array.from(request.accountId)});
+    // A transport owns these request bytes, never the handle's retained scope.
+    if (request.accountId instanceof Uint8Array) request.accountId.fill(120);
+    return {status:200,headers:[],body:request.body};
+  };
   let actorReads = 0, workerReads = 0;
   const actorTransport = {get invokeActor() {
     actorReads++;
     return async function(this: unknown, request: semantic.InvokeActorRequest) {
       expect(this).toBe(actorTransport);
-      requests.push(request); return {status:200,headers:[],body:request.body};
+      return record(request);
     };
   }};
   const workerTransport = {get invokeWorker() {
     workerReads++;
     return async function(this: unknown, request: semantic.InvokeWorkerRequest) {
       expect(this).toBe(workerTransport);
-      requests.push(request); return {status:200,headers:[],body:request.body};
+      return record(request);
     };
   }};
   const authority = {
@@ -40,16 +48,28 @@ test("deployment declarations become scoped namespace and private service handle
   expect(env.OBJECTS).toBeInstanceOf(ActorNamespaceBinding); expect(env.SERVICE).toBeInstanceOf(WorkerServiceBinding);
   const objects = env.OBJECTS as ActorNamespaceBinding;
   const worker = env.SERVICE as WorkerServiceBinding;
+  const exposed = worker.identity.toFields();
+  exposed.account.fill(121); exposed.id.fill(122);
   const actor = objects.get(objects.idFromName("same"));
   expect([actorReads,workerReads]).toEqual([1,1]);
   // Existing handles retain the original callable and receiver across a wait.
   for (const [transport, method] of [[actorTransport,"invokeActor"],[workerTransport,"invokeWorker"]] as const) {
     Object.defineProperty(transport, method, {get() { throw new Error("substituted invocation producer"); }});
   }
-  await actor.rpc("actorCall", new Uint8Array([1]));
-  await worker.rpc("workerCall", new Uint8Array([2]));
-  await actor.rpc("actorWarm", new Uint8Array([3]));
-  await worker.rpc("workerWarm", new Uint8Array([4]));
+  const accountField = Object.getOwnPropertyDescriptor(ResourceIdentity.prototype,"account")!;
+  let projections = 0;
+  Object.defineProperty(ResourceIdentity.prototype,"account", {...accountField, get() {
+    projections++;
+    return accountField.get!.call(this);
+  }});
+  try {
+    await actor.rpc("actorCall", new Uint8Array([1]));
+    await worker.rpc("workerCall", new Uint8Array([2]));
+    await actor.rpc("actorWarm", new Uint8Array([3]));
+    await worker.rpc("workerWarm", new Uint8Array([4]));
+    // Negative control: the former getter repeats the real Rust identity decode.
+    expect(projections).toBe(0);
+  } finally { Object.defineProperty(ResourceIdentity.prototype,"account", accountField); }
   expect([actorReads,workerReads]).toEqual([1,1]);
   expect(requests).toHaveLength(4);
   expect(requests.slice(0,2)).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
