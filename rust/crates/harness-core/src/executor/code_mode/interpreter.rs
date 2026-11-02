@@ -31,6 +31,16 @@ pub(super) async fn run(
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
 ) -> Result<Value, String> {
+    let compiled = crate::config::compile_module("code.ts", code.as_bytes())?;
+    if let Some(import) = compiled
+        .imports
+        .iter()
+        .find(|name| name.as_str() != "acyclic")
+    {
+        return Err(format!(
+            "code.ts imports {import}: effective file imports are not bound"
+        ));
+    }
     let bridge = allocator.clone();
     let runtime = AsyncRuntime::new_with_alloc(allocator).map_err(|error| error.to_string())?;
     runtime.set_memory_limit(MEMORY_BYTES).await;
@@ -115,7 +125,8 @@ pub(super) async fn run(
             let bridge: rquickjs::Object = setup.call((rpc, definitions))?;
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
-            let module = Module::declare(ctx.clone(), "code", code)?;
+            Module::declare(ctx.clone(), "acyclic", include_str!("acyclic.mjs"))?;
+            let module = Module::declare(ctx.clone(), "code.ts", compiled.script)?;
             let (module, evaluated) = module.eval()?;
             let evaluated: Promise = protect.call((evaluated,))?;
             let result = async {
@@ -193,6 +204,130 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn acyclic_files_use_the_real_conditional_publisher_and_pinned_reader()
+    -> crate::Result<()> {
+        use crate::{
+            Capabilities, OperationId,
+            conversation::{Limits, VolumeOperation},
+            runtime::{Bindings, RuntimeScope, ToolContext},
+            tool::ToolInvocation,
+        };
+        use std::sync::Arc;
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+        let content = storage.content_bindings();
+        let grants = Capabilities::new([
+            content
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+            content
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+            "tool:call:read".into(),
+            "tool:call:write".into(),
+        ]);
+        let task = Arc::new(
+            Bindings {
+                scope: RuntimeScope::new(
+                    grants,
+                    Limits {
+                        file_bytes: 65536,
+                        render_bytes: 4096,
+                        ..Limits::default()
+                    },
+                )?,
+                content: Some(content.clone()),
+                ..Bindings::local()
+            }
+            .build()?
+            .agent_context(&Capabilities::default(), content)?,
+        );
+        let code = r#"
+            import {read, write, spawn, fork, DeniedError, ConflictError} from 'acyclic';
+            const first = await write('file.txt', 'one\r\nβ\n', 'absent');
+            const file = await read('file.txt');
+            const lines = file.lines(1, 1);
+            await write('file.txt', 'changed', first);
+            let conflict;
+            try { await write('file.txt', 'wrong', file.version); }
+            catch (error) { if (!(error instanceof ConflictError)) throw error; conflict = error.current.text(); }
+            try { await write('file.txt', 'wrong', 'absent'); throw new Error('create replaced a file'); }
+            catch (error) { if (!(error instanceof ConflictError)) throw error; }
+            const absent = await read('missing.txt');
+            const stubs = [];
+            for (const create of [spawn, fork]) {
+                try { await create(); throw new Error('creation succeeded'); }
+                catch (error) { if (!(error instanceof DeniedError)) throw error; stubs.push(error.reason); }
+            }
+            await write('agent.ts', {model: 'example/model'}, 'any');
+            const moduleText = (await read('agent.ts')).text();
+            export default {lines, conflict, absent, stubs, moduleText};
+        "#;
+        let (send, mut receive) = tokio::sync::mpsc::channel(1);
+        let (result, served) = tokio::join!(
+            acyclic_native_runtime::blocking_future(super::run(
+                code.into(),
+                acyclic_stream::OwnedBytes::from_static(b"[]"),
+                send,
+                tokio_util::sync::CancellationToken::new(),
+                4096,
+                super::super::allocator::EngineAllocator::new(None),
+                super::INTERRUPT_BUDGET,
+            )),
+            async move {
+                let mut count = 0;
+                while let Some(request) = receive.recv().await {
+                    let super::Request::Tool(call) = request else {
+                        panic!("unexpected log");
+                    };
+                    let name = call
+                        .name
+                        .value
+                        .strip_prefix("acyclic.")
+                        .expect("canonical action");
+                    let tool = match name {
+                        "read" => crate::tool::files::read()?,
+                        "write" => crate::tool::files::write()?,
+                        _ => panic!("unexpected action"),
+                    };
+                    count += 1;
+                    let invocation = ToolInvocation {
+                        operation_id: OperationId::new(),
+                        call_id: count.to_string(),
+                        name: name.into(),
+                        arguments: serde_json::from_str(&call.arguments.value).unwrap(),
+                    };
+                    let context = ToolContext::new(
+                        task.clone(),
+                        invocation.operation_id,
+                        &invocation.call_id,
+                    )?;
+                    let reply = match tool.executor.execute(invocation, Some(context)).await {
+                        Ok(result) => serde_json::json!({"ok":true,"value":result.value}),
+                        Err(error) => serde_json::json!({"ok":false,"value":{
+                            "class":crate::executor::ToolErrorClass::of(&error),"message":error.to_string(),
+                        }}),
+                    };
+                    let _ = call
+                        .reply
+                        .send(Some(serde_json::to_vec(&reply).unwrap().into()));
+                }
+                Ok::<_, crate::Error>(count)
+            }
+        );
+        assert_eq!(
+            result.unwrap().unwrap(),
+            serde_json::json!({
+                "lines":["β"],"conflict":"changed","absent":null,
+                "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
+            })
+        );
+        assert_eq!(served?, 10);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn module_default_is_awaited_and_script_completion_is_not_a_result() {
         for (code, expected) in [

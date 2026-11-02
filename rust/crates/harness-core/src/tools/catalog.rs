@@ -157,8 +157,8 @@ pub(crate) static READ: ToolSpec = ToolSpec {
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-6",
-    description: "Write UTF-8 content to a workspace path, creating or replacing the file",
+    revision: "portable-7",
+    description: "Write UTF-8 content to a workspace path. ifVersion any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,

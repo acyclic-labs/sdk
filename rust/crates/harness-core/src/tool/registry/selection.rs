@@ -1,6 +1,25 @@
 use super::*;
 
 impl ToolRegistry {
+    /// The selected canonical executor, including when presented through native
+    /// declarations. Hidden capabilities remain unavailable. Native adapters all
+    /// retain the same originally selected capability and revision.
+    pub(crate) fn capability(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Tool>> {
+        match self.data.selected.get(name) {
+            Some(ModelSelection::Native(natives)) => match natives.first() {
+                Some(native) => Ok(self
+                    .get(native, None, io)?
+                    .and_then(|tool| tool.executor.capability())),
+                None => Ok(None),
+            },
+            _ => self.get(name, None, io),
+        }
+    }
+
     pub(crate) fn pin_model_definitions(
         &mut self,
         definitions: &[ToolDefinition],

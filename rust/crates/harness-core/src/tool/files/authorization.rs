@@ -146,6 +146,21 @@ impl FileTool {
             }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
+                if let Some(version) = input
+                    .0
+                    .if_version
+                    .as_deref()
+                    .filter(|version| !matches!(*version, "any" | "absent"))
+                {
+                    return self.path_source(
+                        scope,
+                        context,
+                        &input.0.path,
+                        Some(version),
+                        work,
+                        io,
+                    );
+                }
                 self.public_path(&input.0.path, io)?;
                 if input.0.path.len() > scope.limits().path_bytes {
                     return Err(error(

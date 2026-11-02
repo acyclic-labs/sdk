@@ -23,6 +23,8 @@ pub use types::{
 #[cfg(not(target_arch = "wasm32"))]
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use evaluate::compile_module;
+#[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{Evaluated, Surface, Tree, compose, evaluate};
 
 /// Evaluates and decodes a `policy.ts` holding `source`: plain data, so a
