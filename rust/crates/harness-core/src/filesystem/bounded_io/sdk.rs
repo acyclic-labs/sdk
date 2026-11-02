@@ -88,6 +88,26 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
 }
 
 impl PreparationIo {
+    /// Retain returned backing on the same preparation owner. Native bytes
+    /// already carry their original allocation; standalone reads must retain
+    /// capacity after their temporary filesystem accounting frame retires.
+    pub(crate) fn retain_read_bytes(
+        &self,
+        bytes: acyclic_stream::OwnedBytes,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        if self.original_native_work().is_none() {
+            let capacity = bytes.retained_capacity().ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    Some(self),
+                    crate::wire::ErrorCode::Unsupported,
+                    "content producer does not expose its owned capacity",
+                )
+            })?;
+            self.retain_owned(capacity as u64)?;
+        }
+        Ok(bytes)
+    }
+
     /// Interpret only the original missing-path result as optional absence.
     /// Missing authority and every other failure remain refusals, even when
     /// their public code is also NotFound. Original accounting still settles
