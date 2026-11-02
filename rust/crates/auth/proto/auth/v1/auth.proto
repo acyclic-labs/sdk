@@ -89,6 +89,13 @@ enum AuditDecision {
   AUDIT_DECISION_CHANNEL_OPEN = 5;
 }
 
+enum IssuanceRefusal {
+  ISSUANCE_REFUSAL_UNSPECIFIED = 0;
+  ISSUANCE_REFUSAL_DENIED = 1;
+  ISSUANCE_REFUSAL_CONFLICT = 2;
+  ISSUANCE_REFUSAL_ISSUER_CHANGED = 3;
+}
+
 enum PrincipalKind {
   PRINCIPAL_KIND_UNSPECIFIED = 0;
   PRINCIPAL_KIND_USER = 1;
@@ -284,6 +291,31 @@ message GrantSet {
 
 message Holder {
   optional string account = 1;
+}
+
+message IssuanceRejected {
+  IssuanceRefusal reason = 1;
+}
+
+message IssuanceReply {
+  uint32 version = 1;
+  bytes request_digest = 2;
+  oneof decision {
+    CertificateChain accepted = 3;
+    IssuanceRejected refused = 4;
+    IssuanceUnknown unknown = 5;
+  }
+}
+
+message IssuanceRequest {
+  uint32 version = 1;
+  bytes operation_key = 2;
+  bytes issuer = 3;
+  string environment = 4;
+  CertifiedKey claims = 5;
+}
+
+message IssuanceUnknown {
 }
 
 message KeyCertificate {
