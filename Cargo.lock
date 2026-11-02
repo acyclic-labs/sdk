@@ -478,9 +478,12 @@ name = "acyclic-guest-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-objects",
+ "acyclic-stream",
  "libfuzzer-sys",
  "serde_json",
+ "tonic",
 ]
 
 [[package]]
