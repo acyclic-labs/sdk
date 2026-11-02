@@ -91,6 +91,19 @@ resume can deliver unconsumed input using the original committed cursor.
 
 ## Guest streaming fetch
 
+`domain::InvokeActorHeader` and `InvokeWorkerHeader` carry the existing
+canonical invocation metadata with an absent body field. Their checked
+conversions reject a buffered body; `InvokeActorRequest::into_parts` and the
+Worker equivalent move an existing body out without a payload copy or
+allocation. The original address, ordering, binding and deployment provenance
+stay in the header and use the existing wire encoding.
+
+Use that header with the original admitted Session input owner. It grants no
+authority or byte capacity. The serving host still supplies its original
+invocation admission and guest context before attaching the credited body to
+`GuestActivation::fetch`; header construction performs no dispatch or input
+polling.
+
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
 frames, terminal trailers and cancellation when dropped. Existing buffered
 bytes use `GuestBody::Buffered`; lazy data and trailers share `GuestBody::Frames`.

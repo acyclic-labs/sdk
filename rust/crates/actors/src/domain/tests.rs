@@ -108,30 +108,121 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
 
 #[test]
 fn invoke_round_trips_without_rewriting_wire_fields() {
+    use prost::Message as _;
     let wire = wire::InvokeActorRequest {
         deployment_envelope: Vec::new(),
-        invocation_order: None,
-        namespace: None,
-        account_id: Vec::new(),
-        location_hint: None,
-        binding_name: None,
-        rpc_method: None,
+        invocation_order: Some(wire::InvocationOrder {
+            session: "0123456789abcdef0123456789abcdef".into(),
+            sequence: 7,
+        }),
+        namespace: Some("original".into()),
+        account_id: b"original-account".to_vec(),
+        location_hint: Some("weur".into()),
+        binding_name: Some("original-binding".into()),
+        rpc_method: Some("original-method".into()),
         actor_id: "actor-1".into(),
         method: String::new(),
         url: String::new(),
-        body: vec![0, 1, 2],
+        body: vec![0xff; 64 * 1024],
         headers: vec![wire::Header {
             name: "x-test".into(),
             value: "ok".into(),
         }],
     };
-    let typed = InvokeActorRequest::try_from(wire.clone()).ok();
-    assert!(typed.is_some());
-    let Some(typed) = typed else {
-        return;
+    let typed = InvokeActorRequest::try_from(wire.clone()).expect("valid original request");
+    let original_body = typed.body().as_ptr();
+    let original_headers = typed.headers().as_ptr();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (header, body) = {
+        let mut parts = None;
+        let allocations = acyclic_test_support::measure(|| parts = Some(typed.into_parts()));
+        assert_eq!(
+            allocations.count_total, 0,
+            "splitting retains existing owners"
+        );
+        parts.expect("original request was split")
     };
-    let round_trip: wire::InvokeActorRequest = typed.into();
+    #[cfg(target_arch = "wasm32")]
+    let (header, body) = typed.into_parts();
+    assert_eq!(header.request().headers().as_ptr(), original_headers);
+    assert_eq!(
+        body.as_ptr(),
+        original_body,
+        "split must retain the original backing"
+    );
+    assert_eq!(body, wire.body);
+    assert!(header.request().body().is_empty());
+    let mut expected_header = wire.clone();
+    expected_header.body.clear();
+    let encoded_header: wire::InvokeActorRequest = header.into();
+    assert_eq!(encoded_header, expected_header);
+    assert!(
+        wire.encoded_len() >= encoded_header.encoded_len() + body.len(),
+        "whole-request negative control includes the buffered body"
+    );
+    assert_eq!(
+        wire::InvokeActorRequest::from(
+            InvokeActorHeader::try_from(encoded_header).expect("body-free canonical header")
+        ),
+        expected_header,
+    );
+    assert!(
+        InvokeActorHeader::try_from(wire.clone()).is_err(),
+        "mixed inputs must refuse"
+    );
+    let typed = InvokeActorRequest::try_from(wire.clone()).expect("valid original request");
+    assert!(InvokeActorHeader::try_from(typed).is_err());
+    let round_trip: wire::InvokeActorRequest = InvokeActorRequest::try_from(wire.clone())
+        .expect("valid original request")
+        .into();
     assert_eq!(round_trip, wire);
+
+    let worker = wire::InvokeWorkerRequest {
+        worker_name: "worker-1".into(),
+        method: "POST".into(),
+        url: "/call".into(),
+        body,
+        headers: wire.headers,
+        account_id: wire.account_id,
+        binding_name: Some("original-binding".into()),
+        rpc_method: Some("original-method".into()),
+        deployment_envelope: wire.deployment_envelope,
+    };
+    let typed =
+        InvokeWorkerRequest::try_from(worker.clone()).expect("valid original worker request");
+    let original_body = typed.body().as_ptr();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (header, body) = {
+        let mut parts = None;
+        let allocations = acyclic_test_support::measure(|| parts = Some(typed.into_parts()));
+        assert_eq!(
+            allocations.count_total, 0,
+            "splitting retains existing owners"
+        );
+        parts.expect("original request was split")
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (header, body) = typed.into_parts();
+    assert_eq!(body.as_ptr(), original_body);
+    assert_eq!(body, worker.body);
+    assert!(header.request().body().is_empty());
+    let mut expected_header = worker.clone();
+    expected_header.body.clear();
+    let encoded_header: wire::InvokeWorkerRequest = header.into();
+    assert_eq!(encoded_header, expected_header);
+    assert_eq!(
+        wire::InvokeWorkerRequest::from(
+            InvokeWorkerHeader::try_from(encoded_header).expect("body-free worker header")
+        ),
+        expected_header,
+    );
+    assert!(InvokeWorkerHeader::try_from(worker.clone()).is_err());
+    assert!(
+        InvokeWorkerHeader::try_from(
+            InvokeWorkerRequest::try_from(worker).expect("valid worker request")
+        )
+        .is_err()
+    );
 }
 
 #[test]
