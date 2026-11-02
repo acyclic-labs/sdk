@@ -35,6 +35,18 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
+    // Only the selected settings entry may fall back to the seed on an
+    // invalid file. Enabled plugin files and imports retain their read errors.
+    async fn entry(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
+        match self.home(path).await {
+            Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            }) => Ok(None),
+            result => result,
+        }
+    }
+
     async fn home(&self, path: &str) -> Result<Option<(String, Vec<u8>)>> {
         match self
             .volumes
@@ -99,16 +111,7 @@ pub(super) async fn admit(
         generation: "",
         bytes: crate::seed::file(config::AGENT),
     };
-    let home = match tree.home(config::AGENT).await {
-        Ok(home) => home,
-        // Selected-path refusal is invalid user settings. Storage, authority,
-        // cancellation and metadata failures keep their original errors.
-        Err(Error::ToolRejected {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        }) => None,
-        Err(error) => return Err(error),
-    };
+    let home = tree.entry(config::AGENT).await?;
     let Some((version, bytes)) = home else {
         return settle(&[seed], &tree, started, resolve, compaction)
             .await
@@ -223,9 +226,13 @@ pub(super) async fn plugins(
         generation: "",
         bytes: crate::seed::file(MANIFEST),
     };
-    let seeded =
-        |error: Error| Error::Invalid(format!("the seed's plugins are not admissible: {error}"));
-    let Some((version, bytes)) = tree.home(MANIFEST).await? else {
+    let seeded = |error: Error| match error {
+        Error::Invalid(reason) => {
+            Error::Invalid(format!("the seed's plugins are not admissible: {reason}"))
+        }
+        error => error,
+    };
+    let Some((version, bytes)) = tree.entry(MANIFEST).await? else {
         return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
     let layers = [
@@ -238,13 +245,14 @@ pub(super) async fn plugins(
     ];
     let (rules, outcome) = match load(&tree, &layers, &enabler).await {
         Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
-        Err(error) => (
+        Err(Error::Invalid(reason)) => (
             load(&tree, &layers[..1], &enabler)
                 .await
                 .map_err(seeded)?
                 .rules,
-            (AdmissionStatus::Invalid, Some(error.to_string())),
+            (AdmissionStatus::Invalid, Some(reason)),
         ),
+        Err(error) => return Err(error),
     };
     record(volumes, agent, (MANIFEST, &version), outcome, clock).await?;
     Ok(rules)
