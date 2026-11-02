@@ -1264,8 +1264,16 @@ fn artifacts_are_exactly_the_declared_entry_and_assets() -> Result<(), Box<dyn s
         role: AssetRole::Module,
     });
     let rule = |manifest: &DeploymentManifest, artifact: &[u8], files: &[(String, Vec<u8>)]| {
-        verify_artifact(manifest, "production", "agent", artifact, files)
-            .map_err(|error| error.rule)
+        verify_artifact(
+            manifest,
+            "production",
+            "agent",
+            artifact,
+            files
+                .iter()
+                .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+        )
+        .map_err(|error| error.rule)
     };
     let file = |bytes: &[u8]| vec![("harness.wasm".to_owned(), bytes.to_vec())];
     assert_eq!(rule(&manifest, &artifact, &file(&module)), Ok(()));
