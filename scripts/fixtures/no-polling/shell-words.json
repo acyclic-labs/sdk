@@ -16,6 +16,11 @@
       "capture": "set -- s\\l\\e\\e\\p; printf \"%s\\n\" \"$@\"",
       "word": "s\\l\\e\\e\\p",
       "stdout": "sleep\n"
+    },
+    {
+      "capture": "set -- \\sleep; printf \"%s\\n\" \"$@\"",
+      "word": "\\sleep",
+      "stdout": "sleep\n"
     }
   ]
 }
