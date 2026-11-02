@@ -628,7 +628,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     // or notify the parent. A failed conditional leaves the same key unspent.
     let request = lower(
         &step,
-        (cursor + 1, 0),
+        cursor + 1,
         intent_key("partial-diagnostic", &["one"])?,
     )?;
     for prefix in 0..2 {

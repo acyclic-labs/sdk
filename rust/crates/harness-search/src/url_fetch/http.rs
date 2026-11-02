@@ -1,6 +1,4 @@
-use super::{
-    FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
-};
+use super::{FetchProvider, FetchRequest, FetchResponse, rejection, validate_url_text};
 use crate::http::transport_error;
 use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
@@ -150,7 +148,11 @@ fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
 
 fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
     // Fund the URL serializer's old/replacement text and host representation while parsing.
-    let held = allocation(work, length * 4 + std::mem::size_of::<Url>() + 128)?;
+    let bytes = length
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Url>() + 128))
+        .ok_or_else(|| rejection(work, "fetch URL allocation overflows"))?;
+    let held = allocation(work, bytes)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
@@ -189,7 +191,6 @@ fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
         || endpoint.fragment().is_some()
-        || endpoint.as_str().len() > MAXIMUM_URL_BYTES
     {
         return Err(rejection(work, "invalid fetch URL"));
     }
