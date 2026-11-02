@@ -2,6 +2,114 @@
 use super::*;
 use crate::runtime::{Bindings, TaskContext, ToolContext};
 
+#[tokio::test]
+async fn native_notebook_insert_ids_follow_operations_through_publication_and_replay() -> Result<()>
+{
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 8192).await?;
+    storage
+        .stage(
+            OperationId::new(),
+            "cells.ipynb",
+            br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+            "application/x-ipynb+json",
+            "cells.ipynb",
+        )
+        .await?;
+    run_admitted_file_case(&storage, Limits::default(), |task| async move {
+        let task = Arc::new(task);
+        let mut tools = crate::tools::defaults()?;
+        crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Anthropic)?;
+        let tool = tools
+            .get("NotebookEdit", None, None)?
+            .ok_or_else(|| Error::NotFound("NotebookEdit".into()))?;
+        let mut expected = Vec::new();
+        let mut original = None;
+        for (ordinal, call_id, anchor) in [
+            (1, "wire:🦀".to_owned(), None),
+            (2, "reused".to_owned(), Some(1)),
+            (3, "reused".to_owned(), None),
+            (4, "long".repeat(40), Some(2)),
+        ] {
+            ToolInvocation::validate_identity(&call_id, Some("NotebookEdit"), &mut None)?;
+            let operation_id = OperationId::from_bytes([ordinal; 16]);
+            let id = operation_id.to_string();
+            let mut arguments = json!({
+                "notebook_path":"cells.ipynb", "edit_mode":"insert",
+                "cell_type":"code", "new_source":format!("value = {ordinal}"),
+            });
+            if let Some(anchor) = anchor {
+                arguments["cell_id"] = json!(OperationId::from_bytes([anchor; 16]).to_string());
+            }
+            let invocation = ToolInvocation {
+                operation_id,
+                call_id,
+                name: "NotebookEdit".into(),
+                arguments,
+            };
+            let canonical = tool.executor.canonical(&invocation)?.unwrap();
+            assert_eq!(canonical.operation_id, operation_id);
+            assert_eq!(canonical.call_id, invocation.call_id);
+            assert_eq!(canonical.arguments["notebook"]["id"], id);
+            assert_eq!(
+                tool.executor.canonical(&invocation)?,
+                Some(canonical.clone())
+            );
+            let context = ToolContext::new(task.clone(), operation_id, &invocation.call_id)?;
+            let result = tool
+                .executor
+                .execute(invocation.clone(), Some(context.clone()))
+                .await?;
+            let published: crate::tool::files::FileResult =
+                serde_json::from_value(result.value.clone()).unwrap();
+            let bytes = task.read_file(&published.file, None).await?;
+            let notebook: Value = serde_json::from_slice(bytes.as_ref()).unwrap();
+            let position = anchor.map_or(0, |anchor| {
+                let anchor = OperationId::from_bytes([anchor; 16]).to_string();
+                expected.iter().position(|id| id == &anchor).unwrap() + 1
+            });
+            expected.insert(position, id);
+            assert_eq!(
+                notebook["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|cell| cell["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+            if original.is_none() {
+                original = Some((invocation, canonical, context, result));
+            }
+        }
+        // The original receipt survives later insertions. Reconciliation must
+        // not select the current head or try to insert the same cell again.
+        let (invocation, mut canonical, context, result) = original.unwrap();
+        assert_eq!(
+            tool.executor
+                .reconcile(invocation, Some(context))
+                .await?
+                .unwrap()
+                .value,
+            result.value,
+        );
+        // A new operation cannot bypass the canonical duplicate-ID refusal by
+        // presenting the first operation's already-published cell ID.
+        canonical.operation_id = OperationId::from_bytes([5; 16]);
+        let context = ToolContext::new(task.clone(), canonical.operation_id, &canonical.call_id)?;
+        let error = tool
+            .executor
+            .capability()
+            .unwrap()
+            .executor
+            .execute(canonical, Some(context))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+        Ok(())
+    })
+    .await
+}
+
 #[test]
 fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Result<()> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};

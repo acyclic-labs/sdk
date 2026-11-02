@@ -158,6 +158,7 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
     .await?;
     // Grants name capabilities; each is offered as its family's declarations.
     assert_eq!(offered, ["Edit", "NotebookEdit", "Read", "Bash", "Write"]);
+    let inserted_id = invocations[1].operation_id.to_string();
     assert_eq!(
         ran(&invocations),
         [
@@ -169,7 +170,7 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
             (
                 "toolu_2".into(),
                 "edit".into(),
-                json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"index","index":0},"id":"toolu_2","cell_type":"code","source":"x"}}),
+                json!({"path":"n.ipynb","notebook":{"kind":"insert","cell":{"kind":"index","index":0},"id":inserted_id,"cell_type":"code","source":"x"}}),
             ),
             (
                 "toolu_3".into(),
@@ -180,7 +181,11 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
     );
     assert_eq!(
         results,
-        include_str!("native_tools/anthropic.json").trim_end()
+        // The operation UUID is runtime-owned, while the surrounding wire
+        // result and the model's call ID remain fixed by the scripted call.
+        include_str!("native_tools/anthropic.json")
+            .trim_end()
+            .replace("\"id\":\"toolu_2\"", &format!("\"id\":\"{inserted_id}\""))
     );
     Ok(())
 }

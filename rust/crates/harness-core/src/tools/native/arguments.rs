@@ -3,14 +3,15 @@
 //! here knows a family.
 //!
 //! A template is JSON. `"$name"` is the native argument `name` and `"$@call_id"`
-//! the call's ID. Four single-key operators compute values:
+//! the model's call ID. `"$@operation_id"` is the runtime-owned operation UUID,
+//! stable through execution and reconciliation. Four single-key operators compute values:
 //! `{"$one_based": name}` (a 1-based line, made 0-based),
 //! `{"$through": [first, last]}` (the count of an inclusive 1-based span; an
 //! absent `first` is line 1), `{"$case": name, "$default": value, value: template, ...}`
 //! and `{"$if": name, "then": template, "else": template}`. Every other value is
 //! literal. An absent argument leaves its member out, and an object whose
 //! references are all absent is itself absent.
-use crate::{Error, Result};
+use crate::{Error, Result, tool::ToolInvocation};
 use serde_json::{Map, Value};
 
 /// One declaration's checked template and refused arguments.
@@ -27,8 +28,9 @@ impl Arguments {
     }
 
     /// The canonical arguments for one native call.
-    pub(crate) fn adapt(&self, call_id: &str, native: &Value) -> Result<Value> {
-        let fields = native
+    pub(crate) fn adapt(&self, invocation: &ToolInvocation) -> Result<Value> {
+        let fields = invocation
+            .arguments
             .as_object()
             .ok_or_else(|| Error::Invalid("native tool arguments are not an object".into()))?;
         if let Some(name) = self
@@ -38,12 +40,12 @@ impl Arguments {
         {
             return Err(Error::Invalid(format!("{name} is not supported here")));
         }
-        Ok(resolve(&self.template, &(fields, call_id))?
+        Ok(resolve(&self.template, &(fields, invocation))?
             .unwrap_or_else(|| Value::Object(Map::new())))
     }
 }
 
-type Call<'a> = (&'a Map<String, Value>, &'a str);
+type Call<'a> = (&'a Map<String, Value>, &'a ToolInvocation);
 
 /// Present and meaningful: not null, false, zero or empty.
 fn set(value: &Value) -> bool {
@@ -52,11 +54,12 @@ fn set(value: &Value) -> bool {
         && value.as_str() != Some("")
 }
 
-fn field<'a>((fields, call_id): &Call<'a>, name: &str) -> Option<Value> {
-    if name == "@call_id" {
-        return Some(Value::String((*call_id).to_owned()));
+fn field<'a>((fields, invocation): &Call<'a>, name: &str) -> Option<Value> {
+    match name {
+        "@call_id" => Some(Value::String(invocation.call_id.clone())),
+        "@operation_id" => Some(Value::String(invocation.operation_id.to_string())),
+        _ => fields.get(name).filter(|value| !value.is_null()).cloned(),
     }
-    fields.get(name).filter(|value| !value.is_null()).cloned()
 }
 
 fn line(call: &Call<'_>, name: &str) -> Result<Option<u64>> {

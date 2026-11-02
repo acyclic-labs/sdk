@@ -34,7 +34,7 @@ tools:
         replace: {kind: replace, cell: {kind: id, id: $cell_id}, source: $new_source, cell_type: $cell_type}
         insert:
           $if: cell_id
-          then: {kind: insert, cell: {kind: id, id: $cell_id}, after: true, id: $@call_id, cell_type: $cell_type, source: $new_source}
-          else: {kind: insert, cell: {kind: index, index: 0}, id: $@call_id, cell_type: $cell_type, source: $new_source}
+          then: {kind: insert, cell: {kind: id, id: $cell_id}, after: true, id: $@operation_id, cell_type: $cell_type, source: $new_source}
+          else: {kind: insert, cell: {kind: index, index: 0}, id: $@operation_id, cell_type: $cell_type, source: $new_source}
         delete: {kind: delete, cell: {kind: id, id: $cell_id}}
 ---
