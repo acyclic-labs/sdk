@@ -82,15 +82,19 @@ fn namespace_failure(error: &crate::kernel::NamespacePathError) -> CallbackFailu
     }
 }
 
-fn filesystem_failure(error: &crate::FsError) -> CallbackFailure {
+pub(in crate::native_mount) fn filesystem_failure(error: &crate::FsError) -> CallbackFailure {
+    use crate::{FsError as E, kernel::GenerationMutationError as M};
     use CallbackFailure as F;
     match error {
-        crate::FsError::Cancelled(_) => F::Cancelled,
-        crate::FsError::SourceSnapshotStale => F::Stale,
-        crate::FsError::NativeKernel(error) => materialization_failure(error),
-        crate::FsError::NotFound => F::NotFound,
-        crate::FsError::NotDirectory => F::NotDirectory,
-        crate::FsError::HandleAllocationFailed => F::OutOfMemory,
+        E::Cancelled(_) => F::Cancelled,
+        E::SourceSnapshotStale => F::Stale,
+        E::NativeKernel(error) => materialization_failure(error),
+        E::CreationRejected | E::Mutation(M::AlreadyExists) => F::AlreadyExists,
+        E::NotFound | E::Mutation(M::MissingParent | M::MissingSource) => F::NotFound,
+        E::NotDirectory | E::Mutation(M::NotDirectory) => F::NotDirectory,
+        E::Mutation(M::IsDirectory) => F::IsDirectory,
+        E::Mutation(M::DirectoryNotEmpty) => F::DirectoryNotEmpty,
+        E::HandleAllocationFailed => F::OutOfMemory,
         _ => F::Io,
     }
 }

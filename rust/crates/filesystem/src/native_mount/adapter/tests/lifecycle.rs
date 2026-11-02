@@ -70,6 +70,7 @@ type MemorySource =
 
 #[test]
 fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::GenerationMutationError;
     use crate::native_mount::shared::outcome::{
         CallbackFailure as F, source_failure, source_stops_mount,
     };

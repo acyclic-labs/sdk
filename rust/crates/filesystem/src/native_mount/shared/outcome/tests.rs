@@ -226,7 +226,7 @@ fn every_backend_adapter_answers_one_outcome_sequence_alike() {
         Cancelled, Denied, Invalid, Io, NotFound, OutOfMemory, ReadOnly, Stale, Unsupported,
     };
     let source = |error| NativeMountError::Source(error);
-    let sequence: [(NativeMountError, CallbackFailure, bool); 15] = [
+    let mut sequence = vec![
         (source(MountSourceError::NotFound), NotFound, false),
         (source(MountSourceError::AccessDenied), Denied, false),
         (source(MountSourceError::ReadOnly), ReadOnly, false),
@@ -285,6 +285,50 @@ fn every_backend_adapter_answers_one_outcome_sequence_alike() {
             true,
         ),
     ];
+    use crate::{FsError as E, kernel::GenerationMutationError as M};
+    for transport in 0..4 {
+        for (cause, expected, stops) in [
+            (E::CreationRejected, CallbackFailure::AlreadyExists, false),
+            (E::NotFound, NotFound, false),
+            (E::NotDirectory, CallbackFailure::NotDirectory, false),
+            (
+                E::Mutation(M::AlreadyExists),
+                CallbackFailure::AlreadyExists,
+                false,
+            ),
+            (E::Mutation(M::MissingParent), NotFound, false),
+            (E::Mutation(M::MissingSource), NotFound, false),
+            (
+                E::Mutation(M::NotDirectory),
+                CallbackFailure::NotDirectory,
+                false,
+            ),
+            (
+                E::Mutation(M::IsDirectory),
+                CallbackFailure::IsDirectory,
+                false,
+            ),
+            (
+                E::Mutation(M::DirectoryNotEmpty),
+                CallbackFailure::DirectoryNotEmpty,
+                false,
+            ),
+            (E::HandleAllocationFailed, OutOfMemory, true),
+            (E::Work(crate::WorkError::Overflow), Io, true),
+        ] {
+            let error = match transport {
+                0 => source(MountSourceError::from(cause)),
+                1 => source(MountSourceError::Filesystem(cause)),
+                2 => source(MountSourceError::WorkspaceCause(
+                    crate::WorkspaceError::Filesystem(cause),
+                )),
+                _ => NativeMountError::Demand(crate::DemandError::Mount(Box::new(
+                    MountSourceError::Filesystem(cause),
+                ))),
+            };
+            sequence.push((error, expected, stops));
+        }
+    }
     for (error, expected, stops) in &sequence {
         assert_eq!(callback_failure(error), *expected, "{error:?}");
         assert_eq!(stops_mount(error), *stops, "{error:?}");
