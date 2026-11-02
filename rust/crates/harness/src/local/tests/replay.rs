@@ -20,15 +20,16 @@ fn agent(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-/// A replayed tool call must never reach its executor.
-struct Refuse;
-impl ToolExecutor for Refuse {
+/// Fails every call with its message. A replay registers one that says the
+/// tool ran, so any replayed call reaching its executor changes the run.
+struct Fails(&'static str);
+impl ToolExecutor for Fails {
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
         _: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Err(Error::Invalid("replayed tool ran".into())) })
+        Box::pin(async { Err(Error::Invalid(self.0.into())) })
     }
     fn reconcile<'a>(
         &'a self,
@@ -78,7 +79,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
 }
 
 /// A source run whose first turn reasons with native bytes and calls a tool.
-async fn source() -> Result<Recording> {
+async fn source(tool: Tool) -> Result<Recording> {
     let reasoning = ReasoningBlock {
         kind: ReasoningKind::Signature,
         text: Some("plan".into()),
@@ -109,25 +110,29 @@ async fn source() -> Result<Recording> {
         ScriptedTurn::Text("answer 0".into()),
         ScriptedTurn::Text("answer 1".into()),
     ]);
-    let recording = run(provider, super::tool("example.echo"), &["first", "second"]).await?;
+    let recording = run(provider, tool, &["first", "second"]).await?;
     assert_eq!(recording.len(), 3);
     Ok(recording)
 }
 
-fn refused() -> Tool {
+fn failing(message: &'static str) -> Tool {
     let mut tool = super::tool("example.echo");
-    tool.executor = Arc::new(Refuse);
+    tool.executor = Arc::new(Fails(message));
     tool
+}
+
+fn refused() -> Tool {
+    failing("replayed tool ran")
 }
 
 #[tokio::test]
 async fn a_fresh_run_replays_its_source_without_the_model_or_its_tools() -> Result<()> {
-    let expected = source().await?;
+    let expected = source(super::tool("example.echo")).await?;
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        source().await?,
+        source(super::tool("example.echo")).await?,
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "second"]).await?;
@@ -146,7 +151,7 @@ async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
         live.clone(),
-        source().await?,
+        source(super::tool("example.echo")).await?,
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "changed"]).await?;
@@ -159,5 +164,22 @@ async fn a_changed_input_goes_live_at_its_first_step_and_stays_live() -> Result<
     // Only the unmatched second answer stays unused.
     assert_eq!(replay.unused(), 1);
     assert_eq!(replayed.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
+    let expected = source(failing("source failure")).await?;
+    let live = super::scripted([]);
+    let divergences = Arc::new(Divergences::default());
+    let replay = Arc::new(RecordedModel::new(
+        live.clone(),
+        source(failing("source failure")).await?,
+        divergences.clone(),
+    ));
+    let replayed = run(replay, refused(), &["first", "second"]).await?;
+    assert_eq!(divergences.taken(), []);
+    assert!(live.requests().is_empty());
+    assert_eq!(replayed, expected);
     Ok(())
 }

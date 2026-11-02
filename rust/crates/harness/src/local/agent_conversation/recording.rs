@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     executor::{ExecutionEvent, ExecutionPayloadField, ExecutionRecord},
-    model::{ModelEvent, RecordedCall, Recording, replay_key},
+    model::{ModelEvent, RecordedCall, RecordedToolOutcome, Recording, replay_key},
     tool::ToolResult,
 };
 
@@ -27,6 +27,19 @@ impl Input {
             self.completed.extend(self.started.take());
         }
         Ok(())
+    }
+
+    /// Attaches a settlement to the answer at `step` that made the call; a
+    /// summary never makes one.
+    fn tool(&mut self, step: u32, call_id: &str, outcome: RecordedToolOutcome) {
+        if let Some((_, _, call)) = self
+            .completed
+            .iter_mut()
+            .rev()
+            .find(|(_, recorded, _)| *recorded == step)
+        {
+            call.tools.push((call_id.to_owned(), outcome));
+        }
     }
 
     fn flush(&mut self, recording: &mut Recording) {
@@ -114,16 +127,22 @@ async fn observe(
             let result: ToolResult =
                 serde_json::from_slice(&payload(ExecutionPayloadField::Result).await?)
                     .map_err(failed)?;
-            // The answer at this step made the call; a summary never does.
-            if let Some((_, _, call)) = calls
-                .completed
-                .iter_mut()
-                .rev()
-                .find(|(_, recorded, _)| recorded == step)
-            {
-                call.tools.push((call_id.clone(), result));
-            }
+            calls.tool(*step, call_id, RecordedToolOutcome::Completed(result));
         }
+        // A refusal settles before dispatch and is decided again on replay.
+        ExecutionEvent::ToolFailed {
+            step,
+            call_id,
+            reason,
+            cause,
+        } if !reason.precedes_dispatch() => calls.tool(
+            *step,
+            call_id,
+            RecordedToolOutcome::Failed {
+                reason: *reason,
+                cause: cause.clone(),
+            },
+        ),
         _ => {}
     }
     Ok(())

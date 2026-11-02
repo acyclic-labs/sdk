@@ -62,6 +62,23 @@ impl<'io> StockExecution<'io> {
             ))
             .await?
         };
+        let replayed = match replayed {
+            Some(crate::model::RecordedToolOutcome::Failed { reason, cause }) => {
+                return self
+                    .settle_tool_cause(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        reason,
+                        cause,
+                    )
+                    .await
+                    .map(|content| ToolInvocationOutcome::Settled(content, None));
+            }
+            Some(crate::model::RecordedToolOutcome::Completed(result)) => Some(result),
+            None => None,
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let composed = if tool.executor.is_code_mode() {
             match self

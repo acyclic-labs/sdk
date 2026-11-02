@@ -11,8 +11,9 @@
 //! request matches only when the model would see the same content it saw
 //! before, so a fresh run or a fork of the source replays it.
 //!
-//! An agent goes live at its first divergent step and stays live, since every
-//! later request carries the live answer. Other agents keep replaying while
+//! A turn goes live at its first divergent step and stays live; its agent's
+//! later turns carry the live answer, so they match only a request whose
+//! content the source also sent. Other agents keep replaying while
 //! their requests still match. A recorded call serves exactly one request;
 //! identical requests in the source are answered in source order.
 //!
@@ -25,13 +26,28 @@ use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStr
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// How a recorded tool call settled.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecordedToolOutcome {
+    /// Its validated result.
+    Completed(crate::tool::ToolResult),
+    /// Its failure, settled again with the same reason and model-visible cause.
+    Failed {
+        /// Stage that failed.
+        reason: crate::executor::ToolFailureKind,
+        /// Sanitized cause the model received.
+        cause: crate::executor::ToolFailureCause,
+    },
+}
+
 /// One recorded model call.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecordedCall {
     /// Exact canonical [`ModelEvent`] JSON, in source order, ending with completion.
     pub events: Vec<Vec<u8>>,
-    /// Validated results of the tool calls this answer made, by call id.
-    pub tools: Vec<(String, crate::tool::ToolResult)>,
+    /// How the tool calls this answer made settled, inner calls of a
+    /// composition included, by call id.
+    pub tools: Vec<(String, RecordedToolOutcome)>,
 }
 
 /// A source run's completed calls, keyed by [`replay_key`]. Lookup and
@@ -70,20 +86,51 @@ impl Recording {
 }
 
 /// The replay key of exact canonical request bytes: their BLAKE3 digest once
-/// fresh identity is erased, so a request matches whenever the model would
-/// see the same content. Erased are every UUID (agent, volume, operation and
-/// input names embed them), a file reference's storage version and a
-/// discovery generation's key, also inside JSON-valued text such as the
-/// skill catalog. File content stays pinned by its descriptor digest. One
-/// pass over the request, on the replay path only.
+/// fresh harness identity is erased, so a request matches whenever the model
+/// would see the same content. Only harness-owned values are touched: system
+/// messages (the skill catalog among them), notices and file references.
+/// There every UUID (agent, volume, operation and input names embed them), a
+/// file reference's storage version and a discovery generation's key are
+/// erased; file content stays pinned by its descriptor digest. User text,
+/// model output and tool JSON are kept exactly. One pass over the request,
+/// on the replay path only.
 pub fn replay_key(request: &[u8]) -> Result<[u8; 32]> {
+    use serde_json::Value;
     let invalid = |error: serde_json::Error| Error::Invalid(format!("replay request: {error}"));
-    let mut value: serde_json::Value = serde_json::from_slice(request).map_err(invalid)?;
-    erase(&mut value);
+    let mut value: Value = serde_json::from_slice(request).map_err(invalid)?;
+    if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            if message.get("role").and_then(Value::as_str) == Some("system") {
+                erase_owned(message);
+            } else {
+                erase_references(message);
+            }
+        }
+    }
     Ok(*blake3::hash(&serde_json::to_vec(&value).map_err(invalid)?).as_bytes())
 }
 
-fn erase(value: &mut serde_json::Value) {
+/// Erases identity inside the harness-owned values of a conversation message.
+fn erase_references(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let reference = ["volume", "path", "version", "descriptor"]
+                .iter()
+                .all(|key| map.contains_key(*key));
+            if reference || map.get("kind").and_then(Value::as_str) == Some("notices") {
+                erase_owned(value);
+            } else {
+                map.values_mut().for_each(erase_references);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(erase_references),
+        _ => {}
+    }
+}
+
+/// Erases identity throughout a harness-owned value, JSON-valued text included.
+fn erase_owned(value: &mut serde_json::Value) {
     use serde_json::Value;
     match value {
         Value::Object(map) => {
@@ -93,12 +140,12 @@ fn erase(value: &mut serde_json::Value) {
             if map.get("kind").and_then(Value::as_str) == Some("generation") {
                 map.remove("key");
             }
-            map.values_mut().for_each(erase);
+            map.values_mut().for_each(erase_owned);
         }
-        Value::Array(items) => items.iter_mut().for_each(erase),
+        Value::Array(items) => items.iter_mut().for_each(erase_owned),
         Value::String(text) => match serde_json::from_str::<Value>(text) {
             Ok(mut nested) if nested.is_object() || nested.is_array() => {
-                erase(&mut nested);
+                erase_owned(&mut nested);
                 *text = nested.to_string();
             }
             _ => erase_uuids(text),
@@ -156,7 +203,9 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
 #[derive(Default)]
 struct Replay {
     recording: Recording,
-    tools: HashMap<(OperationId, String), crate::tool::ToolResult>,
+    tools: HashMap<(OperationId, String), RecordedToolOutcome>,
+    /// Turns that went live; each stays live.
+    live: std::collections::HashSet<OperationId>,
     diverged: bool,
 }
 
@@ -209,7 +258,11 @@ impl RecordedModel {
     ) -> Result<Option<Vec<Vec<u8>>>> {
         let key = replay_key(request.bytes())?;
         let mut replay = self.lock();
+        if replay.live.contains(&dispatch.operation_id) {
+            return Ok(None);
+        }
         let Some(call) = replay.recording.take(&key) else {
+            replay.live.insert(dispatch.operation_id);
             let first = !std::mem::replace(&mut replay.diverged, true);
             drop(replay);
             if first {
@@ -283,7 +336,7 @@ impl ModelProvider for RecordedModel {
         &self,
         operation: OperationId,
         call_id: &str,
-    ) -> Option<crate::tool::ToolResult> {
+    ) -> Option<RecordedToolOutcome> {
         self.lock().tools.remove(&(operation, call_id.to_owned()))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

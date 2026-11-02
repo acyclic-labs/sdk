@@ -27,7 +27,8 @@ mod profile;
 mod provider;
 mod recorded;
 pub use recorded::{
-    Divergence, DivergenceSink, RecordedCall, RecordedModel, Recording, replay_key,
+    Divergence, DivergenceSink, RecordedCall, RecordedModel, RecordedToolOutcome, Recording,
+    replay_key,
 };
 mod reasoning;
 mod request;
