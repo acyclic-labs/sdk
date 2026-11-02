@@ -43,31 +43,34 @@ const CLAUDE_PERMISSION_MATCHER: &str = "^mcp__plugin_acyclic_acyclic-sessions__
 /// hooks observe native execution boundaries; they do not replace host tools.
 #[must_use]
 pub fn claude_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
-    #[cfg(windows)]
-    let executable = executable.replace('\\', "/");
-    command_hooks(&format!("'{}'", executable.replace('\'', "'\"'\"'")))
-}
-
-fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
+    let executable = quoted_executable(executable);
     CLAUDE_EVENTS
         .into_iter()
-        .map(|event| {
-            let mut group = Map::new();
-            if event == "PermissionRequest" {
-                group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
-            }
-            group.insert(
-                "hooks".into(),
-                json!([{
-                    "type": "command",
-                    "command": format!("{executable} __hook claude-code {event}"),
-                    "timeout": if event == "SessionEnd" { 3 } else { 120 },
-                    "statusMessage": "Acyclic is routing the workspace"
-                }]),
-            );
-            (event, vec![Value::Object(group)])
-        })
+        .map(|event| (event, vec![command_group(&executable, event)]))
         .collect()
+}
+
+fn quoted_executable(executable: &str) -> String {
+    #[cfg(windows)]
+    let executable = executable.replace('\\', "/");
+    format!("'{}'", executable.replace('\'', "'\"'\"'"))
+}
+
+fn command_group(executable: &str, event: &str) -> Value {
+    let mut group = Map::new();
+    if event == "PermissionRequest" {
+        group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
+    }
+    group.insert(
+        "hooks".into(),
+        json!([{
+            "type": "command",
+            "command": format!("{executable} __hook claude-code {event}"),
+            "timeout": if event == "SessionEnd" { 3 } else { 120 },
+            "statusMessage": "Acyclic is routing the workspace"
+        }]),
+    );
+    Value::Object(group)
 }
 
 /// Executable of an owned installed hook, for ownership and diagnostics.
@@ -76,6 +79,9 @@ fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
 /// Foreign groups, additional commands and split argument fields are rejected.
 #[must_use]
 pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
+    if !CLAUDE_EVENTS.contains(&event) {
+        return None;
+    }
     let command = group
         .get("hooks")?
         .as_array()?
@@ -91,8 +97,8 @@ pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
     if !name.eq_ignore_ascii_case("acyclic") && !name.eq_ignore_ascii_case("acyclic.exe") {
         return None;
     }
-    let hooks = claude_hooks(&executable);
-    let expected = hooks.get(event)?.first()?.as_object()?;
+    let expected = command_group(&quoted_executable(&executable), event);
+    let expected = expected.as_object()?;
     let actual = group.as_object()?;
     (actual.len() == expected.len()
         && expected.iter().all(|(key, value)| {

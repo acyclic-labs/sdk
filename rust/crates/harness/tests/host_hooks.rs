@@ -122,13 +122,22 @@ proptest! {
         let expected = executable.replace('\\', "/");
         #[cfg(not(windows))]
         let expected = executable;
+        // Rebuilding every event is the original unnecessary ownership cost.
+        let whole_set = acyclic_test_support::measure(|| {
+            drop(std::hint::black_box(claude_hooks(&expected)));
+        });
         for (event, groups) in claude_hooks(&expected) {
             let group = groups.first().expect("owned hook group");
             let hook = group.pointer("/hooks/0").expect("owned hook");
             prop_assert!(hook.get("args").is_none());
             prop_assert_eq!(acyclic_harness::tools::parse_command(hook.get("command").and_then(serde_json::Value::as_str).expect("hook command"))?,
                 vec![expected.clone(), "__hook".into(), "claude-code".into(), event.into()]);
-            prop_assert_eq!(claude_hook_executable(event, group), Some(expected.clone()));
+            let mut recovered = None;
+            let recognition = acyclic_test_support::measure(|| {
+                recovered = claude_hook_executable(event, group);
+            });
+            prop_assert_eq!(recovered, Some(expected.clone()));
+            prop_assert!(recognition.count_total < whole_set.count_total);
             let mut foreign = group.clone();
             foreign.pointer_mut("/hooks/0").and_then(serde_json::Value::as_object_mut).expect("hook object").insert("permissionDecision".into(), json!("allow"));
             prop_assert!(claude_hook_executable(event, &foreign).is_none());
