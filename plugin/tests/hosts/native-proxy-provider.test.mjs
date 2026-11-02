@@ -28,7 +28,7 @@ test('pinned Pi protocols authenticate exact models and preserve native HTTP ref
  const root=hostFixtureDirectory('native-proxy-'),scope=new Processes();
  try {
   const cells=[['openai','gpt-6-luna','/openai/responses','authorization','Bearer '+capability],
-   ['anthropic','claude-haiku-5-5','/anthropic/v1/messages','x-api-key',capability],
+   ['anthropic','claude-haiku-5-5','/anthropic/v1/messages?beta=true','x-api-key',capability],
    ['gemini','gemini-3.8-flash','/gemini/models/gemini-3.8-flash:streamGenerateContent?alt=sse','x-goog-api-key',capability]];
   for(const [provider,model,path,header,credential] of cells) {
    const live={provider,model,proxy};process.env.ACYCLIC_NATIVE_PROXY=JSON.stringify(live);
