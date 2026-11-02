@@ -863,13 +863,15 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
 
 /// Admit a deployable artifact against its validated manifest: the entry bytes match
 /// `artifactSha256`, and the supplied files are exactly the entry's declared assets,
-/// each with its declared size and digest.
-pub fn verify_artifact(
+/// each with its declared size and digest. Paths and payloads are borrowed from
+/// their original owners; verification does not require an owning projection or
+/// release an immutable content proof retained by the caller.
+pub fn verify_artifact<'a>(
     manifest: &DeploymentManifest,
     environment: &str,
     entry: &str,
     artifact: &[u8],
-    files: &[(String, Vec<u8>)],
+    files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
 ) -> Result<(), ManifestError> {
     validate(manifest)?;
     let entry = manifest
@@ -887,9 +889,9 @@ pub fn verify_artifact(
     let mut supplied = HashSet::new();
     for (path, bytes) in files {
         let asset = declared
-            .get(path.as_str())
+            .get(path)
             .ok_or_else(|| ManifestError::invalid("assets", "undeclared-asset"))?;
-        require(supplied.insert(path.as_str()), "assets", "duplicate-asset")?;
+        require(supplied.insert(path), "assets", "duplicate-asset")?;
         asset.verify_bytes(bytes)?;
     }
     require(supplied.len() == declared.len(), "assets", "missing-asset")
