@@ -1,0 +1,1 @@
+[{"deny":[{"path":"a/**b","actions":["read"]}]}, {}, "a/b"]
