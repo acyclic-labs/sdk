@@ -220,16 +220,36 @@ mod tests {
         );
         assert_eq!(input.receive.try_recv().unwrap().tree, 7);
 
-        let (read, mut write) = pipe()?;
-        let mut input = Input::start(io::BufReader::new(read), port.as_raw_handle())?;
-        write.write_all(&bytes[..bytes.len() - 1])?;
-        drop(write);
-        assert_eq!(packet(&port)?, INPUT_EXITED);
-        assert_eq!(
-            input.finish().unwrap_err().raw_os_error(),
-            Some(ERROR_INVALID_DATA.cast_signed())
-        );
-        assert!(input.receive.try_recv().is_err());
+        // Mutate only the selected handle of the original native handover
+        // frame. No invalid owner may reach the credited receiver, including
+        // the readiness handle that State::open adopts as OwnedHandle.
+        let fields = std::str::from_utf8(&bytes)
+            .unwrap()
+            .strip_suffix('\n')
+            .unwrap()
+            .split(' ')
+            .collect::<Vec<_>>();
+        let invalid_handle = usize::MAX.to_string();
+        let mut malformed = vec![bytes[..bytes.len() - 1].to_vec()];
+        for index in 1..=4 {
+            for sentinel in ["0", invalid_handle.as_str()] {
+                let mut fields = fields.clone();
+                fields[index] = sentinel;
+                malformed.push(format!("{}\n", fields.join(" ")).into_bytes());
+            }
+        }
+        for bytes in malformed {
+            let (read, mut write) = pipe()?;
+            let mut input = Input::start(io::BufReader::new(read), port.as_raw_handle())?;
+            write.write_all(&bytes)?;
+            drop(write);
+            assert_eq!(packet(&port)?, INPUT_EXITED);
+            assert_eq!(
+                input.finish().unwrap_err().raw_os_error(),
+                Some(ERROR_INVALID_DATA.cast_signed())
+            );
+            assert!(input.receive.try_recv().is_err());
+        }
 
         // Read from the actual write-only native pipe handle. Its native cause
         // must survive the original worker result and kernel terminal join.

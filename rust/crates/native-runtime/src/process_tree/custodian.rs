@@ -20,7 +20,6 @@
 use super::custodian_admission::{self as admission, Secret};
 use indexmap::IndexMap;
 use std::collections::BTreeMap;
-use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::windows::io::{
     AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
@@ -634,10 +633,7 @@ impl Opened {
     fn parse(line: &str) -> Option<Self> {
         let mut fields = line.split(' ');
         let tree = fields.next()?.parse().ok()?;
-        let mut handle = || {
-            let value = fields.next()?.parse::<usize>().ok()?;
-            Some(std::ptr::with_exposed_provenance_mut(value))
-        };
+        let mut handle = || handle_value(fields.next()?).filter(|handle| !handle.is_null());
         let opened = Self {
             tree,
             job: handle()?,
@@ -648,6 +644,14 @@ impl Opened {
         };
         fields.next().is_none().then_some(opened)
     }
+}
+
+/// Decode the private handover's native handle representation once. Null is
+/// allowed only for an absent inherited output; required owners reject it at
+/// admission. INVALID_HANDLE_VALUE can never transfer an owned kernel object.
+fn handle_value(value: &str) -> Option<HANDLE> {
+    let value = value.parse::<usize>().ok()?;
+    (value != usize::MAX).then(|| std::ptr::with_exposed_provenance_mut(value))
 }
 
 /// One live tree: its Job, its count of watched members and the event its
@@ -697,17 +701,23 @@ fn serve() -> io::Result<()> {
 fn run(response: &mut Response) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin());
     let mut line = String::new();
-    input.read_line(&mut line)?;
-    let mut handles = line.trim_end().split(' ').map(|value| {
-        value
-            .parse::<usize>()
-            .map(std::ptr::with_exposed_provenance_mut::<c_void>)
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
-    });
-    let mut handle = || handles.next().ok_or(io::ErrorKind::InvalidInput)?;
-    let owner = handle()?;
-    let output = handle()?;
-    let error = handle()?;
+    if input.read_line(&mut line)? == 0 {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let mut fields = line
+        .strip_suffix('\n')
+        .ok_or(io::ErrorKind::InvalidData)?
+        .split(' ');
+    let mut handle = || {
+        fields
+            .next()
+            .and_then(handle_value)
+            .ok_or(io::ErrorKind::InvalidData)
+    };
+    let (owner, output, error) = (handle()?, handle()?, handle()?);
+    if owner.is_null() || fields.next().is_some() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
     // These original pipe handles stay live until every member has physically
     // exited. In particular, killing the owner cannot publish an early EOF.
     let _output = transport_lease(output);
@@ -1460,9 +1470,22 @@ mod handoff_tests {
         );
         assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
 
+        // Required handle sentinels must fail before creating a borrowed or
+        // owned native handle. Use the same actual initializer and writer;
+        // restoring raw numeric admission changes the original refusal.
+        for owner in [std::ptr::null_mut(), INVALID_HANDLE_VALUE] {
+            let mut child = launch_child()?;
+            let result = hand_over_owner(&mut child, owner);
+            let _ = child.kill();
+            child.wait()?;
+            let failure = result.expect_err("an absent owner cannot be admitted");
+            assert_eq!(failure.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(failure.raw_os_error(), None);
+        }
+
         // Withdraw the actual startup request producer. The initializer
-        // exits without a response; the same reader must report producer
-        // loss rather than accept EOF as readiness or invent a native cause.
+        // reports producer loss; the same reader must not accept EOF as
+        // readiness or invent a native cause.
         let mut lost = launch_child()?;
         drop(lost.stdin.take());
         let reply = startup_response(&mut lost);
