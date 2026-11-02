@@ -1275,21 +1275,11 @@ mod tests {
             client.reply().await.pointer("/error/code"),
             Some(&json!(-32800))
         );
-        // The cancelled completion holds the operation until it stops polling.
-        let mut id = 3;
-        loop {
-            client.send(&call(id, "identity_login_complete"));
-            client.send(&json!({"jsonrpc": "2.0", "id": id + 1, "method": "ping"}));
-            let reply = client.reply().await;
-            if reply.get("id") == Some(&json!(id + 1)) {
-                break;
-            }
-            assert_eq!(reply.pointer("/error/code"), Some(&json!(-32000)));
-            assert_eq!(client.reply().await.get("id"), Some(&json!(id + 1)));
-            id += 2;
-        }
         client.close();
+        // Serving joins the original operation before returning. Observe the
+        // retained approval after that completion, without probing admission.
         client.served.await.expect("served").expect("transport");
+        assert!(client.server.lock().await.pending.is_some());
     }
 
     #[tokio::test]

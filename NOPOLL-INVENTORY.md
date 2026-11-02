@@ -1,5 +1,23 @@
 # Polling and timed-wait inventory
 
+Identity cancellation retention successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1238` | Retry tools/call and ping until the cancelled operation admits another call | Close input and await the original serving task, which joins the dispatched operation, then inspect the retained approval. | Source complete; runtime qualification pending |
+
+The original real transport control keeps its ping and cancellation reply
+assertions. Its final assertion now directly checks that device approval survived
+the completed cancellation. Area cleanup deletes the request-ID counter, busy
+reply branch and readiness loop. Additional tools/call and ping requests change
+from two per probe attempt to zero; the existing EOF and serving-task join remain
+one each. The final approval check takes one existing server lock. No new event,
+channel, allocation, task, timer, syscall, round trip or payload copy is added to
+product code. The fixture has fixed work instead of work proportional to racing
+admission attempts. Dropping approval during cancellation fails the final state
+assertion. This bounded change does not claim a new admission event or close the
+broader census.
+
 Identity consumed-exchange release successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
@@ -24,6 +42,7 @@ release is excluded by ownership. The handler's bounded event work has no scan
 or retained history. Added production tasks, workers, syscalls, round trips,
 durability barriers and payload copies are zero. Actual allocation bytes,
 latency and idle CPU remain unmeasured; the broader census remains open.
+
 
 Identity HTTP-entry observation successor:
 
