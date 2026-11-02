@@ -73,14 +73,16 @@ impl<const N: usize> Readiness<N> {
                 return Err(io::ErrorKind::InvalidInput.into());
             }
         }
-        let mut timeval = timeout.map(|timeout| {
-            Ok::<_, io::Error>(libc::timeval {
-                tv_sec: libc::time_t::try_from(timeout.as_secs().min(MAX_SECONDS))
-                    .map_err(|_| io::ErrorKind::InvalidInput)?,
-                tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
-                    .map_err(|_| io::ErrorKind::InvalidInput)?,
+        let mut timeval = timeout
+            .map(|timeout| {
+                Ok::<_, io::Error>(libc::timeval {
+                    tv_sec: libc::time_t::try_from(timeout.as_secs().min(MAX_SECONDS))
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                    tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                })
             })
-        }).transpose()?;
+            .transpose()?;
         for (number, fd) in self.fds.iter().zip(fds) {
             if fd.is_some() {
                 self.words[number / WORD_BITS] |= 1 << (number % WORD_BITS);
