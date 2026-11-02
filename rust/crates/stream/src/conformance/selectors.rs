@@ -29,7 +29,19 @@ async fn selected<P: StreamProvider + ?Sized>(
             .try_collect()
             .await?;
         for record in &records {
+            let previous = (seek.key.clone(), seek.before, from);
             seek.advance(&mut from, record.sequence, record.headers.keys())?;
+            // A broken continuation must fail this control at its original
+            // page, rather than repeatedly reading the same page forever.
+            let progressed = match seek.order {
+                crate::ReadOrder::LatestFirst => seek.before < previous.1,
+                crate::ReadOrder::Ascending => {
+                    seek.key > previous.0 || seek.key == previous.0 && from > previous.2
+                }
+            };
+            if !progressed {
+                return Err(StreamError::InvalidResponse);
+            }
             sequences.push(record.sequence);
         }
         if records.len() < page as usize {
