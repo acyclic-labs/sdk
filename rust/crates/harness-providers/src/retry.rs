@@ -22,18 +22,11 @@ impl Redelivery {
         hasher.update(b"harness-providers:redelivery:dispatch:v1");
         hasher.update(&dispatch.operation_id.into_bytes());
         hasher.update(&dispatch.step.to_le_bytes());
-        Self::seeded(spec, *hasher.finalize().as_bytes())
+        Self::for_request(spec, *hasher.finalize().as_bytes())
     }
 
-    /// The budget of one exchange without a dispatch, such as a token count, keyed by its body.
-    pub(crate) fn for_request(spec: RetrySpec, body: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"harness-providers:redelivery:request:v1");
-        hasher.update(body);
-        Self::seeded(spec, *hasher.finalize().as_bytes())
-    }
-
-    const fn seeded(spec: RetrySpec, seed: [u8; 32]) -> Self {
+    /// Uses an existing identity digest only to spread retry waits, never for admission.
+    pub(crate) const fn for_request(spec: RetrySpec, seed: [u8; 32]) -> Self {
         Self {
             spec,
             seed,

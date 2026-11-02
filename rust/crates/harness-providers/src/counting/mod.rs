@@ -203,7 +203,7 @@ pub(crate) async fn send_count(
     count_custody: NativeCustody,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
-    count.input_tokens = exchange_count(provider, exchange, work).await?;
+    count.input_tokens = exchange_count(provider, exchange, count.request_digest, work).await?;
     Ok((count, count_custody))
 }
 
@@ -235,10 +235,11 @@ async fn read_count(
 async fn exchange_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,
+    request_digest: [u8; 32],
     work: NativeWork<'_>,
 ) -> Result<u64> {
     let mut redelivery =
-        crate::retry::Redelivery::for_request(provider.config.retry, &exchange.body);
+        crate::retry::Redelivery::for_request(provider.config.retry, request_digest);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
     #[cfg(not(target_arch = "wasm32"))]
     let _copy = work
