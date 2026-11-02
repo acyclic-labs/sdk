@@ -177,17 +177,38 @@ Live consumers use the original durable read and alarm rather than polling.
 Status and counts remain the existing phase projection and `counts(range)`;
 the exporter adds neither a status writer nor execution counters.
 
-The following row kinds are reserved for the original research carriers in
-the same six tables. Their producers remain separate from this offline codec:
+The following row kinds use the same six tables. Their original producers
+remain separate from this offline codec:
 
 | Table / kind | Original authority and coverage |
 | --- | --- |
 | `agents` / `placement` | Original immutable placement fact on initial observation or change, joined by its original digest. Unknown location stays unknown. |
-| `edges` / `stream_record_shared` | Original record origin, sequence and commit ID, selected destination stream and bound provider/account. Coverage is logical record-value bytes; union original identities before summing. |
+| `edges` / `stream_record_shared` | `metrics::stream_records::project` preserves an authorized original record's account, origin, sequence and commit ID, separately from the selected destination. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
 
-These reservations do not claim that the outstanding producer integrations
-already emit rows. Existing object identity or `AlreadyExists` alone never
+Placement and interval integration remain reserved. The stream projection
+accepts the original `Record`, selected `StreamPath` and authenticated
+`AccountId`; it makes no read or provider request. Common nullable
+`source_account` (URL-safe base64 without padding), `source_origin` and
+`source_commit_id` retain exact original source fields. Stream sequences are
+zero-based; journal completion sequences use their separate one-based contract.
+The `source` edge endpoint is the JSON tuple `[account, origin, sequence, commit]`,
+and `target` is `[account, selected_path]`. An observation at its original path
+has kind `stream_record`; an inherited reference has kind `stream_record_shared`.
+Equal-length or equal-valued independent records retain different identities.
+`logical_value_bytes` excludes headers, framing and physical backing;
+`physical_copied_bytes` and `physical_shared_bytes` remain null. Zero-length
+record values remain known zero. RDF retains the same identity and coverage
+without attesting a new content producer.
+
+The projection retains one row and does not copy, hash or decode record values.
+It encodes account and commit once, formats two endpoint tuples and copies
+metadata into the existing Arrow columns. Borrowing dynamic source paths removes
+an intermediate owned path. Added execution reads, allocations, provider calls,
+commits, barriers and flushes remain 0. An exact logical union is an offline
+query, never a growing capture-side seen-content map.
+
+Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added
 into a critical path. Phase counts come from the primitive's `counts(range)`;
 no checkpoint resource accumulator or separate snapshot writer is used.
