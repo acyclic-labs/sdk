@@ -13,6 +13,93 @@ pub(crate) fn system_read_roots() -> Vec<PathBuf> {
 }
 
 #[test]
+fn native_root_selection_is_bounded_by_query_bytes_after_foreign_growth() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().canonicalize().unwrap();
+    let external = base.join("external");
+    let nested = external.join("nested");
+    let mut deep = nested.clone();
+    for _ in 0..base.as_os_str().as_encoded_bytes().len() + 48 {
+        deep.push("a");
+    }
+    let mut index = ReadRootIndex::default();
+    let mut roots = vec![external.clone(), nested.clone()];
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        roots.push(base.join(std::ffi::OsString::from_vec(b"native-\xff".to_vec())));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        roots.push(base.join(std::ffi::OsString::from_wide(&[0x6e, 0xd800])));
+    }
+    for (slot, root) in roots.iter().enumerate() {
+        index.insert(root, slot);
+    }
+    let mut queries = vec![
+        external,
+        nested,
+        deep.clone(),
+        base.join("external-neighbor"),
+        base.join("external/nested-neighbor"),
+    ];
+    if let Some(native) = roots.get(2) {
+        queries.push(native.join("leaf"));
+    }
+    let mut indexed_work = Vec::new();
+    let mut ordered_work = Vec::new();
+    for population in [1, 100_000] {
+        if population > 1 {
+            for suffix in 0..population {
+                let root = base.join("foreign").join(format!("{suffix:06x}"));
+                index.insert(&root, roots.len());
+                roots.push(root);
+            }
+        }
+        // Preserve the original sorted-root binary lookup as an independent
+        // semantic and population-cost negative, including ancestor order.
+        let mut ordered = roots.iter().enumerate().collect::<Vec<_>>();
+        ordered.sort_unstable_by(|(_, left), (_, right)| left.cmp(right));
+        for query in &queries {
+            let mut compared = 0;
+            let mut previous = |path: &Path| {
+                ordered
+                    .binary_search_by(|(_, root)| {
+                        compared += 1;
+                        root.as_path().cmp(path)
+                    })
+                    .ok()
+                    .map(|slot| ordered.get(slot).unwrap().0)
+            };
+            let exact = previous(query);
+            let ancestor = query.ancestors().skip(1).filter_map(previous).last();
+            let mut work = 0;
+            let measured = acyclic_test_support::measure(|| {
+                let selected = index.select(query, |n| work += n);
+                assert_eq!(selected, (exact, ancestor));
+            });
+            assert_eq!(measured.count_total, 0);
+            assert!(work <= 12 * query.as_os_str().as_encoded_bytes().len() + 1);
+            if query == &deep {
+                // Foreign roots never branch inside this selected path. This
+                // tighter bound distinguishes the restored per-ancestor search.
+                let bound = 2 * query.as_os_str().as_encoded_bytes().len() + 32;
+                assert!(work <= bound);
+                if population > 1 {
+                    assert!(compared > bound);
+                }
+                indexed_work.push(work);
+                ordered_work.push(compared);
+            }
+        }
+    }
+    println!(
+        "foreign_roots=[0,100000] indexed_work={indexed_work:?} restored_comparisons={ordered_work:?}; lookup allocations=0"
+    );
+}
+
+#[test]
 fn child_grants_cannot_reacquire_revoked_capabilities() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");

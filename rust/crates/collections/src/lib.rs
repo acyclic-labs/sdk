@@ -14,6 +14,9 @@ pub use arc::arc_allocation_bytes;
 mod recent;
 pub use recent::RecentIndex;
 
+mod byte_prefix;
+pub use byte_prefix::BytePrefixIndex;
+
 mod prefix;
 pub use prefix::{ExtractedEntries, ExtractedPrefix, PrefixTooLong};
 

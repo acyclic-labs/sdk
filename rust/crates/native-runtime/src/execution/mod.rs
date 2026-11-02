@@ -84,17 +84,57 @@ impl std::error::Error for ExecutionRefusal {}
 struct Grant {
     workspace: BoundPath,
     read: Vec<BoundPath>,
+    read_index: ReadRootIndex,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
     filter: &'static [linux::Instruction],
 }
 
 impl Grant {
-    fn read_root(&self, path: &Path) -> Option<&BoundPath> {
-        self.read
-            .binary_search_by(|root| root.path.as_path().cmp(path))
-            .ok()
-            .map(|index| &self.read[index])
+    fn read_roots(&self, path: &Path) -> (Option<&BoundPath>, Option<&BoundPath>) {
+        let (exact, ancestor) = self.read_index.select(path, |_| {});
+        (
+            exact.and_then(|slot| self.read.get(slot)),
+            ancestor.and_then(|slot| self.read.get(slot)),
+        )
+    }
+}
+
+// BoundPath canonicalizes once before indexing. ASCII separators have their
+// own encoded bytes on every supported native platform, including non-UTF8
+// Unix and Windows strings. A textual prefix inside a component is no grant.
+#[derive(Debug, Default)]
+struct ReadRootIndex(acyclic_collections::BytePrefixIndex<usize>);
+
+impl ReadRootIndex {
+    fn insert(&mut self, path: &Path, slot: usize) {
+        self.0
+            .insert(path.as_os_str().as_encoded_bytes().to_vec(), slot);
+    }
+
+    fn select(&self, path: &Path, examine: impl FnMut(usize)) -> (Option<usize>, Option<usize>) {
+        let key = path.as_os_str().as_encoded_bytes();
+        let separator = |byte: u8| byte == b'/' || (cfg!(windows) && byte == b'\\');
+        let mut exact = None;
+        let mut ancestor = None;
+        self.0.visit_prefixes(
+            key,
+            |length, slot| {
+                if length == key.len() {
+                    exact = Some(*slot);
+                } else if ancestor.is_none()
+                    && (key.get(length).is_some_and(|byte| separator(*byte))
+                        || length
+                            .checked_sub(1)
+                            .and_then(|n| key.get(n))
+                            .is_some_and(|byte| separator(*byte)))
+                {
+                    ancestor = Some(*slot);
+                }
+            },
+            examine,
+        );
+        (exact, ancestor)
     }
 }
 
@@ -225,6 +265,8 @@ impl ExecutionGrant {
     /// No ambient home, temporary directory or filesystem root is added.
     /// Invalid network authority refuses before binding paths or consuming
     /// the read-root iterator.
+    /// Canonical read-root keys are indexed once here; later selection examines
+    /// only requested path bytes, independently of unrelated admitted roots.
     pub fn new(
         workspace: &Path,
         access: ExecutionAccess,
@@ -244,12 +286,17 @@ impl ExecutionGrant {
             .collect::<io::Result<Vec<_>>>()?;
         read.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         read.dedup_by(|left, right| left.path == right.path);
+        let mut read_index = ReadRootIndex::default();
+        for (slot, root) in read.iter().enumerate() {
+            read_index.insert(&root.path, slot);
+        }
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
         Ok(Self {
             policy: Arc::new(Grant {
                 workspace,
                 read,
+                read_index,
                 network,
                 #[cfg(target_os = "linux")]
                 filter,
@@ -389,9 +436,10 @@ impl ExecutionGrant {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
         for path in &requested.policy.read {
+            let (exact, ancestor) = self.policy.read_roots(&path.path);
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
-            if let Some(root) = self.policy.read_root(&path.path) {
+            if let Some(root) = exact {
                 if root.contains(path, meter)? {
                     continue;
                 }
@@ -399,17 +447,10 @@ impl ExecutionGrant {
             if self.policy.workspace.contains(path, meter)? {
                 continue;
             }
-            // Only a component ancestor can confer authority. Search the
-            // existing sorted roots instead of scanning unrelated roots.
-            // The last match is the shallowest ancestor, preserving the
-            // original sorted proof order for overlapping declared roots.
-            let root = path
-                .path
-                .ancestors()
-                .skip(1)
-                .filter_map(|ancestor| self.policy.read_root(ancestor))
-                .last();
-            let permitted = match root {
+            // The same single byte traversal retained the shallowest proper
+            // component ancestor. Preserve exact -> workspace -> ancestor
+            // object proofs, including their original failure ordering.
+            let permitted = match ancestor {
                 Some(root) => root.contains(path, meter)?,
                 None => false,
             };
