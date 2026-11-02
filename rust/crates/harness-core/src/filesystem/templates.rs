@@ -232,11 +232,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 None,
             )?;
-            crate::templates::child(
+            crate::templates::select(
                 reader.as_ref(),
                 &home.volume,
                 &seed,
-                creation,
                 name,
                 crate::conversation::ContentAccess { ceiling, io: None },
             )
