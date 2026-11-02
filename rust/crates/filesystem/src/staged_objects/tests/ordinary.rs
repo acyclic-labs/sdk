@@ -50,7 +50,15 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
         assert!(!store.inner().contains(id, &mut retry).await?);
         drop(store.flush_before_publish(scope, &mut retry).await?);
         assert!(store.index().objects.is_empty());
-        assert_eq!(retry.spent().items_examined, 3);
+        let provider = crate::MemoryObjectStore::default();
+        let mut direct = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        provider.put(id, bytes.clone(), &mut direct).await?;
+        // Count the three staging passes separately from the provider's real
+        // fixed-width index insertion, using the same object and work path.
+        assert_eq!(
+            retry.spent().items_examined,
+            direct.spent().items_examined + 3
+        );
         assert_eq!(
             store
                 .inner()
