@@ -86,12 +86,44 @@ async fn object_store_verifies_identity_bounds_and_original_work()
     ));
     assert_eq!(context.spent(), completed);
 
+    let continuation = crate::kernel::allocation::retained::OwnedAccounting::take_branch(
+        &mut context.accounting(),
+        &cancellation,
+    )?;
+    let suspended = context.spent();
     cancellation.cancel();
+    assert!(matches!(
+        crate::kernel::read_object_with_accounting(
+            &store,
+            object_id,
+            6,
+            &mut context.accounting(),
+            &cancellation,
+        )
+        .await,
+        Err(FsError::AccountingHandoffActive)
+    ));
+    assert!(matches!(
+        crate::kernel::read_objects_with_accounting(
+            &store,
+            &[crate::storage::ObjectReadRequest {
+                object_id,
+                maximum_bytes: 6,
+            }],
+            &mut context.accounting(),
+            &cancellation,
+        )
+        .await,
+        Err(FsError::AccountingHandoffActive)
+    ));
+    assert_eq!(context.spent(), suspended);
+    continuation.restore(&mut context.accounting())?;
+    let cancelled = context.spent();
     assert!(matches!(
         store.read(object_id, 6, &mut context).await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(context.spent(), completed);
+    assert_eq!(context.spent(), cancelled);
     assert_eq!(read.bytes.as_ref(), b"abcdef");
     Ok(())
 }
