@@ -364,19 +364,7 @@ fn parse<'a>(
 
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
-    let mut entries = Vec::new();
-    let context = parse(bytes, |key, operation, metadata| {
-        entries.push(wire::ChangeEntry {
-            key: bytes::Bytes::copy_from_slice(key),
-            operation: operation.into(),
-            metadata: bytes::Bytes::copy_from_slice(metadata),
-        });
-        Ok(())
-    })?;
-    Ok(wire::ChangeRecord {
-        context: bytes::Bytes::copy_from_slice(context),
-        entries,
-    })
+    decode_record(bytes, Some(FORMAT), 0)
 }
 
 pub(crate) fn decode(
@@ -384,7 +372,17 @@ pub(crate) fn decode(
     headers: &RecordHeaders,
 ) -> Result<wire::ChangeRecord, StreamError> {
     let format = validated_format(bytes, headers)?;
-    let mut entries = Vec::new();
+    // Only a fully validated typed index establishes the body's entry count.
+    let capacity = format.map_or(0, |_| headers.keys().len());
+    decode_record(bytes, format, capacity)
+}
+
+fn decode_record(
+    bytes: &[u8],
+    format: Option<&[u8]>,
+    capacity: usize,
+) -> Result<wire::ChangeRecord, StreamError> {
+    let mut entries = Vec::with_capacity(capacity);
     let context = parse_record(bytes, format, |key, operation, metadata| {
         entries.push(wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(key),
