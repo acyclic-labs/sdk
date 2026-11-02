@@ -311,7 +311,9 @@ where
                 return result.map(project);
             }
             let span = match expected_tail {
-                Some(rev) => crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev),
+                Some(rev) => {
+                    crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev = rev)
+                }
                 None => crate::obs::obs_span!("acyclic.harness.journal.append"),
             };
             crate::obs::traced_future(
