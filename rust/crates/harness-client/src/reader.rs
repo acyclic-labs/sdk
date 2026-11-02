@@ -2630,6 +2630,7 @@ mod reader_tests {
             withdrawn.plan([]);
             withdrawn.plan(wants().skip(1).take(1));
             withdrawn.complete(first[0].id(), Outcome::Failed(Failure::Refused), 1);
+            withdrawn.network_changed(true, 1);
             withdrawn.plan(wants().take(2).rev());
             withdrawn.acknowledge_issue(&denied);
             let resumed = withdrawn.poll(1);
