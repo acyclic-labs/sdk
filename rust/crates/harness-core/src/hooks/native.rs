@@ -113,8 +113,9 @@ pub(super) async fn run_hook(
     };
     let timeout = hook.timeout_ms.map(Duration::from_millis);
     let input = request.2.clone();
+    let spawner = acyclic_native_runtime::TaskSpawner::current();
     // Spawning may block; the running hook then holds no worker.
-    let (tree, handler) = run_blocking_io(
+    let capture = run_blocking_io(
         move || {
             let mut handler = handler;
             if maximum_bytes == Some(0) {
@@ -147,7 +148,14 @@ pub(super) async fn run_hook(
                 None => ProcessTree::spawn(&mut command),
             }
             .map_err(Error::process_io)?;
-            Ok((tree, handler))
+            // Transfer physical custody before returning from the worker.
+            // Cancelling its observer cannot drop an unsubmitted live tree.
+            Ok(spawner.spawn(tree.capture(
+                timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
+                maximum_bytes,
+                Some(OwnedCaptureInput::Literal(input)),
+                handler,
+            )))
         },
         None,
     )
@@ -156,15 +164,10 @@ pub(super) async fn run_hook(
     .map_err(Error::process_io)??;
     // The spawned capture keeps ownership of the tree until its cleanup
     // finishes, even if this hook's caller is cancelled.
-    let outcome = acyclic_native_runtime::spawn(tree.capture(
-        timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
-        maximum_bytes,
-        Some(OwnedCaptureInput::Literal(input)),
-        handler,
-    ))
-    .await
-    .and_then(|outcome| outcome)
-    .map_err(Error::process_io)?;
+    let outcome = capture
+        .await
+        .and_then(|outcome| outcome)
+        .map_err(Error::process_io)?;
     let output = outcome.result.map_err(|failure| {
         Error::process_exit(
             failure.error,
