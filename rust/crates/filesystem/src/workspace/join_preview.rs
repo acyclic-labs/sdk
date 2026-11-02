@@ -174,6 +174,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPreview<A, O> {
+    /// Advances one original changed-path row, including excluded conflicts.
+    /// This bounds a directory page even when conflicts hide every clean row.
+    pub async fn clean_step(
+        &mut self,
+    ) -> crate::MeasuredResult<OperationReceipt<JoinCleanStep>, WorkspaceError> {
+        let (state, mut accounting) = self.owner.borrow();
+        let result = async {
+            if !state.prepare_clean_step(&mut accounting).await? {
+                return Ok(JoinCleanStep::Excluded);
+            }
+            Ok(match state.changes.pending.take() {
+                Some(entry) => {
+                    state.clean_ready = false;
+                    JoinCleanStep::Entry(entry)
+                }
+                None => JoinCleanStep::Done,
+            })
+        }
+        .await;
+        let work = accounting.spent();
+        result
+            .map(|value| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+
     /// Exact original conflict count; no path or content expansion is performed.
     pub fn conflict_count(&mut self) -> usize {
         self.owner.borrow().0.conflict_count
@@ -494,34 +519,52 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
         &mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
+        while !self.prepare_clean_step(accounting).await? {}
+        Ok(())
+    }
+
+    async fn prepare_clean_step(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceError> {
         self.begin(accounting)?;
         if self.clean_ready {
             self.failed = false;
-            return Ok(());
+            return Ok(true);
         }
-        loop {
-            self.changes.prepare_next(accounting).await?;
-            let Some(row) = self.changes.pending.as_ref() else {
-                self.clean_ready = true;
-                self.failed = false;
-                return Ok(());
-            };
-            let row = row.value();
-            let before = row.before.map(|record| record.file_id);
-            let after = row.after.map(|record| record.file_id);
-            let mut excluded = false;
-            for id in [before, after.filter(|id| Some(*id) != before)]
-                .into_iter()
-                .flatten()
-            {
-                excluded |= self.excluded.get(id.into_bytes(), accounting)?.is_some();
-            }
-            if !excluded {
-                self.clean_ready = true;
-                self.failed = false;
-                return Ok(());
-            }
-            drop(self.changes.pending.take());
+        self.changes.prepare_next(accounting).await?;
+        let Some(row) = self.changes.pending.as_ref() else {
+            self.clean_ready = true;
+            self.failed = false;
+            return Ok(true);
+        };
+        let row = row.value();
+        let before = row.before.map(|record| record.file_id);
+        let after = row.after.map(|record| record.file_id);
+        let mut excluded = false;
+        for id in [before, after.filter(|id| Some(*id) != before)]
+            .into_iter()
+            .flatten()
+        {
+            excluded |= self.excluded.get(id.into_bytes(), accounting)?.is_some();
         }
+        if !excluded {
+            self.clean_ready = true;
+            self.failed = false;
+            return Ok(true);
+        }
+        drop(self.changes.pending.take());
+        self.failed = false;
+        Ok(false)
     }
+}
+
+/// One bounded step of the clean projection, without an output buffer.
+pub enum JoinCleanStep {
+    /// One clean row retaining its original backing.
+    Entry(ChangedPathEntry),
+    /// One conflicting row was skipped; more original rows may remain.
+    Excluded,
+    /// No further original changed-path rows remain.
+    Done,
 }

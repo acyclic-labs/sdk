@@ -1,5 +1,138 @@
 use super::*;
 
+#[tokio::test]
+async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<(), Box<dyn Error>>
+{
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("directory-main"))?;
+    for (path, content) in [
+        ("/text", "base\n"),
+        ("/binary", "base\0"),
+        ("/deleted", "base"),
+    ] {
+        main.write_text(path, content).await?;
+    }
+    let agent = fork_workspace(
+        &main,
+        "directory-child",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    main.write_text("/text", "ours\n").await?;
+    agent.write_text("/text", "theirs\n").await?;
+    main.write_text("/binary", "ours\0").await?;
+    agent.write_text("/binary", "theirs\0").await?;
+    main.write_text("/deleted", "modified").await?;
+    agent.remove("/deleted").await?;
+    for index in 0..7 {
+        agent
+            .write_text(&format!("/clean-{index}"), "clean")
+            .await?;
+    }
+    let join = unbounded!(agent.join_into(&main), plan())?;
+    let pins = (
+        join.common_ancestor(),
+        join.target_head(),
+        join.source_head(),
+    );
+    let cancellation = CancellationToken::new();
+    let options = ApplyOptions {
+        if_target: join.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let preview = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let staging = unbounded!(fs, create_workspace("directory-staging"))?;
+    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    let mut pages = 0;
+    while !directory.plan().complete {
+        let before = directory.plan().clean + directory.plan().exposed_conflicts;
+        directory
+            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+            .await?;
+        let after = directory.plan().clean + directory.plan().exposed_conflicts;
+        assert!(
+            after - before <= 1,
+            "a one-row page expanded the whole merge"
+        );
+        pages += 1;
+    }
+    assert!(
+        pages > 7,
+        "negative control: the fixture must require multiple pages"
+    );
+    assert_eq!(directory.plan().clean, 7);
+    assert!(directory.plan().conflicts >= 3);
+    assert_eq!(
+        directory.plan().exposed_conflicts,
+        directory.plan().conflicts
+    );
+    let root = directory.path().to_owned();
+    let encoded = unbounded!(staging, read(&format!("{root}/plan.json"), 16384))?;
+    let document: MergeDirectoryPlan = serde_json::from_slice(&encoded)?;
+    assert_eq!(document, *directory.plan());
+    assert_eq!((document.base, document.ours, document.theirs), pins);
+    let text = unbounded!(staging, read(&format!("{root}/conflicts/text"), 16384))?;
+    assert!(crate::text_merge::has_conflict_markers(
+        std::str::from_utf8(&text)?
+    ));
+    for path in ["binary", "deleted"] {
+        let bytes = unbounded!(
+            staging,
+            read(&format!("{root}/conflicts/{path}.conflict.json"), 16384)
+        )?;
+        let document: MergeConflictFile = serde_json::from_slice(&bytes)?;
+        assert_eq!(document.version, 1);
+        assert_eq!(
+            document.conflict.path.as_deref(),
+            Some(format!("/{path}").as_str())
+        );
+        assert!(!matches!(document.conflict.ours, ConflictValue::Binary(_)));
+        assert!(!matches!(
+            document.conflict.theirs,
+            ConflictValue::Binary(_)
+        ));
+    }
+    assert_eq!(unbounded!(main, head())?.id(), pins.1);
+    assert_eq!(unbounded!(agent, head())?.id(), pins.2);
+
+    // A foreign edit to plan.json cannot be silently overwritten by a later
+    // page. Failure terminates the advanced cursor; no partial page appears.
+    let join = unbounded!(agent.join_into(&main), plan())?;
+    let options = ApplyOptions {
+        if_target: join.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let preview = value!(
+        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    directory
+        .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+        .await?;
+    let plan_path = format!("{}/plan.json", directory.path());
+    staging.write_text(&plan_path, "foreign").await?;
+    let before = unbounded!(staging, head())?.id();
+    assert!(matches!(
+        directory
+            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+            .await,
+        Err(WorkspaceError::StaleIdentity)
+    ));
+    assert_eq!(unbounded!(staging, head())?.id(), before);
+    assert!(matches!(
+        directory
+            .write_page(step, crate::PublicationPermit::Unrestricted, &cancellation)
+            .await,
+        Err(WorkspaceError::InvalidMergeResolution)
+    ));
+    Ok(())
+}
+
 struct SelectTheirsDriver;
 
 impl crate::MergeDriver for SelectTheirsDriver {
