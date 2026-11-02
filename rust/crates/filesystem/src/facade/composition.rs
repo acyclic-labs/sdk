@@ -360,34 +360,54 @@ where
     /// the commit applies. Composing this for every source a commit forks
     /// makes the sources one consistent cut: if any advanced after it was
     /// read, the whole commit is rejected and nothing is published.
-    pub async fn require_head(
+    pub async fn require_head<W: FsWork>(
         &self,
         source: &crate::Generation<StreamAuthorityStore<P>, O>,
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<()>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<(), WorkspaceError> {
+        self.require_heads(&[source], commit, work, cancellation)
+            .await
+    }
+
+    /// Conditions the same caller commit on every original source head, using
+    /// one supplied accounting frame. Native preparation retains the original
+    /// invocation and allocation owner; standalone callers spend one budget.
+    /// This neither submits nor seals the commit. On refusal its caller still
+    /// owns the same partially conditioned commit and original retry identity.
+    pub async fn require_heads<W: FsWork>(
+        &self,
+        sources: &[&crate::Generation<StreamAuthorityStore<P>, O>],
+        commit: &mut FilesystemCommit,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
-            if !self.same_deployment(&source.workspace.volume.fs) {
-                return Err(WorkspaceError::ForeignGeneration);
+            accounting.check()?;
+            for source in sources {
+                if !self.same_deployment(&source.workspace.volume.fs) {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let result = self
+                    .inner
+                    .authority
+                    .contribute_head(
+                        commit,
+                        crate::kernel::volume_authority_id(source.workspace.volume.id),
+                        source.id,
+                        &mut authority,
+                    )
+                    .await;
+                finish_authority_work(authority)?;
+                result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
             }
-            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
-            let result = self
-                .inner
-                .authority
-                .contribute_head(
-                    commit,
-                    crate::kernel::volume_authority_id(source.workspace.volume.id),
-                    source.id,
-                    &mut authority,
-                )
-                .await;
-            finish_authority_work(authority)?;
-            result.map_err(|error| WorkspaceError::from(FsError::from(error)))
+            Ok(())
         }
         .await;
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Fences the active policy cut and freezes a caller-submitted commit.
@@ -411,13 +431,13 @@ where
 
     /// Submits a composed commit once. On `Unknown`, resubmit the returned
     /// commit unchanged; its key replays the original receipt.
-    pub async fn submit_commit(
+    pub async fn submit_commit<W: FsWork>(
         &self,
         commit: FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<FilesystemCommitOutcome> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<FilesystemCommitOutcome, FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut authority = match crate::async_storage::AuthorityFrame::borrow(&mut accounting)
             {
@@ -436,7 +456,7 @@ where
             result.map_err(FsError::from)
         }
         .await;
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Settles a composed commit the caller submitted through its own

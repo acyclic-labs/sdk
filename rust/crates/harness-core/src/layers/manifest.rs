@@ -1,7 +1,6 @@
 //! Original immutable filesystem pins and their consuming commit conditions.
 use acyclic_fs::{
-    AsyncObjectStore, FilesystemCommit, Fs, Generation, OperationFailure, OperationReceipt,
-    StreamAuthorityStore, WorkBudget, WorkCounters, WorkspaceError,
+    AsyncObjectStore, FilesystemCommit, Fs, Generation, StreamAuthorityStore, WorkspaceError,
 };
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -138,69 +137,28 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     }
 }
 
-/// A refused manifest condition retains the original commit and all its
-/// preparation, publication and allocation custody. It has not been submitted.
-pub struct ManifestFailure {
-    /// The same partially conditioned caller commit; no naked request escapes.
-    pub commit: FilesystemCommit,
-    /// Original failing step and aggregate work, including earlier layers.
-    pub failure: OperationFailure<WorkspaceError>,
-}
-
 impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStore + 'static>
     Manifest<'_, StreamAuthorityStore<P>, O>
 {
     /// Adds every source-head condition to the SAME caller commit, spending
-    /// one aggregate budget. Nothing is published here. The caller submits the
-    /// returned commit once through the original filesystem submission path;
+    /// one original work source. Nothing is published here. The caller submits
+    /// its commit once through the original filesystem submission path;
     /// its Rejected/Unknown outcomes and exact retry ownership stay unchanged.
     /// A source changed between reading and submission rejects the whole
     /// consuming commit, even when all changed data paths are unrelated.
     ///
     /// # Errors
-    /// Original custody plus the exact source failure; no retry or polling.
-    pub async fn condition(
+    /// The exact source failure; the caller keeps its original commit and all
+    /// preparation, publication and allocation custody. No retry or polling.
+    pub async fn condition<W: acyclic_fs::facade::FsWork>(
         &self,
         filesystem: &Fs<StreamAuthorityStore<P>, O>,
-        mut commit: FilesystemCommit,
-        budget: WorkBudget,
+        commit: &mut FilesystemCommit,
+        work: W,
         cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<OperationReceipt<FilesystemCommit>, ManifestFailure> {
-        let mut spent = WorkCounters::UNCHARGED;
-        for (_, generation) in self.sources() {
-            let remaining = match spent.remaining(budget) {
-                Ok(remaining) => remaining,
-                Err(error) => {
-                    return Err(ManifestFailure {
-                        commit,
-                        failure: OperationFailure::new(error.into(), spent),
-                    });
-                }
-            };
-            match filesystem
-                .require_head(generation, &mut commit, remaining, cancellation)
-                .await
-            {
-                Ok(receipt) => match spent.checked_add(receipt.work) {
-                    Ok(work) => spent = work,
-                    Err(error) => {
-                        return Err(ManifestFailure {
-                            commit,
-                            failure: OperationFailure::new(error.into(), spent),
-                        });
-                    }
-                },
-                Err(failure) => {
-                    return Err(ManifestFailure {
-                        commit,
-                        failure: failure.map_with_prior_work(spent, std::convert::identity),
-                    });
-                }
-            }
-        }
-        Ok(OperationReceipt {
-            value: commit,
-            work: spent,
-        })
+    ) -> W::Output<(), WorkspaceError> {
+        filesystem
+            .require_heads(&self.generations, commit, work, cancellation)
+            .await
     }
 }
