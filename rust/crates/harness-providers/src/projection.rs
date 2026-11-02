@@ -325,7 +325,7 @@ pub(crate) fn project<'a>(
     let sampling = request.sampling;
     if adapter == Adapter::Gemini {
         fields
-            .update(Field::GenerationConfig, |value| {
+            .update(Field::GenerationConfig, |value| -> Result<()> {
                 let config = value
                     .as_object_mut()
                     .ok_or_else(|| invalid("sampling projection requires generationConfig"))?;

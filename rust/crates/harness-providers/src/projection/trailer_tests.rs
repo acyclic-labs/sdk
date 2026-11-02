@@ -243,7 +243,9 @@ proptest! {
                     let mut sorted: Map<_, _> = body.fields.header().chain(body.fields.call_controls()).map(|(name, value)| (name.to_owned(), value.clone())).collect();
                     sorted.sort_keys();
                     let restored: Vec<_> = sorted.keys().map(String::as_str).collect();
-                    prop_assert_ne!(restored.as_slice(), &expected[..expected.len() - usize::from(body.tools.is_some()) - 1]);
+                    let schema_order: Vec<_> = expected.iter().copied()
+                        .filter(|name| !matches!(*name, "tools") && *name != body.messages_field).collect();
+                    prop_assert_ne!(restored.as_slice(), schema_order.as_slice());
 
                     let cost = acyclic_test_support::measure(|| body.write_selected(&mut io::sink(), None, None::<&str>).unwrap());
                     prop_assert_eq!((cost.count_total, cost.bytes_total), (0, 0));
