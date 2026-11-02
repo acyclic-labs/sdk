@@ -256,7 +256,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
                     }
                 );
                 assert_eq!(spent.backend_read_operations, 1);
-                assert!(spent.items_examined > 1);
+                assert_eq!(spent.items_examined, 1 + parents.len() as u64);
                 assert_eq!(
                     live,
                     baseline + (parents.capacity() * size_of::<GenerationId>()) as u64
@@ -294,6 +294,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
         let baseline = original.live_allocation_bytes();
         let (parents, allocation) = selected.parents(&original, &cancellation).await?;
         let allocation = allocation.ok_or("parent result lost original native backing")?;
+        assert!(allocation.work().shares_ledger(&original));
         let bytes = (parents.capacity() * size_of::<GenerationId>()) as u64;
         assert_eq!(parents, [before.id()]);
         assert_eq!(allocation.bytes(), bytes);
