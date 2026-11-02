@@ -189,7 +189,8 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    '--config','model_providers.acyclic_proxy.base_url='+JSON.stringify(proxy.baseUrl),
    '--config','model_providers.acyclic_proxy.wire_api="responses"',
    '--config','model_providers.acyclic_proxy.requires_openai_auth=false',
-   '--config','model_providers.acyclic_proxy.env_key="ACYCLIC_NATIVE_PROXY_TOKEN"','--model',model]
+   '--config','model_providers.acyclic_proxy.env_key="ACYCLIC_NATIVE_PROXY_TOKEN"',
+   '--config','shell_environment_policy.filters.ACYCLIC_NATIVE_PROXY_TOKEN="exclude"','--model',model]
    :live?['--config','model_provider="openai"','--model',model]
    :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
@@ -290,6 +291,9 @@ export async function installedHost({host,processes,fixture,capture,tools,native
    assert.equal(installation.code,0,installation.stderr);
    assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
   }
+  const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
+   extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
+  const {policy,args}=await launchNativeHost(host,configuration);
   step='start shipping workspace owner';
   // The harness approval chain the native permission hook asks: the case's
   // coordination tools only; exhausting it refuses every other one.
@@ -304,9 +308,6 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
-   extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
-  const {policy,args}=await launchNativeHost(host,configuration);
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});

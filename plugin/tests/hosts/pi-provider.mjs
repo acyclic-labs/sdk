@@ -20,6 +20,7 @@ function streamSimple(model,context,options) {
 export default async function register(pi) {
  if(process.env.ACYCLIC_NATIVE_PROXY) {
   const {provider,model,baseUrl,credential}=parseNativeProxy(process.env.ACYCLIC_NATIVE_PROXY);
+  delete process.env.ACYCLIC_NATIVE_PROXY;
   const family={openai:'openai',anthropic:'anthropic',gemini:'google'}[provider];
   const constants={openai:'OPENAI_MODELS',anthropic:'ANTHROPIC_MODELS',google:'GOOGLE_MODELS'};
   const tables=await import('@earendil-works/pi-ai/providers/'+family+'.models');

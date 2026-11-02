@@ -44,6 +44,7 @@ test('native proxy launch retains managed policy and gives only the ephemeral ca
    if(host==='codex') {
     assert.ok(launched.policy.includes('never'));assert.ok(launched.policy.includes('workspace-write'));
     assert.equal(env.ACYCLIC_NATIVE_PROXY_TOKEN,cap);
+    assert.ok(launched.policy.includes('shell_environment_policy.filters.ACYCLIC_NATIVE_PROXY_TOKEN="exclude"'));
    } else if(host==='claude-code') {
     assert.ok(launched.policy.includes('default'));assert.equal(env.ANTHROPIC_API_KEY,cap);
    } else assert.deepEqual(JSON.parse(env.ACYCLIC_NATIVE_PROXY),live);

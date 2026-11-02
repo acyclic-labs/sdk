@@ -34,6 +34,7 @@ test('pinned Pi protocols authenticate exact models and preserve native HTTP ref
    const live={provider,model,proxy};process.env.ACYCLIC_NATIVE_PROXY=JSON.stringify(live);
    let selected;
    await register({registerProvider(value){assert.equal(selected,undefined);selected=value;}});
+   assert.equal(process.env.ACYCLIC_NATIVE_PROXY,undefined,'the native shell must not inherit provider bootstrap credentials');
    const models=createModels();models.setProvider(selected);
    const admitted=models.getModel(provider,model);
    assert.ok(admitted,'the model must come from the pinned native catalogue');
@@ -59,6 +60,18 @@ test('pinned Pi protocols authenticate exact models and preserve native HTTP ref
   assert.equal(requests.at(-1).headers.authorization,'Bearer '+capability);
   assert.throws(()=>assertNativeCompletion('pi',completed,'NATIVE_PLUGIN_MODEL_DONE'),
    error=>error.code==='NATIVE_HOST_MODEL_FAILED');
+  const codexEnv=environment(join(root,'codex-profile'));
+  const codex=await nativeHost('codex',codexEnv);
+  const initialized=await scope.runOwned(codexEnv.E2E_GIT_BINARY??'git',['init','--quiet'],{cwd:workspace,env:codexEnv});
+  assert.equal(initialized.code,0,initialized.stderr);
+  const codexLaunch=await launchNativeHost('codex',{root,workspace,env:codexEnv,live,prompt:'native admission',installed:false});
+  const codexCount=requests.length;
+  const refused=await scope.runOwned(codex.program,[...codex.args,...codexLaunch.args],{cwd:workspace,env:codexEnv});
+  assert.equal(requests.length,codexCount+1,'the actual Codex CLI must send one admitted request');
+  assert.equal(requests.at(-1).path,'/openai/responses');
+  assert.equal(requests.at(-1).headers.authorization,'Bearer '+capability);
+  assert.equal(JSON.parse(requests.at(-1).body).model,live.model);
+  assert.throws(()=>assertNativeCompletion('codex',refused,'NATIVE_PLUGIN_MODEL_DONE'));
  } finally {
   try {await scope.close();}
   finally {
