@@ -470,7 +470,8 @@ fn validate_reply(
                             .is_none_or(|next| next == page.end && visited == 32)
                 })
                 && page.items.iter().all(|item| {
-                    item.version == 1 && item.agent_path.as_deref() == Some(agent.as_str())
+                    item.version == acyclic_harness_core::executor::ModelUsageRecord::VERSION
+                        && item.agent_path.as_deref() == Some(agent.as_str())
                 }) {
                 Ok(())
             } else {
