@@ -44,6 +44,25 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         let held = OwnedAccounting::take_branch(&mut borrowed.accounting(), &cancellation)?;
         let before = borrowed.spent();
         assert!(matches!(
+            borrowed.check(),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            borrowed.admit(WorkCounters::UNCHARGED),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            borrowed.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            }),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            borrowed.scope(),
+            Err(AuthorityStoreError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
             borrowed.remaining(),
             Err(AuthorityStoreError::AccountingHandoffActive)
         ));
@@ -53,6 +72,9 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         ));
         assert_eq!(borrowed.spent(), before);
         held.restore(&mut borrowed.accounting())?;
+        crate::performance::VERIFICATION_PASSES.with(|passes| passes.set(0));
+        borrowed.admit(WorkCounters::UNCHARGED)?;
+        crate::performance::VERIFICATION_PASSES.with(|passes| assert_eq!(passes.get(), 0));
         let remaining = borrowed.remaining()?;
         assert_eq!(remaining.items_examined, 0);
         assert_eq!(
@@ -93,6 +115,14 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         Err(AuthorityStoreError::Cancelled)
     ));
     assert_eq!(stopped.spent(), WorkCounters::UNCHARGED);
+    assert!(matches!(
+        stopped.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        }),
+        Err(AuthorityStoreError::Cancelled)
+    ));
+    assert_eq!(stopped.spent().items_examined, 1);
     assert_eq!(original.spent(), before);
     drop(first);
     drop(second);

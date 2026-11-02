@@ -553,6 +553,14 @@ mod tests {
         let baseline = caller.spent();
         let handed_off_live = caller.standalone_parts().unwrap().0.live_bytes();
         assert!(matches!(
+            caller.check(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
+            crate::async_storage::AuthorityFrame::borrow(&mut caller),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
+        assert!(matches!(
             caller.allocation_scope(),
             Err(crate::FsError::AccountingHandoffActive)
         ));
