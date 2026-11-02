@@ -11,6 +11,16 @@
 //! the reply. There is no per-request watcher or deadline: a
 //! request waits until it is answered, withdrawn, its notification source fails or its owner exits.
 //!
+//! Request publication completes durably before the client waits. Filesystem
+//! commands retain their results with their committed compatibility state
+//! while the original request exists; other host actions use their own agent
+//! records. There is no separate durable ledger of every encoded bridge reply.
+//! Request absence also permits saved-result pruning, so withdrawal and reply
+//! removal participate in recovery custody. A visible unlink alone cannot
+//! authorize pruning: it precedes the removal's directory barrier. These files
+//! cannot become visibility-only projections without an independent durable
+//! acknowledgement and replay owner.
+//!
 //! Both endpoints follow notifications, never scans. The owner indexes the
 //! request names each notification carries and dispatches every request
 //! independently, publishing each reply as soon as it is ready; only a
