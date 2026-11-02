@@ -79,7 +79,11 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
     })
     .await?;
     let denied = decisions.contains(&2);
-    if runs.len() != decisions.len() {
+    let mut visits = vec![0; decisions.len()];
+    for (name, _) in &runs {
+        visits[name.parse::<usize>().unwrap()] += 1;
+    }
+    if visits.iter().any(|visits| *visits != 1) {
         return Err(Error::Invalid(
             "hook work exceeded one visit per unchanged selected hook".into(),
         ));
@@ -119,10 +123,19 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
         },
     )
     .await?;
-    if runs.len() > 3 * order.len() {
+    if order
+        .iter()
+        .any(|name| runs.iter().filter(|(seen, _)| seen == name).count() > 3)
+    {
         return Err(Error::Invalid(
             "hook work exceeded three visits per selected hook".into(),
         ));
+    }
+    if !runs
+        .iter()
+        .any(|(name, input)| name == "b" && input == &middle)
+    {
+        return Err(Error::Invalid("ordered rewrite was not forwarded".into()));
     }
     if mode != 0 {
         if !output.blocks() || output.updated_input.is_some() {

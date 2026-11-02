@@ -32,7 +32,9 @@ fn apply(
     policy: HookFailure,
     result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
 ) {
-    let mut ledger = budget::Budget::existing(65_536, output).unwrap();
+    // Compare decoding semantics without an aggregate-output fallback changing
+    // the retained approval. The bounded fold is exercised separately below.
+    let mut ledger = budget::Budget::existing(u64::MAX, output).unwrap();
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
