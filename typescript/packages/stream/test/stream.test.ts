@@ -561,7 +561,7 @@ describe("website Stream contract", () => {
     await expect(client.commit({ conditions: [{ stream: source, ifTail: 1n }, { path: "invalid", ifAbsent: true }], mutations: [
       { append: { stream: source, values: [new Uint8Array([2])] } },
       { fork: { source, destination: "invalid", atTail: 99n } },
-    ] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "invalid_argument" });
+    ] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "prefix_not_retained" });
     expect(await source.tail()).toBe(1n);
     expect(await client.inspectIdempotency(key("atomic"))).toBeUndefined();
   });

@@ -5,9 +5,9 @@ import { webSocketSession, type SessionWebSocketFactory } from "./session-websoc
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import { streamFailure } from "./error.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
@@ -149,16 +149,12 @@ async function hostedError(route: string, text: string, status: number): Promise
   if (details.code === undefined) return new StreamError("transport", fallback, status);
   try {
     await ensureStreamWasm();
-    const code = publicHttpErrorCode(details.code, route);
-    if (code !== undefined && isPublicHttpCode(code)) return new StreamError(code, details.message ?? fallback, status);
+    const failure = streamFailure(details.code, details.message ?? fallback, route, status);
+    if (failure !== undefined) return failure;
   } catch { /* Unknown or unavailable contract remains a transport error. */ }
   return new StreamError("transport", fallback, status);
 }
 
-const HTTP_ALIASES = ["stream_not_found", "commit_not_found", "destination_exists", "capacity_exhausted"] as const satisfies readonly StreamFailureCode[];
-function isPublicHttpCode(code: string): code is StreamFailureCode {
-  return is_stream_error_code(code) || (HTTP_ALIASES as readonly string[]).includes(code);
-}
 
 function parseHostedError(text: string): { readonly code?: string; readonly message?: string } {
   try {

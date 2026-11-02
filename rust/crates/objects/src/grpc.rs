@@ -251,20 +251,7 @@ fn error_from_status(status: &tonic::Status) -> Error {
     {
         return code.into();
     }
-    match status.code() {
-        tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
-        tonic::Code::NotFound => wire::ErrorCode::NotFound,
-        tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
-            wire::ErrorCode::AccessDenied
-        }
-        tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
-        tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
-        tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
-        tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
-        tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
-        _ => wire::ErrorCode::Unavailable,
-    }
-    .into()
+    Error::from_grpc_status(status.code() as i32)
 }
 
 fn status(error: Error) -> tonic::Status {

@@ -26,3 +26,10 @@ path = "fuzz_targets/objects_manifest.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "objects_transport_status"
+path = "fuzz_targets/objects_transport_status.rs"
+test = false
+doc = false
+bench = false
