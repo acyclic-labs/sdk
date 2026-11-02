@@ -170,6 +170,7 @@ mod tests {
         let mut catalog = registry.catalog()["gemini"].as_ref().clone();
         // Alias support is a catalog fact, rather than a model-name heuristic.
         let advertised = catalog.models["gemini-4-argon"].clone();
+        let capacity = advertised.capacity;
         let mut unknown = serde_json::to_value(&advertised).unwrap();
         catalog.models.insert("opaque-alias".into(), advertised);
         unknown.as_object_mut().unwrap().remove("thinking_levels");
@@ -202,7 +203,7 @@ mod tests {
                         "---\nversion: 1\ntools: []\nreasoning: {reasoning}\ncache: automatic\nbudget_tokens: 4096\nwatermark_tokens: 2048\n---\n"
                     ),
                     &format!("---\nversion: 1\nkey: {key}\n---\n"),
-                    advertised.capacity,
+                    capacity,
                     "renderer-v1",
                 )?;
                 let profile = resolve(&model, &role, &project, &agent)?;
