@@ -5,7 +5,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::collections::VecDeque;
+use std::{borrow::Cow, collections::VecDeque};
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_BLOCKS: usize = 128;
@@ -50,7 +50,10 @@ impl TranscriptRows {
     pub fn push(&mut self, prompt: bool, text: &str) {
         self.clear_pending();
         self.truncated |= text.len() > MAX_BLOCK_BYTES;
-        let text = bounded_text(text);
+        self.push_owned(prompt, bounded_text(text).into_owned());
+    }
+
+    fn push_owned(&mut self, prompt: bool, text: String) {
         self.bytes += text.len();
         let rows = wrap(prompt, &text, self.width.max(1));
         self.blocks.push_back(Block {
@@ -72,7 +75,7 @@ impl TranscriptRows {
             self.lines.clear();
             self.bytes = 0;
             for block in std::mem::take(&mut self.blocks) {
-                self.push(block.prompt, &block.text);
+                self.push_owned(block.prompt, block.text);
             }
         }
         &self.lines
@@ -161,17 +164,17 @@ impl TranscriptRows {
     }
 }
 
-fn bounded_text(text: &str) -> String {
+fn bounded_text(text: &str) -> Cow<'_, str> {
     let text = text.trim_end_matches('\n');
     if text.len() <= MAX_BLOCK_BYTES {
-        return text.to_owned();
+        return Cow::Borrowed(text);
     }
     let minimum = text.len() - (MAX_BLOCK_BYTES - OMITTED.len() - 1);
     let start = text
         .grapheme_indices(true)
         .find(|(at, _)| *at >= minimum)
         .map_or(text.len(), |(at, _)| at);
-    format!("{OMITTED}\n{}", &text[start..])
+    Cow::Owned(format!("{OMITTED}\n{}", &text[start..]))
 }
 
 /// A prompt is shown bold as typed; an answer is rendered markdown.
@@ -186,13 +189,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     } else {
         crate::markdown::render(text, columns)
     };
-    let style_at = |offset: usize| {
-        let at = styles.partition_point(|(range, _)| range.end <= offset);
-        styles
-            .get(at)
-            .filter(|(range, _)| range.start <= offset)
-            .map_or_else(Style::default, |(_, style)| *style)
-    };
+    let mut style_at = crate::styled_cells::ordered_styles(styles);
     let layout = Layout::new(&Editor::new(&text), columns);
     let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
@@ -221,17 +218,13 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
             spans.push(Span::styled(marker, style_at(row.start)));
         }
         // The marker span stays its own, borrowed; text cells of one style join.
-        let text = spans.len();
-        for cell in &row.cells {
-            let style = style_at(cell.source.start);
-            let joinable = spans.len() > text;
-            match spans.last_mut() {
-                Some(span) if joinable && span.style == style => {
-                    span.content.to_mut().push_str(&cell.symbol);
-                }
-                _ => spans.push(Span::styled(cell.symbol.clone(), style)),
-            }
-        }
+        crate::styled_cells::append(
+            &mut spans,
+            row.cells
+                .iter()
+                .map(|cell| (cell.source.start, cell.symbol.clone())),
+            &mut style_at,
+        );
         rows.push(Line::from(spans));
     }
     rows.push(Line::default());
@@ -276,6 +269,61 @@ mod tests {
     }
 
     #[test]
+    fn resize_moves_retained_sources_and_preserves_the_bounded_projection() {
+        let mut transcript = TranscriptRows::default();
+        for index in 0..MAX_BLOCKS + 2 {
+            transcript.push(
+                index % 2 == 0,
+                &format!("source {index:03}: 界e\u{301}👩‍💻\nlast"),
+            );
+        }
+        let sources = transcript
+            .blocks
+            .iter()
+            .map(|block| block.text.as_ptr())
+            .collect::<Vec<_>>();
+        let bytes = transcript.bytes;
+        let original = transcript.lines.clone();
+        // Negative control: transient text must be rebuilt at the new width,
+        // rather than carried over with the immutable settled source.
+        transcript.pending([(true, "transient text")].into_iter());
+        assert!(transcript.pending_rows > 0);
+        for width in [47, 15, 3, 0, 80] {
+            let rows = transcript.rows(width);
+            assert!(rows.len() <= MAX_ROWS);
+            assert!(
+                rows.iter()
+                    .all(|row| row.width() <= usize::from(width.max(1)))
+            );
+            assert_eq!(transcript.pending_rows, 0);
+            assert_eq!(transcript.bytes, bytes);
+            assert_eq!(
+                transcript
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_ptr())
+                    .collect::<Vec<_>>(),
+                sources,
+                "resize copied settled source text"
+            );
+        }
+        assert_eq!(transcript.lines, original);
+        let allocation = transcript.lines[0].spans.as_ptr();
+        transcript.rows(80);
+        assert_eq!(transcript.lines[0].spans.as_ptr(), allocation);
+
+        // A narrow projection may evict older display blocks, but it must
+        // retain the original newest source without exceeding row credit.
+        transcript.push(false, &"界".repeat(MAX_ROWS - 4));
+        let newest = transcript.blocks.back().unwrap().text.as_ptr();
+        assert!(transcript.rows(1).len() <= MAX_ROWS);
+        assert_eq!(transcript.blocks.len(), 1);
+        assert_eq!(transcript.blocks.back().unwrap().text.as_ptr(), newest);
+        assert!(transcript.bytes <= MAX_BYTES);
+        assert!(transcript.truncated());
+    }
+
+    #[test]
     fn display_width_and_graphemes_survive_wrapping() {
         let mut transcript = TranscriptRows::default();
         transcript.push(true, "界e\u{301}👩‍💻\ttext\nlast");
@@ -287,7 +335,8 @@ mod tests {
                     .all(|line| line.width() <= usize::from(width))
             );
         }
-        let text = bounded_text(&format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES)));
+        let source = format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES));
+        let text = bounded_text(&source);
         assert!(text.len() <= MAX_BLOCK_BYTES);
         assert!(text.ends_with("e\u{301}end"));
         assert!(text.starts_with(OMITTED));

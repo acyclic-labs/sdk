@@ -49,18 +49,30 @@ impl<C> QueryPage<C> {
             }
             let text = line.to_string();
             let layout = Layout::new(&Editor::new(&text), usize::from(columns));
+            let mut end = 0;
+            let mut style_at = crate::styled_cells::ordered_styles(line.spans.iter().map(|span| {
+                let start = end;
+                end += span.content.len();
+                (start..end, span.style)
+            }));
             for row in layout.rows {
                 // The editor reserves an insertion row after an exact-width
                 // final row. A read-only page has no insertion cursor.
                 if !text.is_empty() && row.cells.is_empty() {
                     continue;
                 }
-                self.lines.push(Line::raw(
+                let mut spans = Vec::new();
+                crate::styled_cells::append(
+                    &mut spans,
                     row.cells
                         .into_iter()
-                        .map(|cell| cell.symbol)
-                        .collect::<String>(),
-                ));
+                        .map(|cell| (cell.source.start, cell.symbol)),
+                    &mut style_at,
+                );
+                let mut wrapped = Line::from(spans);
+                wrapped.style = line.style;
+                wrapped.alignment = line.alignment;
+                self.lines.push(wrapped);
             }
         }
     }
@@ -91,7 +103,12 @@ mod tests {
     use super::*;
     use crate::{
         PromptInput, Screen, Viewport,
-        ratatui::{Terminal, backend::TestBackend},
+        ratatui::{
+            Terminal,
+            backend::TestBackend,
+            style::{Color, Modifier, Style},
+            text::Span,
+        },
     };
     use std::collections::BTreeMap;
     type Failure = Box<dyn std::error::Error>;
@@ -106,6 +123,18 @@ mod tests {
                 "abcdef".repeat(60)
             )),
             Line::raw("+\t\tshort-tab-tail"),
+            Line::from(vec![
+                Span::styled("Ω".repeat(50), Style::default().fg(Color::Yellow)),
+                Span::raw(""),
+                Span::styled(
+                    "Ж\t".repeat(10),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+            .style(Style::default().bg(Color::DarkGray)),
             Line::raw(""),
         ];
         let expected = source
@@ -130,6 +159,7 @@ mod tests {
             panel.wrap(areas.overlay_columns());
             let mut top = 0;
             let mut seen = BTreeMap::new();
+            let mut styled = false;
             loop {
                 // Inspect the completed render, not the backend's sparse
                 // diff-write history beneath earlier wide glyphs.
@@ -148,11 +178,24 @@ mod tests {
                     let mut text = String::new();
                     let mut column = 0;
                     while column < areas.overlay_columns() {
-                        let symbol = painted.buffer[(
+                        let cell = &painted.buffer[(
                             areas.transcript.x + 1 + column,
                             areas.transcript.y + 1 + u16::try_from(row)?,
-                        )]
-                            .symbol();
+                        )];
+                        let symbol = cell.symbol();
+                        match symbol {
+                            "Ω" => {
+                                assert_eq!(cell.fg, Color::Yellow);
+                                assert_eq!(cell.bg, Color::DarkGray);
+                                styled = true;
+                            }
+                            "Ж" => {
+                                assert_eq!(cell.fg, Color::Cyan);
+                                assert_eq!(cell.bg, Color::Blue);
+                                assert!(cell.modifier.contains(Modifier::BOLD));
+                            }
+                            _ => {}
+                        }
                         text.push_str(symbol);
                         // A wide glyph covers the next buffer cell; that cell's
                         // previous symbol is not visible in the terminal.
@@ -169,6 +212,7 @@ mod tests {
                 }
             }
             assert_eq!(seen.into_values().collect::<String>(), expected);
+            assert!(styled, "the paged paint must reach the styled source");
             assert_eq!(panel.next.as_deref(), Some("original-continuation"));
             assert_eq!(
                 panel.source.as_ptr(),
@@ -207,6 +251,49 @@ mod tests {
         panel.wrap(0);
         assert!(panel.lines.is_empty());
         assert_eq!(panel.source.as_ptr(), original_source);
+
+        // Both projections use the same source-style walk. Unstyled gaps
+        // must reset emphasis, including after a wrapped row or a resize.
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let mut query = QueryPage::<()>::new(
+            vec![Line::from(vec![
+                Span::styled("bold", bold),
+                Span::raw(" gap "),
+                Span::styled("again", bold),
+                Span::raw(" end"),
+            ])],
+            None,
+            false,
+        );
+        let mut transcript = crate::TranscriptRows::default();
+        transcript.push(false, "**bold** gap **again** end");
+        let expected = [
+            ("bold", true),
+            ("gap", false),
+            ("again", true),
+            ("end", false),
+        ]
+        .into_iter()
+        .flat_map(|(text, bold)| text.chars().map(move |character| (character, bold)))
+        .collect::<Vec<_>>();
+        for width in [1, 2, 3, 7, 13, 20] {
+            query.wrap(width);
+            for rows in [query.lines.as_slice(), transcript.rows(width)] {
+                let actual = rows
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .flat_map(|span| {
+                        span.content.chars().filter_map(move |character| {
+                            (!character.is_whitespace()).then_some((
+                                character,
+                                span.style.add_modifier.contains(Modifier::BOLD),
+                            ))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected);
+            }
+        }
         Ok(())
     }
 }
