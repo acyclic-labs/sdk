@@ -10,8 +10,27 @@ mod ingress;
 
 // Exercise the production parser and cross-command validation. No runtime,
 // filesystem, provider, command execution or reconstructed parser is involved.
-fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool)| {
-    let (arguments, raw, refuse) = input;
+fuzz_target!(|input: (Vec<String>, Vec<Vec<u8>>, bool, [u8; 16])| {
+    let (arguments, raw, refuse, id) = input;
+    // A generated canonical path goes through the shipping admission boundary.
+    // Explicit selection must preserve that path and cannot consult ambient
+    // state, even when ordinary argument mutations rarely spell a valid ID.
+    let root =
+        acyclic_harness::agent::AgentPath::root(&acyclic_harness::agent::AgentId::from_bytes(id));
+    for expected in [
+        root.clone(),
+        root.child(&acyclic_harness::agent::AgentId::from_bytes(id))
+            .unwrap(),
+    ] {
+        let action = ingress::workspace_action(&["reopen".into(), expected.to_string()], || {
+            panic!("explicit reopen consulted ambient selection")
+        })
+        .unwrap();
+        let acyclic_harness::local::host_owner::HostAction::Reopen { task } = action else {
+            panic!("explicit reopen changed its operation")
+        };
+        assert_eq!(task, expected);
+    }
     let mut arguments = std::iter::once(std::ffi::OsString::from("acyclic"))
         .chain(arguments.into_iter().map(std::ffi::OsString::from))
         .collect::<Vec<_>>();
