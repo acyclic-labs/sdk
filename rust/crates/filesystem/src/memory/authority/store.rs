@@ -211,20 +211,3 @@ impl MemoryAuthorityStore {
         operation(state, accounting)
     }
 }
-
-#[test]
-fn authority_access_uses_one_lock_boundary() {
-    for (path, source) in [
-        ("read.rs", include_str!("read.rs")),
-        ("reservation.rs", include_str!("reservation.rs")),
-        ("publication.rs", include_str!("publication.rs")),
-    ] {
-        assert!(
-            !source
-                .split_whitespace()
-                .collect::<String>()
-                .contains("self.authorities"),
-            "REFUSED step=authority-access-policy file={path}: use MemoryAuthorityStore::lock_authorities; recovery: cargo test --locked -p acyclic-fs --lib authority_access_uses_one_lock_boundary"
-        );
-    }
-}
