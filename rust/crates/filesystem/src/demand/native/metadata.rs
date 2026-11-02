@@ -1,39 +1,3 @@
-fn node_kind(file_type: crate::demand::SourceNodeKind) -> SourceNodeKind {
-    [
-        (
-            (file_type == crate::demand::SourceNodeKind::Directory),
-            SourceNodeKind::Directory,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::RegularFile),
-            SourceNodeKind::RegularFile,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::SymbolicLink),
-            SourceNodeKind::SymbolicLink,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::Fifo),
-            SourceNodeKind::Fifo,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::Socket),
-            SourceNodeKind::Socket,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::CharacterDevice),
-            SourceNodeKind::CharacterDevice,
-        ),
-        (
-            (file_type == crate::demand::SourceNodeKind::BlockDevice),
-            SourceNodeKind::BlockDevice,
-        ),
-    ]
-    .into_iter()
-    .find_map(|(matches, kind)| matches.then_some(kind))
-    .unwrap_or(SourceNodeKind::Unsupported)
-}
-
 fn version(metadata: &HostStat) -> SourceVersion {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
@@ -99,32 +63,6 @@ fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
     hash.update(&u32::try_from(volume).unwrap_or_default().to_le_bytes());
     hash.update(&index.to_le_bytes());
     *hash.finalize().as_bytes()
-}
-
-#[allow(
-    clippy::useless_conversion,
-    reason = "dev_t and major/minor result widths differ across Unix targets"
-)]
-fn device_identity(metadata: &HostStat, kind: SourceNodeKind) -> Option<(u32, u32)> {
-    #[cfg(unix)]
-    {
-        if !matches!(
-            kind,
-            SourceNodeKind::CharacterDevice | SourceNodeKind::BlockDevice
-        ) {
-            return None;
-        }
-        let raw: libc::dev_t = (metadata.raw.st_rdev as u64).try_into().ok()?;
-        Some((
-            libc::major(raw).try_into().ok()?,
-            libc::minor(raw).try_into().ok()?,
-        ))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (metadata, kind);
-        None
-    }
 }
 
 fn source_metadata(metadata: &HostStat) -> SourceMetadata {

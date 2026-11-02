@@ -81,6 +81,10 @@ pub(crate) use macos_metadata::*;
 pub(crate) use metadata::set_posix_mode_held;
 mod stat;
 pub(crate) use stat::*;
+#[cfg(unix)]
+mod device;
+#[cfg(unix)]
+pub(crate) use device::*;
 #[cfg(test)]
 #[cfg(windows)]
 pub(crate) mod stat_probe;

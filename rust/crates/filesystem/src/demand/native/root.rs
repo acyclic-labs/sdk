@@ -393,12 +393,12 @@ impl NativeDemandSource {
     }
 
     fn node(metadata: &HostStat) -> SourceNode {
-        let kind = node_kind(metadata.file_type());
+        let kind = metadata.file_type();
         SourceNode {
             kind,
             file_identity: file_identity(metadata),
             link_count: Some(metadata.nlink()),
-            device: device_identity(metadata, kind),
+            device: metadata.device(),
             logical_bytes: (kind == SourceNodeKind::RegularFile
                 || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
                 .then_some(metadata.len()),

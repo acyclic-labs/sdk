@@ -102,28 +102,6 @@ pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
     })
 }
 
-#[cfg(unix)]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "The shared capture path also handles platforms without device identities."
-)]
-pub(super) fn host_device_identity(metadata: &HostStat) -> Result<(u32, u32), CaptureError> {
-    let device = metadata.raw.st_rdev;
-    #[cfg(target_os = "linux")]
-    let identity = (libc::major(device), libc::minor(device));
-    #[cfg(target_os = "macos")]
-    let identity = (
-        u32::try_from(libc::major(device)).unwrap_or(u32::MAX),
-        u32::try_from(libc::minor(device)).unwrap_or(u32::MAX),
-    );
-    Ok(identity)
-}
-
-#[cfg(not(unix))]
-pub(super) fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureError> {
-    Err(CaptureError::UnsupportedKind)
-}
-
 pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
     let result = physical_metadata(metadata);
     #[cfg(feature = "test-support")]
