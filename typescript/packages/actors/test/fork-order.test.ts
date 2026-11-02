@@ -28,6 +28,10 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
         expect(request.accountId).toEqual(new TextEncoder().encode("account"));
         expect(request.namespace).toBe("ClassOne");
         expect(request.childActorId).toBe("child");
+        expect(request.subscriptions).toHaveLength(1);
+        expect(request.subscriptions[0]?.subscriptionId).toBe("input");
+        expect(request.subscriptions[0]?.streamPath).toBe("events/child");
+        expect(request.subscriptions[0]?.start?.start).toEqual({ case: "currentHead", value: true });
         forks.push(request.actorId);
         return { actor: { actorId: request.childActorId } };
       },
@@ -51,9 +55,15 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     const fast = success.rpc("fast", new Uint8Array());
     await entered.get("success")!.promise;
     await fast; // The second real HTTP2 response overtakes the first.
-    const forked = success.fork(child, [], { idempotencyKey: "success" });
+    const subscriptions: Parameters<typeof success.fork>[1] = [{
+      subscriptionId: "input", streamPath: "events/child",
+      start: { start: { case: "currentHead", value: true } }, placementAnchor: false,
+    }];
+    const forked = success.fork(child, subscriptions, { idempotencyKey: "success" });
     // The admitted target is retained before the predecessor completion wait.
     child.toString = () => "substituted";
+    Object.defineProperty(subscriptions[0], "streamPath", {get() { throw new Error("substituted queued fork stream"); }});
+    Object.defineProperty(subscriptions, 0, {get() { throw new Error("substituted queued fork subscription"); }});
     const late = success.rpc("late", new Uint8Array());
     await entered.get("late")!.promise;
     await barrier();

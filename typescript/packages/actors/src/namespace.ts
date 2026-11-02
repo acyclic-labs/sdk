@@ -211,6 +211,7 @@ export class ActorStub {
     const reference = new ActorReference(this.#account, encoder.encode(this.#namespace), childId);
     if (!target.equals(reference)) throw new TypeError("fork child is outside this actor's namespace");
     if (target.equals(namespaceReference(this.#id))) throw new TypeError("an actor cannot fork into itself");
+    const selectedSubscriptions = structuredClone(subscriptions);
     const fork = this.#transport.forkActor;
     if (fork === undefined) throw new TypeError("this binding's transport cannot fork actors");
     const childActorId = decoder.decode(childId) as Semantic.ActorId;
@@ -221,7 +222,7 @@ export class ActorStub {
     signal.throwIfAborted();
     await fork.call(this.#transport, { actorId: this.#actor, childActorId,
       namespace: this.#namespace, accountId: this.#account.slice(),
-      subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
+      subscriptions: selectedSubscriptions, idempotencyKey }, {...callOptions,signal});
     return reference;
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
