@@ -143,6 +143,9 @@ pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStore
         crate::FsError::Object(error) => error,
         crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),
         crate::FsError::Cancelled(_) => crate::storage::ObjectStoreError::Cancelled,
+        crate::FsError::AccountingHandoffActive => {
+            crate::storage::ObjectStoreError::AccountingHandoffActive
+        }
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => crate::storage::ObjectStoreError::Native(error),
         crate::FsError::HandleAllocationFailed => {

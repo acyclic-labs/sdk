@@ -247,17 +247,11 @@ impl AsyncObjectStore for MemoryObjectStore {
         maximum_bytes: u64,
         context: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        if context.is_native() {
-            return self
-                .read_value(object_id, maximum_bytes, &mut context.accounting())
-                .map_err(object_error);
+        if !context.is_native() {
+            context.read_budget()?;
         }
-        let budget = context.read_budget()?;
-        let mut operation = AuthorityWork::new(budget, context.cancellation);
-        let result = self
-            .read_value(object_id, maximum_bytes, &mut operation.accounting())
-            .map_err(object_error);
-        context.accept(operation.receipt(result))
+        self.read_value(object_id, maximum_bytes, &mut context.accounting())
+            .map_err(object_error)
     }
     async fn read_many(
         &self,
