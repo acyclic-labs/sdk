@@ -114,17 +114,19 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
         // Subscriber callbacks and arbitrary output wakes run outside both
         // admission and completion locks. Missing result is never success.
         if let Some(((terminal, error, os_error), panicked)) = evidence {
-            observation.record("native.terminal", terminal);
-            observation.record("native.panicked", panicked);
-            if let Some(os_error) = os_error {
-                observation.record("error.os", os_error);
-            }
-            if terminal == "missing" {
-                observation.record("error.kind", "missing_result");
-                observation.record("outcome", "incomplete");
-            } else {
-                acyclic_observability::record_outcome(observation, error);
-            }
+            obs::project(|| {
+                observation.record("native.terminal", terminal);
+                observation.record("native.panicked", panicked);
+                if let Some(os_error) = os_error {
+                    observation.record("error.os", os_error);
+                }
+                if terminal == "missing" {
+                    observation.record("error.kind", "missing_result");
+                    observation.record("outcome", "incomplete");
+                } else {
+                    acyclic_observability::record_outcome(observation, error);
+                }
+            });
         }
         waker
     }
