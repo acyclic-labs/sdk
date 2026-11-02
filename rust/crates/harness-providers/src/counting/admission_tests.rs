@@ -210,6 +210,9 @@ proptest::proptest! {
         let expected = if final_failure && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
         proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && failures <= usize::from(budget)));
-        if let Ok(count) = result { proptest::prop_assert_eq!(count.input_tokens, 7); }
+        if let Ok(count) = result {
+            proptest::prop_assert_eq!(count.input_tokens, 7);
+            proptest::prop_assert_eq!(count.request_digest, request.request_digest());
+        }
     }
 }
