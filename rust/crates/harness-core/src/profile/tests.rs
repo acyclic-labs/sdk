@@ -321,5 +321,28 @@ fn builtin_roles_pin_context_and_spawn_permissions() -> Result<()> {
     assert!(profiles.pinned(&stale).is_err());
     assert_eq!(profiles.pinned(&worker)?.name(), "worker");
     assert!(!profiles.directive(&worker)?.messages.is_empty());
+    let admit = |advisor: &str, reverse: bool| -> Result<Profiles> {
+        let mut roles = [ORCHESTRATOR, WORKER, REVIEWER, advisor]
+            .map(RoleFile::parse)
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        if reverse {
+            roles.reverse();
+        }
+        Profiles::new(roles)
+    };
+    let reordered = admit(ADVISOR, true)?;
+    assert_eq!(profiles.snapshot(), reordered.snapshot());
+    assert_eq!(reordered.child(&root, "worker")?, worker);
+    // Only a future descendant changes. The root and worker files are
+    // untouched, yet neither resumed turns nor child admission may switch it.
+    let changed = admit(&ADVISOR.replace("alloy/advisor", "other/advisor"), false)?;
+    assert_ne!(profiles.snapshot(), changed.snapshot());
+    assert!(changed.pinned(&worker).is_err());
+    assert!(changed.directive(&worker).is_err());
+    assert!(changed.child(&root, "worker").is_err());
+    let changed_root = changed.root()?;
+    let changed_worker = changed.child(&changed_root, "worker")?;
+    assert!(changed.pinned(&changed_worker).is_ok());
     Ok(())
 }

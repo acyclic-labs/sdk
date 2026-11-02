@@ -47,6 +47,7 @@ pub mod devices;
 pub mod distributed;
 mod effects;
 pub mod executor;
+pub mod experiments;
 pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
