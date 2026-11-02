@@ -754,8 +754,14 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
             if cancelled {
                 io::ErrorKind::Interrupted
             } else {
-                io::ErrorKind::Other
+                io::ErrorKind::PermissionDenied
             }
+        );
+        assert_eq!(
+            error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<ExecutionRefusal>()),
+            !cancelled
         );
         assert_eq!(meter.read_attempts.load(Ordering::Acquire), 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
