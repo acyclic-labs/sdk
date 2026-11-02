@@ -1,3 +1,4 @@
+use crate::input_keymap::KeyBinding;
 use crate::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::{Action, InputKeymap};
 use std::fmt::Write as _;
@@ -24,10 +25,12 @@ pub fn decode_key(key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKey> {
     }
     let key = normalize_key(key);
     let chord = normalized_chord(key);
-    if chord.as_ref().is_some_and(|chord| bindings.disabled(chord)) {
-        return None;
-    }
-    if let Some(binding) = chord.as_ref().and_then(|chord| bindings.resolve(chord)) {
+    let binding = match chord.as_ref().map(|chord| bindings.lookup(chord)) {
+        Some(KeyBinding::Disabled) => return None,
+        Some(KeyBinding::Action(binding)) => Some(binding),
+        Some(KeyBinding::Unbound) | None => None,
+    };
+    if let Some(binding) = binding {
         if key.kind == KeyEventKind::Repeat && !binding.repeat {
             return None;
         }

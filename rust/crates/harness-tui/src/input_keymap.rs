@@ -1,5 +1,5 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::{Binding, KEYMAP, named_action};
+use crate::{named_action, Binding, KEYMAP};
 use std::{collections::BTreeMap, io, path::Path};
 
 /// Canonical schema-validated `{"bindings":{"Ctrl+l":"cursor.line-start"}}`
@@ -8,6 +8,12 @@ use std::{collections::BTreeMap, io, path::Path};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputKeymap {
     overrides: BTreeMap<String, String>,
+}
+
+pub(crate) enum KeyBinding<'a> {
+    Disabled,
+    Action(Binding<'a>),
+    Unbound,
 }
 
 impl InputKeymap {
@@ -70,23 +76,30 @@ impl InputKeymap {
     /// Resolve an already canonical event chord using the generated help data.
     /// Override files are canonicalized once by `parse`.
     pub fn resolve(&self, chord: &str) -> Option<Binding<'_>> {
+        match self.lookup(chord) {
+            KeyBinding::Action(binding) => Some(binding),
+            KeyBinding::Disabled | KeyBinding::Unbound => None,
+        }
+    }
+
+    pub(crate) fn lookup(&self, chord: &str) -> KeyBinding<'_> {
         if let Some((source, target)) = self.overrides.get_key_value(chord) {
+            if target.is_empty() {
+                return KeyBinding::Disabled;
+            }
             if let Some(binding) = named_action(target) {
-                return Some(Binding {
+                return KeyBinding::Action(Binding {
                     chord: source,
                     ..binding
                 });
             }
-            return None;
+            return KeyBinding::Unbound;
         }
         KEYMAP
             .iter()
             .find(|binding| binding.chord == chord)
             .copied()
-    }
-
-    pub(crate) fn disabled(&self, chord: &str) -> bool {
-        self.overrides.get(chord).is_some_and(String::is_empty)
+            .map_or(KeyBinding::Unbound, KeyBinding::Action)
     }
 
     pub(crate) fn has_prefix(&self, prefix: &str) -> bool {
