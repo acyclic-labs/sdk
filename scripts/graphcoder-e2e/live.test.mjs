@@ -14,8 +14,23 @@ const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-resu
 const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
 const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
 const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
+const codeFailure = JSON.parse(readFileSync(new URL("./fixtures/live-code-failure.json", import.meta.url), "utf8")).event;
 const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
+
+test("completed code calls cannot erase the original VM refusal", () => {
+  assert.throws(() => requireTools([codeFailure], ["code"]), error => {
+    assert.ok(error.message.includes(codeFailure.tool_response.output.error));
+    return true;
+  });
+  const selectedValue = structuredClone(codeFailure);
+  selectedValue.tool_response.output = { value: { error: codeFailure.tool_response.output.error } };
+  requireTools([selectedValue], ["code"]);
+  const opaqueValue = structuredClone(codeFailure);
+  delete opaqueValue.tool_response.version;
+  delete opaqueValue.tool_response.context;
+  requireTools([opaqueValue], ["code"]);
+});
 
 test("file reads retain the original authored or content source", () => {
   for (const { event } of fileReads) {
