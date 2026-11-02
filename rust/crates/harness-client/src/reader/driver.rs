@@ -525,6 +525,126 @@ mod tests {
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
+    fn record_coordinates_refuse_unrepresentable_ends_before_retaining_bytes() {
+        use super::super::{Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let path = StreamPath::new("coordinates/child/body").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"original body".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"coordinates".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let original = provider.head(path.clone()).await.unwrap().last.unwrap();
+            // Generate boundary coordinates on the actual provider row. This
+            // preserves its original allocation and commit, without claiming
+            // the provider has produced a history of this length.
+            let row = |sequence| Record {
+                sequence,
+                ..original.clone()
+            };
+            let want = Want::Range {
+                stream: path.clone(),
+                from: u64::MAX - 2,
+                to: u64::MAX,
+            };
+            for invalid in [true, false] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.cache.observe_origin(&path, None);
+                reader.begin_frame(0);
+                reader.plan([(want.clone(), Priority::Visible)]);
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                let rows = if invalid {
+                    vec![row(u64::MAX - 2), row(u64::MAX - 1), row(u64::MAX), row(0)]
+                } else {
+                    vec![row(u64::MAX - 2), row(u64::MAX - 1)]
+                };
+                reader.complete(
+                    op.id(),
+                    Outcome::Records(rows.into_iter().map(fetched).collect()),
+                    1,
+                );
+                assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
+                assert!(reader.cache.record(&path, u64::MAX).is_none());
+                if !invalid {
+                    assert_eq!(
+                        reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
+                        original.value.as_slice().as_ptr()
+                    );
+                }
+                reader.plan([(want.clone(), Priority::Visible)]);
+                assert!(
+                    reader.poll(1).is_empty(),
+                    "accepted or refused work was repeated"
+                );
+                assert!(reader.inflight.is_empty());
+            }
+
+            let parent = StreamPath::new("coordinates").unwrap();
+            let child = StreamPath::new("coordinates/child").unwrap();
+            let listing = Want::Listing {
+                parent: parent.clone(),
+                index: 0,
+                tail: Some(StreamPath::new("body").unwrap()),
+                witness: None,
+            };
+            for sequence in [u64::MAX, u64::MAX - 1] {
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.begin_frame(0);
+                reader.plan([(listing.clone(), Priority::Visible)]);
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                reader.complete(
+                    op.id(),
+                    Outcome::Children {
+                        children: vec![ListedChild {
+                            path: child.clone(),
+                            origin: None,
+                            tail: Some(fetched(row(sequence))),
+                        }],
+                        next: None,
+                        version: original.commit_id,
+                    },
+                    1,
+                );
+                let invalid = sequence == u64::MAX;
+                assert_eq!(reader.cache.listing(&parent, 0).is_none(), invalid);
+                assert_eq!(
+                    reader.cache.tail(&path),
+                    if invalid { None } else { Some(u64::MAX) }
+                );
+                assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
+                reader.plan([(listing.clone(), Priority::Visible)]);
+                assert!(reader.poll(1).is_empty());
+            }
+
+            let mut source = FollowSource {
+                path: path.clone(),
+                position: u64::MAX - 1,
+                accepted: u64::MAX - 1,
+                records: Box::pin(futures::stream::iter([
+                    Ok(row(u64::MAX - 1)),
+                    Ok(row(u64::MAX)),
+                ])),
+            };
+            let (_, accepted, record) = source.next().await.unwrap();
+            assert_eq!(accepted, u64::MAX);
+            assert_eq!(
+                record.unwrap().value.as_slice().as_ptr(),
+                original.value.as_slice().as_ptr()
+            );
+            let (_, accepted, record) = source.next().await.unwrap();
+            assert_eq!(record.unwrap_err(), StreamError::InvalidResponse);
+            assert_eq!(accepted, u64::MAX);
+            assert_eq!(source.position, u64::MAX);
+        });
+    }
+
+    #[test]
     fn listing_views_keep_original_projection_witness_and_cut() {
         use super::super::{ListingProjection, Priority, ReaderPolicy, Want};
 
