@@ -189,13 +189,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     } else {
         crate::markdown::render(text, columns)
     };
-    let style_at = |offset: usize| {
-        let at = styles.partition_point(|(range, _)| range.end <= offset);
-        styles
-            .get(at)
-            .filter(|(range, _)| range.start <= offset)
-            .map_or_else(Style::default, |(_, style)| *style)
-    };
+    let mut style_at = crate::styled_cells::ordered_styles(styles);
     let layout = Layout::new(&Editor::new(&text), columns);
     let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
@@ -229,7 +223,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
             row.cells
                 .iter()
                 .map(|cell| (cell.source.start, cell.symbol.clone())),
-            style_at,
+            &mut style_at,
         );
         rows.push(Line::from(spans));
     }
