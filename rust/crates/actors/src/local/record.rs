@@ -10,10 +10,12 @@ use std::collections::BTreeMap;
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
 pub const STATE_RECORD_OVERHEAD: usize =
-    130 + STATE_FORMAT_V1.len() + 2 + crate::escrow::MAX_RECORD_LEN;
+    130 + STATE_FORMAT_V2.len() + 2 + crate::escrow::MAX_RECORD_LEN;
 // The first byte has forbidden protobuf wire type 7: an older unversioned
 // decoder MUST fail rather than discard metadata and subsequently rewrite it.
-const STATE_FORMAT_V1: &[u8] = b"\xffAST\x01";
+// Version 2 keeps funding in its host-owned field. Guest metadata from version
+// 1 cannot be promoted into funding authority by the state reader.
+const STATE_FORMAT_V2: &[u8] = b"\xffAST\x02";
 /// Framing bytes each subscription adds beyond its id and path, at most.
 pub const SUBSCRIPTION_OVERHEAD: usize = 32;
 /// Framing bytes each metadata entry adds beyond its key and value, at most.
@@ -102,15 +104,19 @@ impl State {
                 .placement_branch
                 .map(|commit| commit.as_bytes().to_vec()),
         };
-        let mut record = Vec::with_capacity(STATE_FORMAT_V1.len() + payload.encoded_len());
-        record.extend_from_slice(STATE_FORMAT_V1);
+        let mut record = Vec::with_capacity(STATE_FORMAT_V2.len() + payload.encoded_len());
+        record.extend_from_slice(STATE_FORMAT_V2);
         payload.encode_raw(&mut record);
         record
     }
 
     /// The state a durable record holds.
     pub fn decode(record: &[u8]) -> Result<Self, Error> {
-        let record = acyclic_stream::persistence::header(record, b"\xffAST", b"\x01")?;
+        let record = acyclic_stream::persistence::header(
+            record,
+            &STATE_FORMAT_V2[..4],
+            &STATE_FORMAT_V2[4..],
+        )?;
         let record =
             Record::decode(record).map_err(|_| Error::Invalid("malformed actor state record"))?;
         let mut subscriptions = BTreeMap::new();
@@ -217,10 +223,10 @@ mod tests {
         // Neither an old writer ignoring new fields nor an unversioned input
         // can silently replace this actor's committed metadata and journal cut.
         assert!(Record::decode(record.as_slice()).is_err());
-        assert!(State::decode(&record[STATE_FORMAT_V1.len()..]).is_err());
-        for version in [0, 2, u8::MAX] {
-            let mut obsolete = STATE_FORMAT_V1.to_vec();
-            *obsolete.last_mut().expect("version") = version;
+        assert!(State::decode(&record[STATE_FORMAT_V2.len()..]).is_err());
+        for version in [0, 1, u8::MAX] {
+            let mut obsolete = record.clone();
+            obsolete[STATE_FORMAT_V2.len() - 1] = version;
             assert!(matches!(
                 State::decode(&obsolete),
                 Err(Error::Stream(acyclic_stream::StreamError::Unsupported))

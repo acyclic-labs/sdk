@@ -292,9 +292,12 @@ The journal is opaque persistence: the existing Stream journal engine retains
 all command interpretation. Actor alarms use the existing generation fence and
 are delivered as `GuestEvent.alarm`, without a guest timer.
 
-The local state record is explicitly `AST` version 1, with an invalid-protobuf
+The local state record is explicitly `AST` version 2, with an invalid-protobuf
 prefix that makes older unversioned decoders refuse it. Its reader rejects
-unversioned records; there is no migration or old-writer fallback. Adoption
+version 1 and unversioned records rather than interpreting guest metadata as
+host funding. Invocation records likewise require version 2, which binds the
+original caller-owned call journal; version 1 is refused before decoding its
+payload. There is no migration or old-writer fallback. Adoption
 requires a fresh state root/data generation. Metadata and the journal cut cannot
 be silently discarded by an older decoder. Older deployment validators also
 reject the new binding kind because its external capability/resource are empty.

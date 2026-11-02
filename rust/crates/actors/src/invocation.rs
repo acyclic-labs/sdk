@@ -10,7 +10,9 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 
 const HEADER: &str = "acyclic.actors.invoke";
-const VERSION: &[u8] = b"1";
+// Version 2 requires the original caller's journal root. Version 1 cannot be
+// completed here without inventing write authority for a missing caller.
+const VERSION: &[u8] = b"2";
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct RequestWire {
@@ -174,7 +176,7 @@ impl Invocation {
 
     pub(crate) fn identity(&self, state_path: &str) -> [u8; 32] {
         let mut hash = Sha256::new();
-        hash.update(b"acyclic.actors.invoke.v1");
+        hash.update(b"acyclic.actors.invoke.v2");
         let actor = self.actor.encode();
         for part in [
             self.caller.as_str().as_bytes(),

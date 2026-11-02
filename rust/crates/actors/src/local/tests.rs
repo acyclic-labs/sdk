@@ -194,6 +194,44 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     ));
     let mut result = transition(7, AlarmChange::Keep);
     result.response = Some(Bytes::new());
+    // Mutate the original accepted record's version. Unsupported formats must
+    // fail before either success or failure can consume input or mint a caller.
+    for version in [b"0", b"1", b"3"] {
+        let mut obsolete = ticket.record().clone();
+        obsolete.headers = acyclic_stream::RecordHeaders::new(
+            obsolete.headers.keys().to_vec(),
+            vec![acyclic_stream::Attribute {
+                name: "acyclic.actors.invoke".into(),
+                value: Bytes::copy_from_slice(version).into(),
+            }],
+        )?;
+        assert!(matches!(
+            Invocation::decode(&obsolete),
+            Err(crate::guest::GuestError::UnsupportedFormat)
+        ));
+        assert!(matches!(
+            store.prepare_publish(
+                &before,
+                1,
+                &record(0),
+                Some(&obsolete),
+                result.clone(),
+                key("invoked/unsupported")?
+            ),
+            Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
+        ));
+        assert!(matches!(
+            store.prepare_invocation_failure(
+                &before,
+                1,
+                &record(0),
+                Some(&obsolete),
+                &crate::guest::GuestError::Decode("failed".into()),
+                key("invoked/unsupported-failure")?
+            ),
+            Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
+        ));
+    }
     assert!(matches!(
         store.prepare_publish(
             &before,
