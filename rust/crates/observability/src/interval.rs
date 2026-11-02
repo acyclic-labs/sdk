@@ -187,3 +187,77 @@ impl std::fmt::Display for IntervalError {
     }
 }
 impl std::error::Error for IntervalError {}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn unix_projection_preserves_duration_or_refuses() {
+        let anchor = UnixClockAnchor {
+            domain: kani::any(),
+            observed_unix_ns: kani::any(),
+            read_window_ns: kani::any(),
+        };
+        let coordinates = IntervalCoordinates {
+            domain: kani::any(),
+            started_ns: kani::any(),
+            finished_ns: kani::any(),
+        };
+        let result = anchor.project(coordinates);
+        if coordinates.domain != anchor.domain {
+            assert_eq!(result, Err(IntervalError::ForeignDomain));
+        } else if coordinates.finished_ns < coordinates.started_ns {
+            assert_eq!(result, Err(IntervalError::Reversed));
+        } else {
+            match result {
+                Ok(estimate) => {
+                    assert_eq!(estimate.domain, coordinates.domain);
+                    assert_eq!(estimate.read_window_ns, anchor.read_window_ns);
+                    // Compare the affine equation as two 129-bit sums. This
+                    // also detects wrapped or incorrectly shifted timestamps.
+                    assert_eq!(
+                        estimate
+                            .started_unix_ns
+                            .overflowing_add(anchor.read_window_ns / 2),
+                        anchor
+                            .observed_unix_ns
+                            .overflowing_add(coordinates.started_ns)
+                    );
+                    assert!(estimate.finished_unix_ns >= estimate.started_unix_ns);
+                    assert_eq!(
+                        estimate.finished_unix_ns - estimate.started_unix_ns,
+                        coordinates.finished_ns - coordinates.started_ns
+                    );
+                }
+                Err(error) => assert_eq!(error, IntervalError::UnixRange),
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn unix_projection_admits_representable_midpoint_intervals() {
+        let anchor = UnixClockAnchor {
+            domain: kani::any(),
+            observed_unix_ns: kani::any(),
+            read_window_ns: kani::any(),
+        };
+        let elapsed: u128 = kani::any();
+        let started_ns = anchor.read_window_ns / 2;
+        let Some(finished_ns) = started_ns.checked_add(elapsed) else {
+            return;
+        };
+        let Some(finished_unix_ns) = anchor.observed_unix_ns.checked_add(elapsed) else {
+            return;
+        };
+        let estimate = anchor
+            .project(IntervalCoordinates {
+                domain: anchor.domain,
+                started_ns,
+                finished_ns,
+            })
+            .expect("representable original midpoint interval");
+        assert_eq!(estimate.started_unix_ns, anchor.observed_unix_ns);
+        assert_eq!(estimate.finished_unix_ns, finished_unix_ns);
+    }
+}
