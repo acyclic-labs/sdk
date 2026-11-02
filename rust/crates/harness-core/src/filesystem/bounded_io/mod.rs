@@ -556,7 +556,7 @@ impl PreparationIo {
     ) -> Result<DecodeReservation<'_>> {
         if !self
             .original_native_work()
-            .is_some_and(|work| work.shares_ledger(custody.work()))
+            .is_some_and(|work| work.shares_allocation_context(custody.work()))
         {
             return Err(self.invalid("native content custody belongs to another ledger"));
         }

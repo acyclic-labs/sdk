@@ -256,8 +256,8 @@ impl ModelProvider for PausedPrefix {
         &'a self,
         _: &'a PreparedModelRequest,
         _: ModelDispatch,
-    ) -> crate::model::ModelStream<'a> {
-        crate::model::ModelStream::new(Box::pin(futures::stream::unfold(
+    ) -> acyclic_harness::model::ModelStream<'a> {
+        acyclic_harness::model::ModelStream::new(Box::pin(futures::stream::unfold(
             false,
             move |sent| async move {
                 if !sent {

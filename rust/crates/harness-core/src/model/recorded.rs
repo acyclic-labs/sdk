@@ -828,6 +828,33 @@ mod tests {
 
                 let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
                 let retained = work.live_allocation_bytes();
+                let foreign = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(error, _)| error)?;
+                let foreign_custody = foreign.claim(0, 0, Default::default())?;
+                assert!(matches!(
+                    io.hold_native_custody(foreign_custody),
+                    Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ..
+                    })
+                ));
+                let resource =
+                    foreign.native_volume_work(acyclic_fs::performance::BOUNDARY_BUDGET)?;
+                assert!(foreign.shares_ledger(&resource));
+                assert!(!foreign.shares_allocation_context(&resource));
+                let foreign_io = crate::filesystem::PreparationIo::from_native_work(&foreign)?;
+                let resource_custody = resource.claim(0, 0, Default::default())?;
+                assert!(matches!(
+                    foreign_io.hold_native_custody(resource_custody),
+                    Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ..
+                    })
+                ));
+                assert_eq!(work.live_allocation_bytes(), retained);
                 for _ in 0..2 {
                     trial
                         .lock()

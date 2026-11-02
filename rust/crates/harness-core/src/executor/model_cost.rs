@@ -441,11 +441,7 @@ impl ModelUsageTotals {
         previous: &ModelUsageProjection<'_>,
         row: &ModelUsageProjection<'_>,
     ) -> Result<(), ModelPriceError> {
-        if previous.usage.dispatch != row.usage.dispatch
-            || previous.usage.purpose != row.usage.purpose
-            || previous.usage.provider != row.usage.provider
-            || previous.usage.model != row.usage.model
-        {
+        if !previous.usage.same_admission_as(&row.usage) {
             return Err(ModelPriceError::CallMismatch);
         }
         self.update(Some(previous), row)
@@ -836,6 +832,24 @@ mod tests {
             foreign.dispatch.step = 1;
             prop_assert_eq!(total.replace(&projected, &foreign.estimate(None).unwrap()), Err(ModelPriceError::CallMismatch));
             prop_assert_eq!(&total, &snapshot);
+
+            // The old dispatch/provider-only comparison accepted substituted
+            // agent or pinned request observations. Each must refuse before
+            // replacing any installed contribution, without retaining a row.
+            for field in 0..3 {
+                let mut foreign = row.clone();
+                match field {
+                    0 => foreign.agent_path = None,
+                    1 => foreign.sampling = Some(crate::model::ModelSampling::default()),
+                    _ => foreign.max_output_tokens = Some(1),
+                }
+                prop_assert!(row.dispatch == foreign.dispatch
+                    && row.purpose == foreign.purpose
+                    && row.provider == foreign.provider
+                    && row.model == foreign.model);
+                prop_assert_eq!(total.replace(&projected, &foreign.estimate(None).unwrap()), Err(ModelPriceError::CallMismatch));
+                prop_assert_eq!(&total, &snapshot);
+            }
 
             let mut missing = row.clone();
             missing.tokens.cached = None;

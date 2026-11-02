@@ -148,6 +148,23 @@ pub struct ModelUsageRecord {
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
     pub const VERSION: u32 = 2;
+
+    /// Whether both observations retain the same original admitted call.
+    /// Completion counters, timing and provider response metadata may change;
+    /// the dispatch, agent and pinned request binding may not. Unknown fields
+    /// remain distinct from supplied values. Format validation is separate.
+    /// Compares a fixed set of fields, borrowing their strings without IO,
+    /// allocation, copying, waiting or traversal of other observations.
+    #[must_use]
+    pub fn same_admission_as(&self, other: &Self) -> bool {
+        self.dispatch == other.dispatch
+            && self.purpose == other.purpose
+            && self.provider == other.provider
+            && self.model == other.model
+            && self.agent_path == other.agent_path
+            && self.sampling == other.sampling
+            && self.max_output_tokens == other.max_output_tokens
+    }
 }
 
 #[cfg(any(
