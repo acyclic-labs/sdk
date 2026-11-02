@@ -33,7 +33,8 @@ export function validatePayload(entries, receipt, platform = process.platform) {
 export function verifyArchive(path, expected, receipt) {
   const archive = readBoundedGzip(path, 64 * 1024 * 1024, 256 * 1024 * 1024);
   if (sha256(archive.compressed) !== expected) throw new Error("package archive digest mismatch");
-  const entries = tarEntries(archive.expanded);
+  // Installation consumes every admitted member after validation has finished.
+  const entries = [...tarEntries(archive.expanded)];
   validatePayload(entries, receipt);
   return entries;
 }
