@@ -68,11 +68,13 @@ fn check(path: &NamespacePath) {
     for name in path.components() {
         let mut expected = vec![original_tag(name.encoding())];
         expected.extend_from_slice(name.as_bytes());
-        let encoded = canonical_name_key(name);
-        assert_eq!(encoded, expected);
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded = canonical_name_key(name, &mut accounting).unwrap();
+        assert_eq!(encoded.value, expected);
         let key = ConflictKey::Binding {
             directory_id,
-            name: encoded,
+            name: encoded.value.clone(),
         };
         assert_eq!(
             kernel_conflict(&key, u32::MAX).unwrap(),
@@ -97,6 +99,7 @@ fn check(path: &NamespacePath) {
                 Err(DrivenJoinError::StaleCandidate)
             ));
         }
+        encoded.retire(&mut accounting).unwrap();
     }
 
     #[cfg(feature = "native-watch")]

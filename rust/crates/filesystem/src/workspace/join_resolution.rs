@@ -8,6 +8,13 @@ enum ConflictContents {
     Files,
 }
 
+fn scalar_conflict_view(
+    value: crate::ConflictView,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+    Ok(Owned::new(value, accounting.claim_owned(0, 0)?, 0))
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     pub(super) async fn stage_regular_resolution(
         &self,
@@ -122,17 +129,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 let path = self
                     .conflict_path(directory_id, Some(name), accounting, cancellation)
                     .await?;
-                (binding_conflict_view(self, conflict), path)
+                (
+                    binding_conflict_view(self, directory_id, name, accounting)?,
+                    path,
+                )
             }
         };
         cancellation.check()?;
-        let (allocation, bytes) = if let Some(path) = path {
-            view.path = Some(path.value);
-            (path.allocation, path.bytes)
-        } else {
-            (accounting.claim_owned(0, 0)?, 0)
-        };
-        let view = Owned::new(view, allocation, bytes);
+        if let Some(path) = path {
+            view.value.path =
+                Some(path.transfer_to(&mut view.allocation, &mut view.bytes, accounting)?);
+        }
         scope.keep();
         Ok(view)
     }
@@ -145,7 +152,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
         let records = self
             .conflict_records(file_id, accounting, cancellation)
             .await?;
@@ -178,24 +185,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             {
                 return Ok(view);
             }
-            return Ok(crate::ConflictView {
-                key: ConflictKey::File(file_id),
-                path: None,
-                kind: ConflictKind::Record,
-                base: fallback(self.base.id, base),
-                ours: fallback(self.target_head.id, ours),
-                theirs: fallback(self.source_head.id, theirs),
-            });
+            return scalar_conflict_view(
+                crate::ConflictView {
+                    key: ConflictKey::File(file_id),
+                    path: None,
+                    kind: ConflictKind::Record,
+                    base: fallback(self.base.id, base),
+                    ours: fallback(self.target_head.id, ours),
+                    theirs: fallback(self.source_head.id, theirs),
+                },
+                accounting,
+            );
         };
         if base_record.link_count != ours_record.link_count
             || base_record.link_count != theirs_record.link_count
         {
-            return Ok(record_conflict_view(
-                self,
-                file_id,
-                None,
-                ConflictKind::HardLink,
-            ));
+            return scalar_conflict_view(
+                record_conflict_view(self, file_id, None, ConflictKind::HardLink),
+                accounting,
+            );
         }
         if self.git_metadata
             && let Some(view) = self
@@ -216,15 +224,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             if contents == ConflictContents::Files {
                 let mut view = record_conflict_view(self, file_id, None, ConflictKind::Metadata);
                 view.key = ConflictKey::Metadata(file_id);
-                return Ok(view);
+                return scalar_conflict_view(view, accounting);
             }
-            return self
+            let view = self
                 .metadata_conflict_view(
                     file_id,
                     [base_record, ours_record, theirs_record],
                     cancellation,
                 )
-                .await;
+                .await?;
+            return scalar_conflict_view(view, accounting);
         }
         if let Some(view) = self
             .regular_conflict_view(
@@ -243,7 +252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             FileKind::SymbolicLink => ConflictKind::SymbolicLink,
             _ => ConflictKind::Special,
         };
-        Ok(record_conflict_view(self, file_id, None, kind))
+        scalar_conflict_view(record_conflict_view(self, file_id, None, kind), accounting)
     }
 
     /// The original identity's records, shared by projection and resolution.
@@ -362,7 +371,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<crate::ConflictView>, WorkspaceError> {
+    ) -> Result<Option<Owned<crate::ConflictView>>, WorkspaceError> {
         if records
             .iter()
             .any(|record| record.kind != FileKind::Regular)
@@ -374,7 +383,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         // their scratch; the original cumulative work survives every exit.
         let mut scope = accounting.allocation_scope()?;
         let accounting = &mut *scope;
-        let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
+        let mut bodies: [Option<crate::kernel::FileRangeRead>; 3] = std::array::from_fn(|_| None);
         let mut texts: [Option<&str>; 3] = [None; 3];
         let reference = || {
             let mut view = record_conflict_view(self, file_id, None, ConflictKind::Binary);
@@ -400,7 +409,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .workspace
                 .volume
                 .fs
-                .workspace_conflict_bytes(
+                .workspace_conflict_body(
                     &self.target_head.workspace.volume,
                     record,
                     accounting,
@@ -408,39 +417,52 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 )
                 .await?
             else {
-                return Ok(Some(reference()));
+                return scalar_conflict_view(reference(), accounting).map(Some);
             };
             let bytes = body.insert(bytes);
-            texts[index] = crate::text_merge::text_from_bytes(bytes, limits).ok();
+            texts[index] = crate::text_merge::text_from_bytes(&bytes.bytes, limits).ok();
             if contents == ConflictContents::Files && texts[index].is_none() {
-                return Ok(Some(reference()));
+                return scalar_conflict_view(reference(), accounting).map(Some);
             }
         }
-        let (kind, [base, ours, theirs]) = match texts {
-            [Some(base), Some(ours), Some(theirs)] => (
-                ConflictKind::Text,
-                [base, ours, theirs].map(|text| ConflictValue::Text(text.to_owned())),
-            ),
-            _ => {
-                let [Some(base), Some(ours), Some(theirs)] = bodies else {
-                    return Err(WorkspaceError::InvalidMergeResolution);
-                };
-                (
-                    ConflictKind::Binary,
-                    [base, ours, theirs]
-                        .each_ref()
-                        .map(|bytes| ConflictValue::Binary(bytes.to_vec())),
-                )
+        let mut view = scalar_conflict_view(reference(), accounting)?;
+        let mut values = [
+            ConflictValue::Absent,
+            ConflictValue::Absent,
+            ConflictValue::Absent,
+        ];
+        match texts {
+            [Some(base), Some(ours), Some(theirs)] => {
+                view.value.kind = ConflictKind::Text;
+                for (slot, text) in values.iter_mut().zip([base, ours, theirs]) {
+                    let text = Owned::<String>::copy_from_str(text, accounting)?;
+                    *slot = ConflictValue::Text(text.transfer_to(
+                        &mut view.allocation,
+                        &mut view.bytes,
+                        accounting,
+                    )?);
+                }
             }
-        };
-        Ok(Some(crate::ConflictView {
-            key: ConflictKey::File(file_id),
-            path: None,
-            kind,
-            base,
-            ours,
-            theirs,
-        }))
+            _ => {
+                for (slot, body) in values.iter_mut().zip(&bodies) {
+                    let body = body
+                        .as_ref()
+                        .ok_or(WorkspaceError::InvalidMergeResolution)?;
+                    let bytes = Owned::<Vec<u8>>::copy_from_slice(&body.bytes, accounting)?;
+                    *slot = ConflictValue::Binary(bytes.transfer_to(
+                        &mut view.allocation,
+                        &mut view.bytes,
+                        accounting,
+                    )?);
+                }
+            }
+        }
+        [view.value.base, view.value.ours, view.value.theirs] = values;
+        for body in bodies.into_iter().flatten() {
+            body.retire(accounting)?;
+        }
+        scope.keep();
+        Ok(Some(view))
     }
 
     /// Applies exact resolutions under the supplied writer permit.
