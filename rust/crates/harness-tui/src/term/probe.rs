@@ -20,7 +20,8 @@ fn modes() -> impl Iterator<Item = u16> {
         .chain(super::restore::MOUSE_ENCODINGS)
 }
 
-/// Polling transport; implementations must honor the supplied absolute deadline.
+/// Deadline-bound transport. Readiness waits belong to the original device;
+/// callers do not retry `WouldBlock` as a readiness check.
 pub trait ProbeIo {
     /// Native initialization established bounded margins and SU/SD support.
     fn native_scroll_regions(&self) -> bool {
@@ -478,13 +479,6 @@ pub fn detect(
             deadline,
         ) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => break,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(
-                    Duration::from_millis(1)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                );
-                continue;
-            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
         };

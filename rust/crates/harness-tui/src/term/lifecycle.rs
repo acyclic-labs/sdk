@@ -12,6 +12,7 @@ pub(crate) struct State<W: Write> {
     active: bool,
     closed: bool,
     restored: bool,
+    changed: Option<fn(&mut W) -> io::Result<()>>,
 }
 
 #[cfg(any(unix, loom))]
@@ -22,13 +23,13 @@ pub(crate) type Owner<W> = Mutex<Option<Arc<Mutex<State<W>>>>>;
 #[cfg(any(unix, loom))]
 pub(crate) fn attach<W: Write>(
     owner: &Owner<W>,
-    create: impl FnOnce() -> io::Result<W>,
+    create: impl FnOnce() -> io::Result<State<W>>,
 ) -> io::Result<Arc<Mutex<State<W>>>> {
     let mut owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
     if owner.is_some() {
         return Err(io::ErrorKind::AlreadyExists.into());
     }
-    let state = Arc::new(Mutex::new(State::new(create()?)));
+    let state = Arc::new(Mutex::new(create()?));
     *owner = Some(Arc::clone(&state));
     Ok(state)
 }
@@ -75,7 +76,30 @@ impl<W: Write> State<W> {
             active: true,
             closed: false,
             restored: false,
+            changed: None,
         }
+    }
+
+    pub(crate) fn notifying(writer: W, changed: fn(&mut W) -> io::Result<()>) -> Self {
+        Self {
+            changed: Some(changed),
+            ..Self::new(writer)
+        }
+    }
+
+    pub(crate) fn is_active(&self) -> io::Result<bool> {
+        if self.closed {
+            Err(io::ErrorKind::NotConnected.into())
+        } else {
+            Ok(self.active)
+        }
+    }
+
+    fn notify(&mut self) -> io::Result<()> {
+        if let Some(changed) = self.changed {
+            changed(self.guard.writer())?;
+        }
+        Ok(())
     }
 }
 
@@ -87,10 +111,7 @@ pub(crate) fn active<W: Write, T>(
     action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<T>,
 ) -> io::Result<T> {
     let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
-    if state.closed {
-        return Err(io::ErrorKind::NotConnected.into());
-    }
-    if !state.active {
+    if !state.is_active()? {
         return Err(io::ErrorKind::WouldBlock.into());
     }
     action(&mut state.guard)
@@ -122,14 +143,17 @@ pub(crate) fn restore<W: Write>(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.closed |= terminate;
     state.active = false;
+    // Publish under the same lock as the state change, including a close
+    // after an earlier successful suspension restoration.
+    let changed = state.notify();
     if state.restored {
-        return Ok(());
+        return changed;
     }
     let dec = state.guard.restore();
     let os = os_restore(state.guard.writer());
     let result = dec.and(os);
     state.restored = result.is_ok();
-    result
+    result.and(changed)
 }
 
 #[cfg(any(unix, loom))]
@@ -143,6 +167,7 @@ pub(crate) fn resume<W: Write>(
         state.guard.reapply()?;
         state.active = true;
         state.restored = false;
+        state.notify()?;
     }
     Ok(())
 }
@@ -182,6 +207,71 @@ mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;
 
+    struct InputWake {
+        pending: Mutex<bool>,
+        changed: loom::sync::Condvar,
+    }
+
+    struct Notifier(Arc<InputWake>);
+    impl Write for Notifier {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Notifier {
+        fn changed(&mut self) -> io::Result<()> {
+            *self.0.pending.lock().map_err(|_| io::ErrorKind::Other)? = true;
+            self.0.changed.notify_one();
+            Ok(())
+        }
+    }
+
+    /// The native control removes the sole notification as its negative.
+    /// This model explores acknowledgement, suspension and final close on
+    /// the same production state mutex and transition callbacks.
+    #[test]
+    fn lifecycle_notification_survives_acknowledgement_before_close() {
+        loom::model(|| {
+            assert!(notification_model().is_ok());
+        });
+    }
+
+    fn notification_model() -> io::Result<()> {
+        let wake = Arc::new(InputWake {
+            pending: Mutex::new(false),
+            changed: loom::sync::Condvar::new(),
+        });
+        let state = Arc::new(Mutex::new(State::notifying(
+            Notifier(Arc::clone(&wake)),
+            Notifier::changed,
+        )));
+        let reading = Arc::clone(&state);
+        let reader = loom::thread::spawn(move || -> io::Result<()> {
+            loop {
+                {
+                    let state = reading.lock().map_err(|_| io::ErrorKind::Other)?;
+                    *wake.pending.lock().map_err(|_| io::ErrorKind::Other)? = false;
+                    if state.is_active().is_err() {
+                        return Ok(());
+                    }
+                }
+                let mut pending = wake.pending.lock().map_err(|_| io::ErrorKind::Other)?;
+                while !*pending {
+                    pending = wake
+                        .changed
+                        .wait(pending)
+                        .map_err(|_| io::ErrorKind::Other)?;
+                }
+            }
+        });
+        restore(&state, false, |_| Ok(()))?;
+        restore(&state, true, |_| Ok(()))?;
+        reader.join().map_err(|_| io::ErrorKind::Other)?
+    }
+
     // Fake OS state is acquired last, after owner -> state; never in reverse.
     struct Terminal {
         raw: Arc<Mutex<bool>>,
@@ -213,10 +303,10 @@ mod terminal_lifecycle_model {
             let owner = Arc::new(Mutex::new(None));
             let old = attach(&owner, || {
                 *raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
-                Ok(Terminal {
+                Ok(State::new(Terminal {
                     raw: Arc::clone(&raw),
                     broken_drop,
-                })
+                }))
             })
             .unwrap_or_else(|error| panic!("{error:?}"));
             let reopening = Arc::clone(&owner);
@@ -224,10 +314,10 @@ mod terminal_lifecycle_model {
             let worker = loom::thread::spawn(move || {
                 attach(&reopening, || {
                     *new_raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
-                    Ok(Terminal {
+                    Ok(State::new(Terminal {
                         raw: new_raw,
                         broken_drop: false,
-                    })
+                    }))
                 })
                 .ok()
             });
@@ -265,19 +355,19 @@ mod terminal_lifecycle_model {
     fn failed_restoration_keeps_owner_until_successful_retry() {
         loom::model(|| {
             let owner = Mutex::new(None);
-            let state =
-                attach(&owner, || Ok(Vec::new())).unwrap_or_else(|error| panic!("{error:?}"));
+            let state = attach(&owner, || Ok(State::new(Vec::new())))
+                .unwrap_or_else(|error| panic!("{error:?}"));
             assert!(detach(&owner, &state, |_| Err(io::ErrorKind::Other.into())).is_err());
-            assert!(attach(&owner, || Ok(Vec::new())).is_err());
+            assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_err());
             detach(&owner, &state, |_| Ok(())).unwrap_or_else(|error| panic!("{error:?}"));
-            assert!(attach(&owner, || Ok(Vec::new())).is_ok());
+            assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_ok());
         });
     }
 
     fn owner_model(broken: bool) {
         loom::model(move || {
             let owner = Arc::new(Mutex::new(None));
-            let state = match attach(&owner, || Ok(Vec::new())) {
+            let state = match attach(&owner, || Ok(State::new(Vec::new()))) {
                 Ok(state) => state,
                 Err(_) => unreachable!(),
             };
@@ -310,8 +400,8 @@ mod terminal_lifecycle_model {
             }
             assert!(signal.join().is_ok());
             assert!(with_owner(&owner, |owner| assert!(owner.is_none())).is_ok());
-            assert!(attach(&owner, || Ok(Vec::new())).is_ok());
-            assert!(attach(&owner, || Ok(Vec::new())).is_err());
+            assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_ok());
+            assert!(attach(&owner, || Ok(State::new(Vec::new()))).is_err());
         });
     }
 
@@ -392,7 +482,7 @@ mod terminal_lifecycle_model {
     fn split_drop_model(broken: bool) {
         loom::model(move || {
             let owner = Arc::new(Mutex::new(None));
-            let old = attach(&owner, || Ok(Vec::<u8>::new())).unwrap();
+            let old = attach(&owner, || Ok(State::new(Vec::<u8>::new()))).unwrap();
             detach(&owner, &old, |_| Ok(())).unwrap();
             let closing_owner = Arc::clone(&owner);
             let delayed = loom::thread::spawn(move || {
@@ -402,7 +492,7 @@ mod terminal_lifecycle_model {
                     *closing_owner.lock().unwrap() = None;
                 }
             });
-            let fresh = attach(&owner, || Ok(Vec::<u8>::new())).unwrap();
+            let fresh = attach(&owner, || Ok(State::new(Vec::<u8>::new()))).unwrap();
             delayed.join().unwrap();
             assert!(
                 owner

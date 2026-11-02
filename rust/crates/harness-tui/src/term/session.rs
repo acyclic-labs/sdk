@@ -1,11 +1,13 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use signal_hook::consts::signal::SIGTSTP;
 
 use super::lifecycle::{self, Arc, Mutex, Owner, State};
-use super::tty::RawTty;
+use super::tty::{InputReadiness, InputWait, RawTty};
 use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
 use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -15,6 +17,7 @@ use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 pub struct Tty {
     state: Arc<Mutex<State<RawTty>>>,
     owner: &'static Owner<RawTty>,
+    input: InputWait,
     decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
@@ -85,10 +88,11 @@ impl Tty {
     /// one terminal lifecycle; callers must not open competing sessions.
     pub fn from_file(file: File) -> io::Result<Self> {
         let owner = super::signals::owner()?;
-        let state = lifecycle::attach(owner, || RawTty::from_file(file))?;
+        let (state, input) = attach(owner, file)?;
         Ok(Self {
             state,
             owner,
+            input,
             decoder: Decoder::default(),
             capabilities: None,
         })
@@ -164,32 +168,56 @@ impl ProbeIo for Tty {
     }
 
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        loop {
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(0);
-            }
-            // Only the nonblocking syscall holds state. Both output and the
-            // signal worker remain runnable while input waits for another byte.
-            let result = lifecycle::active(&self.state, |guard| {
-                guard.receive(bytes, deadline.min(now + Duration::from_millis(1)))
-            });
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(
-                        Duration::from_millis(1)
-                            .min(deadline.saturating_duration_since(Instant::now())),
-                    );
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
-        }
+        receive(&self.state, &mut self.input, bytes, deadline)
     }
 
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         lifecycle::active(&self.state, |guard| guard.detected(caps))
     }
+}
+
+fn attach(owner: &Owner<RawTty>, file: File) -> io::Result<(Arc<Mutex<State<RawTty>>>, InputWait)> {
+    let mut input = None;
+    let state = lifecycle::attach(owner, || {
+        let mut tty = RawTty::from_file(file)?;
+        input = Some(tty.input_wait().inspect_err(|_| {
+            let _ = tty.restore();
+        })?);
+        Ok(State::notifying(tty, RawTty::notify))
+    })?;
+    Ok((state, input.ok_or(io::ErrorKind::NotConnected)?))
+}
+
+fn receive(
+    state: &Mutex<State<RawTty>>,
+    input: &mut impl InputReadiness,
+    bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<usize> {
+    while !bytes.is_empty() && Instant::now() < deadline {
+        let active = {
+            let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
+            // Ack and state admission share the transition producer's lock.
+            // A later change remains readable even if it precedes OS arming.
+            state.guard.acknowledge_input()?;
+            let active = state.is_active()?;
+            if active {
+                match state.guard.try_receive(bytes) {
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => return result,
+                }
+            }
+            active
+        };
+        // Both output and the signal worker can acquire state during this
+        // single native wait. Suspended sessions listen only for state change.
+        if !input.wait(active, deadline)? {
+            return Ok(0);
+        }
+    }
+    Ok(0)
 }
 
 impl Write for Tty {
@@ -220,6 +248,149 @@ mod tests {
     use super::*;
     use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
+
+    struct ControlledInput<'a, F> {
+        input: &'a mut InputWait,
+        before: F,
+        active: Vec<bool>,
+    }
+
+    impl<F: FnMut(usize) -> io::Result<()>> InputReadiness for ControlledInput<'_, F> {
+        fn wait(&mut self, active: bool, _deadline: Instant) -> io::Result<bool> {
+            self.active.push(active);
+            if !active {
+                // Queued terminal bytes cannot wake a suspended session.
+                assert!(!self.input.wait(false, Instant::now())?);
+            }
+            (self.before)(self.active.len())?;
+            // The real event is already published. This one OS observation
+            // also detects removal of the sole notifier without a timed hang.
+            self.input.wait(active, Instant::now())
+        }
+    }
+
+    fn input_wait_joins_original_bytes_lifecycle_and_source_loss() -> io::Result<()> {
+        for mode in 0..6 {
+            let pty = rustix_openpty::openpty(None, None)?;
+            let mut controller = Some(File::from(pty.controller));
+            let owner = Mutex::new(None);
+            let (state, mut input) = attach(&owner, File::from(pty.user))?;
+            let mut wait = ControlledInput {
+                input: &mut input,
+                active: Vec::new(),
+                before: |step| {
+                    match (mode, step) {
+                        (0, 1) => controller
+                            .as_mut()
+                            .ok_or(io::ErrorKind::NotConnected)?
+                            .write_all(b"x")?,
+                        (1 | 4, 1) => {
+                            lifecycle::detach(&owner, &state, RawTty::restore)?;
+                            if mode == 4 {
+                                // Negative control removes only the published
+                                // wake, preserving the original closed state.
+                                state
+                                    .lock()
+                                    .map_err(|_| io::ErrorKind::Other)?
+                                    .guard
+                                    .acknowledge_input()?;
+                            }
+                        }
+                        (2 | 3, 1) => {
+                            controller
+                                .as_mut()
+                                .ok_or(io::ErrorKind::NotConnected)?
+                                .write_all(b"x\n")?;
+                            lifecycle::restore(&state, false, RawTty::restore)?;
+                            // Repeated restoration coalesces into that same
+                            // pending byte; it cannot grow a change queue.
+                            lifecycle::restore(&state, false, RawTty::restore)?;
+                        }
+                        (2, 2) => lifecycle::resume(&state, RawTty::reapply)?,
+                        (3, 2) => lifecycle::detach(&owner, &state, RawTty::restore)?,
+                        (5, 1) => drop(controller.take()),
+                        _ => {
+                            return Err(io::Error::other(format!(
+                                "unexpected input wait {mode}/{step}"
+                            )));
+                        }
+                    }
+                    Ok(())
+                },
+            };
+            let mut bytes = [0; 8];
+            assert_eq!(receive(&state, &mut wait, &mut bytes, Instant::now())?, 0);
+            assert!(wait.active.is_empty());
+            let result = receive(
+                &state,
+                &mut wait,
+                &mut bytes,
+                Instant::now() + Duration::from_secs(5),
+            );
+            let active = std::mem::take(&mut wait.active);
+            drop(wait);
+            match mode {
+                0 | 2 => {
+                    let expected = if mode == 0 { b"x".as_slice() } else { b"x\n" };
+                    assert_eq!(bytes.get(..result?), Some(expected));
+                    assert!(!input.wait(false, Instant::now())?, "wake queue grew");
+                }
+                1 | 3 => assert!(
+                    matches!(&result, Err(error) if error.kind() == io::ErrorKind::NotConnected)
+                ),
+                4 => assert_eq!(
+                    result?, 0,
+                    "removing the notifier must fail the close oracle"
+                ),
+                5 => {
+                    let error = result
+                        .err()
+                        .ok_or_else(|| io::Error::other("lost PTY returned success"))?;
+                    assert!(
+                        error.kind() == io::ErrorKind::UnexpectedEof
+                            || error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error())
+                    );
+                }
+                _ => return Err(io::Error::other("unknown input scenario")),
+            }
+            assert_eq!(
+                active,
+                if matches!(mode, 2 | 3) {
+                    vec![true, false]
+                } else {
+                    vec![true]
+                }
+            );
+            let restored = lifecycle::detach(&owner, &state, RawTty::restore);
+            if mode != 5 {
+                restored?;
+            }
+        }
+
+        // Exercise the actual split-output destructor, retaining the same
+        // original terminal admission and read implementation.
+        let pty = rustix_openpty::openpty(None, None)?;
+        let _controller = File::from(pty.controller);
+        let (mut tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let mut output = Some(output);
+        let mut wait = ControlledInput {
+            input: &mut tty.input,
+            active: Vec::new(),
+            before: |_| {
+                drop(output.take());
+                Ok(())
+            },
+        };
+        let result = receive(
+            &tty.state,
+            &mut wait,
+            &mut [0; 1],
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+        assert_eq!(wait.active, [true]);
+        Ok(())
+    }
 
     fn read_redraw_model(tracked_read: bool) -> io::Result<usize> {
         use crate::ratatui::layout::Size;
@@ -252,7 +423,7 @@ mod tests {
                     // Negative control: the former polling path classified a
                     // read as outside output through the generic writer.
                     let count = lifecycle::active(&tty.state, |guard| {
-                        guard.writer().receive(&mut [0; 8], deadline)
+                        guard.writer().try_receive(&mut [0; 8])
                     })?;
                     assert_eq!(count, 1);
                 } else {
@@ -276,6 +447,7 @@ mod tests {
     fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
         // The signal dispatcher owns one terminal per process. Run all real
         // owner scenarios in this test so parallel tests cannot race attach.
+        input_wait_joins_original_bytes_lifecycle_and_source_loss()?;
         input_reads_leave_identical_real_pty_frames_without_output()?;
         let pty = rustix_openpty::openpty(None, None)?;
         let observer = File::from(pty.user);
