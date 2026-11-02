@@ -1,4 +1,5 @@
 use super::{GuestError, GuestRequest, GuestResponse};
+use acyclic_stream::body::BodyChunk;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
@@ -10,6 +11,90 @@ pub enum GuestBody {
     Buffered(Bytes),
     /// Original HTTP body, preserving data, terminal trailers and drop cancellation.
     Frames(Pin<Box<dyn Body<Data = Bytes, Error = GuestError> + Send>>),
+}
+
+impl GuestBody {
+    /// Preserve an admitted HTTP body's original per-fragment custody.
+    ///
+    /// Construction never polls the source. The caller supplies its ORIGINAL
+    /// allocation admission: once for this adapter and once per data frame's
+    /// fixed transport owner. No payload is collected or copied. Data, trailers,
+    /// source failure and drop cancellation remain on the same original body;
+    /// the first error retires the source and is returned exactly once.
+    ///
+    /// This is a handler-side projection, not request authorization or a new
+    /// wire protocol. Pass it through the existing admitted fetch delivery.
+    pub fn from_credited<B, C, F, A>(body: B, mut admit: F) -> Result<Self, GuestError>
+    where
+        B: Body<Data = BodyChunk<C>, Error = GuestError> + Send + Unpin + 'static,
+        C: Send + 'static,
+        F: FnMut(usize) -> Result<A, GuestError> + Send + Unpin + 'static,
+        A: Send + Unpin + 'static,
+    {
+        let allocation = admit(std::mem::size_of::<CreditedBody<B, F, A>>())?;
+        Ok(Self::Frames(Box::pin(CreditedBody {
+            body: Some(body),
+            admit,
+            _allocation: allocation,
+        })))
+    }
+}
+
+struct CreditedBody<B, F, A> {
+    // Retire the source and its original owner before the adapter allocation.
+    body: Option<B>,
+    admit: F,
+    _allocation: A,
+}
+
+impl<B, C, F, A> Body for CreditedBody<B, F, A>
+where
+    B: Body<Data = BodyChunk<C>, Error = GuestError> + Unpin,
+    C: Send + 'static,
+    F: FnMut(usize) -> Result<A, GuestError> + Unpin,
+    A: Send + Unpin + 'static,
+{
+    type Data = Bytes;
+    type Error = GuestError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, GuestError>>> {
+        let this = self.get_mut();
+        let Some(body) = this.body.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = match std::task::ready!(Pin::new(body).poll_frame(cx)) {
+            Some(Ok(frame)) => match frame.into_data() {
+                Ok(chunk) => chunk.try_into_bytes(&mut this.admit).map(Frame::data),
+                Err(frame) => {
+                    // `into_data` returned this same non-data frame, so the
+                    // mapping closure is never called. Preserve its metadata.
+                    return Poll::Ready(Some(Ok(frame.map_data(|_| Bytes::new()))));
+                }
+            },
+            Some(Err(error)) => Err(error),
+            None => {
+                this.body = None;
+                return Poll::Ready(None);
+            }
+        };
+        if result.is_err() {
+            this.body = None;
+        }
+        Poll::Ready(Some(result))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.as_ref().is_none_or(Body::is_end_stream)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body
+            .as_ref()
+            .map_or_else(|| SizeHint::with_exact(0), Body::size_hint)
+    }
 }
 
 impl Body for GuestBody {
