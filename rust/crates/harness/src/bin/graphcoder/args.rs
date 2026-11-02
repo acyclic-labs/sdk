@@ -1,3 +1,4 @@
+use acyclic_harness::client::AgentPageRequest;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -203,8 +204,11 @@ pub struct Page {
     #[arg(long)]
     pub cursor: Option<String>,
     /// Entries per page; this chunks discovery and never limits session count.
-    #[arg(long, default_value_t = 32)]
+    #[arg(long, default_value_t = AgentPageRequest::default().items())]
     pub page_size: u32,
+    /// Encoded reply credit; increase it if one row and its continuation cannot fit.
+    #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
+    pub page_bytes: u32,
 }
 
 #[derive(Debug, clap::Args)]

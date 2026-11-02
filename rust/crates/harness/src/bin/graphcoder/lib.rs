@@ -369,7 +369,7 @@ async fn connected(
     if let Some(Command::Sessions(page) | Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(
             page.page_size,
-            32 * 1024,
+            page.page_bytes,
             page.cursor.clone(),
         )?;
         let agent = connection.root().clone();

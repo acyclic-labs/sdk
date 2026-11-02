@@ -22,6 +22,12 @@ A reconnect resumes after the last emitted record; consumers deduplicate by
 source stream and sequence. Pages and transport credit bound memory, not the
 total history or session count. EOF, cancellation and follow delivery are events.
 
+`graphcoder sessions` and `graphcoder history` expose the same bounded page
+request: `--page-size` controls rows and `--page-bytes` controls encoded reply
+credit. Both default to the shared client's page settings. Return `--cursor`
+unchanged to continue. If one row and its continuation exceed credit, the query
+refuses without skipping that row; increase `--page-bytes` to continue.
+
 The v1 `execution` envelope borrows an original journal record, including its
 turn `operation_id`, one-based `sequence`, retry identity and canonical event.
 Its outer `operation` is the caller's exec identity. Model, tool and usage
