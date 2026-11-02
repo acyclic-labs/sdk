@@ -176,6 +176,9 @@ impl FollowFilter {
     /// the stronger rule that every key must satisfy every authority ceiling.
     pub fn project(&self, mut record: crate::Record) -> Result<Option<crate::Record>, StreamError> {
         let format = crate::changes::validated_format(&record.value, &record.headers)?;
+        if self.clauses().is_empty() {
+            return Ok(Some(record));
+        }
         if !self.matches_format(&record.headers, format) {
             return Ok(None);
         }
@@ -365,7 +368,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn projection_reuses_validation_without_changing_errors_or_allocation()
+    fn projection_reuses_validation_and_skips_unrestricted_decoding()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::changes::{take_marker_probes, take_parsed_bytes, validate};
 
@@ -422,6 +425,7 @@ mod tests {
             baseline: impl FnOnce() -> T,
             candidate: impl FnOnce() -> T,
             saved: usize,
+            skipped_decode_bytes: Option<usize>,
         ) -> (usize, usize) {
             let before = std::cell::Cell::new((0, 0));
             let after = std::cell::Cell::new((0, 0));
@@ -441,8 +445,18 @@ mod tests {
                     result
                 },
             );
-            assert_eq!(old, new, "all allocation statistics must remain identical");
-            assert_eq!(before.get().1, after.get().1, "no extra body pass");
+            if let Some(bytes) = skipped_decode_bytes {
+                assert_eq!(new, acyclic_test_support::AllocationInfo::default());
+                assert!(
+                    old.count_total > 0,
+                    "decoded ownership is the negative control"
+                );
+                assert_eq!(after.get().1, bytes, "validate the original body once");
+                assert_eq!(before.get().1, 3 * bytes, "original decode reparses twice");
+            } else {
+                assert_eq!(old, new, "all allocation statistics must remain identical");
+                assert_eq!(before.get().1, after.get().1, "no extra body pass");
+            }
             assert_eq!(before.get().0, after.get().0 + saved);
             if saved != 0 {
                 assert!(
@@ -539,15 +553,26 @@ mod tests {
                             } else {
                                 0
                             },
+                            None,
                         );
+                        let unrestricted_changes = valid
+                            && format.as_ref().is_ok_and(|format| format.is_some())
+                            && index == 0;
                         let projection = compare(
                             || project(filter, record.clone()),
                             || filter.project(record.clone()),
                             if valid {
-                                if matches { 2 * probes } else { probes }
+                                if unrestricted_changes {
+                                    3 * probes
+                                } else if matches {
+                                    2 * probes
+                                } else {
+                                    probes
+                                }
                             } else {
                                 0
                             },
+                            unrestricted_changes.then_some(record.value.len()),
                         );
                         if fault == 0 && padding == 15 && prefix == "a" {
                             eprintln!(
