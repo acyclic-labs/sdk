@@ -26,7 +26,7 @@ async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result {
     served("pi", exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
+async fn nested_children_preserve_unmerged_work_across_follow_up_and_merge() -> Result {
     served("codex", follow_up).await
 }
 
@@ -216,22 +216,18 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
         },
     )?;
     let parent: AgentPath = serde_json::from_value(root["task"].clone())?;
-    let held = acyclic_fs::hold_root(cwd)?.create_directories(
-        &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
-        acyclic_fs::NativeDurability::Durable,
-    )?;
-    let ownership = FileLock::try_acquire(
-        held.open_file(Path::new("fixture.lock"), true)?,
-        FileLockMode::Exclusive,
-    )?;
-    let sessions = NativeChildren::with(
-        host,
-        cwd.to_path_buf(),
-        parent.clone(),
-        Vec::new(),
-        ownership,
-        held,
-    );
+    let policy: &[&str] = match host {
+        "codex" => &[
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+        ],
+        "claude-code" => &["--settings", "{}", "--permission-mode", "default"],
+        _ => &[],
+    };
+    let policy = policy.iter().map(|value| (*value).to_owned()).collect();
+    let sessions = NativeChildren::own(host, cwd, parent.clone(), policy)?;
     Ok((sessions, parent))
 }
 
@@ -269,7 +265,8 @@ fn claim(
 
 /// An idle child's view is released once its turn settles with nothing
 /// queued; a follow-up mounts it again, and its turn runs and settles under
-/// the child's original receipt.
+/// the child's original receipt. A nested child inherits the unmerged parent
+/// cut, and each merge changes only its own parent until the outer merge.
 fn follow_up(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "follow-up")?;
     let prompts = [
@@ -282,36 +279,48 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
     ];
     for (turn, action) in prompts.into_iter().enumerate() {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
-        let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                "printf turn > \"turn-$1\"; printf '%s' \"$2\"",
-                "fixture",
-            ])
-            .arg(turn.to_string())
-            .arg(include_str!("../fixtures/codex-completed.jsonl"))
-            .current_dir(&view)
-            .stdin(ProcessStdio::null())
-            .stdout(ProcessStdio::piped())
-            .stderr(ProcessStdio::piped());
+        let mut command = completed_write(&view, &format!("turn-{turn}"));
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
         wait_exit(&mut running)?;
-        let completed = sessions
-            .refresh("idle", &mut running, &mut [0; 8192])?
-            .ok_or_else(|| failed("settle idle child", "exited turn did not settle"))?;
-        assert!(completed["next"].is_null(), "turn {turn} queued nothing");
-        assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
-        let results = completed["results"]
-            .as_array()
-            .ok_or("settled results absent")?;
-        assert!(
-            results.last().is_some_and(
-                |result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"
-            ),
-            "turn {turn} recorded its reply: {results:?}"
-        );
+        if turn == 0 {
+            // Reusing the local name must still create a distinct child of
+            // this parent, using the production ownership entrance.
+            let mut nested = NativeChildren::own(
+                host,
+                &view,
+                running.claim.agent.clone(),
+                sessions.flags.clone(),
+            )?;
+            let (mut inner, inner_view) = claim(
+                &mut nested,
+                &view,
+                "idle",
+                SessionAction::Spawn {
+                    prompt: "nested work".into(),
+                },
+            )?;
+            assert_eq!(
+                inner.claim.agent.parent(),
+                Some(running.claim.agent.clone())
+            );
+            assert_eq!(fs::read(inner_view.join("turn-0"))?, b"turn");
+            let mut command = completed_write(&inner_view, "nested.txt");
+            inner.process.spawn(&mut command, inner.claim.operation)?;
+            wait_exit(&mut inner)?;
+            finish_turn(&nested, "idle", &mut inner)?;
+            assert!(!view.join("nested.txt").exists(), "nested work is private");
+            host_files::request(
+                &view,
+                HostAction::Fs {
+                    task: running.claim.agent.clone(),
+                    command: "merge agents/idle".into(),
+                },
+            )?;
+            assert_eq!(fs::read(view.join("nested.txt"))?, b"turn");
+            assert!(!cwd.join("nested.txt").exists(), "outer work is private");
+        }
+        finish_turn(&sessions, "idle", &mut running)?;
     }
     host_files::request(
         cwd,
@@ -322,6 +331,38 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
     )?;
     assert_eq!(fs::read(cwd.join("turn-0"))?, b"turn");
     assert_eq!(fs::read(cwd.join("turn-1"))?, b"turn");
+    assert_eq!(fs::read(cwd.join("nested.txt"))?, b"turn");
+    Ok(())
+}
+
+fn completed_write(view: &Path, file: &str) -> acyclic_native_runtime::ProcessCommand {
+    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
+    command
+        .args(["-c", "printf turn > \"$1\" || { printf 'step=write native fixture: write failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf '%s' \"$2\"", "fixture"])
+        .arg(file)
+        .arg(include_str!("../fixtures/codex-completed.jsonl"))
+        .current_dir(view)
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
+    command
+}
+
+fn finish_turn(sessions: &NativeChildren, reference: &str, running: &mut Running) -> Result {
+    let completed = sessions
+        .refresh(reference, running, &mut [0; 8192])?
+        .ok_or_else(|| failed("settle native child", "exited turn did not settle"))?;
+    assert!(completed["next"].is_null(), "nothing else was queued");
+    assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
+    let results = completed["results"]
+        .as_array()
+        .ok_or("settled results absent")?;
+    assert!(
+        results
+            .last()
+            .is_some_and(|result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"),
+        "{reference} recorded its reply: {results:?}"
+    );
     Ok(())
 }
 
