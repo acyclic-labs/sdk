@@ -63,8 +63,10 @@ impl<'io> StockExecution<'io> {
             .await?
         };
         let replayed = match replayed {
+            // A recorded failure settles again; an interruption also stops
+            // the turn where the source's stopped.
             Some(crate::model::RecordedToolOutcome::Failed { reason, cause }) => {
-                return self
+                let content = self
                     .settle_tool_cause(
                         journal,
                         operation_id,
@@ -73,8 +75,12 @@ impl<'io> StockExecution<'io> {
                         reason,
                         cause,
                     )
-                    .await
-                    .map(|content| ToolInvocationOutcome::Settled(content, None));
+                    .await?;
+                return Ok(if reason == ToolFailureKind::Interrupted {
+                    ToolInvocationOutcome::Interrupted
+                } else {
+                    ToolInvocationOutcome::Settled(content, None)
+                });
             }
             Some(crate::model::RecordedToolOutcome::Completed(result)) => Some(result),
             None => None,
