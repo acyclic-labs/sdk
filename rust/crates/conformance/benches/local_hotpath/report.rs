@@ -28,10 +28,13 @@ struct OperationEvidence<'a> {
     #[serde(flatten)]
     fields: serde_json::Value,
     #[serde(serialize_with = "serialize_work_receipts")]
-    original_work_receipts: &'a [(serde_json::Value, Work)],
-    coordinator_allocations_count_and_bytes: &'a [Option<[u64; 2]>],
-    provider_request_counts: &'a [Option<[u64; 7]>],
-    native_attempt_counts: &'a [Option<[u64; 3]>],
+    original_work_receipts: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_allocations")]
+    coordinator_allocations_count_and_bytes: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_requests")]
+    provider_request_counts: &'a [RetainedObservation],
+    #[serde(serialize_with = "serialize_attempts")]
+    native_attempt_counts: &'a [RetainedObservation],
     #[serde(serialize_with = "serialize_work_summary")]
     work: &'a [Counter; METRICS.len()],
 }
@@ -68,7 +71,7 @@ fn serialize_work_summary<S: serde::Serializer>(
 }
 
 fn serialize_work_receipts<S: serde::Serializer>(
-    receipts: &[(serde_json::Value, Work)],
+    receipts: &[RetainedObservation],
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     #[derive(Serialize)]
@@ -80,15 +83,48 @@ fn serialize_work_receipts<S: serde::Serializer>(
         progress: &'static str,
     }
 
-    serializer.collect_seq(receipts.iter().enumerate().map(|(sample, (identity, work))| {
+    serializer.collect_seq(receipts.iter().enumerate().map(|(sample, retained)| {
         Receipt {
             sample,
-            identity,
-            work: &work.0,
+            identity: &retained.identity,
+            work: &retained.observation.work.0,
             physical_admission_binding: None,
             progress: "original operation returned; operation-specific result oracle checked before the report",
         }
     }))
+}
+
+fn serialize_allocations<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.coordinator_allocations),
+    )
+}
+
+fn serialize_requests<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.provider_requests),
+    )
+}
+
+fn serialize_attempts<S: serde::Serializer>(
+    observations: &[RetainedObservation],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        observations
+            .iter()
+            .map(|sample| &sample.observation.native_attempts),
+    )
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -157,21 +193,26 @@ pub(super) fn check_observations() -> Result {
         &[Operation::ObjectGet],
     );
     let mut record = |bytes, observation| {
-        cohort.record(
-            Operation::ObjectGet,
-            Terms {
-                copy_bytes: bytes,
-                ..Terms::default()
-            },
-            Duration::ZERO,
-            observation,
-            serde_json::json!({
-                "request": {"operation": "object.get", "requested_copy_bytes": bytes},
-                "resource": {"path": "original/requested/object"},
-            }),
-        )
+        let identity = serde_json::json!({
+            "request": {"operation": "object.get", "requested_copy_bytes": bytes},
+            "resource": {"path": "original/requested/object"},
+        });
+        let mut result = Ok(());
+        let allocations = acyclic_test_support::measure(|| {
+            result = cohort.record(
+                Operation::ObjectGet,
+                Terms {
+                    copy_bytes: bytes,
+                    ..Terms::default()
+                },
+                Duration::ZERO,
+                observation,
+                identity,
+            );
+        });
+        result.map(|()| allocations)
     };
-    record(
+    let first = record(
         1024,
         Observation {
             work: Work([Some(u64::MAX), Some(0), None, None, None, None, None, None]),
@@ -180,6 +221,11 @@ pub(super) fn check_observations() -> Result {
             native_attempts: Some([1, 0, 0]),
         },
     )?;
+    // One row node, its timestamp buffer and its original observation buffer.
+    // Reintroducing separate diagnostic buffers adds three allocations here.
+    if first.count_total != 3 {
+        return Err("original sample retention added independent backing allocations".into());
+    }
     if record(2048, Observation::default()).is_ok() {
         return Err("different required work was admitted into one latency cohort".into());
     }
@@ -215,25 +261,31 @@ pub(super) fn check_observations() -> Result {
         return Err("exhausted observation count admitted another sample".into());
     }
     let row = &cohort.rows[&Operation::ObjectGet];
-    if row.work != full
-        || [
-            row.raw_ns.len(),
-            row.coordinator_allocations.len(),
-            row.provider_requests.len(),
-            row.native_attempts.len(),
-            row.original_work.len(),
-        ] != [2; 5]
-    {
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
         return Err("refused observation changed the retained evidence".into());
     }
-    let evidence = OperationEvidence {
-        fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
-        original_work_receipts: &row.original_work,
-        coordinator_allocations_count_and_bytes: &row.coordinator_allocations,
-        provider_request_counts: &row.provider_requests,
-        native_attempt_counts: &row.native_attempts,
-        work: &row.work.work,
-    };
+    // Restore the three former diagnostic buffers from the same retained
+    // observations, independently of the serializer under test.
+    let copied = acyclic_test_support::measure(|| {
+        std::hint::black_box((
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.coordinator_allocations)
+                .collect::<Vec<_>>(),
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.provider_requests)
+                .collect::<Vec<_>>(),
+            row.observations
+                .iter()
+                .map(|sample| sample.observation.native_attempts)
+                .collect::<Vec<_>>(),
+        ));
+    });
+    if copied.count_total != 3 || copied.bytes_total == 0 {
+        return Err("separate diagnostic buffer negative did not retain three allocations".into());
+    }
+    let evidence = row.evidence(serde_json::json!({"schema": 1, "kind": "negative_control"}));
     check_borrowed_serialization(&evidence, "operation evidence")?;
     let encoded = serde_json::to_value(&evidence)?;
     // Compare against the former independent map builder, outside measurement.
@@ -262,8 +314,8 @@ pub(super) fn check_observations() -> Result {
     if encoded["coordinator_allocations_count_and_bytes"] != serde_json::json!([[2, 1024], null])
         || encoded["provider_request_counts"] != serde_json::json!([[1, 0, 0, 0, 0, 0, 0], null])
         || encoded["native_attempt_counts"] != serde_json::json!([[1, 0, 0], null])
-        || encoded["original_work_receipts"][0]["identity"] != row.original_work[0].0
-        || encoded["original_work_receipts"][1]["identity"] != row.original_work[1].0
+        || encoded["original_work_receipts"][0]["identity"] != row.observations[0].identity
+        || encoded["original_work_receipts"][1]["identity"] != row.observations[1].identity
     {
         return Err("operation encoding changed original diagnostic evidence".into());
     }
@@ -411,10 +463,25 @@ struct Row {
     terms: Terms,
     raw_ns: Vec<f64>,
     work: Sample,
-    coordinator_allocations: Vec<Option<[u64; 2]>>,
-    provider_requests: Vec<Option<[u64; 7]>>,
-    native_attempts: Vec<Option<[u64; 3]>>,
-    original_work: Vec<(serde_json::Value, Work)>,
+    observations: Vec<RetainedObservation>,
+}
+
+struct RetainedObservation {
+    identity: serde_json::Value,
+    observation: Observation,
+}
+
+impl Row {
+    fn evidence(&self, fields: serde_json::Value) -> OperationEvidence<'_> {
+        OperationEvidence {
+            fields,
+            original_work_receipts: &self.observations,
+            coordinator_allocations_count_and_bytes: &self.observations,
+            provider_request_counts: &self.observations,
+            native_attempt_counts: &self.observations,
+            work: &self.work.work,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -581,21 +648,17 @@ impl Measurements {
             terms: floor,
             raw_ns: Vec::new(),
             work: Sample::new(operation),
-            coordinator_allocations: Vec::new(),
-            provider_requests: Vec::new(),
-            native_attempts: Vec::new(),
-            original_work: Vec::new(),
+            observations: Vec::new(),
         });
         if row.terms != floor {
             return Err(format!("{} samples have different floor terms", operation.name()).into());
         }
         row.work.record(observation.work, &self.recovery)?;
         row.raw_ns.push(ns(elapsed));
-        row.coordinator_allocations
-            .push(observation.coordinator_allocations);
-        row.provider_requests.push(observation.provider_requests);
-        row.native_attempts.push(observation.native_attempts);
-        row.original_work.push((identity, observation.work));
+        row.observations.push(RetainedObservation {
+            identity,
+            observation,
+        });
         Ok(())
     }
 
@@ -623,21 +686,12 @@ impl Measurements {
                 }))?;
                 continue;
             };
-            let Row {
-                terms,
-                raw_ns,
-                work,
-                coordinator_allocations,
-                provider_requests,
-                native_attempts,
-                original_work,
-            } = row;
-            let quantiles = Quantiles::new(&mut raw_ns.clone())?;
+            let terms = row.terms;
+            let quantiles = Quantiles::new(&mut row.raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
             let timer = floors.timer();
             emit(RawSamples {
-                fields: OperationEvidence {
-                    fields: serde_json::json!({
+                fields: row.evidence(serde_json::json!({
                     "schema": 1, "kind": "operation", "operation": operation.name(),
                     "measurement_label": match operation {
                         Operation::ActorWake => "event-drain-to-handler-entry",
@@ -658,22 +712,16 @@ impl Measurements {
                     "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
                     "work_columns": METRICS,
                     "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
-                    "work_observations": work.observations,
+                    "work_observations": row.work.observations,
                     "coordinator_allocations_scope": "current thread only; excluded from qualification",
                     "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
                     "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
                     "native_attempt_columns": ["ok", "err", "incomplete"],
                     "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
-                    }),
-                    original_work_receipts: &original_work,
-                    coordinator_allocations_count_and_bytes: &coordinator_allocations,
-                    provider_request_counts: &provider_requests,
-                    native_attempt_counts: &native_attempts,
-                    work: &work.work,
-                },
-                raw_ns: &raw_ns,
+                    })),
+                raw_ns: &row.raw_ns,
             })?;
-            point.samples.push(work);
+            point.samples.push(row.work);
         }
         if !self.rows.is_empty() {
             return Err("unknown core operation in measurement report".into());
