@@ -626,7 +626,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     CommitCondition::Absent { path: path.clone() },
                 ],
                 mutation: CommitMutation::Fork {
-                    exclude: vec![acyclic_stream::RelativePath::new(disposition::DIRECTORY)?],
+                    exclude: disposition::fork_exclusions()?,
                     source: parent.path.clone(),
                     destination: path,
                     at_tail: parent.tail,
@@ -719,8 +719,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             && envelope.mutations.iter().any(|mutation| {
                 matches!(mutation, acyclic_stream::CommittedMutation::Fork(fork)
                     if fork.source == *parent && fork.destination == *child
-                        && fork.exclude.len() == 1
-                        && fork.exclude[0].as_str() == disposition::DIRECTORY)
+                        && disposition::is_fork_exclusion(&fork.exclude))
             })
         {
             return Ok(true);

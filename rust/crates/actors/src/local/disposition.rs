@@ -9,7 +9,15 @@ use prost::Message as _;
 
 // A forbidden protobuf wire type prevents an unversioned decoder accepting it.
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
-pub(super) const DIRECTORY: &str = ".failures";
+const DIRECTORY: &str = ".failures";
+
+pub(super) fn fork_exclusions() -> Result<Vec<acyclic_stream::RelativePath>, Error> {
+    Ok(vec![acyclic_stream::RelativePath::new(DIRECTORY)?])
+}
+
+pub(super) fn is_fork_exclusion(exclude: &[acyclic_stream::RelativePath]) -> bool {
+    matches!(exclude, [path] if path.as_str() == DIRECTORY)
+}
 
 fn status_path(path: &StreamPath) -> Result<StreamPath, Error> {
     Ok(StreamPath::new(format!("{path}/status"))?)
