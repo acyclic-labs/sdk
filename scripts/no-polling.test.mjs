@@ -518,6 +518,38 @@ test('shared policy covers consumer paths and configured temporal dependencies',
  assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller));
 });
 
+test('SQLite busy policies require review at the original fixture boundary', () => {
+ const file = 'rust/crates/conformance/src/bin/qualify/filesystem_cases.rs';
+ const source = readFileSync(file, 'utf8');
+ const boundary = source.indexOf('connection.busy_timeout(');
+ assert.notEqual(boundary, -1);
+ const call = boundary + 'connection.'.length;
+ assert.ok(pollingSites(file, source).some(site => site.start === call), 'original fixture busy policy is reviewable');
+ for (const [file, before, after] of [
+  [rust, 'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::ZERO) }',
+   'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::from_secs(2)) }'],
+  [rust, 'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_handler(None) }',
+   'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_handler(Some(|_| true)) }'],
+  ['lib/storage/control.c', 'int configure(sqlite3 *db) { return sqlite3_busy_timeout(db, 0); }',
+   'int configure(sqlite3 *db) { return sqlite3_busy_timeout(db, 2000); }'],
+  ['lib/storage/control.c', 'int configure(sqlite3 *db) { return sqlite3_busy_handler(db, 0, 0); }',
+   'int configure(sqlite3 *db) { return sqlite3_busy_handler(db, keep_trying, 0); }'],
+ ]) {
+  const sites = pollingSites(file, before);
+  assert.ok(sites.length, before);
+  const accepted = sites.map(site => disposition(site, 'finite-work',
+   'original SQLite fixture connection boundary', 'immediate SQLite result with busy retries disabled',
+   'restore a nonzero busy timeout or a retrying handler'));
+  assert.deepEqual(newPollingSites(file, '', before, accepted), []);
+  assert.ok(newPollingSites(file, before, after, accepted).length);
+  assert.ok(pollingSites('scripts/control.mjs', 'runHost(' + JSON.stringify(before) + ')')
+   .some(site => site.kind === 'embedded-timer-or-retry'), before);
+ }
+ const alias = 'use sqlite::sqlite3_busy_handler as handler; handler(db, callback, state);';
+ const aliasSites = pollingSites('lib/storage/control.rs', alias);
+ assert.ok(aliasSites.some(site => site.start === alias.indexOf('handler(db')));
+});
+
 test('the entry point compares real Git objects and rejects modified and untracked sources', async () => {
  const root = mkdtempSync(join(tmpdir(), 'sdk-no-polling-'));
  const checker = resolve('scripts/check-no-polling.mjs');

@@ -26,6 +26,11 @@ export function fuzz(data, analyze = pollingSites) {
   ['scripts/control.rs', `r#"${word}"#`], ['scripts/control.rs', "'x'"],
   ['scripts/control.ps1', `@"\n${word}\n"@`], ['scripts/control.py', `"""${word}"""`],
  ]) assert.ok(analyze(file, literal + '\nsleep(1)').some(site => site.kind === 'timer-or-readiness'));
+ const sqlitePolicy = ['busy_timeout', 'busy_handler', 'sqlite3_busy_timeout', 'sqlite3_busy_handler'][data.length % 4];
+ const sqliteSource = sqlitePolicy.startsWith('sqlite3_') ? `${sqlitePolicy}(db, ${word});` : `connection.${sqlitePolicy}(${word});`;
+ assert.ok(analyze('lib/storage/control.' + (sqlitePolicy.startsWith('sqlite3_') ? 'c' : 'rs'), sqliteSource).length, sqliteSource);
+ assert.ok(analyze('scripts/control.mjs', 'runHost(' + JSON.stringify(sqliteSource) + ')')
+  .some(site => site.kind === 'embedded-timer-or-retry'), sqliteSource);
  for (const program of [`while ! ${word}; do step; done`, `for item in ${word}; do step; done`]) {
   for (const [file, source] of [
    ['scripts/control.yaml', 'run: |\n  ' + program],
