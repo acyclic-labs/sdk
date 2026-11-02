@@ -89,6 +89,22 @@ test("deployment declarations become scoped namespace and private service handle
   expect([actorReads,workerReads]).toEqual([1,1]);
   expect(requests).toHaveLength(4);
   expect(requests.slice(0,2)).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
+  for (const handle of [actor,worker]) {
+    const expected = new Uint8Array([29,31,37]);
+    const backing = new Uint8Array(1024 * 1024);
+    backing.set(expected,17);
+    const payload = backing.subarray(17,20);
+    // Negative control: the former slice call substitutes the admitted bytes.
+    Object.defineProperty(payload,"slice",{value:() => new Uint8Array([255])});
+    const pending = handle.rpc("selected",payload);
+    backing.fill(0,17,20);
+    expect(await pending).toEqual(expected);
+    const admitted = requests.length;
+    await expect(handle.rpc("refused",new Uint8Array(new SharedArrayBuffer(3)))).rejects.toBeInstanceOf(TypeError);
+    expect(requests).toHaveLength(admitted);
+    // A boundary refusal has no invocation and leaves the original handle live.
+    expect(await handle.rpc("afterRefusal",expected)).toEqual(expected);
+  }
   for (const handle of [actor,worker]) for (const count of [1,2]) {
     const U8 = Uint8Array, expected = new U8([7,11,13,17,19,23].slice(0,3 * count));
     const backing = new U8(1024 * 1024);
