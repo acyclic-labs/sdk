@@ -128,6 +128,7 @@ impl Alarm {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     epoch: u64,
+    placement_branch: Option<CommitId>,
     checkpoint: Option<Checkpoint>,
     subscriptions: BTreeMap<String, Subscription>,
     alarm: Alarm,
@@ -146,7 +147,8 @@ impl State {
     pub const fn journal_tail(&self) -> u64 {
         self.journal_tail
     }
-    /// Current placement fence; zero means created but never placed.
+    /// Current placement fence. A fork inherits this number until its first
+    /// dispatch claims a newer epoch in the original fork publication's branch.
     pub const fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -190,6 +192,18 @@ struct Publication<'a> {
     key: IdempotencyKey,
 }
 impl Snapshot {
+    fn placement_branch(&self) -> Option<CommitId> {
+        self.provenance
+            .as_ref()
+            .map(|origin| origin.inherited.commit_id)
+    }
+
+    fn owns_epoch(&self, epoch: u64) -> bool {
+        self.state.as_ref().is_some_and(|state| {
+            state.epoch == epoch && state.placement_branch == self.placement_branch()
+        })
+    }
+
     /// Complete retained tuple, absent before creation.
     pub const fn state(&self) -> Option<&State> {
         self.state.as_ref()
@@ -561,6 +575,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         let state = State {
             epoch: 0,
+            placement_branch: None,
             checkpoint,
             subscriptions,
             alarm: Alarm::default(),
@@ -581,13 +596,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// The companion effects that fork `parent`'s exact state cut into a new
-    /// unplaced (epoch 0) `child` inside a caller-built commit, exactly as
-    /// [`Self::create`] makes one: a Streams fork of the parent's state
+    /// lazily placed `child` inside a caller-built commit: a Streams fork of the parent's state
     /// subtree, so its checkpoint, metadata, journal, alarm and pause state are
     /// shared rather than copied, plus the child's activation-log entry.
     /// `subscriptions` binds the child's own inputs under the parent's exact
     /// subscription ids, as create binds a new actor's. The commit conflicts
-    /// if the parent moved past `parent`'s cut or `child` already exists.
+    /// if the parent moved past `parent`'s cut or `child` already exists. The
+    /// inherited placement cannot publish in the new branch. Its first actual
+    /// dispatch claims a newer epoch against that branch's original fork fact.
     pub fn fork(
         &self,
         parent: &Snapshot,
@@ -607,10 +623,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if subscriptions.values().any(|value| value.path == path) {
             return Err(Error::Invalid("actor subscribes to its own state"));
         }
-        let forked = State {
-            epoch: 0,
-            subscriptions,
-            ..state.clone()
+        let records = if subscriptions == state.subscriptions {
+            Vec::new()
+        } else {
+            vec![
+                State {
+                    subscriptions,
+                    ..state.clone()
+                }
+                .encode()
+                .into(),
+            ]
         };
         Ok([
             Effect {
@@ -627,7 +650,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     source: parent.path.clone(),
                     destination: path,
                     at_tail: parent.tail,
-                    records: vec![forked.encode().into()],
+                    records,
                 },
             },
             self.activation(child),
@@ -786,6 +809,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     return Err(Error::Conflict);
                 }
                 state.epoch = epoch;
+                state.placement_branch = previous.placement_branch();
                 self.submit_retained(self.prepare(previous, state, Vec::new(), key)?)
                     .await?
                     .ok_or(Error::Invalid("claim receipt has no state"))
@@ -810,7 +834,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let mut state = previous
                     .state
                     .as_ref()
-                    .filter(|state| state.epoch == epoch)
+                    .filter(|_| previous.owns_epoch(epoch))
                     .ok_or(Error::Conflict)?
                     .clone();
                 state.paused = paused;
@@ -1137,7 +1161,7 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
     previous
         .state
         .as_ref()
-        .filter(|state| epoch != 0 && state.epoch == epoch)
+        .filter(|_| epoch != 0 && previous.owns_epoch(epoch))
         .ok_or(Error::Conflict)
 }
 

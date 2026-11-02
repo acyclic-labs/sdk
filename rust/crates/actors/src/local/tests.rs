@@ -92,6 +92,11 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
 /// Either missing provenance handoff must fail before a later load can mask it.
 #[tokio::test]
 async fn forked_prepared_publication_retains_original_provenance() -> TestResult {
+    crate::conformance::fork_uniform(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("fork-placement")?,
+    )
+    .await?;
     let store = Store::new(Arc::new(MemoryStream::default()), state_root()?);
     let parent = actor("parent")?;
     let child = actor("child")?;
@@ -105,12 +110,12 @@ async fn forked_prepared_publication_retains_original_provenance() -> TestResult
     let forked = store.load(&child).await?;
     let original = forked.provenance().cloned().ok_or("missing fork origin")?;
     assert_eq!(original.source, *parent_cut.path());
-    store.claim(&forked, 1, key("claim")?).await?;
+    store.claim(&forked, 2, key("claim")?).await?;
     let mut retained = store.load(&child).await?;
     for sequence in 0..2 {
         let publication = store.prepare_publish(
             &retained,
-            1,
+            2,
             &record(sequence),
             None,
             transition(7, AlarmChange::Keep),
