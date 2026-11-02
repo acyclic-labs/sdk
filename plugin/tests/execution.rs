@@ -40,14 +40,14 @@ fn execution_reopen_keeps_the_named_agent_without_ambient_selection()
 #[test]
 fn execution_dispatch_precedes_workspace_lookup() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    for args in [
-        vec!["--help"],
-        vec!["run", "--help"],
-        vec!["serve", "--help"],
-        vec!["attach", "--help"],
-        vec!["--workspace", ".", "exec", "--help"],
-        vec!["--workspace", ".", "serve", "--help"],
-    ] {
+    let schema = acyclic_plugin::command();
+    let commands = schema.get_subcommands().flat_map(|command| {
+        [
+            vec![command.get_name(), "--help"],
+            vec!["--workspace", ".", command.get_name(), "--help"],
+        ]
+    });
+    for args in std::iter::once(vec!["--help"]).chain(commands) {
         let output = std::process::Command::new(binary::acyclic())
             .args(args)
             .env_clear()

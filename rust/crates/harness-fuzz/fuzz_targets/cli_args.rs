@@ -5,6 +5,7 @@ use libfuzzer_sys::fuzz_target;
 
 #[path = "../../../../plugin/src/runner/args.rs"]
 mod args;
+use args as runner;
 #[path = "../../../../plugin/src/ingress.rs"]
 mod ingress;
 

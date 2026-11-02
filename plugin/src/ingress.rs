@@ -53,13 +53,12 @@ impl std::error::Error for InvalidNativeArgument {}
 /// Routes one owned argv without opening a workspace or copying its payloads.
 pub fn parse(arguments: Vec<OsString>) -> std::result::Result<Input, InvalidNativeArgument> {
     let first = arguments.get(1).and_then(|argument| argument.to_str());
-    if matches!(
-        first,
-        Some("run" | "serve" | "attach" | "exec" | "sessions" | "history")
-    ) || first.is_some_and(|argument| {
-        argument.starts_with('-')
-            && !matches!(argument, "--help" | "-h" | "--version" | "-V" | "--task")
-    }) {
+    if first.is_some_and(crate::runner::is_command)
+        || first.is_some_and(|argument| {
+            argument.starts_with('-')
+                && !matches!(argument, "--help" | "-h" | "--version" | "-V" | "--task")
+        })
+    {
         return Ok(Input::Agent(arguments));
     }
     arguments

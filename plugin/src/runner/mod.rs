@@ -12,6 +12,8 @@ mod lifecycle;
 mod usage_export;
 mod view;
 
+pub(crate) use args::is_command;
+
 pub use lifecycle::{
     CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, FailureReport,
 };

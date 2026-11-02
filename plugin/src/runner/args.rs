@@ -2,6 +2,10 @@ use acyclic_harness::client::AgentPageRequest;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+pub(crate) fn is_command(name: &str) -> bool {
+    Command::has_subcommand(name)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum InputFormat {
     #[default]
