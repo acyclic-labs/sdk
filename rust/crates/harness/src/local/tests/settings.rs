@@ -78,13 +78,90 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
     serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+async fn run(
+    task: std::sync::Arc<crate::runtime::TaskContext>,
+    tool: crate::tool::Tool,
+    arguments: serde_json::Value,
+) -> Result<crate::tool::ToolResult> {
+    let context =
+        crate::runtime::ToolContext::new(task, crate::OperationId::new(), "settings-file")?;
+    let invocation = crate::tool::ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments,
+    };
+    tool.executor.execute(invocation, Some(context)).await
+}
+
+#[tokio::test]
+async fn off_markers_require_end_of_file_across_effective_reads_and_discovery() -> Result<()> {
+    use crate::{
+        Capabilities, filesystem::FilesystemContentPublisher, runtime::ContentBindings,
+        wire::ErrorCode,
+    };
+    use serde_json::json;
+
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let harness = open(directory.path()).await?;
+    let task = std::sync::Arc::new(harness.harness.agent_context(
+        &Capabilities::default(),
+        ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        },
+    )?);
+    let header_bytes = crate::context::ContextDiscoveryLimits::default().header_bytes as usize;
+    let path = "skills/marker-control/SKILL.md";
+    let mut observed = Vec::new();
+    for body in [
+        format!("{}off: true\n", " ".repeat(header_bytes + 1)),
+        format!("off: true{}\nnot a marker", " ".repeat(header_bytes)),
+    ] {
+        write(&harness, path, &body).await?;
+        let read = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": format!("{}{path}", crate::layers::EFFECTIVE_PATH)}),
+        )
+        .await;
+        let skills = harness
+            .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
+            .await;
+        observed.push((
+            read.err().map(|error| error.code()),
+            skills
+                .as_ref()
+                .is_ok_and(|skills| skills.iter().all(|skill| skill.source.path != path)),
+            skills.err().map(|error| error.code()),
+        ));
+    }
+    assert_eq!(
+        observed,
+        [
+            (Some(ErrorCode::NotFound), true, None),
+            (None, false, Some(ErrorCode::Invalid)),
+        ],
+        "classification must reach EOF at the original generation; a prefix cannot disable a body"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn system_reads_keep_the_run_generation_and_require_original_authority() -> Result<()> {
     use crate::{
-        Capabilities, OperationId,
+        Capabilities,
         filesystem::{FilesystemContentPublisher, WorkspaceMutation, workspace_ref},
-        runtime::{Bindings, ContentBindings, RuntimeScope, ToolContext},
-        tool::{Tool, ToolInvocation, files::FileReadSource},
+        runtime::{Bindings, ContentBindings, RuntimeScope},
+        tool::files::FileReadSource,
     };
     use acyclic_stream::OwnedBytes;
     use serde_json::json;
@@ -117,16 +194,6 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
             .harness
             .agent_context(&Capabilities::default(), private()?)?,
     );
-    let run = |task: Arc<crate::runtime::TaskContext>, tool: Tool, arguments| async move {
-        let context = ToolContext::new(task, OperationId::new(), "system-file")?;
-        let invocation = ToolInvocation {
-            operation_id: context.operation_id(),
-            call_id: context.call_id().into(),
-            name: tool.definition.name.clone(),
-            arguments,
-        };
-        tool.executor.execute(invocation, Some(context)).await
-    };
     let effective = format!("{}{path}", crate::layers::EFFECTIVE_PATH);
     let first = run(
         task.clone(),
