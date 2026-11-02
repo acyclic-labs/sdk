@@ -6,6 +6,70 @@ use acyclic_stream::{
 use futures::channel::oneshot;
 use std::sync::Mutex;
 
+/// The pause gate must fence the next delivery without cancelling the current
+/// one. Use the original delivery and pause locks, with a real committed output.
+#[tokio::test]
+async fn pause_finishes_active_delivery_before_parking() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "pause-finish", &[b"emit", b"emit"]).await?;
+    let handler = Arc::new(Gated {
+        package: Package::new()?,
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    let mut delivery = Box::pin(runtime.drain_actor(&address));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    assert_eq!(handler.active.load(Ordering::SeqCst), 1);
+    let slot = runtime.slot(&address).ok_or("lost delivery placement")?;
+    let cancellation = slot
+        .delivery_control
+        .lock()
+        .expect("delivery control lock")
+        .cancellation
+        .clone()
+        .ok_or("active delivery has no cancellation owner")?;
+    let parked = AtomicUsize::new(0);
+    // Poll the production application directly so the gate is installed before
+    // checking cancellation; no scheduling delay or readiness loop is involved.
+    let mut pause = Box::pin(super::super::pause::apply(
+        &runtime.store,
+        &address,
+        &slot,
+        true,
+        async {
+            parked.fetch_add(1, Ordering::SeqCst);
+        },
+    ));
+    assert!(futures::poll!(pause.as_mut()).is_pending());
+    assert!(!cancellation.is_cancelled(), "pause cancelled active work");
+    assert_eq!(parked.load(Ordering::SeqCst), 0);
+    handler.gate.add_permits(1);
+    let (delivered, paused) = futures::join!(delivery, pause);
+    delivered?;
+    paused.map_err(|()| "pause application failed")?;
+    assert_eq!(parked.load(Ordering::SeqCst), 1);
+    assert_eq!(records(&*provider, "out/pause-finish").await?.len(), 1);
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        runtime
+            .store
+            .load(&address)
+            .await?
+            .state()
+            .map(State::paused),
+        Some(true)
+    );
+    runtime.pause(&address, false).await?;
+    handler.gate.add_permits(1);
+    runtime.drain_actor(&address).await?;
+    assert_eq!(records(&*provider, "out/pause-finish").await?.len(), 2);
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Fault {
     Load,
