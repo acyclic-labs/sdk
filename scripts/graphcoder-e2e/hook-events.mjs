@@ -11,33 +11,43 @@ export async function waitForHook(path, match, closed) {
   const watcher = watch(dirname(path));
   const buffer = Buffer.allocUnsafe(64 * 1024), decoder = new StringDecoder("utf8");
   let fragments = [];
-  let reads = Promise.resolve();
+  let reads = Promise.resolve(), reading = false, dirty = false;
   const scan = () => {
-    return reads = reads.then(async () => {
-      if (settled) return;
-      if (!file) {
-        try { file = await open(path, "r"); }
-        catch (error) { if (error.code === "ENOENT") return; throw error; }
-      }
-      // Drain only newly appended bytes. The retained descriptor owns the read
-      // cursor; a later notification never reparses previously consumed rows.
-      while (!settled) {
-        const { bytesRead } = await file.read(buffer);
-        if (!bytesRead) return;
-        const text = decoder.write(buffer.subarray(0, bytesRead));
-        let start = 0, end;
-        while ((end = text.indexOf("\n", start)) !== -1) {
-          fragments.push(text.slice(start, end));
-          const line = fragments.join("");
-          fragments = [];
-          start = end + 1;
-          if (!line) continue;
-          const event = JSON.parse(line);
-          if (match(event)) { settled = true; found(event); return; }
-        }
-        if (start < text.length) fragments.push(text.slice(start));
-      }
-    }).catch(failed);
+    dirty = true;
+    if (reading) return reads;
+    reading = true;
+    // Notifications arriving during IO share one drain and one dirty bit;
+    // the original exit joins that same work instead of queuing another scan.
+    return reads = (async () => {
+      try {
+        do {
+          dirty = false;
+          if (settled) return;
+          if (!file) {
+            try { file = await open(path, "r"); }
+            catch (error) { if (error.code === "ENOENT") continue; throw error; }
+          }
+          // Drain only newly appended bytes. The retained descriptor owns the
+          // cursor; a notification never reparses previously consumed rows.
+          while (!settled) {
+            const { bytesRead } = await file.read(buffer);
+            if (!bytesRead) break;
+            const text = decoder.write(buffer.subarray(0, bytesRead));
+            let start = 0, end;
+            while ((end = text.indexOf("\n", start)) !== -1) {
+              fragments.push(text.slice(start, end));
+              const line = fragments.join("");
+              fragments = [];
+              start = end + 1;
+              if (!line) continue;
+              const event = JSON.parse(line);
+              if (match(event)) { settled = true; found(event); return; }
+            }
+            if (start < text.length) fragments.push(text.slice(start));
+          }
+        } while (dirty && !settled);
+      } finally { reading = false; }
+    })().catch(failed);
   };
   watcher.on("change", scan);
   watcher.on("error", failed);
