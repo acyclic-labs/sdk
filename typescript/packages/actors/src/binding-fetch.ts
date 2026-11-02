@@ -1,4 +1,4 @@
-import { snapshotBytes } from "@acyclic-labs/auth";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 
 /** A host-installed, deployment-selected HTTPS capability.
  * The host retains the original invocation and Request signal through header
