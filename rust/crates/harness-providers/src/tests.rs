@@ -384,8 +384,7 @@ pub(super) fn provider_with(
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
-        #[cfg(not(target_arch = "wasm32"))]
-        codex_count: std::sync::Arc::default(),
+        usage: std::sync::Arc::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
     }
@@ -534,7 +533,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
     for (adapter, _) in fixtures() {
         let (provider, script) = provider(adapter, 200);
         let (request, dispatch) = request(&provider)?;
-        let count = provider.count_tokens(&request).await?;
+        let count = provider.count_tokens(&request, 0).await?;
         assert_eq!(count.request_digest, request.request_digest());
         assert_eq!(count.message_tokens.len(), 2);
         assert!(count.fixed_tokens > 0 && count.message_tokens.iter().all(|count| *count > 0));
@@ -767,7 +766,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             ],
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-        let count = provider.count_tokens(&prepared).await?;
+        let count = provider.count_tokens(&prepared, 0).await?;
         let dispatch = ModelDispatch {
             operation_id: acyclic_harness_core::OperationId::new(),
             step: 1,

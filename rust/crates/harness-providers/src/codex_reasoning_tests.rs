@@ -79,15 +79,15 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 if step == 1 {
                     let count = if native {
                         let (count, hold) = provider
-                            .count_tokens_with_native_work(&prepared, &work)?
+                            .count_tokens_with_native_work(&prepared, 0, &work)?
                             .await?;
                         assert!(hold.work().shares_allocation_context(&work));
                         drop(hold);
                         count
                     } else {
-                        provider.count_tokens(&prepared).await?
+                        provider.count_tokens(&prepared, 0).await?
                     };
-                    assert_eq!(count.input_tokens, provider.codex_count.count(&prepared)?);
+                    assert_eq!(count.input_tokens, provider.usage.codex_estimate(&prepared)?);
                     assert!(count.input_tokens >= 8);
                 }
                 let mut events = Vec::new();

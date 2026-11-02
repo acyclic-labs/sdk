@@ -332,6 +332,7 @@ impl ModelProvider for ScriptedModelProvider {
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
+        _ceiling: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
         Box::pin(async move {
             let counter = self.token_counter.as_ref().ok_or_else(|| {

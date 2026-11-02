@@ -113,7 +113,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
         let mut changed = provider.model().clone();
         changed.revision.push_str("-foreign");
         assert!(provider.context_capacity(&changed).is_err());
-        assert!(futures::executor::block_on(provider.count_tokens(&prepared)).is_ok());
+        assert!(futures::executor::block_on(provider.count_tokens(&prepared, 0)).is_ok());
         let mut old = serde_json::to_value(provider.model()).unwrap();
         old["options"] = json!({"tools":[{"type":"forged-native-tool"}]});
         assert!(serde_json::from_value::<Model>(old).is_err());

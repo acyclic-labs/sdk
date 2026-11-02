@@ -49,9 +49,15 @@ pub(crate) fn specification<'a>(
     Ok(spec)
 }
 
+/// Admission for one request: a locally proven upper bound when it is within
+/// `ceiling`, so no count request precedes generation, otherwise the
+/// endpoint's verified count. The only guarantee admission buys is that the
+/// caller compacts before the window overflows, and a bound within the ceiling
+/// already proves the caller need not compact.
 pub(crate) async fn count(
     provider: &ResolvedModel,
     request: &acyclic_harness_core::model::PreparedModelRequest,
+    ceiling: u64,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
     if request.request().model != provider.model {
@@ -60,32 +66,26 @@ pub(crate) async fn count(
             "request model differs from resolved selection",
         ));
     }
+    let framing = u64::from(
+        provider
+            .config
+            .token_counter
+            .as_ref()
+            .map_or(0, |spec| spec.framing_tokens),
+    );
+    if let Some(bound) = provider
+        .usage
+        .bound(request)
+        .map_err(|_| boundary(work, "usage bound encoding failed"))?
+        .and_then(|tokens| tokens.checked_add(framing))
+        .filter(|tokens| *tokens <= ceiling)
+    {
+        return local(provider, request, bound, work);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
-        let custody = work
-            .map(|work| {
-                work.claim(
-                    (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
-                        as u64,
-                    1,
-                    acyclic_fs::WorkCounters {
-                        bytes_encoded: request.bytes().len() as u64,
-                        items_examined: request.request().messages.len() as u64,
-                        ..acyclic_fs::WorkCounters::UNCHARGED
-                    },
-                )
-            })
-            .transpose()?;
-        let result = provider
-            .codex_count
-            .count(request)
-            .and_then(|tokens| projection::plan(provider, request, tokens));
-        let mut custody = custody;
-        let result = match custody.as_mut() {
-            Some(hold) => crate::native::diagnostic(result, hold),
-            None => result,
-        };
-        return Ok((result?, custody));
+        let tokens = provider.usage.codex_estimate(request)?;
+        return local(provider, request, tokens, work);
     }
     let spec = specification(&provider.config, work)?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -155,7 +155,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, count) = prepared?;
+    let (url, headers, bytes, mut count) = prepared?;
     drop(auth);
     #[cfg(not(target_arch = "wasm32"))]
     drop(auth_custody);
@@ -170,6 +170,15 @@ pub(crate) async fn count(
                 )
             })
             .transpose()?;
+    }
+    // With no usage yet, every token the endpoint would count spans at least one
+    // byte of this exact body, and `framing` bounds input it adds beyond it.
+    if let Some(bound) = (bytes.len() as u64)
+        .checked_add(framing)
+        .filter(|tokens| *tokens <= ceiling)
+    {
+        count.input_tokens = bound;
+        return Ok((count, count_custody));
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(hold) = admission.as_mut() {
@@ -196,6 +205,42 @@ pub(crate) async fn count(
     });
     let exchange = HttpRequest { url, headers, body };
     send_count(provider, exchange, count, count_custody, work).await
+}
+
+/// A count proven without a request is charged like the DTO it returns.
+fn local(
+    provider: &ResolvedModel,
+    request: &acyclic_harness_core::model::PreparedModelRequest,
+    tokens: u64,
+    work: NativeWork<'_>,
+) -> Result<(ModelTokenCount, NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut custody = work
+        .map(|work| {
+            work.claim(
+                (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
+                    as u64,
+                1,
+                acyclic_fs::WorkCounters {
+                    bytes_encoded: request.bytes().len() as u64,
+                    items_examined: request.request().messages.len() as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                },
+            )
+        })
+        .transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let custody: NativeCustody = {
+        let _ = work;
+        None
+    };
+    let result = projection::plan(provider, request, tokens);
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = match custody.as_mut() {
+        Some(hold) => crate::native::diagnostic(result, hold),
+        None => result,
+    };
+    Ok((result?, custody))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
