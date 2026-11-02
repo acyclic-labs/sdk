@@ -132,16 +132,10 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
     });
     assert_eq!(text_round_trip.count_total, 1);
     let key = IdempotencyKey::new("create-sandbox")?;
-    let original_key = MachinesKey::parse(
-        &uuid::Uuid::from_bytes(
-            *blake3::hash(key.as_str().as_bytes())
-                .as_bytes()
-                .first_chunk::<16>()
-                .ok_or_else(|| Error::Invalid("key digest".into()))?,
-        )
-        .to_string(),
-    )
-    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut expected = [0; 16];
+    expected.copy_from_slice(&blake3::hash(key.as_str().as_bytes()).as_bytes()[..16]);
+    let original_key = MachinesKey::parse(&uuid::Uuid::from_bytes(expected).to_string())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     let converted = acyclic_test_support::measure(|| {
         assert_eq!(machines_key(&key).ok(), Some(original_key));
     });
