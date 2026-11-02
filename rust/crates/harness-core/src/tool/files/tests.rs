@@ -58,18 +58,22 @@ async fn effective_reads_retain_the_original_layer_and_generation() -> Result<()
         "shared.md",
     )
     .await?;
-    home.stage(
-        OperationId::new(),
-        "mine.md",
-        b"first\nsecond\n",
-        "text/plain",
-        "mine.md",
-    )
-    .await?;
+    let original_content = home
+        .stage(
+            OperationId::new(),
+            "mine.md",
+            b"first\nsecond\n",
+            "text/plain",
+            "mine.md",
+        )
+        .await?;
     let effective = ".volumes/effective/mine.md";
     let original = read_at(task.clone(), json!({"path": effective})).await?;
     assert_eq!(original.text, "first\nsecond\n");
     let version = super::version::encode_source(&original.file, None)?.0;
+    super::version::check_version(version.as_bytes());
+    let content_version = super::version::encode_version(&original_content, None)?.0;
+    super::version::check_version(content_version.as_bytes());
     home.stage(
         OperationId::new(),
         "mine.md",

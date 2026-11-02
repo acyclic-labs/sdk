@@ -64,6 +64,13 @@ pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
+#[cfg(all(
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub use version::check_version;
 pub(crate) use version::{encode_path_version, encode_version};
 
 /// The same opaque version used by file projections, without a second codec in

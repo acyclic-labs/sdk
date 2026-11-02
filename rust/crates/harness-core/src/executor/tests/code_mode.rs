@@ -708,7 +708,7 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
         let code = r#"
             import {read, write, ConflictError, DeniedError} from 'acyclic';
             await write('file.txt', 'original', 'absent');
-            let current, path, readDenied = false;
+            let current, path, readDenied = false, deniedReason = null;
             try { await write('file.txt', 'replacement', 'absent'); throw new Error('write succeeded'); }
             catch (error) {
                 if (!(error instanceof ConflictError)) throw error;
@@ -716,19 +716,27 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
                 current = error.current === null ? null : error.current.text();
             }
             try { await read('file.txt'); }
-            catch (error) { if (!(error instanceof DeniedError)) throw error; readDenied = true; }
-            export default {path, current, readDenied};
+            catch (error) {
+                if (!(error instanceof DeniedError)) throw error;
+                readDenied = true;
+                deniedReason = error.reason;
+            }
+            export default {path, current, readDenied, deniedReason};
         "#;
-        let (mut executor, _, _) = executor(code, allowed()?, false)?;
+        let approval_policy = crate::approvals::ApprovalPolicy::accept_all("owner");
+        let policy: Arc<dyn ToolPolicy> = Arc::new(approval_policy.bind()?);
+        let (mut executor, model, unused_tool) = executor(code, policy.clone(), false)?;
         for tool in [crate::tool::files::read()?, crate::tool::files::write()?] {
             executor.tools.register((tool, None), &mut None, None)?;
         }
-        let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+        let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536)
+            .await?
+            .with_approval_policy(approval_policy)?;
         let content = storage.content_bindings();
         let mut grants = vec![
             "tool:call:code".into(),
             "tool:call:write".into(),
+            capability::INTERACTION_ROUTE.into(),
             content
                 .volume
                 .capability(VolumeOperation::Write, &mut None)?,
@@ -753,18 +761,30 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
         .agent_context(&Capabilities::default(), content)?;
         let operation = OperationId::new();
         executor = executor
-            .with_tool_authority(scope, allowed()?)?
+            .with_tool_authority(scope, policy)?
             .with_task_context(&task, operation)?;
+        // Exercise dispatch, failure settlement, receipt decoding and the
+        // guest reply on the same original native ledger.
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
         let invocation = ToolInvocation::for_model_call(
             operation,
             0,
             "program".into(),
             "code".into(),
             json!({"code": code}),
-            None,
+            Some(&work),
         )?;
         let journal = storage.journal();
-        let execution = StockExecution::ordinary(&executor);
+        let execution = StockExecution {
+            io: Some(&io),
+            ..StockExecution::ordinary(&executor)
+        };
         execution
             .ensure_started(
                 journal.as_ref(),
@@ -785,9 +805,32 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
         else {
             panic!("conflicting write did not settle");
         };
+        let records = journal.replay(operation, 0, 32, Some(&io))?.await?;
+        assert!(records.len() < 32, "the original operation fits one page");
+        let failures = records
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+            .collect::<Vec<_>>();
+        assert!(failures.iter().any(|record| matches!(
+            &record.event,
+            ExecutionEvent::ToolFailed { cause, .. }
+                if cause.class == ToolErrorClass::Conflict
+        )));
+        let denied_reason = if read_tool && read_volume {
+            Value::Null
+        } else {
+            let ExecutionEvent::ToolFailed { reason, cause, .. } =
+                &failures.last().expect("original denied read receipt").event
+            else {
+                unreachable!()
+            };
+            Value::String(
+                crate::executor::tool_failure::ToolFailureText(*reason, cause).to_string(),
+            )
+        };
         assert_eq!(
             crate::tools::code_mode::output(&result.value)?,
-            &json!({"path": "file.txt", "current": if read_tool && read_volume { Some("original") } else { None }, "readDenied": !(read_tool && read_volume)})
+            &json!({"path": "file.txt", "current": if read_tool && read_volume { Some("original") } else { None }, "readDenied": !(read_tool && read_volume), "deniedReason":denied_reason})
         );
         let (_, bytes, _) = storage
             .content_reader()
@@ -801,6 +844,8 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
             )?
             .await?;
         assert_eq!(&*bytes, b"original");
+        assert!(model.requests().is_empty());
+        assert_eq!(unused_tool.0.load(Ordering::SeqCst), 0);
     }
     Ok(())
 }

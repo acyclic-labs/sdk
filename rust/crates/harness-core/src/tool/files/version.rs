@@ -2,6 +2,48 @@ use super::*;
 
 const AUTHORED: &str = "authored-path-v1:";
 
+/// Exercises both real decoders and the original native result custody.
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+pub fn check_version(input: &[u8]) {
+    let Ok(version) = std::str::from_utf8(input) else {
+        return;
+    };
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .expect("version control admits its original ledger");
+    let baseline = work.live_allocation_bytes();
+    let portable = decode_selection(version, None);
+    let native = decode_selection(version, Some(&work));
+    match (&portable, &native) {
+        (Ok((SelectedVersion::Content(left), _)), Ok((SelectedVersion::Content(right), _))) => {
+            assert_eq!(left, right);
+        }
+        (Ok((SelectedVersion::Authored(left), _)), Ok((SelectedVersion::Authored(right), _))) => {
+            assert_eq!(left, right);
+        }
+        (Err(_), Err(_)) => {}
+        _ => panic!("version decoding disagrees across original native admission"),
+    }
+    if let Ok((selected, _)) = &native {
+        assert!(decode_version(selected.path(), version, Some(&work)).is_ok());
+        let mut other_path = selected.path().to_owned();
+        other_path.push('\0');
+        assert!(decode_version(&other_path, version, Some(&work)).is_err());
+    }
+    drop(native);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    cancellation.cancel();
+    assert!(decode_selection(version, Some(&work)).is_err());
+    assert_eq!(work.live_allocation_bytes(), baseline);
+}
+
 /// A version pins a namespace selection, without inventing file metadata.
 /// Only the original read producer supplies the length in FileReadSource.
 pub(super) enum SelectedVersion {

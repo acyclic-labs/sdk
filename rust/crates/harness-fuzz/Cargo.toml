@@ -186,6 +186,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "file_version"
+path = "fuzz_targets/file_version.rs"
+required-features = ["filesystem-access"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
 required-features = ["runtime"]
