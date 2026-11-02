@@ -6,6 +6,8 @@ fn qualify_marker(
     headers: &RecordHeaders,
     filter: &FollowFilter,
     expected: Result<bool, StreamError>,
+    value: &[u8],
+    decoded: &wire::ChangeRecord,
 ) {
     // Original two-pass classification, independent of the shared lookup.
     let mut before = 0;
@@ -29,7 +31,10 @@ fn qualify_marker(
     };
     assert_eq!(original, expected);
     MARKER_PROBES.with(|count| count.set(0));
-    assert_eq!(marked(headers), original);
+    assert_eq!(
+        reader_format(headers).map(|format| format.is_some()),
+        original
+    );
     let after = MARKER_PROBES.with(|count| count.replace(0));
     assert!(after <= before);
     if expected.is_ok() && !headers.attributes().is_empty() {
@@ -41,6 +46,59 @@ fn qualify_marker(
     assert_eq!(filter.matches(headers), expected == Ok(true));
     assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
     assert_eq!(FollowFilter::default().matches(headers), expected.is_ok());
+    MARKER_PROBES.with(|count| count.set(0));
+    assert_eq!(validate(value, headers), expected.clone().map(|_| ()));
+    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(
+        decode(value, headers),
+        expected.clone().map(|_| decoded.clone())
+    );
+    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+
+    // The former validation and decode paths selected the reader by looking
+    // up the same immutable marker again (twice more during typed decoding).
+    if expected == Ok(true) {
+        let _ = reader_format(headers).unwrap();
+        let _ = compact(headers);
+        assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), 2 * after);
+        let _ = reader_format(headers).unwrap();
+        let _ = compact(headers);
+        let _ = compact(headers);
+        assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), 3 * after);
+    }
+
+    assert_eq!(decode(&[], headers), Err(StreamError::InvalidArgument));
+    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+    assert_eq!(
+        validate(&[], headers),
+        if expected == Ok(false) {
+            Ok(())
+        } else {
+            Err(StreamError::InvalidArgument)
+        }
+    );
+    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
+
+    // A valid body alone cannot establish its immutable index. Bypassing
+    // validation would accept the same decoded value under a forged key.
+    let forged = RecordHeaders::new(
+        vec!["a".into(), "z".into()],
+        headers
+            .attributes()
+            .iter()
+            .map(crate::RecordAttribute::to_owned)
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        decode(value, &forged),
+        if expected == Ok(false) {
+            Ok(decoded.clone())
+        } else {
+            Err(StreamError::InvalidArgument)
+        }
+    );
+    assert_eq!(MARKER_PROBES.with(|count| count.replace(0)), after);
     eprintln!(
         "marker {:?}, {} attributes: {before} -> {after} name probes",
         expected,
@@ -53,6 +111,9 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
 -> Result<(), Box<dyn std::error::Error>> {
     let golden = acyclic_proto_build::golden::frame("stream.changes-v1")?;
     let old = wire::Record::decode(golden.as_slice())?;
+    let current = super::tests::changes();
+    let retained_value = wire::ChangeRecord::decode(old.value.clone())?;
+    let current_value = decode_changes(&current.value)?;
     let followed = crate::StreamPath::new("followed")?;
     let filter = super::tests::filter();
     let retained = wire_codec::record(old.clone(), Some(&followed))?;
@@ -125,7 +186,12 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
             }
             attributes.sort_by(|left, right| left.name.cmp(&right.name));
             let headers = RecordHeaders::new(retained.headers.keys().to_vec(), attributes)?;
-            qualify_marker(&headers, &filter, expected.clone());
+            let (body, decoded) = if value == Some(FORMAT) {
+                (current.value.as_ref(), &current_value)
+            } else {
+                (old.value.as_ref(), &retained_value)
+            };
+            qualify_marker(&headers, &filter, expected.clone(), body, decoded);
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let observed = std::sync::Arc::new(crate::test_meter::Meter::default());
@@ -140,7 +206,7 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
                 observed
                     .deny_codec
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                qualify_marker(&prepared, &filter, expected.clone());
+                qualify_marker(&prepared, &filter, expected.clone(), body, decoded);
                 drop(prepared);
                 observed.assert_refunded();
             }
@@ -167,7 +233,6 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
             }
         }
     }
-    let current = super::tests::changes();
     assert_eq!(
         wire_codec::append_record(wire_codec::append_record_wire(current.clone()))?,
         current

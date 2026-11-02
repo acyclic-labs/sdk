@@ -75,17 +75,17 @@ fn compact(headers: &RecordHeaders) -> bool {
 }
 
 /// Classifies the reserved marker in one pass; an unknown claim is never opaque.
-pub(crate) fn marked(headers: &RecordHeaders) -> Result<bool, StreamError> {
+pub(crate) fn reader_format(headers: &RecordHeaders) -> Result<Option<&[u8]>, StreamError> {
     match marker(headers) {
-        None => Ok(false),
-        Some(value) if READER_FORMATS.contains(&value.as_ref()) => Ok(true),
+        None => Ok(None),
+        Some(value) if READER_FORMATS.contains(&value.as_ref()) => Ok(Some(value.as_ref())),
         Some(_) => Err(StreamError::InvalidArgument),
     }
 }
 
 /// Whether `headers` belong to a change record.
 pub fn is_changes(headers: &RecordHeaders) -> bool {
-    marked(headers) == Ok(true)
+    reader_format(headers).is_ok_and(|format| format.is_some())
 }
 
 /// V2 derives its index from the compact value. V1 retains its original wire
@@ -291,10 +291,10 @@ fn parse_v1<'a>(
 
 fn parse_record<'a>(
     bytes: &'a [u8],
-    headers: &RecordHeaders,
+    format: Option<&[u8]>,
     visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
-    if compact(headers) {
+    if format == Some(FORMAT) {
         parse(bytes, visit)
     } else {
         parse_v1(bytes, visit)
@@ -383,9 +383,9 @@ pub(crate) fn decode(
     bytes: &[u8],
     headers: &RecordHeaders,
 ) -> Result<wire::ChangeRecord, StreamError> {
-    validate(bytes, headers)?;
+    let format = validated_format(bytes, headers)?;
     let mut entries = Vec::new();
-    let context = parse_record(bytes, headers, |key, operation, metadata| {
+    let context = parse_record(bytes, format, |key, operation, metadata| {
         entries.push(wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(key),
             operation: operation.into(),
@@ -402,14 +402,24 @@ pub(crate) fn decode(
 /// Rejects a change value whose keys differ from its in-memory headers, and
 /// any record claiming a change format outside the supported readers.
 pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), StreamError> {
-    if !marked(headers)? {
-        return Ok(());
+    validated_format(bytes, headers).map(|_| ())
+}
+
+// Keep the admitted marker borrowed through reader selection. Decoding still
+// validates the complete value and index before allocating any decoded entries.
+fn validated_format<'a>(
+    bytes: &[u8],
+    headers: &'a RecordHeaders,
+) -> Result<Option<&'a [u8]>, StreamError> {
+    let format = reader_format(headers)?;
+    if format.is_none() {
+        return Ok(None);
     }
     if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
     let mut expected = headers.keys().iter();
-    parse_record(bytes, headers, |key, _, _| {
+    parse_record(bytes, format, |key, _, _| {
         if expected
             .next()
             .is_none_or(|expected| expected.as_ref() != key)
@@ -421,7 +431,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
     if expected.next().is_some() {
         return Err(StreamError::InvalidArgument);
     }
-    Ok(())
+    Ok(format)
 }
 
 /// Headers for a record arriving from any wire or persisted form. A change

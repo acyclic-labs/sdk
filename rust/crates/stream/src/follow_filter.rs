@@ -134,13 +134,13 @@ impl FollowFilter {
 
     /// Returns whether opaque record headers satisfy the full intersection.
     pub fn matches(&self, headers: &RecordHeaders) -> bool {
-        match crate::changes::marked(headers) {
+        match crate::changes::reader_format(headers) {
             Err(_) => false,
-            Ok(true) => headers
+            Ok(Some(_)) => headers
                 .keys()
                 .iter()
                 .any(|key| self.matches_entry(key, headers)),
-            Ok(false) => self.clauses().iter().all(|clause| clause.matches(headers)),
+            Ok(None) => self.clauses().iter().all(|clause| clause.matches(headers)),
         }
     }
 
@@ -157,15 +157,17 @@ impl FollowFilter {
     /// and no projected value is constructed.
     pub fn preserves(&self, record: &crate::Record) -> Result<bool, StreamError> {
         crate::changes::validate(&record.value, &record.headers)?;
-        Ok(if crate::changes::marked(&record.headers)? {
-            record
-                .headers
-                .keys()
-                .iter()
-                .all(|key| self.matches_entry(key, &record.headers))
-        } else {
-            self.matches(&record.headers)
-        })
+        Ok(
+            if crate::changes::reader_format(&record.headers)?.is_some() {
+                record
+                    .headers
+                    .keys()
+                    .iter()
+                    .all(|key| self.matches_entry(key, &record.headers))
+            } else {
+                self.matches(&record.headers)
+            },
+        )
     }
 
     /// Projects typed provider changes before delivery. Opaque values retain
@@ -175,7 +177,7 @@ impl FollowFilter {
         if !self.matches(&record.headers) {
             return Ok(None);
         }
-        if crate::changes::marked(&record.headers)? {
+        if crate::changes::reader_format(&record.headers)?.is_some() {
             let headers = record.headers.clone();
             let body = crate::AppendRecord {
                 value: record.value,
@@ -627,7 +629,10 @@ mod tests {
             let expected = original.project(record.clone()).unwrap();
             assert_eq!(transferred.project(record.clone()).unwrap(), expected);
             assert_eq!(forwarded.project(record.clone()).unwrap(), expected);
-            if crate::changes::marked(&record.headers).unwrap() {
+            if crate::changes::reader_format(&record.headers)
+                .unwrap()
+                .is_some()
+            {
                 let projected = expected.unwrap();
                 assert_eq!(projected.headers.keys().len(), 1);
                 assert_eq!(projected.headers.keys()[0].as_ref(), b"b");
