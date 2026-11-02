@@ -54,67 +54,58 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
 ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError> {
-    let budget = context.remaining().map_err(crate::ObjectStoreError::from)?;
-    let mut batch = AuthorityWork::new(budget, context.cancellation);
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        batch.original = context.original;
+    let mut scope = context.scope()?;
+    let batch = &mut *scope;
+    if requests.is_empty() {
+        return Err(crate::ObjectStoreError::EmptyReadBatch);
     }
-    let result = async {
-        if requests.is_empty() {
-            return Err(crate::ObjectStoreError::EmptyReadBatch);
+    let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
+    batch
+        .admit(WorkCounters {
+            items_examined: count,
+            items_returned: count,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(crate::ObjectStoreError::from)?;
+    batch
+        .charge(WorkCounters {
+            items_examined: count,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(crate::ObjectStoreError::from)?;
+    let mut values = batch
+        .vec_owned(requests.len())
+        .map_err(crate::ObjectStoreError::from)?;
+    for request in requests {
+        let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
+        let read = R::read(store, request, &mut read_work).await;
+        if !batch.is_native() {
+            batch.record_completed(read_work.spent())?;
+            let retained = match &read {
+                Ok(ObjectRead {
+                    retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
+                    ..
+                }) => *logical_bytes,
+                _ => 0,
+            };
+            batch
+                .allocations
+                .record_owned_bytes(retained, &mut batch.work)
+                .map_err(|error| {
+                    error.into_work_or(crate::ObjectStoreError::SdkAllocationFailed)
+                })?;
+            batch.work.verify(batch.budget)?;
         }
-        let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
-        batch
-            .admit(WorkCounters {
-                items_examined: count,
-                items_returned: count,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(crate::ObjectStoreError::from)?;
-        batch
-            .charge(WorkCounters {
-                items_examined: count,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(crate::ObjectStoreError::from)?;
-        let mut values = batch
-            .vec_owned(requests.len())
-            .map_err(crate::ObjectStoreError::from)?;
-        for request in requests {
-            let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
-            let read = R::read(store, request, &mut read_work).await;
-            if !batch.is_native() {
-                batch.record_completed(read_work.spent())?;
-                let retained = match &read {
-                    Ok(ObjectRead {
-                        retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
-                        ..
-                    }) => *logical_bytes,
-                    _ => 0,
-                };
-                batch
-                    .allocations
-                    .record_owned_bytes(retained, &mut batch.work)
-                    .map_err(|error| {
-                        error.into_work_or(crate::ObjectStoreError::SdkAllocationFailed)
-                    })?;
-                batch.work.verify(batch.budget)?;
-            }
-            values.value.push(read?);
-        }
-        batch.check().map_err(crate::ObjectStoreError::from)?;
-        batch
-            .charge(WorkCounters {
-                items_returned: count,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(crate::ObjectStoreError::from)?;
-        Ok(values)
+        values.value.push(read?);
     }
-    .await;
-    context.record_completed(batch.work)?;
-    result.map(authority_parts)
+    batch.check().map_err(crate::ObjectStoreError::from)?;
+    batch
+        .charge(WorkCounters {
+            items_returned: count,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(crate::ObjectStoreError::from)?;
+    Ok(authority_parts(values))
 }
 
 impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {

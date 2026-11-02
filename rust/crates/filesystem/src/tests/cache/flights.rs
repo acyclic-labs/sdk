@@ -65,6 +65,7 @@ async fn concurrent_reads_share_one_original_backend_request()
         let reads = Arc::new(AtomicUsize::new(0));
         let cached = CachedObjectStore::new(
             GatedStore {
+                reads_before_gate: 0,
                 inner: Arc::new(inner),
                 gate: gate.clone(),
                 reads: Arc::clone(&reads),
@@ -115,6 +116,7 @@ async fn concurrent_scalar_and_batch_reads_share_the_original_success_or_failure
             let reads = Arc::new(AtomicUsize::new(0));
             let cached = CachedObjectStore::new(
                 GatedStore {
+                    reads_before_gate: 0,
                     inner: Arc::new(inner),
                     gate: gate.clone(),
                     reads: Arc::clone(&reads),
@@ -189,6 +191,7 @@ async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
         GatedStore {
+            reads_before_gate: 0,
             inner: Arc::new(inner),
             gate: gate.clone(),
             reads: Arc::clone(&reads),
@@ -250,6 +253,7 @@ async fn cancelled_followers_release_their_wakers_before_the_original_read_finis
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
         GatedStore {
+            reads_before_gate: 0,
             inner: Arc::new(inner),
             gate: futures::FutureExt::shared(gate),
             reads: reads.clone(),
@@ -319,6 +323,7 @@ async fn distinct_reads_and_followers_cross_previous_admission_totals()
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
         GatedStore {
+            reads_before_gate: 0,
             inner: Arc::new(inner),
             gate: futures::FutureExt::shared(gate),
             reads: reads.clone(),
