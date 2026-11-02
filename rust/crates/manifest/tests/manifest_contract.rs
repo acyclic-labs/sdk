@@ -756,6 +756,32 @@ fn worker_lowering_preserves_request_limits_and_rejects_namespace_entries()
         )
         .is_err()
     );
+    // Borrowed admission still checks the complete environment, including
+    // declarations that the selected entry does not use.
+    for invalid_name in [true, false] {
+        let mut invalid = environment.clone();
+        if invalid_name {
+            invalid.name = "invalid/environment".into();
+        } else {
+            invalid
+                .entries
+                .first_mut()
+                .ok_or_else(missing)?
+                .artifact_sha256 = "invalid".into();
+        }
+        let expected = validate(&DeploymentManifest {
+            schema_version: 1,
+            environments: vec![invalid.clone()],
+        })
+        .expect_err("the original complete contract rejects this environment");
+        let worker = invalid.entries.last().ok_or_else(missing)?;
+        assert_eq!(
+            lower_worker(&invalid, worker, "deploy").err(),
+            Some(expected.clone())
+        );
+        let actor = invalid.entries.first().ok_or_else(missing)?;
+        assert_eq!(lower_actor(&invalid, actor, "deploy").err(), Some(expected));
+    }
     Ok(())
 }
 

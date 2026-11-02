@@ -110,19 +110,23 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
         "$.schemaVersion",
         "unsupported-version",
     )?;
+    validate_environments(&manifest.environments)
+}
+
+fn validate_environments(environments: &[Environment]) -> Result<usize, ManifestError> {
     require(
-        !manifest.environments.is_empty(),
+        !environments.is_empty(),
         "$.environments",
         "environments-empty",
     )?;
     let mut work = 0;
-    let mut environments = HashSet::new();
+    let mut environment_names = HashSet::new();
     let mut routes = HashSet::new();
     let mut patterns = HashSet::new();
-    for (ei, environment) in manifest.environments.iter().enumerate() {
+    for (ei, environment) in environments.iter().enumerate() {
         let p = format!("$.environments[{ei}]");
         require(
-            label(&environment.name) && environments.insert(&environment.name),
+            label(&environment.name) && environment_names.insert(&environment.name),
             &p,
             "environment-name",
         )?;
@@ -567,15 +571,9 @@ pub fn lower_actor(
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
-    validate(&DeploymentManifest {
-        schema_version: 1,
-        environments: vec![environment.clone()],
-    })?;
+    validate_environments(std::slice::from_ref(environment))?;
     require(
-        environment
-            .entries
-            .iter()
-            .any(|candidate| candidate == entry),
+        environment.entries.contains(entry),
         "entry",
         "undeclared-entry",
     )?;
@@ -716,10 +714,7 @@ pub fn lower_worker(
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
-    validate(&DeploymentManifest {
-        schema_version: 1,
-        environments: vec![environment.clone()],
-    })?;
+    validate_environments(std::slice::from_ref(environment))?;
     require(
         environment.entries.contains(entry),
         "entry",
