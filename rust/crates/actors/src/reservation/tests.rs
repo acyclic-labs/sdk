@@ -75,6 +75,7 @@ async fn reservation_rejection_preserves_due_grants_and_original_fence() -> Test
             let mut operation = b"reserve\0".to_vec();
             operation.extend_from_slice(&request_id);
             let invocation = Invocation::new(
+                acyclic_stream::StreamPath::new("invoke-control/caller")?,
                 actor.clone(),
                 "inbox".into(),
                 operation.into(),
@@ -145,7 +146,11 @@ async fn reservation_rejection_preserves_due_grants_and_original_fence() -> Test
                     .ok_or("missing live grant")?
                     .clone(),
             }
-            .invocation(actor.clone(), "inbox".into())?;
+            .invocation(
+                acyclic_stream::StreamPath::new("reservation-control/caller")?,
+                actor.clone(),
+                "inbox".into(),
+            )?;
             let ticket = store.enqueue_invoke(&invocation).await?;
             valid.trigger = Trigger::Record {
                 subscription: "inbox".into(),
@@ -247,8 +252,18 @@ async fn shared_input_invocations_execute_only_under_the_original_store_root() -
         )?,
     )
     .await?;
-    let left_pool = Pool::new(&left, &actor, "inbox");
-    let right_pool = Pool::new(&right, &actor, "inbox");
+    let left_pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        &left,
+        &actor,
+        "inbox",
+    );
+    let right_pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        &right,
+        &actor,
+        "inbox",
+    );
     let owner = OwnerEvidence::new(Bytes::from_static(b"owner"), Bytes::from_static(b"proof"))?;
     let deadline = SystemClock
         .now_unix_ms()
@@ -323,8 +338,18 @@ async fn release_is_bound_to_the_original_store_root_in_client_and_handler() -> 
     let actor = ActorReference::new(b"account", b"pools", b"same")?;
     let (left, left_host) = open(&provider, &actor, "left-pool").await?;
     let (right, right_host) = open(&provider, &actor, "right-pool").await?;
-    let left_pool = Pool::new(&left, &actor, "inbox");
-    let right_pool = Pool::new(&right, &actor, "inbox");
+    let left_pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        &left,
+        &actor,
+        "inbox",
+    );
+    let right_pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        &right,
+        &actor,
+        "inbox",
+    );
     let owner = OwnerEvidence::new(
         Bytes::from_static(b"owner"),
         Bytes::from_static(b"original-evidence"),
@@ -366,7 +391,11 @@ async fn release_is_bound_to_the_original_store_root_in_client_and_handler() -> 
     let foreign_release = Request::Release {
         grant: left_grant.clone(),
     }
-    .invocation(actor.clone(), "inbox".into())?;
+    .invocation(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        actor.clone(),
+        "inbox".into(),
+    )?;
     let mut release = Box::pin(right.invoke(&foreign_release));
     assert!(futures::poll!(release.as_mut()).is_pending());
     assert_eq!(right_host.wake().await?, Some(deadline));

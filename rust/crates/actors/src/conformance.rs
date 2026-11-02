@@ -758,6 +758,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     target.store().wait_applied(&fixture.actor, cut).await?;
     target.pause(&fixture.actor, true).await?;
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
         fixture.actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"operation"),
@@ -769,6 +770,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         return fixture.violation("queued retry changed its original input".into());
     }
     let changed = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
         fixture.actor.clone(),
         "inbox".into(),
         invocation.operation().clone(),
@@ -796,7 +798,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     let receipt = committed.receipt();
     if committed.response().as_ref() != b"emit"
         || receipt.ticket() != &ticket
-        || receipt.state().commit_id != receipt.reply().commit_id
+        || receipt.state().commit_id != receipt.terminal().commit_id
         || receipt.revision() != receipt.state().sequence + 1
     {
         return fixture
@@ -834,6 +836,7 @@ pub(crate) async fn invocation_failure<T: Backend + ?Sized>(
         .and_then(|state| state.checkpoint())
         .cloned();
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
         fixture.actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"failed"),
@@ -846,7 +849,7 @@ pub(crate) async fn invocation_failure<T: Backend + ?Sized>(
             .violation("handler failure did not settle as a terminal invocation failure".into());
     };
     if source != GuestError::Handler("unknown command".into())
-        || receipt.state().commit_id != receipt.reply().commit_id
+        || receipt.state().commit_id != receipt.terminal().commit_id
         || receipt.ticket().invocation() != &invocation
     {
         return fixture
@@ -871,6 +874,7 @@ pub(crate) async fn invocation_failure<T: Backend + ?Sized>(
         _ => return fixture.violation("retry replaced the original committed failure".into()),
     }
     let successful = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
         fixture.actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"after-failure"),
@@ -952,6 +956,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
     })?;
     store.submit(prepared).await?;
     let call = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(Error::from)?,
         owner.actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"shared-call"),
@@ -995,7 +1000,12 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     let mut fixture = Fixture::create(target, run, "reserved").await?;
     fixture.send("pool 2").await?;
     wait_pool_used(&fixture, 0).await?;
-    let pool = Pool::new(target.store(), &fixture.actor, "inbox");
+    let pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller").map_err(Error::from)?,
+        target.store(),
+        &fixture.actor,
+        "inbox",
+    );
     let owner = OwnerEvidence::new(
         Bytes::from_static(b"placement"),
         Bytes::from_static(b"admitted-owner-proof"),
@@ -1016,9 +1026,14 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     )
     .map_err(|_| Error::Invalid("foreign pool fixture actor"))?;
     if !matches!(
-        Pool::new(target.store(), &foreign_actor, "inbox")
-            .release(first_grant)
-            .await,
+        Pool::new(
+            acyclic_stream::StreamPath::new("reservation-control/caller").map_err(Error::from)?,
+            target.store(),
+            &foreign_actor,
+            "inbox"
+        )
+        .release(first_grant)
+        .await,
         Err(Error::Conflict)
     ) {
         return fixture.violation("grant released a different pool actor".into());
@@ -1029,9 +1044,15 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     );
     if first_grant.state_path() != &target.store().path(&fixture.actor)?
         || !matches!(
-            Pool::new(&another_root, &fixture.actor, "inbox")
-                .release(first_grant)
-                .await,
+            Pool::new(
+                acyclic_stream::StreamPath::new("reservation-control/caller")
+                    .map_err(Error::from)?,
+                &another_root,
+                &fixture.actor,
+                "inbox"
+            )
+            .release(first_grant)
+            .await,
             Err(Error::Conflict)
         )
     {

@@ -638,7 +638,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             steps += 1;
             if let Some((snapshot, publication)) = inner.pending.take() {
-                match self.store.submit_retained(publication).await {
+                match self.submit_delivery(&snapshot, publication).await {
                     Ok(observed) => {
                         inner.observed = Some(Arc::new(
                             observed.ok_or(Error::Invalid("actor receipt has no state"))?,
@@ -851,7 +851,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error) => return Err(error),
             };
             publication.require(self.handler.publication_conditions())?;
-            match self.store.submit_retained(publication).await {
+            match self.submit_delivery(&snapshot, publication).await {
                 Ok(observed) => {
                     inner.observed = Some(Arc::new(
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
@@ -872,6 +872,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Err(error);
                 }
             }
+        }
+    }
+
+    /// The original and unknown-acknowledgement paths share cancellation
+    /// retirement, so neither can leave a settled inline input blocking progress.
+    async fn submit_delivery(
+        &self,
+        snapshot: &Snapshot,
+        publication: PreparedPublish,
+    ) -> Result<Option<Snapshot>, Error> {
+        match self.store.submit_retained(publication).await {
+            Err(Error::CallSettled { call, trigger }) => {
+                let epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
+                let cancelled = self.store.prepare_settled_input(
+                    snapshot,
+                    epoch,
+                    &trigger,
+                    &call,
+                    key(snapshot, "settled-input")?,
+                )?;
+                self.store.submit_retained(cancelled).await
+            }
+            outcome => outcome,
         }
     }
 

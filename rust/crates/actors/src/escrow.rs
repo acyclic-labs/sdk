@@ -5,8 +5,8 @@
 use acyclic_stream::CommitId;
 use bytes::Bytes;
 
-pub(crate) const KEY: &str = "acyclic.actors.escrow.v1";
 const FORMAT: &[u8] = b"\xffAES\x01";
+pub(crate) const MAX_RECORD_LEN: usize = FORMAT.len() + 2 + 32 + 8;
 
 /// The amount this agent can still spend. `None` is explicitly unbounded;
 /// absence of an escrow record is a missing prerequisite, never unbounded.
@@ -31,9 +31,6 @@ pub enum Error {
     /// The finite balance cannot fund this debit.
     #[error("actor escrow is exhausted")]
     Exhausted,
-    /// Only the original host transaction can change the balance.
-    #[error("guest metadata cannot replace actor escrow")]
-    GuestWrite,
     /// The record does not have the exact supported format and length.
     #[error("invalid actor escrow record")]
     InvalidRecord,

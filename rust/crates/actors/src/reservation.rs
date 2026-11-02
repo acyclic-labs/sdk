@@ -182,10 +182,17 @@ impl Request {
     }
     fn invocation(
         &self,
+        caller: acyclic_stream::StreamPath,
         actor: crate::addressing::ActorReference,
         subscription: String,
     ) -> Result<Invocation, GuestError> {
-        Invocation::new(actor, subscription, self.operation()?, encode(self)?)
+        Invocation::new(
+            caller,
+            actor,
+            subscription,
+            self.operation()?,
+            encode(self)?,
+        )
     }
 }
 

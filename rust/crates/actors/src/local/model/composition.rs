@@ -39,13 +39,11 @@ impl Composition for Participant {
                     .mutations
                     .iter()
                     .find_map(|mutation| match mutation {
-                        CommitMutation::Append { path, .. } => {
-                            path.as_str().rsplit_once("/replies/")
-                        }
+                        CommitMutation::Append { path, .. } => path.as_str().rsplit_once("/calls/"),
                         _ => None,
                     })
                     .ok_or_else(|| GuestError::Decode("missing original reply".into()))?;
-                let destination = StreamPath::new(format!("{}/replies", reply.0))
+                let destination = StreamPath::new(format!("{}/calls", reply.0))
                     .map_err(|_| GuestError::Decode("invalid original reply parent".into()))?;
                 let source = request
                     .mutations
@@ -329,6 +327,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
         let (store, actor) = placed(provider.clone(), counts.clone()).await?;
         let before = store.load(&actor).await?;
         let invocation = Invocation::new(
+            acyclic_stream::StreamPath::new("invoke-control/caller")?,
             actor.clone(),
             "inbox".into(),
             Bytes::from_static(b"uncertain-admission"),
@@ -413,6 +412,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             acyclic_stream::request::commit_digest(&mut expected)?
         );
         let changed = Invocation::new(
+            acyclic_stream::StreamPath::new("invoke-control/caller")?,
             actor.clone(),
             "inbox".into(),
             invocation.operation().clone(),
@@ -483,6 +483,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     let counts = Arc::new(Counts::default());
     let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"op"),
@@ -559,6 +560,7 @@ async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(),
     let counts = Arc::new(Counts::default());
     let (store, actor) = placed(provider.clone(), counts.clone()).await?;
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"fork-control"),

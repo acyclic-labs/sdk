@@ -472,7 +472,12 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
         ))
     };
     let host = open()?;
-    let pool = Pool::new(&store, &address, "inbox");
+    let pool = Pool::new(
+        acyclic_stream::StreamPath::new("reservation-control/caller")?,
+        &store,
+        &address,
+        "inbox",
+    );
     let owner = OwnerEvidence::new(
         Bytes::from_static(b"owner"),
         Bytes::from_static(b"original-evidence"),

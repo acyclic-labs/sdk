@@ -1,13 +1,15 @@
 //! Invocation uses the existing input, checkpoint publication and stream replay.
 use super::{Error, Snapshot, State, Store};
 use crate::{
+    call::{self, Entry, Journal, Outcome},
     guest::{Effect, GuestError, Trigger},
     invocation::Invocation,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommittedMutation, FollowRequest, IdempotencyKey,
-    ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath, StreamProvider,
+    Attribute, CommitId, CommitMutation, CommittedMutation, FollowRequest, IdempotencyKey,
+    OwnedBytes, ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -15,7 +17,7 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct ReplyWire {
+struct CompletionBinding {
     #[prost(bytes = "bytes", tag = "1")]
     request_digest: Bytes,
     #[prost(bytes = "bytes", tag = "2")]
@@ -24,12 +26,9 @@ struct ReplyWire {
     input_sequence: u64,
     #[prost(uint64, tag = "4")]
     revision: u64,
-    #[prost(bytes = "bytes", tag = "5")]
-    response: Bytes,
-    /// Canonical public GuestError value; mutually exclusive with response.
-    #[prost(bytes = "bytes", optional, tag = "6")]
-    failure: Option<Bytes>,
 }
+
+const COMPLETION: &str = "acyclic.actors.completion.v1";
 
 /// Original committed input, retained while waiting or reconciling a reply.
 /// Dropping this ticket does not cancel an already committed operation.
@@ -63,6 +62,12 @@ impl InvocationTicket {
     pub const fn record(&self) -> &Record {
         &self.record
     }
+    /// Shared call identity derived from this ticket's original admitted state
+    /// path. Use its cancellation commit without resolving the target again.
+    /// This performs no provider I/O and conveys no additional authority.
+    pub fn call(&self) -> Result<call::CallPath, call::Error> {
+        self.invocation.call(&self.state)
+    }
     /// The provider-issued publication revision, usable as a read floor.
     pub const fn storage_revision(&self) -> &Revision {
         &self.revision
@@ -75,7 +80,8 @@ impl InvocationTicket {
 pub struct InvocationReceipt {
     ticket: InvocationTicket,
     state: Record,
-    reply: Record,
+    terminal: Record,
+    call: call::Receipt,
 }
 
 impl InvocationReceipt {
@@ -88,12 +94,16 @@ impl InvocationReceipt {
         &self.state
     }
     /// Exact response publication in the same original commit.
-    pub const fn reply(&self) -> &Record {
-        &self.reply
+    pub const fn terminal(&self) -> &Record {
+        &self.terminal
+    }
+    /// The shared call protocol's original terminal receipt.
+    pub const fn call(&self) -> &call::Receipt {
+        &self.call
     }
     /// Shared original state/reply publication identity.
     pub const fn commit_id(&self) -> CommitId {
-        self.reply.commit_id
+        self.terminal.commit_id
     }
     /// Exclusive actor state revision, including control publications.
     pub const fn revision(&self) -> u64 {
@@ -104,13 +114,13 @@ impl InvocationReceipt {
 /// Result of one durably committed invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommittedInvocation {
-    response: Bytes,
+    response: OwnedBytes,
     receipt: InvocationReceipt,
 }
 
 impl CommittedInvocation {
     /// Original handler response, including an empty response.
-    pub const fn response(&self) -> &Bytes {
+    pub const fn response(&self) -> &OwnedBytes {
         &self.response
     }
     /// Original publication evidence and committed revision.
@@ -119,14 +129,27 @@ impl CommittedInvocation {
     }
 }
 
-fn reply_path(state: &StreamPath, invocation: &Invocation) -> Result<StreamPath, Error> {
-    Ok(StreamPath::new(format!(
-        "{state}/replies/{}",
-        acyclic_auth::encode_component(&invocation.identity(state.as_str()))
-    ))?)
-}
-
 impl<P: StreamProvider + ?Sized> Store<P> {
+    /// Retire a cancelled inline delivery without adopting any guest writes.
+    /// The original state anchor and call marker authorize this one consume.
+    pub(super) fn prepare_settled_input(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        call: &call::CallPath,
+        key: IdempotencyKey,
+    ) -> Result<super::PreparedPublish, Error> {
+        let original = super::owned(previous, epoch)?;
+        let mut state = original.clone();
+        super::consume(&mut state, &original.alarm, trigger)?;
+        let mut publication = self.prepare(previous, state, Vec::new(), key)?;
+        publication.require(vec![acyclic_stream::CommitCondition::Present {
+            path: call.settled().clone(),
+        }])?;
+        Ok(publication)
+    }
+
     /// Append one keyed inbox operation and wait for its atomic reply. A retry
     /// with the identical operation and bytes reconciles the original result;
     /// different bytes under that identity fail with IdempotencyMismatch.
@@ -255,22 +278,41 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 // input. Wait on that operation's reply, whose original state
                 // publication below proves its exact consumed cursor. A later
                 // actor state is neither needed nor evidence of this result.
-                let reply = acyclic_stream::records_only(
+                let path = ticket.call()?;
+                let mut records = acyclic_stream::records_only(
                     self.provider
                         .follow(FollowRequest {
                             at_least: RevisionCut::of(ticket.revision.clone()),
                             when_absent: acyclic_stream::WhenAbsent::Wait,
-                            ..FollowRequest::new(reply_path(&ticket.state, &ticket.invocation)?, 0)
+                            ..FollowRequest::new(path.log().clone(), 0)
                         })
                         .await?,
-                )
-                .try_next()
-                .await?
-                .ok_or(StreamError::Unavailable)?;
-                let wire = ReplyWire::decode(reply.value.as_ref())
-                    .map_err(|_| Error::Invalid("invalid invocation reply"))?;
-                if wire.encode_to_vec().as_slice() != reply.value.as_ref()
-                    || reply.sequence != 0
+                );
+                let mut journal = Journal::default();
+                let (terminal, outcome) = loop {
+                    let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
+                    if let Entry::Terminal(outcome) = journal.apply(&record)? {
+                        break (record, outcome);
+                    }
+                };
+                let call = journal
+                    .receipt(path.log())
+                    .ok_or(Error::Invalid("call terminal receipt is missing"))?;
+                if matches!(outcome, Outcome::Cancelled(_) | Outcome::Indeterminate(_)) {
+                    return Err(Error::InvocationTerminated {
+                        receipt: Box::new(call),
+                    });
+                }
+                let attributes = terminal.headers.attributes();
+                let binding = attributes
+                    .binary_search_by(|attribute| attribute.name.cmp(COMPLETION))
+                    .ok()
+                    .and_then(|index| attributes.get(index))
+                    .ok_or(Error::Invalid("invocation completion binding is missing"))?
+                    .value;
+                let wire = CompletionBinding::decode(binding.as_ref())
+                    .map_err(|_| Error::Invalid("invalid invocation completion binding"))?;
+                if wire.encode_to_vec().as_slice() != binding.as_ref()
                     || wire.request_digest.as_ref()
                         != Sha256::digest(&ticket.record.value).as_slice()
                     || wire.input_commit.as_ref() != ticket.record.commit_id.as_bytes()
@@ -295,8 +337,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .await?
                     .ok_or(Error::Invalid("invocation state receipt is missing"))?;
                 if state.sequence.checked_add(1) != Some(wire.revision)
-                    || state.commit_id != reply.commit_id
-                    || state.committed_at_micros != reply.committed_at_micros
+                    || state.commit_id != terminal.commit_id
+                    || state.committed_at_micros != terminal.committed_at_micros
                     || State::decode(&state.value)?
                         .subscriptions
                         .get(ticket.invocation.subscription())
@@ -310,28 +352,31 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let receipt = InvocationReceipt {
                     ticket,
                     state,
-                    reply,
+                    terminal,
+                    call,
                 };
-                if let Some(failure) = wire.failure {
-                    let source: GuestError = serde_json::from_slice(&failure)
-                        .map_err(|_| Error::Invalid("invalid invocation failure"))?;
-                    if !wire.response.is_empty()
-                        || serde_json::to_vec(&source)
+                match outcome {
+                    Outcome::Error(failure) => {
+                        let source: GuestError = serde_json::from_str(&failure)
+                            .map_err(|_| Error::Invalid("invalid invocation failure"))?;
+                        if serde_json::to_string(&source)
                             .map_err(|_| Error::Invalid("invalid invocation failure"))?
-                            .as_slice()
-                            != failure.as_ref()
-                    {
-                        return Err(Error::Invalid("non-canonical invocation failure"));
+                            != failure
+                        {
+                            return Err(Error::Invalid("non-canonical invocation failure"));
+                        }
+                        Err(Error::InvocationFailed {
+                            source,
+                            receipt: Box::new(receipt),
+                        })
                     }
-                    return Err(Error::InvocationFailed {
-                        source,
-                        receipt: Box::new(receipt),
-                    });
+                    Outcome::Ok(response) => Ok(CommittedInvocation { response, receipt }),
+                    Outcome::Cancelled(_) | Outcome::Indeterminate(_) => {
+                        Err(Error::InvocationTerminated {
+                            receipt: Box::new(receipt.call),
+                        })
+                    }
                 }
-                Ok(CommittedInvocation {
-                    response: wire.response,
-                    receipt,
-                })
             }
         )
     }
@@ -347,27 +392,27 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         failure: &GuestError,
         key: IdempotencyKey,
     ) -> Result<Option<super::PreparedPublish>, Error> {
-        let Some((path, reply)) =
-            self.invocation_reply(previous, trigger, delivered, Some(Err(failure)), &[])?
+        let Some((call, effects)) =
+            self.invocation_completion(previous, trigger, delivered, Some(Err(failure)), &[])?
         else {
             return Ok(None);
         };
         let original = super::owned(previous, epoch)?;
         let mut state = original.clone();
         super::consume(&mut state, &original.alarm, trigger)?;
-        let mut prepared = self.prepare(previous, state, vec![reply], key)?;
-        prepared.reply = Some(path);
+        let mut prepared = self.prepare(previous, state, effects, key)?;
+        prepared.call = Some((call, trigger.clone()));
         Ok(Some(prepared))
     }
 
-    pub(super) fn invocation_reply(
+    pub(super) fn invocation_completion(
         &self,
         previous: &Snapshot,
         trigger: &Trigger,
         delivered: Option<&Record>,
         outcome: Option<Result<&Bytes, &GuestError>>,
         effects: &[Effect],
-    ) -> Result<Option<(StreamPath, Effect)>, Error> {
+    ) -> Result<Option<(call::CallPath, Vec<Effect>)>, Error> {
         let invocation = delivered
             .map(Invocation::decode_bound)
             .transpose()?
@@ -392,28 +437,25 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 ))
             };
         }
-        let path = reply_path(&previous.path, &invocation)?;
-        if effects
-            .iter()
-            .any(|effect| super::mutation_targets(&effect.mutation, &path))
-        {
+        let call = invocation.call(&previous.path)?;
+        let path = call.log();
+        if effects.iter().any(|effect| {
+            [path, call.settled()]
+                .into_iter()
+                .any(|path| super::mutation_targets(&effect.mutation, path))
+        }) {
             return Err(Error::Invalid(
                 "guest effect targets the host's invocation reply",
             ));
         }
-        let (response, failure) =
-            match outcome.ok_or(Error::Invalid("invocation has no response"))? {
-                Ok(response) => (response.clone(), None),
-                Err(failure) => (
-                    Bytes::new(),
-                    Some(
-                        serde_json::to_vec(failure)
-                            .map_err(|_| Error::Invalid("invocation failure does not encode"))?
-                            .into(),
-                    ),
-                ),
-            };
-        let value = ReplyWire {
+        let outcome = match outcome.ok_or(Error::Invalid("invocation has no response"))? {
+            Ok(response) => Outcome::Ok(response.clone().into()),
+            Err(failure) => Outcome::Error(
+                serde_json::to_string(failure)
+                    .map_err(|_| Error::Invalid("invocation failure does not encode"))?,
+            ),
+        };
+        let binding = CompletionBinding {
             request_digest: Sha256::digest(&record.value).to_vec().into(),
             input_commit: Bytes::copy_from_slice(record.commit_id.as_bytes()),
             input_sequence: record.sequence,
@@ -421,19 +463,29 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 .tail
                 .checked_add(1)
                 .ok_or(Error::Invalid("invocation revision overflow"))?,
-            response,
-            failure,
         }
         .encode_to_vec();
+        // Inline computation gains authority only at this step commit. Its
+        // result, consumed input and state are sealed with the one call terminal.
+        let completion = call.settle_with_attributes(
+            None,
+            &outcome,
+            [Attribute {
+                name: COMPLETION.into(),
+                value: binding.into(),
+            }],
+        )?;
+        let mut conditions = Some(completion.conditions);
         Ok(Some((
-            path.clone(),
-            Effect {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
-                    path,
-                    records: vec![value.into()],
-                },
-            },
+            call,
+            completion
+                .mutations
+                .into_iter()
+                .map(|mutation| Effect {
+                    conditions: conditions.take().unwrap_or_default(),
+                    mutation,
+                })
+                .collect(),
         )))
     }
 }

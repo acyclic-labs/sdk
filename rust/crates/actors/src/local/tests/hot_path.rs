@@ -50,6 +50,18 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     resident_work().await?;
     borrowed_read_guards().await?;
     observation_work().await?;
+    alarm_replacement().await?;
+    alarm_publication_wakes().await?;
+    futures::try_join!(
+        publication_and_reopen(),
+        physical_loss(0),
+        physical_loss(1),
+        physical_loss(2)
+    )?;
+    Ok(())
+}
+
+async fn publication_and_reopen() -> TestResult {
     let directory = tempfile::tempdir()?;
     let address = actor("hot-path")?;
     {
@@ -80,6 +92,17 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
             binding.transaction(|state| state.debit_escrow(1)),
             Err(Error::Escrow(crate::escrow::Error::Missing))
         ));
+        assert!(matches!(
+            binding.transaction(|state| {
+                state.fund_escrow(crate::escrow::Escrow::new(None))?;
+                Err::<(), _>(Error::Invalid("discard funding candidate"))
+            }),
+            Err(Error::Invalid("discard funding candidate"))
+        ));
+        assert!(matches!(
+            binding.transaction(|state| state.debit_escrow(1)),
+            Err(Error::Escrow(crate::escrow::Error::Missing))
+        ));
         binding.transaction(|state| {
             state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
             state.debit_escrow(2)?;
@@ -87,6 +110,10 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
             state.append_journal(0, vec![Bytes::from_static(b"journal")])?;
             state.alarm(Some(42))
         })?;
+        assert!(matches!(
+            binding.transaction(|state| state.fund_escrow(crate::escrow::Escrow::new(None))),
+            Err(Error::Escrow(crate::escrow::Error::AlreadyFunded))
+        ));
         assert!(matches!(
             binding.transaction(|state| {
                 state.debit_escrow(1)?;
@@ -99,25 +126,21 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
             binding.transaction(|state| state.debit_escrow(4)),
             Err(Error::Escrow(crate::escrow::Error::Exhausted))
         ));
-        assert!(matches!(
-            binding.apply(crate::guest::ActorStateCommit {
-                writes: vec![
-                    crate::guest::ActorMetadataWrite {
-                        key: "forged-before-escrow".into(),
-                        value: Bytes::from_static(b"refuse the whole candidate"),
-                    },
-                    crate::guest::ActorMetadataWrite {
-                        key: crate::escrow::KEY.into(),
-                        value: crate::escrow::Escrow::new(None).encode(),
-                    },
-                ],
-                journal_from: "1".into(),
-                journal: Vec::new(),
-                alarm: crate::guest::ActorStateAlarm::Keep,
-            }),
-            Err(Error::Escrow(crate::escrow::Error::GuestWrite))
-        ));
-        assert!(binding.get("forged-before-escrow")?.is_none());
+        // Guest metadata has no address for the host-owned balance. Even the
+        // former balance key is ordinary metadata and cannot reset spending.
+        binding.apply(crate::guest::ActorStateCommit {
+            writes: vec![crate::guest::ActorMetadataWrite {
+                key: "acyclic.actors.escrow.v1".into(),
+                value: crate::escrow::Escrow::new(None).encode(),
+            }],
+            journal_from: "1".into(),
+            journal: Vec::new(),
+            alarm: crate::guest::ActorStateAlarm::Keep,
+        })?;
+        binding.transaction(|state| {
+            assert_eq!(state.escrow()?.remaining(), Some(3));
+            Ok(())
+        })?;
         assert!(binding.read_journal(0, 1).await?.is_empty());
         let mut update = transition(7, AlarmChange::Keep);
         update.checkpoint.bytes = Bytes::from(vec![7; 128]);
@@ -262,13 +285,7 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         Some([8; 128].as_slice())
     );
     assert_eq!(
-        crate::escrow::Escrow::decode(
-            state
-                .metadata
-                .get(crate::escrow::KEY)
-                .ok_or("missing recovered escrow")?
-        )?
-        .remaining(),
+        state.escrow.ok_or("missing recovered escrow")?.remaining(),
         Some(2),
         "committed spend must survive physical reopen"
     );
@@ -278,9 +295,6 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         binding.read_journal(0, 1).await?.first().map(AsRef::as_ref),
         Some(b"journal".as_slice())
     );
-    alarm_replacement().await?;
-    alarm_publication_wakes().await?;
-    futures::try_join!(physical_loss(0), physical_loss(1), physical_loss(2))?;
     Ok(())
 }
 
@@ -436,14 +450,9 @@ async fn physical_loss(fail_at: usize) -> TestResult {
     let applied = u64::from(fail_at == 2);
     assert_eq!(state.cursor("inbox"), Some(applied));
     assert_eq!(state.journal_tail(), applied);
-    assert_eq!(state.metadata().count(), usize::try_from(applied)? * 2);
-    let escrow = state
-        .metadata
-        .get(crate::escrow::KEY)
-        .map(|record| crate::escrow::Escrow::decode(record))
-        .transpose()?;
+    assert_eq!(state.metadata().count(), usize::try_from(applied)?);
     assert_eq!(
-        escrow.map(crate::escrow::Escrow::remaining),
+        state.escrow.map(crate::escrow::Escrow::remaining),
         (applied != 0).then_some(Some(3)),
         "uncertain acknowledgement cannot split spend from its consumed input"
     );
@@ -458,7 +467,6 @@ async fn physical_loss(fail_at: usize) -> TestResult {
 }
 
 async fn resident_work() -> TestResult {
-    let mut debit_work = None;
     for population in [1_usize, 100_000] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(provider.clone(), state_root()?);
@@ -533,12 +541,11 @@ async fn resident_work() -> TestResult {
             let debit = acyclic_test_support::measure(|| {
                 binding.transaction(|state| state.debit_escrow(1)).unwrap();
             });
-            let work = (debit.count_total, debit.bytes_total);
-            if let Some(expected) = debit_work {
-                assert_eq!(work, expected, "debit work grew with unrelated metadata");
-            } else {
-                debit_work = Some(work);
-            }
+            assert_eq!(
+                debit.count_total, 0,
+                "debit must change only the fixed field"
+            );
+            assert_eq!(debit.bytes_total, 0);
             println!(
                 "escrow_metadata={population} debit_allocations={} debit_bytes={}",
                 debit.count_total, debit.bytes_total
@@ -547,7 +554,7 @@ async fn resident_work() -> TestResult {
         rollback(&mut binding, staged_tail)?;
         binding.transaction(|state| {
             assert_eq!(state.journal_tail(), staged_tail);
-            assert_eq!(state.entries().len(), population + 1);
+            assert_eq!(state.entries().len(), population);
             Ok(())
         })?;
         assert_eq!(provider.requests().since(before).data(), 0);

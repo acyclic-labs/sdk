@@ -636,6 +636,8 @@ async fn committed_handover(refused_close: bool) -> Result {
                 idempotency_key: IdempotencyKey::new(key.to_vec())?,
             })
         };
+        let handover_store = Store::new(provider.clone(), StreamPath::new("harness/actors")?);
+        let before_handover = handover_store.load(&actor).await?;
         let request = dispatch(run.clone(), b"original-device-dispatch")?;
         let contributed = acyclic_harness_core::tool::Dispatch {
             delivery: (
@@ -732,6 +734,95 @@ async fn committed_handover(refused_close: bool) -> Result {
         assert_eq!(provider.tail(paths.queue("desktop")?).await?, 1);
 
         if !refused_close {
+            use acyclic_actors::{
+                call::Entry,
+                guest::{Composer as _, Participant},
+            };
+            // Reuse the same real queue delivery, committed checkpoints and
+            // authenticated socket. A handover declaration without its exact
+            // guarded acceptance must never send a second physical command.
+            let after_handover = handover_store.load(&actor).await?;
+            let checkpoint = |snapshot: &acyclic_actors::local::Snapshot| {
+                snapshot
+                    .state()
+                    .and_then(|state| state.checkpoint())
+                    .cloned()
+                    .ok_or("device has no committed checkpoint")
+            };
+            let previous = checkpoint(&before_handover)?;
+            let next = checkpoint(&after_handover)?;
+            let mut queue = provider
+                .follow(FollowRequest::new(paths.queue("desktop")?, 0))
+                .await?;
+            let delivered = loop {
+                if let FollowUpdate::Record(record) =
+                    queue.next().await.ok_or("original queue ended")??
+                {
+                    break record;
+                }
+            };
+            let call = acyclic_harness_core::devices::call(&run.agent, op)?;
+            let mut accepted = provider
+                .follow(FollowRequest::new(call.log().clone(), 0))
+                .await?;
+            let acceptance = loop {
+                if let FollowUpdate::Record(record) =
+                    accepted.next().await.ok_or("original acceptance ended")??
+                {
+                    let Entry::Accepted(accepted) = Entry::decode(&record)? else {
+                        return Err("original handover had no acceptance".into());
+                    };
+                    break call.accept(&accepted, false)?;
+                }
+            };
+            let composer = TargetComposer::new(Arc::new(sockets.clone()));
+            let participant = Participant {
+                kind: "acyclic.harness.device.handover.v1".into(),
+                plan: bytes::Bytes::new(),
+            };
+            let open = || {
+                composer.open(
+                    &actor,
+                    Some(&previous),
+                    Some(&delivered),
+                    &next,
+                    &participant,
+                )
+            };
+            let original =
+                acceptance.request(IdempotencyKey::new(b"validate-device-handover".to_vec())?);
+            for remove_guard in [false, true] {
+                let mut omitted = original.clone();
+                if remove_guard {
+                    omitted
+                        .conditions
+                        .pop()
+                        .ok_or("acceptance has no original guard")?;
+                } else {
+                    omitted.mutations.clear();
+                }
+                assert!(open()?.seal(omitted).await.is_err());
+            }
+            // A different, genuinely committed publication cannot stand in for
+            // this acceptance's selected append range.
+            let unrelated = provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: Vec::new(),
+                    mutations: vec![CommitMutation::Append {
+                        path: StreamPath::new("handover-control/unrelated")?,
+                        records: vec![AppendRecord::from("unrelated")],
+                    }],
+                    idempotency_key: IdempotencyKey::new(
+                        b"unrelated-handover-publication".to_vec(),
+                    )?,
+                })
+                .await?;
+            let mut handover = open()?;
+            handover.seal(original).await?;
+            assert!(handover.settle(Ok(&unrelated)).await.is_err());
+            assert_eq!(std::fs::read(&marker_path)?, b"x");
+
             let mut binary = run.clone();
             binary.op = OperationId::new();
             let binary_op = binary.op;

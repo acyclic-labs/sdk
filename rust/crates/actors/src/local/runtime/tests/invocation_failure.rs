@@ -1,6 +1,7 @@
 use super::*;
 use crate::guest::{CancellationToken, GuestError};
 use crate::invocation::Invocation;
+use futures::TryStreamExt as _;
 
 struct Rejects {
     package: Package,
@@ -70,8 +71,9 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         Arc::new(SystemClock),
     );
     runtime.track(address.clone())?;
-    runtime.drain_actor(&address).await?; // Establish placement outside the counted delivery.
+    runtime.drain_actor(&address).await?; // An idle actor does not claim placement.
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         address.clone(),
         "inbox".into(),
         Bytes::from_static(b"failed"),
@@ -120,10 +122,33 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     };
     assert_eq!(source, cause());
     assert_eq!(receipt.ticket(), &ticket);
-    assert_eq!(receipt.state().commit_id, receipt.reply().commit_id);
+    assert_eq!(receipt.state().commit_id, receipt.terminal().commit_id);
+    let mut publications = provider
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: snapshot.path().clone(),
+            from: snapshot.tail,
+            limit: 2,
+            at_least: Default::default(),
+        })
+        .await?;
+    let claim = publications
+        .try_next()
+        .await?
+        .ok_or("missing placement claim")?;
+    let claimed = State::decode(&claim.value)?;
+    assert_eq!(claimed.epoch(), epoch + 1);
+    assert_eq!(claimed.cursor("inbox"), Some(0));
+    assert_eq!(claimed.checkpoint(), Some(&checkpoint));
+    assert_ne!(claim.commit_id, receipt.state().commit_id);
+    assert_eq!(
+        publications.try_next().await?.as_ref(),
+        Some(receipt.state())
+    );
+    assert!(publications.try_next().await?.is_none());
     let retained = store.load(&address).await?;
     assert_eq!(
-        retained.tail - snapshot.tail,
+        retained.tail - claim.sequence - 1,
         1,
         "failure consumes input and replies in one state publication"
     );
@@ -153,6 +178,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     );
 
     let cancelled = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         address.clone(),
         "inbox".into(),
         Bytes::from_static(b"cancelled"),
@@ -174,6 +200,75 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let mut wait = Box::pin(store.wait_invocation(cancelled));
     assert!(futures::poll!(wait.as_mut()).is_pending());
     drop(wait);
+
+    // The same inline executor must retire a cancelled call and run its next
+    // input. Its speculative response, checkpoint and output never commit.
+    let cancelled_actor = actor("inline-cancel")?;
+    let input = StreamPath::new("inline-cancel/inbox")?;
+    let output = StreamPath::new("inline-cancel/outbox")?;
+    let mut create = PreparedPublish::foreign(key("inline-cancel/create")?);
+    for effect in store.create(
+        &cancelled_actor,
+        BTreeMap::from([(
+            "inbox".into(),
+            Subscription {
+                path: input,
+                cursor: 0,
+            },
+        )]),
+        Some(ledger(output.as_str())?),
+    )? {
+        create.join(effect)?;
+    }
+    store.submit(create).await?;
+    runtime.track(cancelled_actor.clone())?;
+    let caller = StreamPath::new("inline-cancel/caller")?;
+    let request = |id: &'static [u8]| {
+        Invocation::new(
+            caller.clone(),
+            cancelled_actor.clone(),
+            "inbox".into(),
+            Bytes::from_static(id),
+            Bytes::from_static(b"emit"),
+        )
+    };
+    let cancelled = request(b"cancelled")?;
+    let ticket = store.enqueue_invoke(&cancelled).await?;
+    let call = ticket.call()?;
+    let cancel = call
+        .cancel("original caller cancelled")?
+        .request(key("inline-cancel/cancel")?);
+    assert!(matches!(
+        provider.commit(cancel).await?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let Err(Error::InvocationTerminated { receipt }) = store.wait_invocation(ticket).await else {
+        return Err("call cancellation did not terminate the invocation observer".into());
+    };
+    assert!(matches!(
+        receipt.outcome,
+        crate::call::Outcome::Cancelled(_)
+    ));
+    let next = store.enqueue_invoke(&request(b"next")?).await?;
+    runtime.drain_actor(&cancelled_actor).await?;
+    let completed = store.wait_invocation(next).await?;
+    assert!(matches!(
+        completed.receipt().call().outcome,
+        crate::call::Outcome::Ok(_)
+    ));
+    assert_eq!(
+        provider.tail(output).await?,
+        1,
+        "cancelled inline effects cannot escape"
+    );
+    assert_eq!(
+        store
+            .load(&cancelled_actor)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
     Ok(())
 }
 

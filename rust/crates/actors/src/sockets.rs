@@ -369,12 +369,14 @@ pub(crate) enum SocketInput {
 
 /// The open invocation for `connection`: its reply is the actor's verdict.
 pub(crate) fn open_invocation(
+    caller: acyclic_stream::StreamPath,
     connection: &str,
     open: &SocketOpen,
 ) -> Result<Invocation, GuestError> {
     let mut operation = OPEN_OPERATION.to_vec();
     operation.extend_from_slice(connection.as_bytes());
     Invocation::new(
+        caller,
         open.actor.clone(),
         open.subscription.clone(),
         operation.into(),

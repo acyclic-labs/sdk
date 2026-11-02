@@ -1,4 +1,4 @@
-//! Committed invocation is an ordinary inbox delivery with an atomic reply.
+//! Committed invocation is an ordinary inbox delivery settled on the caller's call journal.
 //! These bytes pass through the same Handler and strict guest wire as records.
 use crate::{
     addressing::ActorReference,
@@ -10,7 +10,9 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 
 const HEADER: &str = "acyclic.actors.invoke";
-const VERSION: &[u8] = b"1";
+// Version 2 requires the original caller's journal root. Version 1 cannot be
+// completed here without inventing write authority for a missing caller.
+const VERSION: &[u8] = b"2";
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct RequestWire {
@@ -26,12 +28,15 @@ struct RequestWire {
     state_path: String,
     #[prost(bytes = "bytes", tag = "6")]
     deployment_envelope: Bytes,
+    #[prost(string, tag = "7")]
+    caller: String,
 }
 
 /// Exact operation identity and request bytes admitted to one actor's inbox.
 /// It carries no execution or storage authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
+    caller: StreamPath,
     actor: ActorReference,
     subscription: String,
     operation: Bytes,
@@ -42,6 +47,7 @@ pub struct Invocation {
 impl Invocation {
     /// Bind a nonempty operation identity to the actor, subscription and bytes.
     pub fn new(
+        caller: StreamPath,
         actor: ActorReference,
         subscription: String,
         operation: Bytes,
@@ -51,12 +57,26 @@ impl Invocation {
             return Err(invalid());
         }
         Ok(Self {
+            caller,
             actor,
             subscription,
             operation,
             request,
             deployment_envelope: Bytes::new(),
         })
+    }
+
+    /// Original caller-owned subtree. The provider authorizes writes to it.
+    pub const fn caller(&self) -> &StreamPath {
+        &self.caller
+    }
+
+    /// The shared call journal, bound to this exact target and operation.
+    pub fn call(&self, state: &StreamPath) -> Result<crate::call::CallPath, crate::call::Error> {
+        crate::call::CallPath::new(
+            &self.caller,
+            &acyclic_auth::encode_component(&self.identity(state.as_str())),
+        )
     }
 
     /// Complete target actor.
@@ -108,6 +128,7 @@ impl Invocation {
                 request: self.request.clone(),
                 state_path: state_path.as_str().into(),
                 deployment_envelope: self.deployment_envelope.clone(),
+                caller: self.caller.as_str().into(),
             }
             .encode_to_vec()
             .into(),
@@ -142,6 +163,7 @@ impl Invocation {
         }
         let path = StreamPath::new(wire.state_path).map_err(|_| invalid())?;
         let mut invocation = Self::new(
+            StreamPath::new(wire.caller).map_err(|_| invalid())?,
             ActorReference::decode(&wire.actor).map_err(|_| invalid())?,
             wire.subscription,
             wire.operation,
@@ -154,9 +176,10 @@ impl Invocation {
 
     pub(crate) fn identity(&self, state_path: &str) -> [u8; 32] {
         let mut hash = Sha256::new();
-        hash.update(b"acyclic.actors.invoke.v1");
+        hash.update(b"acyclic.actors.invoke.v2");
         let actor = self.actor.encode();
         for part in [
+            self.caller.as_str().as_bytes(),
             state_path.as_bytes(),
             actor.as_slice(),
             self.operation.as_ref(),

@@ -10,6 +10,7 @@ use bytes::Bytes;
 /// Public reservation client for an admitted actor running the shared Book.
 /// The provider and pool actor are original host-injected capabilities.
 pub struct Pool<'a, P: StreamProvider + ?Sized> {
+    caller: acyclic_stream::StreamPath,
     store: &'a Store<P>,
     actor: &'a ActorReference,
     subscription: &'a str,
@@ -35,11 +36,13 @@ impl Publication {
 impl<'a, P: StreamProvider + ?Sized> Pool<'a, P> {
     /// Bind to the original actor and its declared reservation subscription.
     pub const fn new(
+        caller: acyclic_stream::StreamPath,
         store: &'a Store<P>,
         actor: &'a ActorReference,
         subscription: &'a str,
     ) -> Self {
         Self {
+            caller,
             store,
             actor,
             subscription,
@@ -79,8 +82,11 @@ impl<'a, P: StreamProvider + ?Sized> Pool<'a, P> {
     }
 
     async fn call(&self, request: Request) -> Result<Publication, Error> {
-        let invocation: Invocation =
-            request.invocation(self.actor.clone(), self.subscription.into())?;
+        let invocation: Invocation = request.invocation(
+            self.caller.clone(),
+            self.actor.clone(),
+            self.subscription.into(),
+        )?;
         let committed = self.store.invoke(&invocation).await?;
         let decision = decode(committed.response())?;
         let matches = match (&request, &decision) {
