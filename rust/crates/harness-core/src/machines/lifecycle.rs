@@ -33,7 +33,7 @@ use tokio::sync::OnceCell;
 #[cfg(not(test))]
 type TargetHasher = std::collections::hash_map::RandomState;
 #[cfg(test)]
-type TargetHasher = first_use_tests::TargetHasher;
+type TargetHasher = crate::test_support::CountedHashState;
 
 /// The persisted format of [`MachineBinding`].
 pub const MACHINE_BINDING_VERSION: u32 = 2;
