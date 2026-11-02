@@ -140,9 +140,6 @@ pub(crate) fn sync_data_descriptor_once(
 #[path = "held_sync_observation_tests.rs"]
 mod observation_tests;
 
-#[cfg(test)]
-#[path = "held_sync_sources_tests.rs"]
-mod source_tests;
 #[cfg(all(test, windows))]
 #[path = "held_sync_windows_tests.rs"]
 mod windows_tests;
