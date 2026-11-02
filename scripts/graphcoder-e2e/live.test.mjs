@@ -14,9 +14,22 @@ import { answer, requireTools, runCase } from "./live.mjs";
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
   const result = stdout => ({ code: 0, signal: null, stdout, stderr: "" });
-  assert.equal(answer(captured["text-responses"], "text"), "hé λ 🙂 **streamed answer**\n");
+  const text = "hé λ 🙂 **streamed answer**\n";
+  assert.equal(answer(captured["text-responses"], "text", text), text);
   const message = { id: "e2e", inbox: 1, text: "done" };
-  assert.deepEqual(answer(captured["jsonl-reopen"], "jsonl"), message);
+  assert.deepEqual(answer(captured["jsonl-reopen"], "jsonl", message.text), message);
+  // A successful process and two identical committed replies cannot admit a
+  // wrong answer. Require the case's original expected bytes in either format.
+  for (const [format, original, expected] of [["text", captured["text-responses"], text],
+    ["jsonl", captured["jsonl-reopen"], message.text]]) {
+    for (const wrong of ["", expected + " ", "\ufeff" + expected]) {
+      assert.throws(() => answer(original, format, wrong), error => {
+        assert.equal(error.actual, expected);
+        assert.equal(error.expected, wrong);
+        return true;
+      });
+    }
+  }
   for (const output of ["", "answer", "{}", JSON.stringify({ ...message, error: "failed" }),
     JSON.stringify({ ok: { text: "obsolete ExecutionResult" } }),
     JSON.stringify(message) + "\n" + JSON.stringify(message)]) {

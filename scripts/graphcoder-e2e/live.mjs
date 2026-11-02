@@ -15,19 +15,24 @@ import { fileBytes, toolOutcome } from "./assertions.mjs";
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
 
-export function answer(result, format) {
+export function answer(result, format, expected) {
   assert.equal(result.code, 0, `GraphCoder exit ${result.code}: ${result.stderr}`);
   assert.equal(result.signal, null, "GraphCoder was interrupted");
-  if (format === "text") return result.stdout.replace(/\r?\n$/, "");
-  assert.equal(format, "jsonl");
-  const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-  assert.equal(lines.length, 1, "JSONL needs exactly one authoritative answer");
-  const [line] = lines;
-  assert.ok(typeof line.id === "string" && Number.isSafeInteger(line.inbox) && line.inbox >= 0,
-    "missing committed message identity");
-  assert.equal(line.error, undefined, `failed turn: ${line.error}`);
-  assert.equal(typeof line.text, "string", "missing answer text");
-  return line;
+  let value;
+  if (format === "text") value = result.stdout.replace(/\r?\n$/, "");
+  else {
+    assert.equal(format, "jsonl");
+    const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    assert.equal(lines.length, 1, "JSONL needs exactly one authoritative answer");
+    const [line] = lines;
+    assert.ok(typeof line.id === "string" && Number.isSafeInteger(line.inbox) && line.inbox >= 0,
+      "missing committed message identity");
+    assert.equal(line.error, undefined, `failed turn: ${line.error}`);
+    assert.equal(typeof line.text, "string", "missing answer text");
+    value = line;
+  }
+  if (expected !== undefined) assert.equal(format === "text" ? value : value.text, expected, "unexpected answer text");
+  return value;
 }
 
 export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
@@ -80,7 +85,7 @@ export async function runCase(binary, login, root, name, signal) {
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   let step = "prepare workspace and isolated settings", env, childHooks, begin, receipt, hooksPending = false;
-  const invoke = async (prompt, format = "text") => {
+  const invoke = async (prompt, format, expected) => {
     hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
       "--model", "openai/gpt-6-luna", "--operation", operation,
@@ -88,7 +93,8 @@ export async function runCase(binary, login, root, name, signal) {
     const result = await processes.run(binary, args, { cwd: workspace, env, scopeReport: true },
       format === "text" ? "" : JSON.stringify({ prompt, id: "live" }) + "\n");
     captures.push({ argv: args, ...result });
-    return answer(result, format);
+    step = "assert GraphCoder answer";
+    return answer(result, format, expected);
   };
   const hooks = async () => {
     hooksPending = false;
@@ -121,11 +127,9 @@ export async function runCase(binary, login, root, name, signal) {
       begin = performance.now();
       step = "invoke shipping GraphCoder";
       if (name === "session") {
-        const text = await invoke(`Reply with exactly ${marker}. Do not use tools.`);
-        step = "assert session answer";
-        assert.equal(text, marker);
+        await invoke(`Reply with exactly ${marker}. Do not use tools.`, "text", marker);
       } else if (name === "shell") {
-        await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply DONE.`);
+        await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply DONE.`, "text", "DONE");
         step = "assert shell effect and completed tool event";
         const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "shell.txt"), marker);
@@ -138,11 +142,11 @@ export async function runCase(binary, login, root, name, signal) {
         requireTools(recorded, ["spawn", "wait"], marker);
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
-        const first = await invoke(prompt, "jsonl");
+        const first = await invoke(prompt, "jsonl", marker);
         const before = childHooks = await hooks();
         requireTools(before, ["shell"]);
         step = "reopen settled operation without repeating work";
-        const second = await invoke(prompt, "jsonl");
+        const second = await invoke(prompt, "jsonl", marker);
         assert.deepEqual(second, first, "reopen changed the committed result");
         await fileBytes(join(workspace, "once.txt"), marker);
         assert.equal((childHooks = await hooks()).filter(hook => hook.hook_event_name === "PostToolUse").length,
