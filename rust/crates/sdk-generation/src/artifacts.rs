@@ -359,27 +359,11 @@ pub(super) fn validate_restore_path(
             path.display()
         )));
     }
-    for ancestor in path.ancestors() {
-        match fs::symlink_metadata(ancestor) {
-            Ok(metadata) => {
-                #[cfg(windows)]
-                let reparse = {
-                    use std::os::windows::fs::MetadataExt;
-                    metadata.file_attributes() & 0x400 != 0
-                };
-                #[cfg(not(windows))]
-                let reparse = false;
-                if metadata.file_type().is_symlink() || reparse {
-                    return Err(CliError(
-                        "Rustdoc restoration path contains a reparse point or symlink".into(),
-                    ));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error(error)),
-        }
-    }
-    Ok(())
+    sdk_file_identity::reject_linked_ancestors(
+        path,
+        |_| CliError("Rustdoc restoration path contains a reparse point or symlink".into()),
+        |_, error| io_error(error),
+    )
 }
 
 fn comparable_path(path: &Path) -> PathBuf {
@@ -632,15 +616,7 @@ pub(super) fn collect_source_files_inner(
                 continue;
             }
             let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-            #[cfg(windows)]
-            let reparse = {
-                use std::os::windows::fs::MetadataExt;
-                metadata.file_attributes() & 0x400 != 0
-            };
-            #[cfg(not(windows))]
-            let reparse = false;
-            if metadata.file_type().is_symlink() || reparse || !canonical(&path)?.starts_with(root)
-            {
+            if sdk_file_identity::is_linked(&metadata) || !canonical(&path)?.starts_with(root) {
                 return Err(CliError(
                     "imported source contains a linked or escaping member".into(),
                 ));

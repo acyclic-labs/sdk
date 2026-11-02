@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) use sdk_file_identity::is_linked as is_reparse_or_symlink;
+
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result<(), Error> {
     reject_reparse_ancestors(path)?;
     if let Ok(existing) = fs::read(path) {
@@ -27,43 +29,21 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result
 }
 
 pub(super) fn reject_reparse_ancestors(path: &Path) -> Result<(), Error> {
-    let mut current = Some(path);
-    while let Some(candidate) = current {
-        match fs::symlink_metadata(candidate) {
-            Ok(metadata) => {
-                if is_reparse_or_symlink(&metadata) {
-                    return Err(Error::Invalid(format!(
-                        "path contains a reparse point or symlink: {}",
-                        candidate.display()
-                    )));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(Error::Invalid(format!(
-                    "cannot inspect path ancestor {}: {error}",
-                    candidate.display()
-                )));
-            }
-        }
-        current = candidate.parent();
-    }
-    Ok(())
-}
-
-pub(super) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
+    sdk_file_identity::reject_linked_ancestors(
+        path,
+        |candidate| {
+            Error::Invalid(format!(
+                "path contains a reparse point or symlink: {}",
+                candidate.display()
+            ))
+        },
+        |candidate, error| {
+            Error::Invalid(format!(
+                "cannot inspect path ancestor {}: {error}",
+                candidate.display()
+            ))
+        },
+    )
 }
 
 pub(super) fn publication_temp_file(
