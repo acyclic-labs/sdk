@@ -706,6 +706,17 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     for (start, end, complete) in [("a", "zz", true), ("b", "c", false), ("x", "y", false)] {
         use acyclic_auth::{contract::*, testing as signed};
         let credential = signed::root(|block| {
+            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: "streams:/tree".into(),
+                            prefix: true,
+                        },
+                        actions: vec!["streams/read".into()],
+                    }),
+                }],
+            };
             block.caveats.push(Caveat {
                 kind: CaveatKind::Filter(Filter {
                     keys: vec![KeyRange {
@@ -718,6 +729,11 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         });
         let capability =
             acyclic_auth::verify::verify(&credential, &signed::Snapshot::default(), signed::NOW)?;
+        assert!(
+            crate::session::testing::authority()
+                .permits(&capability, "streams/read", "streams:/tree/a/status", 1)
+                .is_ok()
+        );
         let filter = crate::FollowFilter::authorized(Default::default(), &capability)?;
         if start == "b" {
             assert!(filter.matches(&change.headers));
