@@ -374,14 +374,19 @@ impl EventProjection {
     /// Save only after the complete JSONL line has been flushed. A crash between
     /// output and saving can replay that line; consumers deduplicate by source
     /// and record sequence. Saving never advances past an unwritten line.
-    pub fn accepted(&mut self, resource: String, cursor: Option<EventCursor>) -> bool {
+    /// The resource name is copied only on its first accepted cursor.
+    pub fn accepted(&mut self, resource: &str, cursor: Option<EventCursor>) -> bool {
         let Some(cursor) = cursor else {
             return false;
         };
-        if self.resources.get(&resource) == Some(&cursor) {
-            return false;
+        if let Some(previous) = self.resources.get_mut(resource) {
+            if *previous == cursor {
+                return false;
+            }
+            *previous = cursor;
+        } else {
+            self.resources.insert(resource.to_owned(), cursor);
         }
-        self.resources.insert(resource, cursor);
         true
     }
 }

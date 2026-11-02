@@ -62,7 +62,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             break (id, binding, delivery);
         }
         let after = projection.event(&delivery).after;
-        projection.accepted(delivery.resource.clone(), after);
+        projection.accepted(&delivery.resource, after);
     };
     let sequence = projection
         .event(&delivery)
@@ -129,7 +129,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     assert!(client.approval_request(sequence, length + 1).await.is_err());
     assert!(client.approval_request(0, 0).await.is_err());
     assert_eq!(provider.request_count(), 1);
-    projection.accepted(delivery.resource.clone(), Some(after));
+    projection.accepted(&delivery.resource, Some(after));
     assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
     let binding = crate::interaction::ApprovalBinding {
         operation_id,
