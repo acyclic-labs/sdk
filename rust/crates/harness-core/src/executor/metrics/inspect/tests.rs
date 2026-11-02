@@ -207,6 +207,43 @@ proptest! {
 }
 
 #[test]
+fn admitted_nested_tool_json_survives_the_shared_replay_key() -> Result<()> {
+    let mut arguments = json!("original tool argument");
+    for _ in 0..128 {
+        arguments = Value::Array(vec![arguments]);
+    }
+    let mut request = request("generated nested request".into());
+    let ModelContent::Part(ModelContentPart::ToolCall(tool)) = &mut request.messages[1].content
+    else {
+        unreachable!("generated tool request")
+    };
+    tool.arguments = arguments;
+    let bytes = serde_json::to_vec(&request).map_err(invalid)?;
+    assert!(
+        serde_json::from_slice::<Value>(&bytes).is_err(),
+        "former default-depth decoder negative control"
+    );
+    let call = Call::new(source(), &admission(&bytes)?, &bytes)?;
+    assert_eq!(call.request, request);
+    let mut output = Vec::new();
+    call.write(
+        &mut output,
+        "2026-11-02T00:00:00Z",
+        &ModelContent::Text(String::new()),
+        None,
+    )?;
+    let log: Value = crate::contract::json_from_slice(&output).map_err(invalid)?;
+    let ModelContent::Part(ModelContentPart::ToolCall(tool)) = &request.messages[1].content else {
+        unreachable!("generated tool request")
+    };
+    assert_eq!(
+        &log["samples"][0]["messages"][1]["tool_calls"][0]["arguments"],
+        &tool.arguments
+    );
+    Ok(())
+}
+
+#[test]
 fn output_failure_stops_without_flush_or_success() -> Result<()> {
     struct Refused {
         remaining: usize,

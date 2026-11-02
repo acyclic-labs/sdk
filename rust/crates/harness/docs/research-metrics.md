@@ -222,6 +222,11 @@ and optional committed `ModelUsageRecord` to `Call::write`. Foreign usage is
 refused. Scope, agent, stream, operation and sequence remain the observation
 identity; the replay key groups equal content across observations.
 
+Replay requests, embedded harness-owned JSON and recorded model events use the
+same complete-value decoder as admitted requests. They do not add serde's
+unrelated default nesting ceiling. Opaque tool JSON still keeps its existing
+portable record contract; malformed JSON and trailing data are refused.
+
 Prefer `Call::settlement(journal, terminal_record)` when the original terminal
 record is available. It checks the original operation, step, purpose and source
 order before reading that event and its optional usage artifact. The shared

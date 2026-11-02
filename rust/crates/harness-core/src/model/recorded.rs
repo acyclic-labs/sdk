@@ -97,7 +97,7 @@ impl Recording {
 pub fn replay_key(request: &[u8]) -> Result<[u8; 32]> {
     use serde_json::Value;
     let invalid = |error: serde_json::Error| Error::Invalid(format!("replay request: {error}"));
-    let mut value: Value = serde_json::from_slice(request).map_err(invalid)?;
+    let mut value: Value = crate::contract::json_from_slice(request).map_err(invalid)?;
     if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
         for message in messages {
             if message.get("role").and_then(Value::as_str) == Some("system") {
@@ -143,7 +143,7 @@ fn erase_owned(value: &mut serde_json::Value) {
             map.values_mut().for_each(erase_owned);
         }
         Value::Array(items) => items.iter_mut().for_each(erase_owned),
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
+        Value::String(text) => match crate::contract::json_from_slice::<Value>(text.as_bytes()) {
             Ok(mut nested) if nested.is_object() || nested.is_array() => {
                 erase_owned(&mut nested);
                 *text = nested.to_string();
@@ -280,8 +280,72 @@ impl RecordedModel {
 }
 
 fn decode(bytes: &[u8]) -> Result<ModelEvent> {
-    serde_json::from_slice(bytes)
+    crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("recorded model event: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn replay_preserves_admitted_nesting_and_owned_identity_rules() -> Result<()> {
+        for depth in [126, 127, 128] {
+            let nest = |mut value| {
+                for _ in 0..depth {
+                    value = Value::Array(vec![value]);
+                }
+                value
+            };
+            let request = |generation: &str, argument: &str| {
+                serde_json::to_vec(&json!({"messages": [
+                    {"role": "system", "content": {
+                        "kind": "text",
+                        "text": nest(json!({"kind":"generation", "key":generation})).to_string()
+                    }},
+                    {"role": "assistant", "content": {
+                        "kind": "tool_call", "arguments": nest(json!(argument))
+                    }}
+                ]}))
+                .expect("generated request JSON")
+            };
+            let original = request("original-generation", "original-argument");
+            assert!(
+                serde_json::from_slice::<Value>(&original).is_err(),
+                "default decoder negative control must reject admitted nesting"
+            );
+            let key = replay_key(&original)?;
+            assert_eq!(
+                key,
+                replay_key(&request("new-generation", "original-argument"))?,
+                "nested harness-owned generation identity is erased"
+            );
+            assert_ne!(
+                key,
+                replay_key(&request("original-generation", "changed-argument"))?,
+                "deep tool JSON remains content-exact"
+            );
+
+            let event = ModelEvent::Completed {
+                metadata: nest(json!(true)),
+            };
+            let mut bytes = serde_json::to_vec(&event).expect("generated canonical model event");
+            if depth == 128 {
+                assert!(serde_json::from_slice::<ModelEvent>(&bytes).is_err());
+            }
+            assert_eq!(decode(&bytes)?, event);
+            bytes.push(b']');
+            assert!(
+                matches!(decode(&bytes), Err(Error::Storage(_))),
+                "shared decoding must still reject trailing data"
+            );
+            let mut malformed = original;
+            malformed.push(b']');
+            assert!(matches!(replay_key(&malformed), Err(Error::Invalid(_))));
+        }
+        Ok(())
+    }
 }
 
 impl ModelProvider for RecordedModel {
