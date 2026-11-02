@@ -18,8 +18,8 @@ async fn open(directory: &Path) -> Result<LocalHarness> {
     .await
 }
 
-/// Writes the home `agent.ts`, returning its version.
-async fn write(harness: &LocalHarness, source: &str) -> Result<String> {
+/// Writes a home settings module, returning its version.
+async fn write(harness: &LocalHarness, path: &str, source: &str) -> Result<String> {
     let grant = ContentGrant::verify(
         &harness.verifier,
         &harness.signed,
@@ -33,12 +33,15 @@ async fn write(harness: &LocalHarness, source: &str) -> Result<String> {
         .put_content(
             &harness.scratch,
             &grant,
-            "agent.ts",
+            path,
             source.as_bytes(),
             "text/typescript",
-            "agent.ts",
+            path,
             u64::MAX,
-            &IdempotencyKey::new(format!("settings:{}", blake3::hash(source.as_bytes())))?,
+            &IdempotencyKey::new(format!(
+                "settings:{path}:{}",
+                blake3::hash(source.as_bytes())
+            ))?,
             None,
             ContentAccess::default(),
         )
@@ -46,7 +49,7 @@ async fn write(harness: &LocalHarness, source: &str) -> Result<String> {
     Ok(file.version().to_owned())
 }
 
-async fn admission(harness: &LocalHarness, version: &str) -> Result<Admission> {
+async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
     let grant = ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
@@ -59,7 +62,10 @@ async fn admission(harness: &LocalHarness, version: &str) -> Result<Admission> {
         .read_private_path_indexed(
             &harness.journal,
             &grant,
-            &format!("live/agents/{}/admissions/{version}.json", harness.root),
+            &format!(
+                "live/agents/{}/admissions/{path}/{version}.json",
+                harness.root
+            ),
             None,
             u64::MAX,
             ContentAccess::default(),
@@ -76,6 +82,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
     assert_eq!(harness.sampling, None);
     let applied = write(
         &harness,
+        "agent.ts",
         "import type { AgentConfig } from 'sys/types/config';\n\
          export default (base: AgentConfig): AgentConfig => ({ ...base, sampling: { temperature: 0.25 } });",
     )
@@ -98,7 +105,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
         ..Sampling::default()
     };
     assert_eq!(harness.sampling, Some(sampling));
-    let record = admission(&harness, &applied).await?;
+    let record = admission(&harness, "agent.ts", &applied).await?;
     assert_eq!(
         (record.path.as_str(), record.status, record.error),
         ("agent.ts", AdmissionStatus::Applied, None)
@@ -127,11 +134,11 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
             "bound by its host",
         ),
     ] {
-        let version = write(&harness, source).await?;
+        let version = write(&harness, "agent.ts", source).await?;
         drop(harness);
         harness = open(directory.path()).await?;
         assert_eq!(harness.sampling, None, "{source}");
-        let record = admission(&harness, &version).await?;
+        let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, status, "{source}");
         assert!(
             record
@@ -140,6 +147,25 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
                 .is_some_and(|error| error.contains(reason)),
             "{record:?}"
         );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let harness = open(directory.path()).await?;
+    let source = "export default (base) => base;";
+    write(&harness, "agent.ts", source).await?;
+    let version = write(&harness, "plugins.ts", source).await?;
+    drop(harness);
+    let harness = open(directory.path()).await?;
+    // Both reads select the same current home generation.
+    for path in ["agent.ts", "plugins.ts"] {
+        let record = admission(&harness, path, &version).await?;
+        assert_eq!(record.path, path);
+        assert_eq!(record.status, AdmissionStatus::Applied);
     }
     Ok(())
 }

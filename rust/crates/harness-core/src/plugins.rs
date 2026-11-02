@@ -14,39 +14,47 @@
 //! before-tool hook judged by the rewrite-safe chain, pinned by its bytes and
 //! its settings. A hook this host cannot run yet makes `plugins.ts` invalid,
 //! so the last admitted set stays and the admission names the hook; an
-//! enabled hook is never silently skipped. `api/index.d.ts` declares the
-//! authoring types (`PluginManifest`, `Plugins`) these decode.
+//! enabled hook is never silently skipped. The authoring types are generated
+//! from these decode shapes by [`crate::config::typescript`].
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
-    hooks::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, RequestMatch},
+    hooks::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, Hooks, RequestMatch},
     layers::Layer,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use ts_rs::TS;
 
 /// The one manifest: `.volumes/home/plugins.ts`.
 pub const MANIFEST: &str = "plugins.ts";
 
+/// The enabled plugins and their settings, decoded from `plugins.ts`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct Plugins(pub BTreeMap<String, PluginEntry>);
+
 /// One `plugins.ts` entry. To change a plugin's code, copy its folder into
 /// `.volumes/home/plugins/` under a new name.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginEntry {
     /// Whether the plugin applies.
     pub enabled: bool,
     /// A folder elsewhere, pinned by content (`acyclic digest <path>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub source: Option<PluginSource>,
     /// Its settings; the only place to change them. Absent: the plugin's
     /// `defaults`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
     pub config: Option<Value>,
 }
 
 /// A plugin folder outside `plugins/`, pinned by its content digest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginSource {
     /// The folder.
@@ -56,7 +64,7 @@ pub struct PluginSource {
 }
 
 /// `plugins/<name>/plugin.ts`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginManifest {
     /// The folder's name.
@@ -68,6 +76,7 @@ pub struct PluginManifest {
     pub requires: Vec<String>,
     /// Its settings when `plugins.ts` names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
     pub defaults: Option<Value>,
     /// What each `hooks/after-<n>.{ts,sh,ps1}` watches, keyed by `<n>`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -79,7 +88,7 @@ pub struct PluginManifest {
 }
 
 /// The path an after-hook watches.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AfterSource {
     /// A file, log or directory.
@@ -89,7 +98,7 @@ pub struct AfterSource {
 }
 
 /// Where an after-hook starts reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum Start {
     /// Everything already there, then each change.
@@ -99,7 +108,7 @@ pub enum Start {
 }
 
 /// A request kind a before-hook judges: `hooks/before-<event>`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum Event {
     /// A tool call.
@@ -153,12 +162,12 @@ impl Event {
 const FORMS: [&str; 3] = ["ts", "sh", "ps1"];
 
 /// The enabled plugin set, lowered to hook rules.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub struct Enabled {
     /// Enabled plugin names, sorted.
     pub names: Vec<String>,
     /// Before-hook rules, in authority order.
-    pub rules: Vec<HookRule>,
+    pub rules: Hooks,
 }
 
 /// Loads the plugins `plugins.ts` enables over `layers` (lowest first), as
@@ -170,9 +179,9 @@ pub struct Enabled {
 /// hook file outside the hook grammar, or a hook this host cannot run.
 pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Result<Enabled> {
     let invalid = |reason: String| Error::Invalid(format!("{MANIFEST}: {reason}"));
-    let (value, _) = config::compose(MANIFEST, layers, tree, Value::Object(Default::default()))
-        .await?;
-    let entries: BTreeMap<String, PluginEntry> =
+    let (value, _) =
+        config::compose(MANIFEST, layers, tree, Value::Object(Default::default())).await?;
+    let Plugins(entries) =
         serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
     let enabled: BTreeMap<_, _> = entries
         .into_iter()
@@ -205,7 +214,9 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
             .iter()
             .find(|required| !enabled.contains_key(*required))
         {
-            return Err(invalid(format!("{name} requires {missing}, which is not enabled")));
+            return Err(invalid(format!(
+                "{name} requires {missing}, which is not enabled"
+            )));
         }
         let settings = entry
             .config
@@ -218,7 +229,9 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
             for form in FORMS {
                 let hook = format!("{root}hooks/after-{after}.{form}");
                 if tree.read(&hook).await?.is_some() {
-                    return Err(invalid(format!("{hook}: after-hooks do not run on this host yet")));
+                    return Err(invalid(format!(
+                        "{hook}: after-hooks do not run on this host yet"
+                    )));
                 }
             }
         }
@@ -264,11 +277,16 @@ pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Resul
                 timeout_ms: u64::MAX,
                 failure: HookFailure::Block,
             };
-            loaded.rules.push(HookRule {
-                on: site,
-                matcher: String::new(),
-                hooks: vec![hook],
-            });
+            loaded
+                .rules
+                .add_rules([HookRule {
+                    on: site,
+                    matcher: String::new(),
+                    hooks: vec![hook],
+                }])
+                .map_err(|error| {
+                    invalid(format!("{root}hooks/before-{}: {error}", event.name()))
+                })?;
         }
         loaded.names.push(name.clone());
     }
