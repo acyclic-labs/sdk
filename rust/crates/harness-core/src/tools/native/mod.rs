@@ -18,12 +18,13 @@ mod arguments_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-/// Exact source declarations in the profile's registration order.
+/// Exact source declarations in the profile's registration order: the
+/// seed's `sys/native/<family>/tools.json`.
 pub const fn declarations(profile: NativeToolProfile) -> &'static str {
     match profile {
-        NativeToolProfile::Anthropic => include_str!("anthropic.json"),
-        NativeToolProfile::Openai => include_str!("openai.json"),
-        NativeToolProfile::Google => include_str!("google.json"),
+        NativeToolProfile::Anthropic => crate::seed::ANTHROPIC_TOOLS,
+        NativeToolProfile::Openai => crate::seed::OPENAI_TOOLS,
+        NativeToolProfile::Google => crate::seed::GOOGLE_TOOLS,
     }
 }
 

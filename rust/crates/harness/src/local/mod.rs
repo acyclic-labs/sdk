@@ -89,6 +89,9 @@ pub struct LocalHarness {
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
+    /// The read-only seed layer under every agent's home, at the generation
+    /// this build wrote (see [`crate::seed`]).
+    seed: (VolumeRef, crate::resources::GenerationRef),
     verifier: AuthorityVerifier,
     signed: Scope,
     /// The agents' host-backed tools and approval policy.

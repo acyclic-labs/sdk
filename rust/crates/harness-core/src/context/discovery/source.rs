@@ -283,6 +283,42 @@ pub async fn discover_skills_from<S: SkillReader>(
     revision: Option<&S::Revision>,
     optional_root: bool,
 ) -> Result<Vec<SkillMetadata>> {
+    Ok(
+        layer_skills(source, directory, name, work, revision, optional_root)
+            .await?
+            .into_iter()
+            .filter_map(|(_, skill)| skill)
+            .collect(),
+    )
+}
+
+/// The skills of `layers`, given lowest first with their pinned revisions:
+/// a higher layer's `<directory>/<entry>/<name>` replaces every lower one's,
+/// and one holding only `off: true` removes it (see [`crate::layers`]).
+#[doc(hidden)]
+pub async fn discover_layered_skills<S: SkillReader>(
+    layers: &mut [(S, S::Revision)],
+    directory: &str,
+    name: &str,
+    work: &mut DiscoveryWork,
+) -> Result<Vec<SkillMetadata>> {
+    let mut effective = BTreeMap::new();
+    for (source, revision) in layers.iter_mut() {
+        effective.extend(layer_skills(source, directory, name, work, Some(revision), true).await?);
+    }
+    Ok(effective.into_values().flatten().collect())
+}
+
+/// One source's skills under `directory`, by entry name; an entry whose
+/// file holds only `off: true` maps to `None`.
+async fn layer_skills<S: SkillReader>(
+    source: &mut S,
+    directory: &str,
+    name: &str,
+    work: &mut DiscoveryWork,
+    revision: Option<&S::Revision>,
+    optional_root: bool,
+) -> Result<Vec<(String, Option<SkillMetadata>)>> {
     validate_content_path(name, &mut None)?;
     if name.contains('/') {
         return Err(Error::Invalid(
@@ -303,26 +339,38 @@ pub async fn discover_skills_from<S: SkillReader>(
         let (_, files) = work
             .list_source(source, &directory, Some(&revision))
             .await?;
-        let Some(entry) = files.iter().find(|e| e.name == name) else {
+        let Some(file) = files.iter().find(|e| e.name == name) else {
             continue;
         };
-        if entry.kind != DiscoveryKind::File {
+        if file.kind != DiscoveryKind::File {
             return Err(Error::Invalid("skill entry is not a file".into()));
         }
-        result.push(
-            read_skill_metadata(source, &child(&directory, name), &revision, work.limits).await?,
-        );
+        let (prefix, pinned) =
+            skill_prefix(source, &child(&directory, name), &revision, work.limits).await?;
+        let skill = if crate::layers::is_off(&prefix) {
+            None
+        } else {
+            Some(parse_skill_metadata(&prefix, pinned)?)
+        };
+        result.push((entry.name, skill));
     }
     Ok(result)
 }
 
-async fn read_skill_metadata<S: SkillReader>(
+async fn skill_prefix<S: SkillReader>(
     source: &mut S,
     path: &str,
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
-) -> Result<SkillMetadata> {
-    read_skill_metadata_parsed(source, path, revision, limits).await?
+) -> Result<(acyclic_stream::OwnedBytes, PinnedContextPath)> {
+    limits.validate()?;
+    let (prefix, pinned) = source
+        .skill_prefix(path, revision, limits.header_bytes)?
+        .await?;
+    if prefix.len() > limits.header_bytes as usize {
+        return Err(Error::Storage("prefix reader exceeded bound".into()));
+    }
+    Ok((prefix, pinned))
 }
 
 // Preserve the distinction between a failed authorized read and an invalid
@@ -333,13 +381,7 @@ async fn read_skill_metadata_parsed<S: SkillReader>(
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
 ) -> Result<Result<SkillMetadata>> {
-    limits.validate()?;
-    let (prefix, pinned) = source
-        .skill_prefix(path, revision, limits.header_bytes)?
-        .await?;
-    if prefix.len() > limits.header_bytes as usize {
-        return Err(Error::Storage("prefix reader exceeded bound".into()));
-    }
+    let (prefix, pinned) = skill_prefix(source, path, revision, limits).await?;
     Ok(parse_skill_metadata(&prefix, pinned))
 }
 

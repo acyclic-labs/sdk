@@ -1,7 +1,8 @@
 use super::*;
 use crate::context::{ContextRoot, DiscoveryWork, SkillCatalog, SkillMetadata};
 
-type Catalog = Option<(VolumeRef, crate::resources::GenerationRef, SkillCatalog)>;
+/// A catalog and the identity of the layer stack it was discovered over.
+type Catalog = Option<([u8; 32], SkillCatalog)>;
 
 #[derive(Default)]
 pub(in crate::local) struct Catalogs {
@@ -16,33 +17,6 @@ pub(in crate::local) fn cache() -> Cache {
 }
 
 pub(super) use crate::context::PROJECT_SKILL_ROOTS as PROJECT_ROOTS;
-
-pub(in crate::local) const PRIVATE_ROOT: &str = "skills";
-
-pub(in crate::local) async fn seed(files: &LocalFilesystem, scratch: &VolumeRef) -> Result<()> {
-    let workspace = crate::filesystem::workspace_ref(
-        scratch.provider().clone(),
-        &scratch.storage_name(&mut None)?,
-    )?;
-    files
-        .seed_once(
-            &workspace,
-            &crate::IdempotencyKey::new("builtin-skills-v1")?,
-            || {
-                Ok(crate::context::BUILTIN_SKILLS
-                    .iter()
-                    .map(|(name, bytes)| {
-                        (
-                            format!("/{PRIVATE_ROOT}/{name}/SKILL.md"),
-                            acyclic_stream::OwnedBytes::from_static(bytes),
-                        )
-                    })
-                    .collect())
-            },
-        )
-        .await?;
-    Ok(())
-}
 
 impl LocalHarness {
     pub(in crate::local) async fn skills_with_work(
@@ -140,6 +114,9 @@ impl LocalHarness {
         files.skill_sources(binding.journal)
     }
 
+    /// The project's skills, or the agent's private ones: its home's
+    /// `skills/` over the seed's. Each catalog is reused while the identity
+    /// of its pinned layer stack is unchanged.
     async fn volume_skills(
         &self,
         binding: &Binding<'_>,
@@ -147,15 +124,14 @@ impl LocalHarness {
         work: &mut DiscoveryWork,
         private: bool,
     ) -> Result<Vec<SkillMetadata>> {
+        use crate::layers::{SEED, stack_digest};
         let volume = if private {
             binding.scratch
         } else {
             binding.project
         };
-        let workspace = crate::filesystem::workspace_ref(
-            volume.provider().clone(),
-            &volume.storage_name(&mut None)?,
-        )?;
+        let name = volume.storage_name(&mut None)?;
+        let workspace = crate::filesystem::workspace_ref(volume.provider().clone(), &name)?;
         // Instructions already selected this generation. Reuse it both for
         // consistency and to keep cache hits free of authority stream reads.
         let observed;
@@ -165,6 +141,14 @@ impl LocalHarness {
             observed = self.files.resolve(&workspace, None).await?.generation;
             &observed
         };
+        let (seed, seeded) = &self.seed;
+        // The home layer is named by its volume, so agents never share it.
+        let home = (name.as_str(), generation.as_resource().key());
+        let stack = if private {
+            stack_digest([(SEED, seeded.as_resource().key()), home])
+        } else {
+            stack_digest([home])
+        };
         {
             let cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
             let catalog = if private {
@@ -172,42 +156,68 @@ impl LocalHarness {
             } else {
                 &cache.project
             };
-            if let Some((cached_volume, cached, catalog)) = catalog
-                && cached_volume == volume
-                && cached == generation
+            if let Some((cached, catalog)) = catalog
+                && *cached == stack
                 && let Some(skills) = catalog.reuse(work)?
             {
                 return Ok(skills);
             }
         }
         let before = *work;
-        let mut skills = Vec::new();
-        let directories: &[&str] = if private {
-            &[PRIVATE_ROOT]
-        } else {
-            &PROJECT_ROOTS
+        let root = |volume: &VolumeRef, directory: &str| ContextRoot {
+            volume: volume.clone(),
+            directory: directory.into(),
         };
-        for directory in directories {
-            let root = ContextRoot {
-                volume: volume.clone(),
-                directory: (*directory).into(),
-            };
-            skills.extend(
-                crate::context::discover_skills_from(
-                    &mut crate::context::VolumeDiscovery {
-                        reader: binding.reader,
-                        root: &root,
-                        io: None,
-                    },
-                    directory,
-                    "SKILL.md",
-                    work,
-                    Some(generation),
-                    true,
-                )
-                .await?,
+        let skills = if private {
+            let (seed_root, home_root) = (
+                root(seed, crate::seed::SKILLS),
+                root(volume, crate::seed::SKILLS),
             );
-        }
+            crate::context::discover_layered_skills(
+                &mut [
+                    (
+                        crate::context::VolumeDiscovery {
+                            reader: binding.reader,
+                            root: &seed_root,
+                            io: None,
+                        },
+                        seeded.clone(),
+                    ),
+                    (
+                        crate::context::VolumeDiscovery {
+                            reader: binding.reader,
+                            root: &home_root,
+                            io: None,
+                        },
+                        generation.clone(),
+                    ),
+                ],
+                crate::seed::SKILLS,
+                "SKILL.md",
+                work,
+            )
+            .await?
+        } else {
+            let mut skills = Vec::new();
+            for directory in PROJECT_ROOTS {
+                skills.extend(
+                    crate::context::discover_skills_from(
+                        &mut crate::context::VolumeDiscovery {
+                            reader: binding.reader,
+                            root: &root(volume, directory),
+                            io: None,
+                        },
+                        directory,
+                        "SKILL.md",
+                        work,
+                        Some(generation),
+                        true,
+                    )
+                    .await?,
+                );
+            }
+            skills
+        };
         let catalog = SkillCatalog::capture(skills.clone(), *work, before)?;
         let mut cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
         let slot = if private {
@@ -215,7 +225,7 @@ impl LocalHarness {
         } else {
             &mut cache.project
         };
-        *slot = Some((volume.clone(), generation.clone(), catalog));
+        *slot = Some((stack, catalog));
         Ok(skills)
     }
 }

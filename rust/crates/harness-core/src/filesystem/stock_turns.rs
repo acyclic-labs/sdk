@@ -118,6 +118,7 @@ impl TurnContext for Grants {
                 scope,
                 content: Some(authority.content.clone()),
                 artifacts: None,
+                seed: None,
             }
             .build()?;
             Tasks::bind(&harness, executor, agent, turn, authority).map(|(executor, _)| executor)

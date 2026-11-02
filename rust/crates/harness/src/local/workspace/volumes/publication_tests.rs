@@ -87,13 +87,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let scratch = mounts
-        .named(Some("scratch"))?
-        .1
-        .view
-        .source
-        .as_ref()
-        .unwrap();
+    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
         write_projected(&scratch.destination.join("data"), b"acknowledged")?;
         Ok(((), claims))
@@ -159,18 +153,12 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let scratch = mounts
-        .named(Some("scratch"))?
-        .1
-        .view
-        .source
-        .as_ref()
-        .unwrap();
+    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     // Negative control: bypass command serialization exactly as the former
     // shared projection did. One verified exit also publishes the other writer.
-    let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
-    let first = scratch.enter(root, SCRATCH_PATH, false).await?;
-    let unverified = scratch.enter(root, SCRATCH_PATH, false).await?;
+    let root = projection_root(&scratch.destination, HOME_PATH)?;
+    let first = scratch.enter(root, HOME_PATH, false).await?;
+    let unverified = scratch.enter(root, HOME_PATH, false).await?;
     write_projected(&scratch.destination.join("data"), b"unverified")?;
     scratch.leave(first).await?;
     assert_eq!(published(scratch, "/data").await?, b"unverified");
@@ -189,7 +177,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
     let workspace = harness.workspace().unwrap();
     let original = workspace
         .mounts
-        .named(Some("scratch"))?
+        .named(Some("home"))?
         .1
         .view
         .source
@@ -197,7 +185,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         .unwrap();
     for _ in 0..2 {
         let aliases = workspace.mounts_at(task.path()).await?;
-        let alias = aliases.named(Some("scratch"))?.1;
+        let alias = aliases.named(Some("home"))?.1;
         assert!(Arc::ptr_eq(alias.view.source.as_ref().unwrap(), original));
         assert_eq!(
             alias.native_root.as_deref(),
@@ -205,17 +193,17 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         );
         assert_eq!(
             canonical_destination(
-                &std::fs::read_link(task.path().join(SCRATCH_PATH)).map_err(storage)?,
+                &std::fs::read_link(task.path().join(HOME_PATH)).map_err(storage)?,
             )?,
             canonical_destination(&original.destination)?
         );
     }
-    let alias = task.path().join(SCRATCH_PATH);
+    let alias = task.path().join(HOME_PATH);
     std::fs::rename(&alias, task.path().join("absolute-alias")).map_err(storage)?;
-    let relative = Path::new("../..").join(SCRATCH_PATH);
+    let relative = Path::new("../..").join(HOME_PATH);
     link_directory(&relative, &alias).map_err(storage)?;
     let aliases = workspace.mounts_at(task.path()).await?;
-    let retained = aliases.named(Some("scratch"))?.1;
+    let retained = aliases.named(Some("home"))?.1;
     assert!(Arc::ptr_eq(
         retained.view.source.as_ref().unwrap(),
         original
@@ -233,14 +221,8 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.mounts.named(None)?.1.view.volume,
         None,
         [(
-            "scratch".into(),
-            workspace
-                .mounts
-                .named(Some("scratch"))?
-                .1
-                .view
-                .volume
-                .clone(),
+            "home".into(),
+            workspace.mounts.named(Some("home"))?.1.view.volume.clone(),
             Some(Arc::clone(original)),
         )],
     )?;
@@ -256,7 +238,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.task_view_admission,
     )
     .await?;
-    let rebound = rebound.named(Some("scratch"))?.1;
+    let rebound = rebound.named(Some("home"))?.1;
     assert!(!Arc::ptr_eq(
         rebound.view.source.as_ref().unwrap(),
         original
@@ -265,7 +247,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         rebound.native_root.as_deref(),
         Some(original.destination.as_path())
     );
-    let alias = task.path().join(SCRATCH_PATH);
+    let alias = task.path().join(HOME_PATH);
     std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
     link_directory(blocked.path(), &alias).map_err(storage)?;
     assert!(workspace.mounts_at(task.path()).await.is_err());
@@ -274,7 +256,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         canonical_destination(blocked.path())?
     );
     std::fs::create_dir(blocked.path().join(".volumes")).map_err(storage)?;
-    let authored = blocked.path().join(SCRATCH_PATH);
+    let authored = blocked.path().join(HOME_PATH);
     std::fs::write(&authored, b"authored blocker").map_err(storage)?;
     assert!(workspace.mounts_at(blocked.path()).await.is_err());
     assert_eq!(
@@ -290,7 +272,7 @@ async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let (_, mount) = mounts.named(Some("scratch"))?;
+    let (_, mount) = mounts.named(Some("home"))?;
     let scratch = mount.view.source.as_ref().unwrap();
     // An invalid alias must fail even when its source also has a valid name.
     // Validation precedes identity-based deduplication and lock acquisition.
@@ -298,7 +280,7 @@ async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        ["scratch", "zzz"].map(|name| {
+        ["home", "zzz"].map(|name| {
             (
                 name.to_owned(),
                 mount.view.volume.clone(),
@@ -325,8 +307,8 @@ async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
     assert!(!scratch.destination.exists());
     // Negative control: the former exit dropped entered claims without leaving.
     // The same oracle sees that projection remain mounted.
-    let root_path = projection_root(&scratch.destination, SCRATCH_PATH)?;
-    drop(scratch.enter(root_path, SCRATCH_PATH, false).await?);
+    let root_path = projection_root(&scratch.destination, HOME_PATH)?;
+    drop(scratch.enter(root_path, HOME_PATH, false).await?);
     assert!(
         scratch.native().await.is_some(),
         "oracle missed a stranded projection"
@@ -344,7 +326,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().expect("fixture workspace").mounts;
-    let (_, mount) = mounts.named(Some("scratch"))?;
+    let (_, mount) = mounts.named(Some("home"))?;
     let scratch = mount.view.source.as_ref().expect("bound scratch source");
     let blocked = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
@@ -360,18 +342,15 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [
-            ("scratch", Arc::clone(scratch)),
-            ("zzz", Arc::clone(&blocked)),
-        ]
-        .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
+        [("home", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))]
+            .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     assert_eq!(
         ordered_mounts(&table)?
             .into_iter()
             .map(|(relative, _)| relative)
             .collect::<Vec<_>>(),
-        [".volumes/scratch", ".volumes/zzz"]
+        [".volumes/home", ".volumes/zzz"]
     );
     let ran = std::sync::atomic::AtomicBool::new(false);
     let second_entry = blocked.native().await;
@@ -418,7 +397,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let (_, mount) = mounts.named(Some("scratch"))?;
+    let (_, mount) = mounts.named(Some("home"))?;
     let scratch = mount.view.source.as_ref().unwrap();
     // `.volumes/aaa` precedes scratch and still has one worker claim.
     let busy = Arc::new(MountedVolume {
@@ -434,12 +413,12 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [("aaa", busy), ("scratch", Arc::clone(scratch))]
+        [("aaa", busy), ("home", Arc::clone(scratch))]
             .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     let project = async || {
-        let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
-        drop(scratch.enter(root, SCRATCH_PATH, false).await?);
+        let root = projection_root(&scratch.destination, HOME_PATH)?;
+        drop(scratch.enter(root, HOME_PATH, false).await?);
         Ok::<_, Error>(())
     };
     project().await?;
@@ -480,11 +459,11 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     let other = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let (_, mount) = mounts.named(Some("scratch"))?;
+    let (_, mount) = mounts.named(Some("home"))?;
     let first = mount.view.source.as_ref().unwrap();
     let second = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
-        destination: other.path().join(SCRATCH_PATH),
+        destination: other.path().join(HOME_PATH),
         options: first.options.clone(),
         task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
@@ -497,7 +476,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             &mount.view.volume,
             Some(Arc::clone(primary)),
             [(
-                "scratch".into(),
+                "home".into(),
                 mount.view.volume.clone(),
                 Some(Arc::clone(named)),
             )],

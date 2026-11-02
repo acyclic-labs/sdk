@@ -58,7 +58,7 @@ impl CheckoutTools {
         let spill_name = format!("shell-{operation}.log");
         let (scratch, _) = state
             .mounts
-            .resolve(std::path::Path::new(".volumes/scratch"))?;
+            .resolve(std::path::Path::new(".volumes/home"))?;
         scratch.check(
             acyclic_fs::access::Action::Write,
             &spill_name,
@@ -67,7 +67,7 @@ impl CheckoutTools {
         let spill_root = scratch
             .native_root
             .clone()
-            .unwrap_or_else(|| state.mounts.root.join(".volumes/scratch"));
+            .unwrap_or_else(|| state.mounts.root.join(".volumes/home"));
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
         let (output, (state, files, claims, retained)) =
             native_process::capture::capture_with_custody(
@@ -116,7 +116,7 @@ impl CheckoutTools {
                     ToolResult {
                         value: serde_json::json!({
                             "success": output.success, "exit_code": output.exit_code,
-                            "spill": format!(".volumes/scratch/{spill_name}"),
+                            "spill": format!(".volumes/home/{spill_name}"),
                             "stop": output.stop,
                         }),
                     },

@@ -203,7 +203,7 @@ impl LocalWorkspace {
             root.path(),
             project,
             None,
-            Some(("scratch".into(), scratch, None)),
+            Some((crate::filesystem::HOME_VOLUME.into(), scratch, None)),
         )?;
         volumes::attach(
             &self.filesystem,
@@ -396,7 +396,7 @@ pub(super) async fn open(
         &path,
         volume,
         None,
-        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
+        native_mounts.then(|| (crate::filesystem::HOME_VOLUME.into(), scratch.clone(), None)),
     )?;
     let task_view_admission = Arc::new(std::sync::OnceLock::new());
     let mount_authority = attach
@@ -548,7 +548,7 @@ async fn held_source(
     .await
     .map_err(storage)?;
     let mut exclusions = if native_mounts {
-        volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
+        volumes::excluded(&path, config, volumes::HOME_PATH)?
     } else {
         Vec::new()
     };

@@ -11,7 +11,11 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
-        let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
+            let layer = context.effective_tool_path(&input.0.path, io).await?;
+            input.0.path = layer.into_owned();
+        }
         if input.0.range.is_some() && input.0.selection.is_some() {
             return Err(invalid(
                 "byte ranges and projections are mutually exclusive",

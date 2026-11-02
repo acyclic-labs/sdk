@@ -4,12 +4,13 @@ use crate::Result;
 pub use crate::model::NativeToolProfile;
 
 impl NativeToolProfile {
-    /// Versioned family file consumed by the existing profile resolver.
+    /// Versioned family file consumed by the existing profile resolver: the
+    /// seed's `sys/native/<family>/profile.md`.
     pub const fn family_layer(self) -> &'static str {
         match self {
-            Self::Anthropic => include_str!("native/anthropic.md"),
-            Self::Openai => include_str!("native/openai.md"),
-            Self::Google => include_str!("native/google.md"),
+            Self::Anthropic => crate::seed::ANTHROPIC_PROFILE,
+            Self::Openai => crate::seed::OPENAI_PROFILE,
+            Self::Google => crate::seed::GOOGLE_PROFILE,
         }
     }
 

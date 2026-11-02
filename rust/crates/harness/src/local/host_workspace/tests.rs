@@ -81,7 +81,7 @@ async fn native_workspace_teardown_removes_storage_after_retiring_retained_views
         .held_task_mount_root()?;
     let workspace = fixture.attach(root(), mounts.path()).await?;
     native_write(
-        &workspace.path().join(".volumes/scratch/retained.txt"),
+        &workspace.path().join(".volumes/home/retained.txt"),
         b"native private volume",
     )?;
     workspace.capture(OperationId::new()).await?;

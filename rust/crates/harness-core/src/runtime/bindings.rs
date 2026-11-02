@@ -7,6 +7,7 @@ pub struct AgentHarness {
     pub(super) scope: RuntimeScope,
     pub(super) content: Option<ContentBindings>,
     pub(super) artifacts: Option<ContentBindings>,
+    pub(super) seed: Option<VolumeRef>,
 }
 
 /// Filesystem commands bound to one provider and immutable volume-name mapping.
@@ -57,6 +58,10 @@ pub struct Bindings {
     pub content: Option<ContentBindings>,
     /// Independently selected immutable artifact storage.
     pub artifacts: Option<ContentBindings>,
+    /// The read-only seed layer under every agent's home (see
+    /// [`crate::seed`]), read through the content reader under the scope's
+    /// read grants. Without it the effective view is the home alone.
+    pub seed: Option<VolumeRef>,
 }
 
 impl Bindings {
@@ -81,6 +86,7 @@ impl Bindings {
             scope: self.scope,
             content: self.content,
             artifacts: self.artifacts,
+            seed: self.seed,
         }))
     }
 }
@@ -101,6 +107,7 @@ impl AgentHarness {
             content: Some(content),
             scope: self.scope.clone(),
             artifacts: self.artifacts.clone(),
+            seed: self.seed.clone(),
         }))
     }
 

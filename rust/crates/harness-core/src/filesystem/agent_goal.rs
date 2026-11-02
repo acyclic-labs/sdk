@@ -1,4 +1,4 @@
-//! [`TurnGoal`] on the agent's [`GOAL_VOLUME`] binding: GOAL.md read once per
+//! [`TurnGoal`] on the agent's [`HOME_VOLUME`] binding: GOAL.md read once per
 //! settled turn and rewritten through the ordinary content writer.
 
 use super::FilesystemHost;
@@ -13,8 +13,9 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
-/// Name of the volume binding that holds an agent's GOAL.md.
-pub const GOAL_VOLUME: &str = "scratch";
+/// Name of the volume binding of an agent's home: its own writable layer,
+/// holding its GOAL.md.
+pub const HOME_VOLUME: &str = crate::layers::HOME;
 const GOAL_PATH: &str = "GOAL.md";
 
 /// The goal file of one agent turn.
@@ -40,7 +41,7 @@ impl<A, O> FilesystemTurnGoal<A, O> {
         let Some(binding) = agent
             .volumes
             .iter()
-            .find(|binding| binding.name == GOAL_VOLUME)
+            .find(|binding| binding.name == HOME_VOLUME)
         else {
             return Ok(None);
         };

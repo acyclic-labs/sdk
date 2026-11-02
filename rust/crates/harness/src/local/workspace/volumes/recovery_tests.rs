@@ -98,7 +98,7 @@ fn scratch_mount_owner() -> TestResult {
             acyclic_fs::NativeMountRequest {
                 mount_id: acyclic_fs::MountId::new(),
                 volume_id: source.volume_id()?,
-                destination: PathBuf::from(root).join(SCRATCH_PATH),
+                destination: PathBuf::from(root).join(HOME_PATH),
                 writable: true,
                 shared: false,
             },
@@ -114,7 +114,7 @@ fn scratch_mount_owner() -> TestResult {
 fn require_recovered(root: &Path, recover: impl FnOnce(&Path) -> Result<()>) -> TestResult {
     recover(root)?;
     assert_eq!(
-        std::fs::read(root.join(SCRATCH_PATH).join("authored"))?,
+        std::fs::read(root.join(HOME_PATH).join("authored"))?,
         b"keep me"
     );
     Ok(())
@@ -140,12 +140,12 @@ fn start_owner(root: &Path) -> TestResult<Owner> {
 fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> TestResult {
     let root = tempfile::tempdir()?;
     let root = root.path().canonicalize()?;
-    let destination = root.join(SCRATCH_PATH);
+    let destination = root.join(HOME_PATH);
     std::fs::create_dir_all(&destination)?;
     std::fs::write(destination.join("authored"), b"keep me")?;
     let alias = tempfile::tempdir()?;
     std::fs::create_dir(alias.path().join(".volumes"))?;
-    std::os::unix::fs::symlink(&destination, alias.path().join(SCRATCH_PATH))?;
+    std::os::unix::fs::symlink(&destination, alias.path().join(HOME_PATH))?;
     let reject_alias = || {
         let error = recover(alias.path()).expect_err("scratch alias was accepted");
         assert!(matches!(error, Error::NativeView { cause, .. }
@@ -179,7 +179,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     assert!(std::fs::metadata(&destination).is_ok());
     assert!(
         require_recovered(&root, |root| {
-            if std::fs::metadata(root.join(SCRATCH_PATH)).is_ok() {
+            if std::fs::metadata(root.join(HOME_PATH)).is_ok() {
                 Ok(())
             } else {
                 recover(root)
@@ -243,7 +243,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
 #[test]
 fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
     let root = tempfile::tempdir()?;
-    let destination = root.path().join(SCRATCH_PATH);
+    let destination = root.path().join(HOME_PATH);
     std::fs::create_dir(root.path().join(".volumes"))?;
     let roots = acyclic_fs::shared_view_root()?
         .parent()
@@ -297,7 +297,7 @@ fn admitted_shared_alias_recovery_refuses_foreign_views_and_rebinds_reaped_paren
         .ok_or("shared root has no parent")?
         .to_path_buf();
     let reaped = roots.join(format!("{:032x}", 0)).join("v0000000000000001");
-    let destination = fixture.path().join(SCRATCH_PATH);
+    let destination = fixture.path().join(HOME_PATH);
     std::os::unix::fs::symlink(&reaped, &destination)?;
     recover(fixture.path())?;
     assert!(std::fs::symlink_metadata(&destination).is_err());

@@ -18,13 +18,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     )
     .await?;
     let workspace = fixture.workspace.as_ref().expect("checkout");
-    let private = workspace
-        .mounts
-        .named(Some("scratch"))?
-        .1
-        .view
-        .volume
-        .clone();
+    let private = workspace.mounts.named(Some("home"))?.1.view.volume.clone();
     let maximum = 65_536;
     let signed = &fixture.signed;
     let task = crate::runtime::Bindings {

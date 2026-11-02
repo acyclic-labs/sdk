@@ -551,7 +551,7 @@ impl NativeAgents {
             issuer,
             bindings: [
                 bind("project", &local.project),
-                bind("scratch", &local.scratch),
+                bind(crate::filesystem::HOME_VOLUME, &local.scratch),
             ],
         })
     }

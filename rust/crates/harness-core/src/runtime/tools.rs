@@ -1,6 +1,6 @@
 use super::*;
 
-const SCRATCH_PREFIX: &str = ".volumes/scratch/";
+use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH};
 
 impl TaskContext {
     /// Retains complete tool output through the existing volume publisher.
@@ -14,7 +14,7 @@ impl TaskContext {
             crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
         let path = crate::executor::with_history_io(io, |history| {
             crate::executor::preparation_format(
-                format_args!("{SCRATCH_PREFIX}tool-output/{operation}.json"),
+                format_args!("{HOME_PATH}tool-output/{operation}.json"),
                 history,
             )
         })?;
@@ -22,7 +22,7 @@ impl TaskContext {
             .stage_private_file_once(
                 self.private_summaries(io)?,
                 operation,
-                &path[SCRATCH_PREFIX.len()..],
+                &path[HOME_PATH.len()..],
                 bytes,
                 ("application/json", "tool-output.json"),
                 io,
@@ -763,6 +763,12 @@ impl ToolContext {
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
+        if crate::layers::read_only(path) {
+            return Err(Error::Unauthorized(format!(
+                "{path} is read-only; write under {HOME_PATH}"
+            ))
+            .tool_input());
+        }
         let binding = self.task().tool_content(None);
         self.stage_once(
             binding,
@@ -848,6 +854,20 @@ impl ToolContext {
             }
             Ok(())
         })?;
+        // The effective view is read-only: reads resolve it to one layer
+        // first (`effective_tool_path`), and nothing writes through it.
+        if path.starts_with(EFFECTIVE_PATH) {
+            return Err(Error::Unauthorized(format!(
+                "{EFFECTIVE_PATH} is read-only; write {HOME_PATH} instead"
+            ))
+            .tool_input());
+        }
+        if let (Some(relative), Some(seed)) = (
+            path.strip_prefix(SEED_PATH),
+            self.task().harness.seed.as_ref(),
+        ) {
+            return Ok((seed, std::borrow::Cow::Borrowed(relative)));
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -855,9 +875,9 @@ impl ToolContext {
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
         }
-        // Match the scratch mount's public path when no execution target is
+        // Match the home mount's public path when no execution target is
         // bound. Keep the same private reader and ordinary directory grants.
-        if let Some(relative) = path.strip_prefix(SCRATCH_PREFIX) {
+        if let Some(relative) = path.strip_prefix(HOME_PATH) {
             let binding = self
                 .task()
                 .harness
@@ -872,6 +892,71 @@ impl ToolContext {
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
         ))
+    }
+
+    /// The layer path a read of `path` selects. A path under
+    /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
+    /// over the seed (`sys/` only from the seed), so the read returns that
+    /// layer's own pinned file; other paths are returned unchanged. A home
+    /// file holding only `off: true` hides the seed's. Configuration both
+    /// layers hold merges per key and has no single source file to return.
+    pub(crate) async fn effective_tool_path<'a>(
+        &self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<std::borrow::Cow<'a, str>> {
+        use crate::layers::{Rule, WHY_SUFFIX, is_off, layered};
+        let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
+            return Ok(std::borrow::Cow::Borrowed(path));
+        };
+        let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
+        let unsupported = || {
+            Error::Unsupported(format!(
+                "{path} merges layers; read its copies under {HOME_PATH} and {SEED_PATH}"
+            ))
+            .tool_input()
+        };
+        if relative.ends_with(WHY_SUFFIX) {
+            return Err(unsupported());
+        }
+        let seed = format!("{SEED_PATH}{relative}");
+        let seeded = self.task().harness.seed.is_some();
+        if !layered(relative) {
+            return if seeded {
+                Ok(seed.into())
+            } else {
+                Err(missing())
+            };
+        }
+        let home = format!("{HOME_PATH}{relative}");
+        // An `off` marker is a few bytes; a longer file is never one.
+        let probe = acyclic_fs::ByteRange {
+            offset: 0,
+            length: 32,
+        };
+        let held = |result: Result<_>| match result {
+            Ok((selected, bytes, _)) => Ok(Some((selected, bytes))),
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(error),
+        };
+        let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
+        let Some((selected, bytes)) = mine else {
+            return if seeded {
+                Ok(seed.into())
+            } else {
+                Err(missing())
+            };
+        };
+        if selected.byte_length <= probe.length && is_off(&bytes) {
+            return Err(missing());
+        }
+        if seeded
+            && Rule::of(relative) == Rule::Merge
+            && held(self.read_tool_path_range(&seed, None, probe, io).await)?.is_some()
+        {
+            return Err(unsupported());
+        }
+        Ok(home.into())
     }
 
     /// Checks original directory authority for the selected mounted path.

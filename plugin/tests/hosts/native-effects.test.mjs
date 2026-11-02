@@ -43,13 +43,13 @@ test('native filesystem effects reject parent-only execution and lost resume cus
    assert.match(parentOnly.stderr,/separate view/);
    step='exercise the original effect with an isolated real directory';
    const child=join(workspace,'.volumes/agents/child');
-   await mkdir(join(child,'.volumes/scratch'),{recursive:true});
+   await mkdir(join(child,'.volumes/home'),{recursive:true});
    await copyFile(join(workspace,'parent.txt'),join(child,'parent.txt'));
    const written=await run('child',child);
    assert.equal(written.code,0,written.stderr);
    assert.equal(await readFile(join(child,'child.txt'),'utf8'),'CHILD');
    step='reject resumed work after private state is lost';
-   const retained=join(child,'.volumes/scratch/native-retained.txt');
+   const retained=join(child,'.volumes/home/native-retained.txt');
    const bytes=await readFile(retained);await unlink(retained);
    const lost=await run('resumed',child);
    assert.notEqual(lost.code,0);assert.match(lost.stderr,/ENOENT/);
@@ -73,7 +73,7 @@ test('native filesystem effects reject parent-only execution and lost resume cus
     const event=JSON.parse(bytes.toString());return {id:event.thread_id??event.session_id};
    };
    const original=await native('codex'),fresh=await native('claude-code');
-   const paths=['native-child.json','child.txt','resumed.txt','.volumes/scratch/native-retained.txt'];
+   const paths=['native-child.json','child.txt','resumed.txt','.volumes/home/native-retained.txt'];
    const before=await Promise.all(paths.map(path=>readFile(join(child,path))));
    assert.throws(()=>assertNativeResume(original,fresh),/resume changed native session identity/);
    assert.throws(()=>assertNativeResume(original,{}),/identifier is missing/);

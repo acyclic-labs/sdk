@@ -41,7 +41,7 @@ pub use execution_journal::{
 };
 mod agent_effects;
 mod agent_goal;
-pub use agent_goal::GOAL_VOLUME;
+pub use agent_goal::HOME_VOLUME;
 mod agent_internal;
 pub mod attestation;
 mod history;

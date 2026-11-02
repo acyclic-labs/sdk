@@ -33,10 +33,10 @@ try {
   child();assert.equal(await text('parent.txt'),'PARENT','fork lost parent bytes');
   await writeFile('child.txt','CHILD');
   await writeFile('native-child.json',JSON.stringify({task:process.env.ACYCLIC_TASK,cwd}));
-  await writeFile('.volumes/scratch/native-retained.txt','RETAINED');
+  await writeFile('.volumes/home/native-retained.txt','RETAINED');
  } else if(phase==='resumed') {
   child();assert.equal((await proof()).task,process.env.ACYCLIC_TASK,'resume changed child identity');
-  assert.equal(await text('.volumes/scratch/native-retained.txt'),'RETAINED','resume lost private child state');
+  assert.equal(await text('.volumes/home/native-retained.txt'),'RETAINED','resume lost private child state');
   assert.equal(await text('child.txt'),'CHILD');
   await writeFile('resumed.txt','RESUMED');
  } else {
@@ -55,8 +55,8 @@ try {
   assert.notEqual(original.cwd,cwd,'parent substituted its own view for the child');
   // Public wait has settled the native turn. The existing owner query reads
   // its original native identifier; no second event reader is introduced.
-  const initial=join(root,'.volumes/scratch/native-initial-session.json');
-  const current=phase==='merge'?initial:join(root,'.volumes/scratch/native-resumed-session.json');
+  const initial=join(root,'.volumes/home/native-initial-session.json');
+  const current=phase==='merge'?initial:join(root,'.volumes/home/native-resumed-session.json');
   const descriptor=openSync(current,'w');
   try {
    execFileSync(binary,['__workspace'],{input:JSON.stringify({kind:'hook',host,event:'NativeSession',

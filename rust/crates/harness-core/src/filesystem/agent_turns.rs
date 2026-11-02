@@ -313,9 +313,16 @@ pub(super) fn require_structured_write(
 }
 
 /// A local root agent's grants: routing, its agent tools, read and write of
-/// every bound volume, and each `external` file by its exact version.
+/// every bound volume, read of its provider's seed layer (see
+/// [`crate::seed`]), and each `external` file by its exact version.
 fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
-    let mut grants = Vec::with_capacity(2 * volumes.len() + 1);
+    let mut grants = Vec::with_capacity(2 * volumes.len() + 2);
+    if let Some(binding) = volumes.first() {
+        grants.push(
+            crate::seed::volume(binding.volume.provider())?
+                .capability(VolumeOperation::Read, &mut None)?,
+        );
+    }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
@@ -1366,11 +1373,11 @@ impl<'a> TurnContext<'a> {
         let mut message_ids = Vec::with_capacity(messages.capacity());
         messages.push(ModelMessage {
             role: ModelRole::System,
-            content: ModelContent::Text(crate::preset::AGENT_PROMPT.to_owned()),
+            content: ModelContent::Text(crate::seed::AGENT_PROMPT.to_owned()),
         });
         message_ids.push(directive_id(
             "acyclic.harness.agent.prompt.v1",
-            crate::preset::AGENT_PROMPT,
+            crate::seed::AGENT_PROMPT,
         ));
         // A spawned agent's role at its fork point. Only the agent's path
         // and its parent's decide the text, so a descendant re-renders an

@@ -13,7 +13,7 @@
             "id": "goal",
             "name": "write",
             "arguments": {
-              "path": ".volumes/scratch/GOAL.md",
+              "path": ".volumes/home/GOAL.md",
               "content": "---\nstatus: active\n---\nGOAL_E2E\n"
             }
           }
@@ -26,7 +26,7 @@
             "id": "plan",
             "name": "write",
             "arguments": {
-              "path": ".volumes/scratch/plans/release.md",
+              "path": ".volumes/home/plans/release.md",
               "content": "- [ ] PLAN_E2E\n"
             }
           }
@@ -45,7 +45,7 @@
             "id": "done_goal",
             "name": "write",
             "arguments": {
-              "path": ".volumes/scratch/GOAL.md",
+              "path": ".volumes/home/GOAL.md",
               "content": "---\nstatus: done\n---\nGOAL_E2E\n"
             }
           }
