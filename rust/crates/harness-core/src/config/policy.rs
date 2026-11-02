@@ -56,9 +56,8 @@ fn rule(id: String, effect: Effect, actions: BTreeSet<access::Action>, path: &st
 }
 
 /// One policy as one access layer, its rule ids prefixed by `layer`. With
-/// no `only`, everything is allowed; with `only`, the file actions it
-/// speaks about are allowed only where an `only` rule matches. `deny` rules
-/// deny on top.
+/// no `only`, everything is allowed; with `only`, only its matching file
+/// actions are allowed. An empty list allows nothing. `deny` rules deny on top.
 fn lower(layer: &str, policy: &Policy) -> Vec<access::Rule> {
     let actions = |rule: &PolicyRule| -> BTreeSet<access::Action> {
         rule.actions
@@ -68,8 +67,13 @@ fn lower(layer: &str, policy: &Policy) -> Vec<access::Rule> {
             .collect()
     };
     let mut rules = Vec::new();
-    let open: BTreeSet<_> = match &policy.only {
-        None => access::Action::ALL.into_iter().collect(),
+    match &policy.only {
+        None => rules.push(rule(
+            format!("{layer}/open"),
+            Effect::Allow,
+            access::Action::ALL.into_iter().collect(),
+            "**",
+        )),
         Some(only) => {
             for (index, only) in only.iter().enumerate() {
                 let actions = actions(only);
@@ -82,15 +86,7 @@ fn lower(layer: &str, policy: &Policy) -> Vec<access::Rule> {
                     ));
                 }
             }
-            let covered: BTreeSet<_> = only.iter().flat_map(actions).collect();
-            access::Action::ALL
-                .into_iter()
-                .filter(|action| !covered.contains(action))
-                .collect()
         }
-    };
-    if !open.is_empty() {
-        rules.push(rule(format!("{layer}/open"), Effect::Allow, open, "**"));
     }
     for (index, deny) in policy.deny.iter().flatten().enumerate() {
         let actions = actions(deny);
@@ -140,40 +136,85 @@ mod tests {
     }
 
     #[test]
-    fn policies_lower_to_one_met_layer_each() -> Result<()> {
-        let parent = decoded(json!({"deny": [{"path": "plugins.ts", "actions": ["write"]}]}));
-        let child = decoded(json!({
-            "only": [{"path": "src/**", "actions": ["write"]}],
-            "deny": [{"path": "x", "actions": ["spawn"]}],
-        }));
-        let met = meet([("parent", &parent), ("child", &child)], 7)?;
-        assert_eq!(met.version, 7);
-        assert_eq!(met.layers.len(), 2);
-        // The parent's layer is open except its denial, which no layer
-        // below can lift: every layer must allow.
-        let [open, deny] = &met.layers[0][..] else {
-            panic!("{:?}", met.layers[0])
+    fn file_policy_meet_cannot_widen_an_issuer_or_an_only_list() -> Result<()> {
+        let principal = access::Principal {
+            kind: access::PrincipalKind::Agent,
+            id: "child".into(),
+            lineage: vec![],
+            groups: Default::default(),
+            roles: Default::default(),
+            tags: Default::default(),
+            attributes: Default::default(),
         };
-        assert_eq!(
-            (open.effect, open.resource.path.as_str()),
-            (Effect::Allow, "**")
-        );
-        assert!(open.actions.contains(&access::Action::Write));
-        assert_eq!(
-            (deny.effect, deny.resource.path.as_str()),
-            (Effect::Deny, "plugins.ts")
-        );
-        // `only` writes: writing is allowed under src/ alone, reading stays
-        // open, and a spawn rule lowers to no file rule.
-        let [only, rest] = &met.layers[1][..] else {
-            panic!("{:?}", met.layers[1])
+        let capability = access::Capability::whole_volume(None, &access::Action::ALL);
+        let resource = access::Resource {
+            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            lineage: &[],
+            volume: "home",
+            generation: 1,
+            head: 1,
+            path: "",
         };
-        assert_eq!(
-            (only.effect, only.resource.path.as_str()),
-            (Effect::Allow, "src/**")
-        );
-        assert!(!rest.actions.contains(&access::Action::Write));
-        assert!(rest.actions.contains(&access::Action::Read));
+        let context = access::Context {
+            now: 0,
+            approvals: 0,
+        };
+        for (issuer, subject, action, path, allowed) in [
+            (json!({}), json!({}), access::Action::Read, "notes", true),
+            (
+                json!({"deny": [{"path": "plugins.ts", "actions": ["write"]}]}),
+                json!({}),
+                access::Action::Write,
+                "plugins.ts",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "src/**", "actions": ["write"]}]}),
+                json!({}),
+                access::Action::Write,
+                "src/lib.rs",
+                true,
+            ),
+            (
+                json!({"only": [{"path": "src/**", "actions": ["write"]}]}),
+                json!({}),
+                access::Action::Write,
+                "plugins.ts",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "src/**", "actions": ["write"]}]}),
+                json!({}),
+                access::Action::Read,
+                "src/lib.rs",
+                false,
+            ),
+            (
+                json!({"only": []}),
+                json!({}),
+                access::Action::Read,
+                "src/lib.rs",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "child", "actions": ["spawn"]}]}),
+                json!({}),
+                access::Action::Read,
+                "child",
+                false,
+            ),
+        ] {
+            let parent = decoded(issuer);
+            let child = decoded(subject);
+            let met = meet([("parent", &parent), ("child", &child)], 7)?;
+            let view = access::PathTrie::compile(&met, &principal, resource, context, &capability)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(
+                view.decide(action, path, 0).allowed,
+                allowed,
+                "{met:?} {action:?} {path}"
+            );
+        }
         Ok(())
     }
 

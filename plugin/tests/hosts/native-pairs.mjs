@@ -16,6 +16,9 @@ import {assertNativeResume} from './native-session-proof.mjs';
 
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
 const quote=text=>"'"+text.replaceAll("'","'\\''")+"'";
+// The helper command uses POSIX quoting. Claude advertises both PowerShell
+// and Bash on Windows, so name the intended native tool in every prompt.
+const shellTool=host=>host==='claude-code'?'Bash':'native shell';
 export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live,packageStage}) {
  assert.ok(order?.length===2&&((order[0]==='bare'&&order[1]==='installed')||
   (order[0]==='installed'&&order[1]==='bare')),
@@ -35,7 +38,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
  const answer='PAIRED_NATIVE_DONE';
  const helper=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
  const command=[process.execPath,helper,'parent',workspace,host].map(quote).join(' ');
- const prompt=live?`Run exactly this command once with your native shell tool: ${command}\nAfter it succeeds with NATIVE_EFFECT_PARENT, reply ${answer}. Do not use coordination tools, delegate, or inspect credentials.`:'PAIRED_NATIVE_SHELL';
+ const prompt=live?`Run exactly this command once with your ${shellTool(host)} tool: ${command}\nAfter it succeeds with NATIVE_EFFECT_PARENT, reply ${answer}. Do not use coordination tools, delegate, or inspect credentials.`:'PAIRED_NATIVE_SHELL';
  const steps=[{when:{user:prompt},tools:[host==='codex'
   ?{id:'paired_shell',name:'exec_command',namespace:'functions',arguments:{cmd:command}}
   :{id:'paired_shell',name:'Bash',arguments:{command}}]},
@@ -61,7 +64,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      policy:host==='codex'?'never/workspace-write':'default/Bash',effect:'PARENT',scenario_sha256:createHash('sha256').update(JSON.stringify(scenario)).digest('hex')};
     await json(join(output,'binding.json'),binding);
     setupSeconds=(performance.now()-setupOrigin)/1000;
-    let pluginInstalled=true;
+    let pluginInstalled=true,builtinPlugins;
     for(const mode of order) {
      // CLI config overrides do not remove the pinned host's advertised plugin
      // tools. Use its original plugin manager, outside both measured launches.
@@ -89,8 +92,12 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      captures.push({mode,...completed});
      // Validate original startup metadata in the existing terminal decoder;
      // missing evidence cannot qualify a bare leg, and needs no second parse.
-     assertNativeCompletion(host,completed,answer,live&&host==='claude-code'
+     const nativeBuiltins=assertNativeCompletion(host,completed,answer,live&&host==='claude-code'
       ?{model:live.model,installed:mode==='installed'}:undefined);
+     if(live&&host==='claude-code') {
+      if(builtinPlugins===undefined)builtinPlugins=nativeBuiltins;
+      else assert.equal(nativeBuiltins,builtinPlugins,'native Claude builtin plugin set changed between paired legs');
+     }
      const effect=await readFile(join(workspace,'parent.txt'),'utf8');assert.equal(effect,'PARENT');
      samples.push({mode,binding,effect,physical:collector.complete(completed),transcripts:completed.transcripts});
      collector=undefined;
@@ -134,9 +141,9 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
  const helper=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
  const command=phase=>[process.execPath,helper,phase,workspace,host].map(quote).join(' ');
  const answer='NATIVE_PLUGIN_MODEL_DONE',tools=['spawn','wait','resume','archive'];
- const child=`Run exactly this command with your native shell tool: ${command('child')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_DONE. Do not inspect credentials.`;
- const resumed=`Run exactly this command with your native shell tool: ${command('resumed')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_RESUMED. Do not inspect credentials.`;
- const prompt=`Use your native shell and installed Acyclic coordination tools to perform these steps sequentially. Do not use built-in subagents, impersonate a child, or inspect credentials.
+ const child=`Run exactly this command with your ${shellTool(host)} tool: ${command('child')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_DONE. Do not inspect credentials.`;
+ const resumed=`Run exactly this command with your ${shellTool(host)} tool: ${command('resumed')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_RESUMED. Do not inspect credentials.`;
+ const prompt=`Use your ${shellTool(host)} tool and installed Acyclic coordination tools to perform these steps sequentially. Do not use built-in subagents, impersonate a child, or inspect credentials.
 1. Run ${command('parent')} in your native shell.
 2. Call the installed Acyclic spawn tool with reference native-child and prompt ${JSON.stringify(child)}.
 3. Call the installed Acyclic wait tool for native-child and require its successful NATIVE_PLUGIN_CHILD_DONE result.

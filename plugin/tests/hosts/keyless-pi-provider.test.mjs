@@ -61,9 +61,13 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
   t.diagnostic(JSON.stringify({native_entry:native.entry,...completed}));
   assert.equal(completed.code,0,'retain the pinned CLI zero-exit convention');
   assert.equal(completed.signal,null);
-  assert.throws(()=>assertNativeCompletion('pi',completed,'NATIVE_PLUGIN_MODEL_DONE'),error=>
-   error.code==='NATIVE_HOST_MODEL_FAILED'&&error.cause.stopReason==='error'
-    &&error.message.startsWith('step=admit Pi keyless Responses provider: No API key for provider: fixture'));
+  assert.throws(()=>assertNativeCompletion('pi',completed,'NATIVE_PLUGIN_MODEL_DONE'),error=>{
+   assert.equal(error.code,'NATIVE_HOST_MODEL_FAILED');
+   assert.equal(error.cause.stopReason,'error');
+   assert.match(error.cause.errorMessage,/^step=admit Pi keyless Responses provider: No API key for provider: fixture/);
+   assert.ok(error.message.startsWith('step=validate native pi completion: '+error.cause.errorMessage));
+   return true;
+  });
   assert.equal(requests,0,'no credential/fetch shim may silently admit a different native request');
  } finally {
   try {await scope.close();}

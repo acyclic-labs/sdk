@@ -10,7 +10,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 /// Every coordination tool, by the name its MCP server advertises.
-pub const TOOLS: [&str; 6] = ["spawn", "send", "wait", "archive", "cancel", "resume"];
+const TOOLS: [&str; 6] = ["spawn", "send", "wait", "archive", "cancel", "resume"];
 /// Waits parked at once, bounded like the host's request concurrency.
 const WAITS: usize = 16;
 /// Bound of one request line.

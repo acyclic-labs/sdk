@@ -6,21 +6,41 @@ import {randomUUID} from 'node:crypto';
 import {readFile,realpath,stat,writeFile} from 'node:fs/promises';
 import {dirname,delimiter,isAbsolute,join,relative,sep,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost,nativeProvider} from './native-host.mjs';
 
+const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
+function nativeFailure(host,code,message,cause) {
+ throw Object.assign(new Error('step=validate native '+host+' completion: '+message+
+  '; recovery='+completionRecovery,{cause}),{code});
+}
+
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer,selection) {
  assert.equal(result.code,0,result.stderr);
- let terminal,text,completed=false,initialized=false;
+ let terminal,text,builtinPlugins,completed=false,initialized=false;
  for(const line of result.stdout.split('\n')) {
   if(!line)continue;
   const event=JSON.parse(line);
   if(host==='codex') {
    if(event.type==='turn.started') {text=undefined;completed=false;}
    if(event.type==='turn.failed'||event.type==='error') {
-    const error=new Error('native Codex turn failed',{cause:event});error.code='NATIVE_HOST_MODEL_FAILED';throw error;
+    nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Codex turn failed',event);
+   }
+   if(event.type==='item.completed') {
+    const item=event.item;
+    if(item.type==='command_execution'||item.type==='mcp_tool_call') {
+     try {
+      toolOutcome(item,undefined,completionRecovery);
+      assert.equal(item.status,'completed','native tool terminal is not successful');
+      if(item.type==='command_execution')assert.equal(item.exit_code,0,'native shell exit is missing or unsuccessful');
+     } catch(cause) {
+      nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Codex '+item.type+' failed (status='+item.status+
+       ', exit_code='+item.exit_code+')',{item,cause});
+     }
+    }
    }
    if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
    if(event.type==='turn.completed')completed=true;
@@ -31,23 +51,45 @@ export function assertNativeCompletion(host,result,answer,selection) {
     const count=selection.installed?1:0;
     assert.ok(Array.isArray(event.plugins),'native Claude plugin set differs from paired mode');
     assert.ok(Array.isArray(event.mcp_servers),'native Claude MCP connections differ from paired mode');
-    assert.equal(event.plugins.length,count,'native Claude plugin set differs from paired mode');
+    // The pinned native host advertises its compiled-in plugins separately
+    // from installed plugins. Retain their exact identities and require the
+    // same native set in both legs; no user plugin is a baseline exemption.
+    builtinPlugins=0;
+    let installedPlugins=0;
+    for(const plugin of event.plugins) {
+     const bit=plugin.name==='agents-md'?1:plugin.name==='plugin-authoring'?2:0;
+     if(bit&&plugin.path==='builtin'&&plugin.source===plugin.name+'@builtin') {
+      assert.equal(builtinPlugins&bit,0,'duplicate native Claude builtin plugin');
+      builtinPlugins|=bit;
+     } else {
+      assert.equal(plugin.name,'acyclic','native Claude plugin set differs from paired mode');
+      installedPlugins++;
+     }
+    }
+    assert.equal(installedPlugins,count,'native Claude plugin set differs from paired mode');
     assert.equal(event.mcp_servers.length,count,'native Claude MCP connections differ from paired mode');
     if(selection.installed) {
-     assert.equal(event.plugins[0].name,'acyclic','native Claude plugin set differs from paired mode');
      assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
      assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
     }
    }
-   if(event.type==='result')terminal=event;
+   if(event.type==='user'&&Array.isArray(event.message?.content)) {
+    for(const part of event.message.content)if(part.type==='tool_result'&&part.is_error===true) {
+     nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
+    }
+   }
+   if(event.type==='result') {
+    if(event.subtype!=='success'||event.is_error!==false) {
+     nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Claude turn failed',event);
+    }
+    terminal=event;
+   }
   } else if(host==='pi') {
    const message=event.type==='message_end'?event.message:undefined;
    if(message?.role!=='assistant')continue;
    terminal=message;
    if(message.stopReason==='error') {
-    const error=new Error(message.errorMessage,{cause:message});
-    error.code='NATIVE_HOST_MODEL_FAILED';
-    throw error;
+    nativeFailure(host,'NATIVE_HOST_MODEL_FAILED',message.errorMessage,message);
    }
   } else {
    throw new Error('step=validate native terminal; recovery=select codex, claude-code or pi');
@@ -57,22 +99,21 @@ export function assertNativeCompletion(host,result,answer,selection) {
  else if(host==='claude-code') {
   if(selection)assert.equal(initialized,true,'native Claude initialization missing');
   assert.ok(terminal,'native Claude terminal missing');
-  assert.equal(terminal.subtype,'success','native Claude turn failed');
-  assert.equal(terminal.is_error,false,'native Claude turn failed');
   text=terminal.result;
  } else {
   assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
   text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
  }
  assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
+ return builtinPlugins;
 }
 
 
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
-// permission hook, which the owner's approval policy answers; Claude Code
-// approves the same coordination tools by its native allow list.
+// spawn permission hook, which the owner's approval policy answers; other
+// prompts stay native. Claude Code uses its native coordination allow list.
 export const nativeModel=(host,live)=>live?.model??(host==='claude-code'?'claude-haiku-5-5':'tiny');
 
 // Query the host's installed state through the shipping native exchange.
