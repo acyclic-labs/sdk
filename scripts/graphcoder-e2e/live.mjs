@@ -10,14 +10,13 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
-import { fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
-  assert.equal(result.code, 0, `GraphCoder exit ${result.code}: ${result.stderr}`);
-  assert.equal(result.signal, null, "GraphCoder was interrupted");
+  executionSucceeded(result);
   let value;
   if (format === "text") value = result.stdout.replace(/\r?\n$/, "");
   else {

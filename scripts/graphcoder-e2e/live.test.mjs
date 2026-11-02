@@ -6,12 +6,39 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
+const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
 import { answer, requireTools, runCase } from "./live.mjs";
+
+test("successful execution cannot erase the original returned native cause", () => {
+  for (const original of [captured["text-responses"], captured["jsonl-reopen"]]) executionSucceeded(original);
+  // Mutate only the original failure's independent exit/ACK observations.
+  // Successful stdout comes from its separately retained shipping contract.
+  // Neither can promote a retained native failure to a successful execution.
+  for (const [format, successful] of [["text", captured["text-responses"]], ["jsonl", captured["jsonl-reopen"]]]) {
+    for (const field of ["execution_failure", "startup_rejection"]) {
+      for (const acknowledged of [false, true]) {
+        const failure = nativeFailure.termination.execution_failure;
+        const termination = { ...nativeFailure.termination, execution_failure: undefined,
+          [field]: failure, report_acknowledged: acknowledged,
+          ...(acknowledged ? { report_outcome: "empty", missing_wait_report: false } : {}) };
+        assert.throws(() => answer({ ...successful, termination }, format, undefined, "e2e"), error => {
+          assert.equal(error.actual, failure, "retain the exact native cause as the failed assertion operand");
+          assert.match(error.message, /^selected native execution reported failure/);
+          return true;
+        });
+      }
+    }
+  }
+  assert.throws(() => executionSucceeded(nativeFailure), error => {
+    assert.equal(error.actual, nativeFailure.termination.execution_failure);
+    return true;
+  });
+});
 
 test("reply-only cases reject recorded tool failure despite successful native completion", {
   skip: process.platform === "win32" && "the protocol child uses an executable POSIX script",

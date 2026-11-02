@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Spool } from "./process.mjs";
-import { messageReply } from "./assertions.mjs";
+import { executionSucceeded, messageReply } from "./assertions.mjs";
 
 // Keep the shipping JSONL connection open across turns. Each next prompt follows
 // the previous turn's committed reply.
@@ -47,8 +47,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
   // original spool's drained terminal event before admitting the conversation.
   try { await replies.next(() => false); }
   catch (error) { if (error.kind !== "eof") throw error; }
-  assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}`);
-  assert.equal(result.signal, null, "step=verify conversation retirement");
+  executionSucceeded(result);
   assert.equal(replies.sequence, input.turns.length,
     "step=verify one committed reply per prompt");
 }

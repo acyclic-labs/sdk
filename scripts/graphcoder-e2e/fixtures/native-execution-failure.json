@@ -1,0 +1,25 @@
+{
+  "source_main": "611cd6aecb235de6f4f026942380765c09779b20",
+  "original_matrix_sha256": "bfdb95e7ca4e14ea0895a9515732c07b465f548f6fb57bc26e7e3482ac490517",
+  "projection": "Original Windows fork-merge sample 2 returned native cause and independent process exit; argv and transcript locations omitted.",
+  "capture": {
+    "code": 1,
+    "signal": null,
+    "stdout": "{\"id\":\"spawn\",\"inbox\":1,\"text\":\"SPAWNED\"}\n",
+    "stderr": "",
+    "termination": {
+      "report_requested": false,
+      "generation": "6da3f2bc95441428e4145dca8d5e3bb4",
+      "report_outcome": "write-failed",
+      "report_cause": "execution-failed",
+      "report_acknowledged": false,
+      "stuck_on": [],
+      "missing_wait_report": true,
+      "execution_failure": {
+        "phase": "execution",
+        "cause": "storage failure: stream unavailable; guest handler failed: storage failure: native mount startup failed: native mount driver failed: listing MountPath { components: [] }: operation would block",
+        "raw_os_error": null
+      }
+    }
+  }
+}
