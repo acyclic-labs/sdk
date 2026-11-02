@@ -83,6 +83,13 @@ mod recovery;
 use codec::*;
 use recovery::*;
 
+// Forwarding transports retain their original routing, watch and trailer
+// ownership while sharing the client's admission and settlement checks.
+pub use recovery::{
+    ForkAdmitted, decode_fork_admissions, decode_recovered, settled_change, settled_checkpoint,
+    settled_fork, settled_machine, validate_recovered_admission,
+};
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod credential_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
