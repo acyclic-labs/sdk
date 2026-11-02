@@ -1,4 +1,4 @@
-//! Shared pull ownership for native and WebAssembly streaming boundaries.
+//! Pull ownership for WebAssembly streaming boundaries.
 
 use futures::stream::LocalBoxStream;
 
@@ -21,6 +21,9 @@ impl<T, E: Clone> PullCursor<T, E> {
         }
     }
     /// Pulls one value; close interrupts the pending source poll.
+    /// Failed ownership, including an outstanding or abandoned pull, returns
+    /// the supplied error instead of EOF. A source failure is returned before
+    /// closing its cursor.
     pub async fn next(&self) -> Result<Option<T>, E> {
         let mut cancellation = self.cancel.subscribe();
         let Some(mut stream) = self
@@ -29,8 +32,8 @@ impl<T, E: Clone> PullCursor<T, E> {
             .map_err(|_| self.unavailable.clone())?
             .take()
         else {
-            // An outstanding or abandoned pull owns the empty slot. Only
-            // original EOF or explicit close can establish a terminal end.
+            // An outstanding or abandoned pull owns the empty slot. Its
+            // absence alone cannot establish a terminal end.
             return if *cancellation.borrow_and_update() {
                 Ok(None)
             } else {
