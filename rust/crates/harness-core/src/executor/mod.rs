@@ -69,6 +69,9 @@ pub use model_cost::{
 #[cfg(feature = "metrics-export")]
 pub mod metrics;
 pub(crate) mod model_usage;
+/// Original research read receipts and bounded artifact source.
+#[cfg(feature = "research")]
+pub mod read_set;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page};

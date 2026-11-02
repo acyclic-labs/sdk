@@ -99,6 +99,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         authorization.1,
                         None,
                     ),
+                    None,
                 )
                 .await?;
             bounded_io::retain(&binding, Some(io)).await?;

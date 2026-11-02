@@ -3,7 +3,7 @@
 //! This is partial coverage: shell, context, hooks, searches and failed reads
 //! are not reconstructed. Neither a request nor hydration proves an actual
 //! read. A complete read set needs evidence from those original producers.
-use super::{ExecutionEvent, ExecutionJournal, OperationId, export_error};
+use super::{ExecutionEvent, ExecutionJournal, OperationId};
 use crate::{
     Error, Result,
     executor::ExecutionRecordQuery,
@@ -14,6 +14,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, io::Write};
+
+fn export_error(error: impl std::fmt::Display) -> Error {
+    Error::Invalid(format!(
+        "read-set projection failed: {error}; recovery: rerun executor::read_set with the original indexed journal and authenticated cut"
+    ))
+}
 
 // Project only these original fields. The original terminal producer already
 // validated the result; ignored arguments/text/media are never rebuilt in a
@@ -274,6 +280,18 @@ impl<W: Write> Writer<W> {
         for observation in &page.observations {
             line(&mut self.writer, observation)?;
         }
+        #[derive(Serialize)]
+        struct Cursor {
+            kind: &'static str,
+            end: u64,
+        }
+        line(
+            &mut self.writer,
+            &Cursor {
+                kind: "cursor",
+                end: page.end,
+            },
+        )?;
         self.next = Some(page.end);
         Ok(())
     }
@@ -302,26 +320,55 @@ impl<W: Write> Writer<W> {
     }
 }
 
+/// Pulls the same version-1 artifact directly into a streaming publisher.
+/// Retained state is one source page and one encoded page, independent of the
+/// cut's size. Every page emits its exclusive cursor, including empty pages.
+/// The final source EOF is possible only after `Writer::finish` succeeds.
+pub fn source<'a>(
+    journal: &'a dyn ExecutionJournal,
+    agent: &'a str,
+    operation: OperationId,
+    cut: u64,
+) -> Result<impl crate::conversation::ContentSource + 'a> {
+    use futures::TryStreamExt;
+    let writer = Writer::new(Vec::new(), agent, operation, cut)?;
+    let stream = futures::stream::try_unfold(Some(writer), move |state| async move {
+        let Some(mut writer) = state else {
+            return Ok(None);
+        };
+        if !writer.writer.is_empty() {
+            return Ok(Some((std::mem::take(&mut writer.writer), Some(writer))));
+        }
+        let next = writer.next.ok_or_else(|| {
+            std::io::Error::other(
+                "read-set source is poisoned; recovery: restart from the authenticated cut",
+            )
+        })?;
+        if next == cut {
+            return writer
+                .finish()
+                .map(|bytes| Some((bytes, None)))
+                .map_err(std::io::Error::other);
+        }
+        let page = page(journal, agent, operation, next, cut)
+            .await
+            .map_err(std::io::Error::other)?;
+        writer.append(&page).map_err(std::io::Error::other)?;
+        Ok::<_, std::io::Error>(Some((std::mem::take(&mut writer.writer), Some(writer))))
+    });
+    Ok(Box::pin(stream).into_async_read())
+}
+
 /// Projects one original read receipt into the existing edges table. The
 /// enclosing operation identifies the activity that used this generation;
 /// the source is an immutable reference, never a current path lookup.
+#[cfg(feature = "metrics-export")]
 pub fn project(
     agent: &str,
     operation: OperationId,
     observation: &Observation,
-) -> Result<super::Batch> {
-    let mut row = super::Row::new(
-        agent,
-        Some(operation),
-        observation.sequence,
-        "journal",
-        "file_read",
-    );
-    row.source = Some(serde_json::to_string(&observation.source).map_err(export_error)?);
-    row.source_type = Some("file_generation");
-    row.target = Some(agent.into());
-    row.target_type = Some("agent");
-    super::batch(super::Table::Edges, &[row])
+) -> Result<super::metrics::Batch> {
+    super::metrics::read_observation(agent, operation, observation)
 }
 
 #[cfg(test)]
@@ -481,7 +528,72 @@ mod tests {
                 .split(|byte| *byte == b'\n')
                 .filter(|line| !line.is_empty())
                 .count(),
-            4
+            6
+        );
+        // The actual artifact source feeds the original publisher, rather
+        // than a whole-turn buffer or another checkpoint writer.
+        let bindings = storage.content_bindings();
+        let publisher = bindings
+            .writer
+            .as_ref()
+            .ok_or_else(|| export_error("missing publisher"))?;
+        let mut artifact_source = source(journal.as_ref(), "a", operation, cut)?;
+        let (artifact, _) = publisher
+            .stage_stream_once(
+                OperationId::new(),
+                "research/reads.jsonl",
+                &mut artifact_source,
+                "application/x-ndjson",
+                "reads.jsonl",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        let published = storage.read(&artifact).await?;
+        let records = published
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(serde_json::from_slice::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(export_error)?;
+        assert_eq!(
+            records
+                .last()
+                .ok_or_else(|| export_error("missing closure"))?["kind"],
+            "end"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|row| row.get("source").is_some())
+                .count(),
+            2
+        );
+        let mut incomplete = source(journal.as_ref(), "a", operation, cut + 1)?;
+        let refused = OperationId::new();
+        assert!(
+            publisher
+                .stage_stream_once(
+                    refused,
+                    "research/incomplete.jsonl",
+                    &mut incomplete,
+                    "application/x-ndjson",
+                    "incomplete.jsonl",
+                    crate::conversation::ContentAccess::default()
+                )?
+                .await
+                .is_err()
+        );
+        assert!(
+            publisher
+                .observe_staged_once(
+                    refused,
+                    None,
+                    4096,
+                    crate::conversation::ContentAccess::default()
+                )?
+                .await?
+                .0
+                .is_none()
         );
         Ok(())
     }
