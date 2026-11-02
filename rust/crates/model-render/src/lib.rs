@@ -6,13 +6,15 @@
 //! bytes, has no I/O except the caller's writer, and never looks at another item
 //! to choose a segment. Persist [`WireItem`] in the conversation stream; do not
 //! reconstruct it from display events. Epoch selection and paging belong to
-//! the stream reader, so this crate never owns or scans conversation history.
+//! the stream reader, so this crate never owns conversation history. Dependency selection examines
+//! only the caller's bounded, admitted projection.
 #![deny(
     clippy::disallowed_types,
     clippy::disallowed_methods,
     clippy::disallowed_macros
 )]
 
+pub mod dependencies;
 mod fields;
 mod item;
 mod notice;

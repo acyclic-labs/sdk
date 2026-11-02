@@ -147,6 +147,19 @@ proptest! {
         text in ".{0,32}", raw_cut in any::<usize>(), raw_maximum in any::<usize>(),
     ) {
         let (source, units) = transcript(&batches, &text);
+        // The selector borrows dependency identities and retains no native
+        // payload. Cancellation must end at its own charged work boundary.
+        #[cfg(feature = "filesystem")]
+        {
+            let cancel = acyclic_fs::CancellationToken::new();
+            cancel.cancel();
+            let io = crate::executor::PreparationIo::from_budget(owned_context_budget(), &cancel).unwrap();
+            let refused = crate::executor::with_history_io(Some(&io), |work| {
+                super::super::compaction::mandatory_messages(&source, source.messages.len(), work)
+            });
+            prop_assert!(refused.is_err());
+            prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+        }
         let cut = 1 + raw_cut % (source.messages.len() - 1);
         let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
         let policy = ThresholdCompaction { recent_tokens: (source.messages.len() - cut) as u32, ..ThresholdCompaction::default() };

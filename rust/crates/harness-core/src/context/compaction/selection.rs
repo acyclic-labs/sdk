@@ -1,6 +1,6 @@
 use super::*;
 
-use super::exchanges::{Group, exchange_groups};
+use super::exchanges::{Group, exchange_groups, mandatory_selection};
 
 impl ThresholdCompaction {
     /// Plans a bounded projection preserving complete tool exchanges.
@@ -109,45 +109,6 @@ pub(in crate::context) fn mandatory_flags(
     let groups = exchange_groups(context, quota)?;
     let selected = mandatory_selection(context, covered, &groups, quota)?;
     Ok((selected, groups))
-}
-
-fn mandatory_selection(
-    context: &Context,
-    covered: usize,
-    groups: &[Group],
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<Vec<bool>> {
-    let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
-    for (position, message) in context.messages.iter().enumerate() {
-        compaction_step(quota)?;
-        let mut configuration = false;
-        for part in message.content.parts() {
-            compaction_step(quota)?;
-            configuration |= matches!(part, ModelContentPart::Configuration { .. });
-        }
-        selected.push(
-            context.current_input_index.map(|index| index as usize) == Some(position)
-                || position + 1 == context.messages.len()
-                || position >= covered
-                || message.content.contains_project_instructions()
-                || message.role == crate::model::ModelRole::System
-                || configuration
-                || message.content.contains_native_media(),
-        );
-    }
-    // Components are flattened. First select every selected member's root,
-    // then select its other members without retaining unrelated interior text.
-    for (position, group) in groups.iter().enumerate() {
-        compaction_step(quota)?;
-        let keep = selected[position];
-        selected[group.root] |= keep;
-    }
-    for (position, group) in groups.iter().enumerate() {
-        compaction_step(quota)?;
-        let keep = selected[group.root];
-        selected[position] |= keep;
-    }
-    Ok(selected)
 }
 
 pub(crate) fn mandatory_messages(
