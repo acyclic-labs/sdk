@@ -313,6 +313,23 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 out.relation(activity, "http://www.w3.org/ns/prov#used", &request)?;
             }
         }
+        if batch.table == Table::ModelCalls {
+            if let Some(digest) = text(batch, "request_body_digest", row)? {
+                out.text(
+                    &observation,
+                    "urn:acyclic:research:requestBodyDigest",
+                    digest,
+                )?;
+            }
+            let bytes = column::<UInt64Array>(batch, "request_body_bytes")?;
+            if !bytes.is_null(row) {
+                out.unsigned(
+                    &observation,
+                    "urn:acyclic:research:requestBodyBytes",
+                    bytes.value(row),
+                )?;
+            }
+        }
         if matches!(
             batch.table,
             Table::Turns | Table::ToolCalls | Table::Edges | Table::Outcomes
@@ -506,6 +523,23 @@ mod tests {
                 "http://www.w3.org/ns/prov#used" && triple.object.as_ref() == node(&source).into()));
             prop_assert!(!reads.iter().any(|triple| triple.subject.as_ref() == node(&source).into()
                 && triple.predicate.as_str() == "http://www.w3.org/ns/prov#wasGeneratedBy"));
+
+            let mut model = Row::new(&path, Some(crate::OperationId::from_bytes([7;16])),
+                4, "journal", "completed");
+            model.step = Some(0);
+            model.purpose = Some("response");
+            model.request_digest = Some("generated-canonical-request".into());
+            model.request_body_digest = Some(reference.clone());
+            model.request_body_bytes = Some(0);
+            let mut bytes = Vec::new();
+            write(&batch(Table::ModelCalls, &[model])?, &mut bytes)?;
+            let model = graph(&bytes)?;
+            prop_assert!(model.iter().any(|triple| triple.predicate.as_str() ==
+                "urn:acyclic:research:requestBodyDigest" && matches!(&triple.object,
+                    Term::Literal(value) if value.value() == reference)));
+            prop_assert!(model.iter().any(|triple| triple.predicate.as_str() ==
+                "urn:acyclic:research:requestDigest" && matches!(&triple.object,
+                    Term::Literal(value) if value.value() == "generated-canonical-request")));
         }
     }
 }

@@ -1,6 +1,6 @@
 pub(crate) mod arguments;
-pub(crate) mod cache;
 mod call;
+pub(crate) mod encoding;
 pub(crate) mod gemini;
 mod gemini_results;
 pub(crate) mod image;

@@ -21,7 +21,7 @@ pub(crate) fn generate<'a>(
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let encoded = encode(provider,request,&names,None,&origin).await?;
-        let events = generate_encoded(provider, request, dispatch, encoded.bytes.into(), encoded.cache, auth, names);
+        let events = generate_encoded(provider, request, dispatch, encoded.map_bytes(bytes::Bytes::from), auth, names);
         futures::pin_mut!(events);
         while let Some(event) = events.next().await { yield event?; }
     })
@@ -32,12 +32,12 @@ pub(crate) fn generate_encoded<'a>(
     provider: &'a ResolvedModel,
     request: &'a PreparedModelRequest,
     dispatch: ModelDispatch,
-    body: bytes::Bytes,
-    cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
+    encoded: projection::encoding::Encoded<bytes::Bytes>,
     auth: (Option<Cow<'a, str>>, Option<String>),
     names: crate::tool_names::Names<'a>,
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
     async_stream::try_stream! {
+        let projection::encoding::Encoded { bytes: body, cache, request_body } = encoded;
         let input_bytes = body.len();
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
@@ -55,7 +55,7 @@ pub(crate) fn generate_encoded<'a>(
         while let Some(event) = events.next().await {
             let mut event = event.map_err(crate::diagnostic::rejection)?;
             if let ModelEvent::Completed { metadata } = &mut event {
-                projection::cache::attach(metadata, cache)?;
+                projection::encoding::attach(metadata, cache, request_body)?;
                 provider.observe(request, input_bytes, metadata)?;
             }
             yield event;
@@ -137,10 +137,10 @@ pub(crate) async fn encode(
     names: &crate::tool_names::Names<'_>,
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
     origin: &acyclic_harness_core::model::ReasoningOrigin,
-) -> Result<projection::cache::Encoded> {
+) -> Result<projection::encoding::Encoded> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
-    projection::cache::encode(&body, provider, origin)
+    projection::encoding::encode(&body, provider, origin)
 }
 
 pub(crate) fn request_headers(

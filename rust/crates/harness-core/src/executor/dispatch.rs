@@ -592,6 +592,8 @@ impl StockExecution<'_> {
                             ttft_ns: clock.ttft_ns(),
                             #[cfg(feature = "research")]
                             cache: ModelCacheObservation::reported(metadata),
+                            #[cfg(feature = "research")]
+                            request_body: ModelRequestBody::reported(metadata),
                         })
                     }
                     _ => None,

@@ -113,6 +113,7 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
         system_fingerprint: None,
         ttft_ns: None,
         cache: None,
+        request_body: None,
     }
 }
 
@@ -494,7 +495,13 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
             None,
         )?
         .await?;
-    let metadata = json!({"usage":{"input_tokens":0,"output_tokens":17},"provider_request_id":"generated-request","finish_reason":"stop"});
+    // Generated internal encoder facts, not a captured provider reply.
+    let body = crate::executor::ModelRequestBody {
+        version: crate::executor::ModelRequestBody::VERSION,
+        digest: *blake3::hash(b"generated original HTTP bytes").as_bytes(),
+        bytes: b"generated original HTTP bytes".len() as u64,
+    };
+    let metadata = json!({"usage":{"input_tokens":0,"output_tokens":17},"provider_request_id":"generated-request","finish_reason":"stop", "request_body":body});
     let completed = ModelEvent::Completed {
         metadata: metadata.clone(),
     };
@@ -518,6 +525,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         system_fingerprint: None,
         ttft_ns: None,
         cache: None,
+        request_body: Some(body),
     };
     model_observation::append(
         journal.as_ref(),
@@ -553,6 +561,14 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     let page =
         crate::executor::usage_page(journal.as_ref(), operation, source().agent_path, 0).await?;
     assert_eq!(page.items.iter().filter(|usage| usage.completed).count(), 1);
+    assert_eq!(
+        page.items
+            .iter()
+            .find(|usage| usage.completed)
+            .unwrap()
+            .request_body,
+        Some(body)
+    );
     super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
         None
     })
@@ -608,6 +624,40 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     }
     let unmeasured = call.settlement(journal.as_ref(), &unmeasured).await?;
     assert!(unmeasured.usage.is_none(), "unknown accounting is not zero");
+    let mut wrong_body =
+        serde_json::from_value::<ModelUsageRecord>(serde_json::to_value(&usage).map_err(invalid)?)
+            .map_err(invalid)?;
+    wrong_body.request_body.as_mut().unwrap().digest[0] ^= 1;
+    let wrong_body_file = stage_json(
+        journal.as_ref(),
+        operation,
+        "wrong-body-usage",
+        &wrong_body,
+        None,
+    )
+    .await?;
+    let mut body_changed = terminal.clone();
+    match &mut body_changed.event {
+        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+            *usage = Some(wrong_body_file)
+        }
+        _ => unreachable!("original model terminal"),
+    }
+    assert!(
+        call.settlement(journal.as_ref(), &body_changed)
+            .await
+            .is_err()
+    );
+    assert!(
+        crate::executor::model_usage::project_record(
+            journal.as_ref(),
+            operation,
+            source().agent_path,
+            &body_changed
+        )
+        .await
+        .is_err()
+    );
     let mut mismatched = usage;
     mismatched.tokens.output = Some(18);
     let wrong = stage_json(

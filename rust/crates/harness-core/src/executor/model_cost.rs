@@ -89,12 +89,12 @@ pub struct ModelCostEstimate<'a> {
     pub token_nano_units: Option<u64>,
 }
 
-/// Version-two usage-file row, retaining the original journal record's
+/// Version-three usage-file row, retaining the original journal record's
 /// dispatch identity and reported counter conventions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageProjection<'a> {
-    /// Usage-file format, currently two; distinct from the journal record format.
+    /// Usage-file format, currently three; distinct from the journal record format.
     pub version: u32,
     /// Original journal record, borrowed while writing and owned after decoding.
     pub usage: Cow<'a, ModelUsageRecord>,
@@ -104,7 +104,7 @@ pub struct ModelUsageProjection<'a> {
 
 impl ModelUsageProjection<'_> {
     /// Usage-file layout, distinct from the source journal and aggregate layouts.
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 }
 
 fn currency_valid(currency: &str) -> bool {
@@ -643,6 +643,7 @@ mod tests {
             system_fingerprint: None,
             ttft_ns: None,
             cache: None,
+            request_body: None,
         }
     }
 

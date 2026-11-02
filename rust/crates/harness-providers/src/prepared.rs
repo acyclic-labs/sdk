@@ -6,8 +6,7 @@ use bytes::Bytes;
 /// and provider projection happen once, before counting or generation.
 pub(crate) struct PreparedInput {
     pub request: PreparedModelRequest,
-    pub generation: Bytes,
-    pub cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
+    pub generation: projection::encoding::Encoded<Bytes>,
     count: Bytes,
 }
 
@@ -26,12 +25,11 @@ impl PreparedInput {
         let mut files = crate::files::resolve(&provider.files, request.request(), None).await?;
         let body =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let encoded = projection::cache::encode(&body, provider, &origin)?;
+        let encoded = projection::encoding::encode(&body, provider, &origin)?;
         let count = counting::wire::body(body, &provider.model.name, spec.adapter)?.into();
         Ok(Self {
             request,
-            generation: encoded.bytes.into(),
-            cache: encoded.cache,
+            generation: encoded.map_bytes(Bytes::from),
             count,
         })
     }

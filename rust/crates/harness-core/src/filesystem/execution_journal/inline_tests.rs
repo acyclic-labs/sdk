@@ -431,6 +431,8 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         ttft_ns: None,
         #[cfg(feature = "research")]
         cache: None,
+        #[cfg(feature = "research")]
+        request_body: None,
         tokens: crate::executor::ModelTokenUsage::reported(match &completed {
             ModelEvent::Completed { metadata } => metadata,
             _ => unreachable!(),

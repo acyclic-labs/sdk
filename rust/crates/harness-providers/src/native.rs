@@ -23,10 +23,7 @@ async fn encode(
     names: &crate::tool_names::Names<'_>,
     auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
-) -> Result<(
-    bytes::Bytes,
-    Option<acyclic_harness_core::executor::ModelCacheObservation>,
-)> {
+) -> Result<crate::projection::encoding::Encoded<bytes::Bytes>> {
     let (key, account) = auth;
     let (mut bytes, nodes) = request.projection_shape();
     for message in &request.request().messages {
@@ -49,10 +46,12 @@ async fn encode(
         &mut allocation,
     )?;
     retain(&mut allocation, body.bytes.capacity() as u64)?;
-    Ok((
-        crate::http::owned_bytes::owned(body.bytes, allocation)?,
-        body.cache,
-    ))
+    let body = body.map_bytes(|bytes| crate::http::owned_bytes::owned(bytes, allocation));
+    Ok(crate::projection::encoding::Encoded {
+        bytes: body.bytes?,
+        cache: body.cache,
+        request_body: body.request_body,
+    })
 }
 
 fn invalid(reason: &'static str) -> Error {
@@ -180,7 +179,7 @@ pub(crate) fn generate<'a>(
                 crate::tool_names::Names::funded(request.request(), Some(work))?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
-            let (body, cache) = encode(
+            let mut encoded = encode(
                 provider,
                 request,
                 &names,
@@ -188,10 +187,10 @@ pub(crate) fn generate<'a>(
                 work,
             )
             .await?;
-            let input_bytes = body.len();
-            if cache.is_some() {
+            let input_bytes = encoded.bytes.len();
+            if encoded.cache.is_some() {
                 work.charge(WorkCounters {
-                    bytes_hashed: crate::projection::cache::hashed_bytes(provider, input_bytes),
+                    bytes_hashed: crate::projection::encoding::hashed_bytes(provider, input_bytes)?,
                     ..WorkCounters::UNCHARGED
                 })?;
             } else {
@@ -199,7 +198,7 @@ pub(crate) fn generate<'a>(
             }
             let response = dispatch::send(
                 provider,
-                body.clone(),
+                encoded.bytes.clone(),
                 dispatch_id,
                 auth.0.as_deref(),
                 auth.1.as_deref(),
@@ -210,17 +209,17 @@ pub(crate) fn generate<'a>(
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
-                    let response = attempt.exchange(provider, &body, dispatch_id, &mut auth,
+                    let response = attempt.exchange(provider, &encoded.bytes, dispatch_id, &mut auth,
                         response, Some(&mut auth_custody), Some(work)).await?;
                     let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                     let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                    let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
+                    encoded.cache = encoded.cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
                         credential_scope: origin.credential_scope,
                         ..cache
                     });
                     let events = parse_response(provider, request, &names, dispatch_id, work, response,
-                        (input_bytes, cache), origin, origin_custody);
+                        encoded.map_bytes(|body| body.len()), origin, origin_custody);
                     futures::pin_mut!(events);
                     while let Some(event) = events.next().await { yield event?; }
                 }
@@ -243,16 +242,15 @@ fn parse_response<'a>(
     dispatch_id: ModelDispatch,
     work: &'a NativeMaterializationWork,
     response: crate::HttpResponse,
-    (input_bytes, cache): (
-        usize,
-        Option<acyclic_harness_core::executor::ModelCacheObservation>,
-    ),
+    encoded: crate::projection::encoding::Encoded<usize>,
     origin: acyclic_harness_core::model::ReasoningOrigin,
     origin_custody: NativeAllocation,
 ) -> impl futures::Stream<Item = Result<(ModelEvent, NativeAllocation)>> + Send + 'a {
     let maximum = provider.config.max_event_bytes;
     let adapter = provider.config.adapter;
     async_stream::try_stream! {
+            let crate::projection::encoding::Encoded { bytes: input_bytes, cache,
+                request_body } = encoded;
             let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
             parser.allocation.absorb(&mut { origin_custody })?;
             parser.state.set_origin(Some(origin))?;
@@ -291,6 +289,11 @@ fn parse_response<'a>(
                 Ok::<_, Error>((bytes.checked_add(b).ok_or_else(|| invalid("tool batch size overflow"))?, nodes.checked_add(n).ok_or_else(|| invalid("tool batch size overflow"))?))
             })?;
             let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
+            let (bytes, nodes) = if request_body.into_option().is_some() {
+                let (extra_bytes, extra_nodes) = crate::projection::encoding::BODY_METADATA_SHAPE;
+                (bytes.checked_add(extra_bytes).ok_or_else(|| invalid("body observation admission failed: byte overflow; recovery: retain the original fixed body fact"))?,
+                 nodes.checked_add(extra_nodes).ok_or_else(|| invalid("body observation admission failed: node overflow; recovery: retain the original fixed body fact"))?)
+            } else { (bytes, nodes) };
             let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
             parser.allocation.absorb(&mut admission)?;
             let restored = parser.state.restore_names(names, |length| {
@@ -306,7 +309,7 @@ fn parse_response<'a>(
                     Some(ModelEvent::Completed { metadata }) => metadata,
                     _ => Err(invalid("model completion omitted its terminal observation"))?,
                 };
-                diagnostic(crate::projection::cache::attach(metadata, cache), &mut allocation)?;
+                diagnostic(crate::projection::encoding::attach(metadata, cache, request_body), &mut allocation)?;
             }
             let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
             let retained = events.iter().try_fold(slots, |bytes, event| {

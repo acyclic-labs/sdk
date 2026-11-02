@@ -22,11 +22,37 @@ enum Reply {
 struct Counted {
     inner: ReqwestTransport,
     sent: AtomicUsize,
+    body: Mutex<Option<([u8; 32], u64)>>,
+}
+
+impl Counted {
+    fn observe(&self, request: &HttpRequest) {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        *self.body.lock().unwrap() = Some((
+            *blake3::hash(&request.body).as_bytes(),
+            request.body.len() as u64,
+        ));
+    }
+
+    fn assert_body(&self, metadata: &Value, canonical: [u8; 32]) {
+        let observed = acyclic_harness_core::executor::ModelRequestBody::reported(metadata);
+        if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+            let body = observed.expect("original serialized body observation");
+            assert_eq!(Some((body.digest, body.bytes)), *self.body.lock().unwrap());
+            assert_ne!(
+                body.digest, canonical,
+                "wire body is distinct from the canonical request"
+            );
+        } else {
+            assert!(observed.is_none());
+            assert!(metadata.get("request_body").is_none());
+        }
+    }
 }
 
 impl HttpTransport for Counted {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        self.sent.fetch_add(1, Ordering::SeqCst);
+        self.observe(&request);
         self.inner.send(request)
     }
     // Each failed exchange is the explicit model-redelivery step.
@@ -44,7 +70,7 @@ impl HttpTransport for Counted {
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        self.sent.fetch_add(1, Ordering::SeqCst);
+        self.observe(&request);
         self.inner.send_with_native_work(request, work)
     }
     fn delay_with_native_work(
@@ -135,6 +161,7 @@ fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
     let transport = Arc::new(Counted {
         inner: ReqwestTransport::new()?,
         sent: AtomicUsize::new(0),
+        body: Mutex::new(None),
     });
     Ok((
         super::provider_with(Adapter::Chat, base_url, transport.clone()),
@@ -202,8 +229,8 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
         ] {
             let (port, accepted) = serve(vec![first, Reply::Full(200, CHAT)]).await?;
             let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let (prepared, dispatch) = super::request(&provider)?;
             if native {
-                let (prepared, dispatch) = super::request(&provider)?;
                 let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
                 let baseline = work.live_allocation_bytes();
                 let mut stream = provider
@@ -212,15 +239,32 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
                 let mut completed = false;
                 while let Some(event) = stream.next().await {
                     let (event, custody) = event?;
-                    completed |= matches!(event, ModelEvent::Completed { .. });
+                    if let ModelEvent::Completed { metadata } = &event {
+                        completed = true;
+                        transport.assert_body(metadata, dispatch.request_digest);
+                    }
                     drop((event, custody));
                 }
                 assert!(completed);
                 drop(stream);
                 assert_eq!(work.live_allocation_bytes(), baseline);
+                let bytes = transport.body.lock().unwrap().unwrap().1 as usize;
+                let expected = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+                    crate::projection::encoding::hashed_bytes(&provider, bytes)?
+                } else {
+                    0
+                };
+                assert_eq!(
+                    work.receipt().bytes_hashed,
+                    expected,
+                    "recovery reuses the original body and hash"
+                );
             } else {
-                let events = generate(&provider).await?;
-                assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+                let events: Vec<_> = provider.generate(&prepared, dispatch).try_collect().await?;
+                let Some(ModelEvent::Completed { metadata }) = events.last() else {
+                    panic!("original Completed event")
+                };
+                transport.assert_body(metadata, dispatch.request_digest);
             }
             assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
             assert_eq!(accepted.load(Ordering::SeqCst), 2);

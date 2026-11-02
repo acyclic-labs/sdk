@@ -229,7 +229,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             ]);
             let request = PreparedModelRequest::prepare(source, Limits::default(), None)?;
             let shared = crate::prepared::PreparedInput::new(&provider, request).await?;
-            let generation = crate::json(&shared.generation)?;
+            let generation = crate::json(&shared.generation.bytes)?;
             assert!(crate::validate_input(adapter, &generation).is_empty());
             let turns = generation["contents"].as_array().unwrap();
             assert_eq!(turns.len(), 3);
@@ -330,7 +330,7 @@ proptest! {
                     let body = prepared.generation.clone();
                     let mut generation = None;
                     let allocated = acyclic_test_support::measure(|| {
-                        generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, prepared.cache, auth, names));
+                        generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, auth, names));
                     });
                     assert_eq!(allocated.count_total, 0);
                     // Negative control: the former erased retry frame adds one allocation.
@@ -339,13 +339,16 @@ proptest! {
                         boxed = Some(Box::pin(generation.take().unwrap()));
                     });
                     assert_eq!(allocated.count_total, 1);
-                    boxed.unwrap().try_collect::<Vec<_>>().await.unwrap();
+                    let events = boxed.unwrap().try_collect::<Vec<_>>().await.unwrap();
+                    let Some(ModelEvent::Completed { metadata }) = events.last() else { panic!("original Completed event") };
+                    let body = acyclic_harness_core::executor::ModelRequestBody::reported(metadata);
+                    assert_eq!(body, prepared.generation.request_body.into_option());
                 }
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
                 let baseline_count = provider.count_tokens(&request).await.unwrap();
                 let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();
                 assert_eq!(baseline_count, count);
-                assert_eq!(baseline_generation.bytes.as_slice(), prepared.generation.as_ref());
+                assert_eq!(baseline_generation.bytes.as_slice(), prepared.generation.bytes.as_ref());
                 // Negative control: the independent old paths require two additional reads.
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 3);
                 let original_counter = provider.config.token_counter.clone();

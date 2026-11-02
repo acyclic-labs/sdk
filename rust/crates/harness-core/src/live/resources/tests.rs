@@ -65,6 +65,7 @@ fn usage() -> ModelUsageRecord {
         provider_request_id: None,
         system_fingerprint: None,
         ttft_ns: None,
+        request_body: None,
         cache: Some(ModelCacheObservation {
             version: ModelCacheObservation::VERSION,
             credential_scope: Some([5; 32]),

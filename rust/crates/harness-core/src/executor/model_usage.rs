@@ -1,6 +1,34 @@
 //! Per-call facts borrowed from the original dispatch and completion observation.
 use super::*;
 
+/// Identity of the exact serialized generation HTTP body. This excludes the
+/// URL, headers and credentials, and is separate from the canonical request
+/// digest, semantic replay key and framed cache-prefix identity. Equality proves
+/// equal body bytes, never equal model admission or provider execution.
+/// Recorded replay may retain this historical fact without a new HTTP send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ModelRequestBody {
+    /// Original body observation format, currently one.
+    pub version: u32,
+    /// BLAKE3 of only the bytes consumed by the original HTTP send.
+    pub digest: [u8; 32],
+    /// Exact serialized body length, without HTTP framing.
+    pub bytes: u64,
+}
+
+impl ModelRequestBody {
+    /// The one layout accepted by the original encoder and readers.
+    pub const VERSION: u32 = 1;
+
+    /// Missing, malformed or unsupported original observations stay unknown.
+    pub fn reported(metadata: &Value) -> Option<Self> {
+        let body = Self::deserialize(metadata.get("request_body")?).ok()?;
+        (body.version == Self::VERSION).then_some(body)
+    }
+}
+
 /// Provider-reported token counters. Missing, malformed or contradictory values
 /// remain unknown. Input and output retain the provider's inclusive/exclusive
 /// conventions; cached and reasoning tokens are never added a second time.
@@ -98,6 +126,9 @@ pub(crate) struct ModelCallUsage<'a> {
     /// Original adapter cache policy and prefix identity, distinct from token hits.
     #[cfg(feature = "research")]
     pub cache: Option<ModelCacheObservation>,
+    /// Original final HTTP body; absent without an encoder observation.
+    #[cfg(feature = "research")]
+    pub request_body: Option<ModelRequestBody>,
 }
 
 /// Durable per-call usage view. The journal's terminal observation is the
@@ -106,7 +137,7 @@ pub(crate) struct ModelCallUsage<'a> {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
-    /// Record format, currently two; older layouts are not migrated.
+    /// Record format, currently three; older layouts are not migrated.
     pub version: u32,
     /// A terminal provider event was committed. False preserves an admitted
     /// call whose completion was not observed; its counters stay unknown.
@@ -143,11 +174,14 @@ pub struct ModelUsageRecord {
     /// Original research cache observation; absence does not mean a cache miss.
     #[serde(default)]
     pub cache: Option<ModelCacheObservation>,
+    /// Original final HTTP body; absent for ordinary or unsupported providers.
+    #[serde(default)]
+    pub request_body: Option<ModelRequestBody>,
 }
 
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 }
 
 pub(crate) fn validate(
@@ -177,6 +211,9 @@ pub(crate) fn validate(
         || record
             .cache
             .is_some_and(|cache| Some(cache) != ModelCacheObservation::reported(metadata))
+        || record
+            .request_body
+            .is_some_and(|body| Some(body) != ModelRequestBody::reported(metadata))
         || record
             .provider_request_id
             .as_deref()
@@ -273,6 +310,7 @@ pub(super) async fn project_record(
                 system_fingerprint: None,
                 ttft_ns: None,
                 cache: None,
+                request_body: None,
             }))
         }
         ExecutionEvent::Model { usage: Some(_), .. }

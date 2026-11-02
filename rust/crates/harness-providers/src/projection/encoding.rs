@@ -4,12 +4,20 @@ use crate::ResolvedModel;
 use acyclic_harness_core::{
     Result,
     executor::{ModelCacheBreakpoint, ModelCacheObservation, ModelCacheTtl},
-    model::{ModelProfileBinding, RESEARCH_CAPTURE_ENABLED, ReasoningOrigin},
+    model::{ModelProfileBinding, RESEARCH_CAPTURE_ENABLED, ReasoningOrigin, ResearchCapture},
 };
 use acyclic_model_render::{Cache, Family, Segment};
 use std::{cell::RefCell, io::Write};
 
 const DOMAIN: &[u8] = b"harness:projected-cache-prefix:v1\0";
+
+// The fixed research fact's widest encoded graph, including its metadata key:
+// 32 three-digit octets, their separators, one u64 length, and the v1 envelope.
+// This is allocation admission, not a limit on a request body.
+pub(crate) const BODY_METADATA_SHAPE: (u64, u64) = (
+    br#"{"request_body":{"version":1,"digest":[],"bytes":}}"#.len() as u64 + 32 * 3 + 31 + 20,
+    1 + 1 + 1 + 1 + 3 + 2 + 1 + 31,
+);
 
 // This tuple determines the endpoint, including model-in-URL protocols, without
 // building or parsing a second URL. Length framing separates every component.
@@ -22,18 +30,30 @@ fn identity(provider: &ResolvedModel) -> [&[u8]; 3] {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn hashed_bytes(provider: &ResolvedModel, input_bytes: usize) -> u64 {
-    DOMAIN.len() as u64
-        + input_bytes as u64
-        + identity(provider)
-            .into_iter()
-            .map(|value| 8 + value.len() as u64)
-            .sum::<u64>()
+pub(crate) fn hashed_bytes(provider: &ResolvedModel, input_bytes: usize) -> Result<u64> {
+    let refuse = || {
+        crate::invalid(
+            "wire hashing admission failed: counter overflow; recovery: use a representable original body and resolved identity",
+        )
+    };
+    let bytes = (input_bytes as u64)
+        .checked_mul(if RESEARCH_CAPTURE_ENABLED { 2 } else { 1 })
+        .and_then(|bytes| bytes.checked_add(DOMAIN.len() as u64))
+        .ok_or_else(refuse)?;
+    identity(provider)
+        .into_iter()
+        .try_fold(bytes, |bytes, value| {
+            bytes
+                .checked_add(8)
+                .and_then(|bytes| bytes.checked_add(value.len() as u64))
+                .ok_or_else(refuse)
+        })
 }
 
 struct Output {
     bytes: Vec<u8>,
     hash: blake3::Hasher,
+    body_hash: blake3::Hasher,
     breakpoint: Option<ModelCacheBreakpoint>,
 }
 
@@ -44,6 +64,7 @@ impl Write for &Writer {
         let mut output = self.0.borrow_mut();
         output.bytes.extend_from_slice(bytes);
         output.hash.update(bytes);
+        output.body_hash.update(bytes);
         Ok(bytes.len())
     }
 
@@ -83,29 +104,45 @@ impl Segment for Marked<'_, '_> {
     }
 }
 
-/// Generation bytes and fixed-size cache provenance produced together.
-#[derive(Debug)]
-pub(crate) struct Encoded {
-    pub bytes: Vec<u8>,
+/// The original generation bytes and their fixed provenance travel together.
+#[derive(Clone, Debug)]
+pub(crate) struct Encoded<B = Vec<u8>> {
+    pub bytes: B,
     pub cache: Option<ModelCacheObservation>,
+    pub request_body: ResearchCapture<acyclic_harness_core::executor::ModelRequestBody>,
+}
+
+impl<B> Encoded<B> {
+    pub fn map_bytes<T>(self, map: impl FnOnce(B) -> T) -> Encoded<T> {
+        Encoded {
+            bytes: map(self.bytes),
+            cache: self.cache,
+            request_body: self.request_body,
+        }
+    }
 }
 
 pub(crate) fn attach(
     metadata: &mut serde_json::Value,
     cache: Option<ModelCacheObservation>,
+    request_body: ResearchCapture<acyclic_harness_core::executor::ModelRequestBody>,
 ) -> Result<()> {
     if !RESEARCH_CAPTURE_ENABLED {
         return Ok(());
     }
-    let Some(cache) = cache else { return Ok(()) };
     let fields = metadata
         .as_object_mut()
-        .ok_or_else(|| crate::invalid("terminal model metadata must be an object"))?;
-    fields.insert(
-        "cache".into(),
-        serde_json::to_value(cache)
-            .map_err(|_| crate::invalid("cache observation encoding failed"))?,
-    );
+        .ok_or_else(|| crate::invalid("wire observation failed: terminal metadata is not an object; recovery: retain the original Completed metadata object"))?;
+    if let Some(cache) = cache {
+        fields.insert("cache".into(), serde_json::to_value(cache).map_err(|_| {
+            crate::invalid("wire observation failed: cache encoding; recovery: retain the original typed cache observation")
+        })?);
+    }
+    if let Some(body) = request_body.into_option() {
+        fields.insert("request_body".into(), serde_json::to_value(body).map_err(|_| {
+            crate::invalid("wire observation failed: body identity encoding; recovery: retain the original typed body observation")
+        })?);
+    }
     Ok(())
 }
 
@@ -118,6 +155,7 @@ pub(crate) fn encode(
         return Ok(Encoded {
             bytes: body.encode()?,
             cache: None,
+            request_body: ResearchCapture::unavailable(),
         });
     }
     let binding = provider.profile_binding();
@@ -131,6 +169,7 @@ pub(crate) fn encode(
     let writer = Writer(RefCell::new(Output {
         bytes: Vec::with_capacity(128),
         hash,
+        body_hash: blake3::Hasher::new(),
         breakpoint: None,
     }));
     let count = body.messages.len();
@@ -160,6 +199,13 @@ pub(crate) fn encode(
         ModelCacheTtl::ProviderManaged
     };
     Ok(Encoded {
+        request_body: ResearchCapture::capture(|| {
+            acyclic_harness_core::executor::ModelRequestBody {
+                version: acyclic_harness_core::executor::ModelRequestBody::VERSION,
+                digest: *output.body_hash.finalize().as_bytes(),
+                bytes: output.bytes.len() as u64,
+            }
+        }),
         bytes: output.bytes,
         cache: Some(ModelCacheObservation {
             version: ModelCacheObservation::VERSION,
@@ -188,6 +234,9 @@ mod tests {
                 credential_scope: Some(scope),
             };
             let (provider, _) = crate::tests::provider(Family::Responses, 200);
+            if usize::BITS == 64 {
+                prop_assert!(hashed_bytes(&provider, usize::MAX).is_err());
+            }
             let one = Request::fixture(json!({"model":"generated","input":[first]}), "input");
             let two = Request::fixture(json!({"model":"generated","input":[first,last]}), "input");
             let captured = encode(&two, &provider, &origin).unwrap();
@@ -200,14 +249,40 @@ mod tests {
             let copied = acyclic_test_support::measure(|| { std::hint::black_box(expected.clone()); });
             prop_assert!(copied.count_total > 0);
             let mut metadata = json!({"usage":{"input_tokens":17}});
-            let attached = acyclic_test_support::measure(|| { attach(&mut metadata, captured.cache).unwrap(); });
+            let attached = acyclic_test_support::measure(|| { attach(&mut metadata, captured.cache,
+                captured.request_body).unwrap(); });
             prop_assert_eq!(captured.cache.is_some(), RESEARCH_CAPTURE_ENABLED);
             if !RESEARCH_CAPTURE_ENABLED {
                 prop_assert_eq!(metadata, json!({"usage":{"input_tokens":17}}));
                 prop_assert_eq!((attached.count_total, attached.bytes_total), (0, 0));
+                prop_assert_eq!(std::mem::size_of::<ResearchCapture<acyclic_harness_core::executor::ModelRequestBody>>(), 0);
+                prop_assert!(std::mem::size_of::<Option<acyclic_harness_core::executor::ModelRequestBody>>() > 0);
+                let calls = std::cell::Cell::new(0);
+                let _ = ResearchCapture::capture(|| calls.set(calls.get() + 1));
+                prop_assert_eq!(calls.get(), 0);
+                // Eager construction is the former nonzero-work alternative.
+                let _ = { calls.set(calls.get() + 1); ResearchCapture::<()>::unavailable() };
+                prop_assert_eq!(calls.get(), 1);
                 return Ok(());
             }
             prop_assert!(attached.count_total > 0);
+
+            {
+                use acyclic_harness_core::executor::ModelRequestBody;
+                let body = captured.request_body.into_option().unwrap();
+                prop_assert_eq!(body.digest, *blake3::hash(&expected).as_bytes());
+                prop_assert_eq!(body.bytes, expected.len() as u64);
+                prop_assert_eq!(ModelRequestBody::reported(&metadata), Some(body));
+                prop_assert_ne!(body.digest, *blake3::hash(&expected[..expected.len()-1]).as_bytes());
+                let maximum = ModelRequestBody { version: ModelRequestBody::VERSION, digest:[255;32], bytes:u64::MAX };
+                let bytes = serde_json::to_vec(&json!({"request_body":maximum})).unwrap();
+                let (bytes, nodes) = acyclic_harness_core::executor::json::encoded_json_shape(&bytes);
+                prop_assert_eq!((bytes, nodes as u64), BODY_METADATA_SHAPE);
+                let mut unsupported = body;
+                unsupported.version += 1;
+                prop_assert_eq!(ModelRequestBody::reported(&json!({"request_body":unsupported})), None);
+                prop_assert_eq!(ModelRequestBody::reported(&json!({"request_body":{"version":1,"bytes":body.bytes,"digest":[]}})), None);
+            }
 
             let cache = captured.cache.unwrap();
             let one = encode(&one, &provider, &origin).unwrap();
@@ -266,11 +341,13 @@ mod tests {
                 if family == Family::Gemini {
                     // The actual Gemini projection omits the model from JSON.
                     prop_assert_eq!(&first.bytes, &second.bytes);
+                    prop_assert_eq!(first.request_body.into_option(), second.request_body.into_option());
                 }
                 provider.model.name.clone_from(&name);
                 std::sync::Arc::make_mut(&mut provider.config).base_url.push_str("/other");
                 let endpoint = projected(&provider);
                 prop_assert_eq!(&first.bytes, &endpoint.bytes);
+                prop_assert_eq!(first.request_body.into_option(), endpoint.request_body.into_option());
                 if RESEARCH_CAPTURE_ENABLED {
                     prop_assert_eq!(first.cache.unwrap().credential_scope, second.cache.unwrap().credential_scope);
                     prop_assert_ne!(first.cache.unwrap().breakpoint, endpoint.cache.unwrap().breakpoint);

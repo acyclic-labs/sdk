@@ -21,8 +21,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 /// Arrow/Parquet layout identity, independent of usage/cache producer versions.
-/// Version 2 admits scope-owned observations with nullable agent ownership.
-pub const VERSION: u32 = 2;
+/// Version 3 retains final HTTP body identity alongside nullable scope ownership.
+pub const VERSION: u32 = 3;
 
 /// Streaming W3C PROV-O projection over these same original observations.
 #[cfg(feature = "provenance-export")]
@@ -158,6 +158,8 @@ impl Table {
                 ("purpose", Utf8),
                 ("request_digest", Utf8),
                 ("provider", Utf8),
+                ("request_body_digest", Utf8),
+                ("request_body_bytes", UInt64),
                 ("replay_key", Utf8),
                 ("model", Utf8),
                 ("sampling_known", Boolean),
@@ -313,7 +315,7 @@ columns! {
     UInt64Array: u64 => [inbox, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
         latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages,
         logical_value_bytes, physical_copied_bytes, physical_shared_bytes,
-        source_committed_at_micros, memory_bytes, request_sequence, terminal_sequence];
+        source_committed_at_micros, memory_bytes, request_sequence, terminal_sequence, request_body_bytes];
     Int64Array: i64 => [seed];
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
@@ -323,7 +325,7 @@ columns! {
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
         source_account, source_origin, source_commit_id, coverage,
         machine, forked_from, physical_host, region, scope_path,
-        caller, call_log, outcome, request_commit_id, fence]
+        caller, call_log, outcome, request_commit_id, fence, request_body_digest]
 }
 
 impl<'a> Row<'a> {
@@ -636,6 +638,10 @@ fn model_call<'a>(
     row.currency = cost.currency.map(|value| value.into_owned());
     row.token_nano_units = cost.token_nano_units;
     row.cache_known = Some(usage.cache.is_some());
+    if let Some(body) = usage.request_body {
+        row.request_body_digest = Some(digest(body.digest));
+        row.request_body_bytes = Some(body.bytes);
+    }
     if let Some(cache) = usage.cache {
         row.credential_scope = cache.credential_scope.map(digest);
         row.profile_prefix_digest = cache.profile_prefix_digest.map(digest);
@@ -876,6 +882,8 @@ mod tests {
         row.input_tokens = Some(0);
         row.output_tokens = Some(u64::MAX);
         row.provider_request_id = Some("generated-column-identity".into());
+        row.request_body_digest = Some("generated-body-digest".into());
+        row.request_body_bytes = Some(0);
         row.artifact = Some("generated-column-reference".into());
         row.cache_savings_nano_units = Some(-1_234_567_890_123_456_789_012_345_678_901);
         for table in [
@@ -930,6 +938,22 @@ mod tests {
                     );
                     assert!(column("ttft_ns").is_null(0));
                     assert_eq!(
+                        column("request_body_bytes")
+                            .as_any()
+                            .downcast_ref::<UInt64Array>()
+                            .unwrap()
+                            .value(0),
+                        0
+                    );
+                    assert_eq!(
+                        column("request_body_digest")
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .unwrap()
+                            .value(0),
+                        "generated-body-digest"
+                    );
+                    assert_eq!(
                         column("cache_savings_nano_units")
                             .as_any()
                             .downcast_ref::<arrow_array::Decimal128Array>()
@@ -948,7 +972,7 @@ mod tests {
                 }
                 // A saved earlier layout cannot acquire the new ownership
                 // contract by copying its columns or erasing its version.
-                for saved_version in [None, Some("1")] {
+                for saved_version in [None, Some("1"), Some("2")] {
                     let mut metadata = original.data.schema().metadata().clone();
                     match saved_version {
                         Some(version) => {

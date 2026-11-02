@@ -173,7 +173,7 @@ proptest! {
                     // Use the original profile projector to compose the frozen
                     // effort with these independently admitted call controls.
                     freeze_effort(&provider, &mut body.fields);
-                    let encoded = super::super::cache::encode(&body, &provider, &origin).unwrap();
+                    let encoded = super::super::encoding::encode(&body, &provider, &origin).unwrap();
                     let wire = &encoded.bytes;
                     let actual: Value = serde_json::from_slice(wire).unwrap();
                     prop_assert_eq!(&actual, &former(&body));

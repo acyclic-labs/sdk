@@ -39,6 +39,57 @@ pub use sampling::ModelSampling;
 /// feature unification cannot enable only part of a capture path. Disabled
 /// branches are constant-folded out of ordinary builds.
 pub const RESEARCH_CAPTURE_ENABLED: bool = cfg!(feature = "research");
+
+/// Optional research evidence whose storage follows the shared core setting.
+/// Ordinary builds retain no value, even when an adapter's feature set differs
+/// through Cargo feature unification. Construction is lazy and performs no
+/// work when research capture is disabled.
+#[derive(Clone, Copy, Debug)]
+pub struct ResearchCapture<T> {
+    #[cfg(feature = "research")]
+    value: Option<T>,
+    #[cfg(not(feature = "research"))]
+    marker: std::marker::PhantomData<T>,
+}
+
+impl<T> ResearchCapture<T> {
+    /// No original observation was supplied.
+    pub const fn unavailable() -> Self {
+        Self {
+            #[cfg(feature = "research")]
+            value: None,
+            #[cfg(not(feature = "research"))]
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Invoke the original producer only in the explicitly enabled core mode.
+    pub fn capture(produce: impl FnOnce() -> T) -> Self {
+        #[cfg(feature = "research")]
+        {
+            Self {
+                value: Some(produce()),
+            }
+        }
+        #[cfg(not(feature = "research"))]
+        {
+            let _ = produce;
+            Self::unavailable()
+        }
+    }
+
+    /// Move the original value out; absence never certifies an empty result.
+    pub fn into_option(self) -> Option<T> {
+        #[cfg(feature = "research")]
+        {
+            self.value
+        }
+        #[cfg(not(feature = "research"))]
+        {
+            None
+        }
+    }
+}
 #[cfg(any(feature = "filesystem", feature = "tui"))]
 mod usage;
 #[cfg(any(feature = "filesystem", feature = "tui"))]

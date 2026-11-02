@@ -76,7 +76,9 @@ pub(crate) mod model_usage;
 pub mod read_set;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
-pub use model_usage::{ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page};
+pub use model_usage::{
+    ModelRequestBody, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
+};
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
