@@ -342,6 +342,98 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
             .is_err()
         );
     }
+    // Absence has a generation, without listing a directory or manufacturing a
+    // file identity. A subsequent write cannot change that original selection.
+    let reader = harness.client_reader()?;
+    let absent_path = "selection-control.ts";
+    let (absent_generation, generation_hold) = reader
+        .select_private_generation(
+            &harness.scratch,
+            "",
+            absent_path,
+            None,
+            ContentAccess::default(),
+        )?
+        .await?;
+    write(&harness, absent_path, "export default {};\n").await?;
+    let range = acyclic_fs::ByteRange {
+        offset: 0,
+        length: 1,
+    };
+    let absent = reader
+        .read_private_range(
+            &harness.scratch,
+            "",
+            absent_path,
+            Some(&absent_generation),
+            range,
+            ContentAccess::default(),
+        )?
+        .await
+        .err()
+        .expect("the original generation has no settings module");
+    assert_eq!(absent.code(), crate::wire::ErrorCode::NotFound);
+    let (present, bytes, present_hold) = reader
+        .read_private_range(
+            &harness.scratch,
+            "",
+            absent_path,
+            None,
+            range,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_ne!(present.generation, absent_generation);
+    assert_eq!(&bytes[..], b"e");
+    let no_read = Capabilities::default();
+    let denied_selection = reader
+        .select_private_generation(
+            &harness.scratch,
+            "",
+            absent_path,
+            Some(&absent_generation),
+            ContentAccess {
+                ceiling: Some(&no_read),
+                io: None,
+            },
+        )?
+        .await
+        .err()
+        .expect("an immutable selection never grants read authority");
+    assert_eq!(
+        denied_selection.code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    cancellation.cancel();
+    let before = work.receipt();
+    let cancelled = match reader.select_private_generation(
+        &harness.scratch,
+        "",
+        absent_path,
+        None,
+        ContentAccess {
+            ceiling: None,
+            io: Some(&io),
+        },
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("cancelled selection must refuse before allocating its future"),
+    };
+    assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
+    assert_eq!(work.receipt().items_examined, before.items_examined);
+    assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+    drop(present);
+    drop(present_hold);
+    drop(absent_generation);
+    drop(generation_hold);
+
     // Deferring effective-path authorization grants nothing: the selected layer
     // still requires the caller's original volume and directory read authority.
     let denied = Bindings {

@@ -283,6 +283,27 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Selects a generation under the original directory authority even when
+    /// the named path is absent. This reads neither directory entries nor file
+    /// bytes. The returned reference is an identity, never a new grant.
+    fn select_private_generation<'a, 'io>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (GenerationRef, Option<ContentHold<'io>>)>>
+    where
+        'io: 'a,
+    {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "authenticated generation selection is unavailable",
+        ))
+    }
+
     /// Reads one interval and returns the very same immutable selection.
     /// Implementations must not reselect head or derive identity by reading the
     /// rest of the body. Unsupported providers refuse before reading.
@@ -829,6 +850,21 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             io,
         )
     }
+    fn select_private_generation<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (GenerationRef, Option<ContentHold<'io>>)>>
+    where
+        'io: 'a,
+    {
+        self.bound_reader(volume, access.io)?
+            .select_private_generation(volume, granted_prefix, path, expected_generation, access)
+    }
+
     fn read_private_range<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

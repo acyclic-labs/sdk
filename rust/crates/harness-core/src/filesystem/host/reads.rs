@@ -23,7 +23,100 @@ struct SkillRead<'a> {
     access: crate::conversation::ContentAccess<'a, 'a>,
 }
 
+// The selected generation and both policy owners remain together until the
+// disclosure's final currency check. Selection does not require a file to exist.
+struct PrivateReadSelection<'a, A: 'static, O: 'static> {
+    workspace: Workspace<A, O>,
+    generation: Generation<A, O>,
+    view: super::super::access::CompiledAccess<'a>,
+    data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'a>)>,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
+    async fn recheck(&self, grant: &ContentGrant, io: &PreparationIo) -> Result<()> {
+        super::super::access::require_current(&self.workspace, &self.view.0, io).await?;
+        if let Some((workspace, view)) = &self.data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
+        }
+        grant.recheck(Some(io))
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    async fn select_private_read<'a>(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
+        io: &'a PreparationIo,
+    ) -> Result<PrivateReadSelection<'a, A, O>> {
+        self.require_private_directory(volume, grant, path, Some(io))?;
+        super::super::access::require_directory_ceiling(ceiling, volume, path, Some(io))?;
+        validate_private_read_path(path, Some(io))?;
+        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
+        drop(workspace_ref);
+        drop(workspace_hold);
+        let generation = match expected_generation {
+            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
+            None => self.current_generation(&workspace, io).await?,
+        };
+        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        let data_access = super::super::access::selected_data_access(
+            &workspace,
+            &generation,
+            grant.policy_scope(),
+            None,
+            io,
+        )
+        .await?;
+        if let Some((_, view)) = &data_access {
+            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
+            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        }
+        bounded_io::retain(&generation, Some(io)).await?;
+        Ok(PrivateReadSelection {
+            workspace,
+            generation,
+            view,
+            data_access,
+        })
+    }
+
+    /// Pins the generation used to resolve a private path, including its
+    /// absence, under the same authority as a range read. No entries or file
+    /// bodies are read. Later reads must still present their original grant.
+    ///
+    /// # Errors
+    /// Refuses a foreign generation, a cancelled operation, or a path denied by
+    /// the signed directory grant, caller ceiling or either policy owner.
+    pub async fn select_private_generation(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<GenerationRef> {
+        let temporary;
+        let io = if let Some(io) = access.io {
+            io
+        } else {
+            temporary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &temporary
+        };
+        let selected = self
+            .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
+            .await?;
+        selected.recheck(grant, io).await?;
+        self.generation_ref_id(selected.generation.id(), access.io)
+    }
+
     /// Resolves a host-owned immutable publication, then uses the same selected
     /// range reader as execution payloads. Only the internal owner may choose
     /// this path; no delegated directory grant can reach internal storage.
@@ -333,9 +426,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<(acyclic_stream::OwnedBytes, GenerationId, u64)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
-        self.require_private_directory(volume, grant, path, io)?;
-        super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
-        validate_private_read_path(path, io)?;
         let unmeasured;
         let io = if let Some(io) = io {
             io
@@ -343,28 +433,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace = self.open(&workspace_ref, Some(io)).await?;
-        let generation = match expected_generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
-        };
-        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        let data_access = super::super::access::selected_data_access(
-            &workspace,
-            &generation,
-            grant.policy_scope(),
-            None,
-            io,
-        )
-        .await?;
-        if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        }
-        bounded_io::retain(&generation, Some(io)).await?;
+        let selected = self
+            .select_private_read(volume, grant, path, expected_generation, ceiling, io)
+            .await?;
+        let generation = &selected.generation;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
@@ -402,11 +474,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await,
         )?;
-        super::super::access::require_current(&workspace, &view.0, io).await?;
-        if let Some((workspace, view)) = &data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
-        }
-        grant.recheck(Some(io))?;
+        selected.recheck(grant, io).await?;
         drop(requested_hold);
         let selected_id = generation.id();
         Ok((chunk.bytes, selected_id, length))

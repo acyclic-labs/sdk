@@ -158,11 +158,16 @@ impl<'a> Tree<'a> {
             "",
             &mut None,
         )?;
-        let workspace = crate::filesystem::workspace_ref(
-            volumes.home.provider().clone(),
-            &volumes.home.storage_name(&mut None)?,
-        )?;
-        let generation = volumes.files.resolve(&workspace, None).await?.generation;
+        let generation = volumes
+            .files
+            .select_private_generation(
+                volumes.home,
+                &read,
+                config::AGENT,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
         Ok(Self {
             volumes,
             read,

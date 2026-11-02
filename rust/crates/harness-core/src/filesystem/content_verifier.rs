@@ -350,6 +350,57 @@ where
         })
     }
 
+    fn select_private_generation<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (GenerationRef, Option<crate::conversation::ContentHold<'io>>),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.verify_exact_file(None, io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            let grant = ContentGrant::verify_directory_read(
+                self.authority.verifier(),
+                self.authority.scope(),
+                volume,
+                granted_prefix,
+                &mut history
+                    .as_mut()
+                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
+            )?;
+            let grant_hold = io
+                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                .transpose()?;
+            let generation = self
+                .host
+                .select_private_generation(
+                    volume,
+                    &grant,
+                    path,
+                    expected_generation,
+                    crate::conversation::ContentAccess { ceiling, io },
+                )
+                .await?;
+            let hold = io
+                .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
+                .transpose()?;
+            drop(grant);
+            drop(grant_hold);
+            Ok((generation, hold))
+        })
+    }
+
     fn read_private_range<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,
