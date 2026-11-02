@@ -200,7 +200,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         .await?;
     let child = page.children.first().ok_or("missing failed invocation")?;
     let entry = child.tail_record.as_ref().ok_or("missing failure record")?;
-    assert_eq!(entry.commit_id, receipt.reply().commit_id);
+    assert_eq!(entry.commit_id, receipt.commit_id());
     let FailureEntry::Failed(failed) = FailureEntry::decode(&child.path, entry)? else {
         return Err("failed invocation already resolved".into());
     };
