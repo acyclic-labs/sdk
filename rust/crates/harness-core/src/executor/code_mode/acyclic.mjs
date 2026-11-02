@@ -42,10 +42,6 @@ class File {
         this.version = version;
         this.size = size;
         this.#text = text;
-        this.#starts = text.length ? [0] : [];
-        for (let i = 0; i < text.length; i++) {
-            if (text.charCodeAt(i) === 10 && i + 1 < text.length) this.#starts.push(i + 1);
-        }
         Object.freeze(this);
     }
     text() { return this.#text; }
@@ -53,6 +49,14 @@ class File {
     lines(from, count) {
         if (!Number.isSafeInteger(from) || from < 0 || !Number.isSafeInteger(count) || count < 0)
             throw new RangeError('lines requires nonnegative safe integers');
+        if (count === 0) return [];
+        if (this.#starts === undefined) {
+            const starts = this.#text.length ? [0] : [];
+            for (let i = 0; i < this.#text.length; i++) {
+                if (this.#text.charCodeAt(i) === 10 && i + 1 < this.#text.length) starts.push(i + 1);
+            }
+            this.#starts = starts;
+        }
         const out = [];
         for (let i = from, end = Math.min(this.#starts.length, from + count); i < end; i++) {
             let end = i + 1 < this.#starts.length ? this.#starts[i + 1] - 1 : this.#text.length;

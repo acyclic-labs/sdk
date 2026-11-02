@@ -248,7 +248,12 @@ mod tests {
             import {read, write, spawn, fork, DeniedError, ConflictError} from 'acyclic';
             const first = await write('file.txt', 'one\r\nβ\n', 'absent');
             const file = await read('file.txt');
+            if (file.lines(0, 0).length !== 0) throw new Error('empty line selection');
             const lines = file.lines(1, 1);
+            if (file.lines(0, 1)[0] !== 'one' || file.lines(2, 1).length !== 0)
+                throw new Error('line selection changed the file');
+            try { file.lines(-1, 1); throw new Error('invalid line selection succeeded'); }
+            catch (error) { if (!(error instanceof RangeError)) throw error; }
             await write('file.txt', 'changed', first);
             let conflict;
             try { await write('file.txt', 'wrong', file.version); }
