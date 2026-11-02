@@ -4,7 +4,10 @@ use acyclic_harness_core::{
     OperationId,
     agent::{AgentRecord as _, Phase, StatusRecord},
     executor::{ModelPriceRecord, ModelPurpose, ModelTokenUsage, ModelUsageRecord, TokenPrice},
-    live::{ContextAdmission, ContextInfo, Error as ProjectionError, Usage},
+    live::{
+        AgentState, Budget, ContextAdmission, ContextInfo, ContextPartInfo, ContextPartKind,
+        Counters, Error as ProjectionError, StateCounts, Status, StatusBudget, Usage,
+    },
     model::ModelDispatch,
 };
 use acyclic_stream::{
@@ -71,6 +74,108 @@ fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
     (admission, usage, price)
 }
 
+// These are the file values consumed by hooks and typed readers, separate from
+// the original records that supply them. Compare JSON values, not rendered bytes.
+fn public_file_contract(usage: &Usage, context: &ContextInfo) {
+    assert_eq!(
+        serde_json::to_value(usage).unwrap(),
+        serde_json::json!({
+            "revision": 4, "model": "generated-model", "inputTokens": 100,
+            "cachedTokens": 30, "outputTokens": 5, "capacity": 1000,
+            "cost": 0.00103,
+            "compaction": {
+                "summariseNow": null, "perCallIfNot": null, "autoTrimAtTokens": 900
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(context).unwrap(),
+        serde_json::json!({
+            "revision": 5, "capacity": 1000, "notifyAt": null, "autoTrimAtTokens": 900,
+            "current": {"request": "08".repeat(32), "totalTokens": 200},
+            "lastCall": {
+                "request": "07".repeat(32), "totalTokens": 100,
+                "cachedReadTokens": 30, "cacheWriteTokens": 10
+            },
+            "parts": "live/agents/self/context/parts"
+        })
+    );
+    let mut unreported = context.clone();
+    unreported.last_call.cached_read_tokens = None;
+    unreported.last_call.cache_write_tokens = None;
+    assert_eq!(
+        serde_json::to_value(unreported).unwrap()["lastCall"],
+        serde_json::json!({
+            "request": "07".repeat(32), "totalTokens": 100,
+            "cachedReadTokens": null, "cacheWriteTokens": null
+        })
+    );
+    let children = StateCounts {
+        working: 1,
+        waiting: 2,
+        blocked: 0,
+        paused: 0,
+        idle: 0,
+        done: 3,
+        failed: 0,
+        archived: 0,
+    };
+    let states = serde_json::json!({
+        "working": 1, "waiting": 2, "blocked": 0, "paused": 0,
+        "idle": 0, "done": 3, "failed": 0, "archived": 0
+    });
+    assert_eq!(
+        serde_json::to_value(Status {
+            state: AgentState::Working,
+            summary: "generated summary".into(),
+            children: children.clone(),
+            budget: StatusBudget {
+                spent: 1.25,
+                limit: None
+            },
+            updated: "2026-11-02T00:00:00Z".into(),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "state": "working", "summary": "generated summary", "children": states,
+            "budget": {"spent": 1.25, "limit": null}, "updated": "2026-11-02T00:00:00Z"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Counters {
+            state: children,
+            kind: [("worker".into(), 6)].into(),
+        })
+        .unwrap(),
+        serde_json::json!({"state": states, "kind": {"worker": 6}})
+    );
+    assert_eq!(
+        serde_json::to_value(Budget {
+            escrow: None,
+            spent: 1.25,
+            reserved: 0.5
+        })
+        .unwrap(),
+        serde_json::json!({"escrow": null, "spent": 1.25, "reserved": 0.5})
+    );
+    let mut part = ContextPartInfo {
+        id: "c4".into(),
+        kind: ContextPartKind::Pinned,
+        tokens: 9,
+        covers: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&part).unwrap(),
+        serde_json::json!({"id": "c4", "kind": "pinned", "tokens": 9, "covers": null})
+    );
+    part.kind = ContextPartKind::Summary;
+    part.covers = Some(["c0".into(), "c3".into()]);
+    assert_eq!(
+        serde_json::to_value(part).unwrap(),
+        serde_json::json!({"id": "c4", "kind": "summary", "tokens": 9, "covers": ["c0", "c3"]})
+    );
+}
+
 #[test]
 fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
     futures::executor::block_on(async {
@@ -131,12 +236,14 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         current.revision += 1;
         current.dispatch.request_digest = [8; 32];
         current.total_tokens = 200;
+        current.notify_at = None;
         let context = ContextInfo::project(&current, &admission, &call).unwrap();
         assert_eq!(context.current.total_tokens, 200);
         assert_eq!(context.last_call.total_tokens, 100);
         assert_ne!(context.current.request, context.last_call.request);
         assert_eq!(context.last_call.cached_read_tokens, Some(30));
         assert_eq!(context.revision, 5);
+        public_file_contract(&first, &context);
 
         let provider = MemoryStream::default();
         let stream = StreamPath::new("original/usage").unwrap();
