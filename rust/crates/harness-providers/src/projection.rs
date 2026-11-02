@@ -135,6 +135,13 @@ pub(crate) fn body_named<'a>(
     files: &mut FileText,
 ) -> Result<Request<'a>> {
     let adapter = provider.config.adapter;
+    let (conversation, instruction) = request.split_summary_instruction()?;
+    let summary = instruction
+        .map(|content| match content {
+            ModelContent::Text(text) => Ok(std::borrow::Cow::Borrowed(text.as_str())),
+            content => text_content(content, files).map(std::borrow::Cow::Owned),
+        })
+        .transpose()?;
     let rendered = acyclic_model_render::Provenance {
         family: adapter,
         provider: target.provider.clone(),
@@ -174,7 +181,7 @@ pub(crate) fn body_named<'a>(
         .profile
         .as_ref()
         .and_then(|profile| profile.baseline_effort());
-    for message in &request.messages {
+    for message in conversation {
         // Chat and Responses put native result media in user input items.
         // Keep every result of a parallel call batch ahead of those items.
         if message.role != ModelRole::Tool {
@@ -252,7 +259,7 @@ pub(crate) fn body_named<'a>(
             ));
         }
     }
-    sequence::finish(adapter, &mut messages)?;
+    sequence::finish(adapter, &mut messages, request.summary)?;
     let tools = request
         .model_tools()
         .map(|tool| Ok(tool.model_declaration(names.wire(&tool.name)?)))
@@ -360,6 +367,7 @@ pub(crate) fn body_named<'a>(
     }
     Ok(Request {
         target: rendered,
+        summary,
         fields,
         messages,
     })
@@ -641,7 +649,9 @@ fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> 
         .map(|part| match part {
             ModelContentPart::Text { text, .. } => Ok(text.clone()),
             ModelContentPart::File { file, policy } => files.project(file, policy),
-            _ => Err(invalid("system messages cannot contain tool exchanges")),
+            _ => Err(invalid(
+                "text instructions cannot contain tool exchanges or native content",
+            )),
         })
         .collect::<Result<Vec<_>>>()
         .map(|parts| parts.join("\n"))

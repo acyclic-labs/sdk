@@ -184,7 +184,7 @@ impl StockExecution<'_> {
             .context_pipeline()
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
-        let tools = self.request_tools(&context.messages)?;
+        let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
         #[cfg(not(target_arch = "wasm32"))]
         if compose_tools {
@@ -268,20 +268,13 @@ impl StockExecution<'_> {
         &self,
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
-        let tools = self.request_tools(&messages)?;
+        let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
         self.request_from_parts(messages, tools, compose_tools)
     }
 
-    pub(super) fn request_tools(
-        &self,
-        messages: &[ModelMessage],
-    ) -> Result<Vec<crate::tool::ToolDefinition>> {
-        if self.request_tools_required(messages)? {
-            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
-        } else {
-            Ok(Vec::new())
-        }
+    pub(super) fn request_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
+        stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
     }
 
     fn request_from_parts(
@@ -291,6 +284,7 @@ impl StockExecution<'_> {
         compose_tools: bool,
     ) -> Result<ModelRequest> {
         Ok(ModelRequest {
+            summary: self.summary.is_some(),
             compose_tools,
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
@@ -310,26 +304,6 @@ impl StockExecution<'_> {
                 .is_some_and(|tool| tool.executor.is_code_mode()))
     }
 
-    fn request_tools_required(&self, messages: &[ModelMessage]) -> Result<bool> {
-        let mut tools_required = self.summary.is_none();
-        if !tools_required {
-            for message in messages {
-                crate::model::charge_items(self.io, 1)?;
-                for part in message.content.parts() {
-                    crate::model::charge_items(self.io, 1)?;
-                    if matches!(part, crate::model::ModelContentPart::ToolCall(_)) {
-                        tools_required = true;
-                        break;
-                    }
-                }
-                if tools_required {
-                    break;
-                }
-            }
-        }
-        Ok(tools_required)
-    }
-
     pub(super) fn validate_response_request(
         &self,
         prepared: &crate::model::PreparedModelRequest,
@@ -341,12 +315,9 @@ impl StockExecution<'_> {
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
-        let tools = if self.request_tools_required(&request.messages)? {
-            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
-        } else {
-            Vec::new()
-        };
-        if request.model != self.stock.model
+        let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
+        if request.summary != self.summary.is_some()
+            || request.model != self.stock.model
             || request.tools != tools
             || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_budget()?
