@@ -71,7 +71,10 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
                 let mut prior = Vec::new();
                 let result = execution.collect_step_events(&input, 0, events, &mut prior);
                 if reject_tool {
-                    assert!(matches!(result, Err(Error::Unauthorized(_))));
+                    assert_eq!(
+                        result.err().map(|error| error.code()),
+                        Some(crate::wire::ErrorCode::Unauthorized)
+                    );
                 } else {
                     let result = result?;
                     assert_eq!(
