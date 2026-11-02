@@ -139,7 +139,7 @@ pub(crate) async fn encode(
     origin: &acyclic_harness_core::model::ReasoningOrigin,
 ) -> Result<projection::cache::Encoded> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
-    let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
+    let body = projection::project(provider, request.request(), names, origin, &mut files)?;
     projection::cache::encode(&body, provider, origin)
 }
 

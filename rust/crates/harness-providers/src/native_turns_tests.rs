@@ -150,16 +150,15 @@ fn settled_native_parts_replay_exactly_in_the_next_turn() {
         let body = projection::body(&provider, &next).unwrap();
         assert_eq!(replayed(adapter, &body), golden(adapter), "{adapter:?}");
         // Each kept native part reaches the encoded wire as its original bytes.
-        let encoded = serde_json::to_vec(
-            &projection::body_named(
-                &provider,
-                &next,
-                &crate::tool_names::Names::new(&next),
-                &provider.reasoning_origin(provider.key.as_deref(), None),
-                &mut crate::files::FileText::default(),
-            )
-            .unwrap(),
+        let encoded = (projection::project(
+            &provider,
+            &next,
+            &crate::tool_names::Names::new(&next),
+            &provider.reasoning_origin(provider.key.as_deref(), None),
+            &mut crate::files::FileText::default(),
         )
+        .unwrap())
+        .encode()
         .unwrap();
         for message in &reply.transcript {
             let ModelContent::Part(part) = &message.content else {

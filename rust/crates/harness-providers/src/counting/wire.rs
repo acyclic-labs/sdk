@@ -65,28 +65,24 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
     Ok(resolved.into())
 }
 
-/// Both native admission and browser preparation borrow the same projected input.
-#[derive(Serialize)]
-#[serde(untagged)]
-pub(crate) enum CountBody<'a, 'b> {
-    Direct(CountInput<'a, 'b>),
-    Gemini {
-        #[serde(rename = "generateContentRequest")]
-        request: CountInput<'a, 'b>,
-    },
+/// Count endpoints borrow the original generation projection. Only Gemini's
+/// protocol envelope and selected model name differ from the shared renderer.
+pub(crate) fn encode(
+    generation: &crate::projection::wire::Projection<'_>,
+    model: &str,
+    adapter: Adapter,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(128);
+    write(generation, model, adapter, &mut bytes)?;
+    Ok(bytes)
 }
 
-pub(crate) struct CountInput<'a, 'b> {
-    generation: &'a crate::projection::wire::Body<'b>,
-    model: &'a str,
+pub(crate) fn write(
+    generation: &crate::projection::wire::Projection<'_>,
+    model: &str,
     adapter: Adapter,
-}
-
-pub(crate) fn body<'a, 'b>(
-    generation: &'a crate::projection::wire::Body<'b>,
-    model: &'a str,
-    adapter: Adapter,
-) -> CountBody<'a, 'b> {
+    writer: &mut impl std::io::Write,
+) -> Result<()> {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
         if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
@@ -94,30 +90,16 @@ pub(crate) fn body<'a, 'b>(
         } else {
             model
         };
-    let input = CountInput {
-        generation,
-        model,
-        adapter,
-    };
     if adapter == Adapter::Gemini {
-        CountBody::Gemini { request: input }
+        writer
+            .write_all(b"{\"generateContentRequest\":")
+            .map_err(|error| invalid(format!("token count envelope: {error}")))?;
+        generation.write_selected(writer, None, Some(CountModel(model)))?;
+        writer
+            .write_all(b"}")
+            .map_err(|error| invalid(format!("token count envelope: {error}")))
     } else {
-        CountBody::Direct(input)
-    }
-}
-
-impl Serialize for CountInput<'_, '_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        if self.adapter == Adapter::Gemini {
-            self.generation
-                .serialize_fields(serializer, None, Some(CountModel(self.model)))
-        } else {
-            self.generation
-                .serialize_fields(serializer, Some(fields(self.adapter)), None::<&str>)
-        }
+        generation.write_selected(writer, Some(fields(adapter)), None::<&str>)
     }
 }
 

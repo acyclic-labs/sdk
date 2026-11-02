@@ -337,7 +337,7 @@ fn projection(
         let result_copy = result_source.clone();
         let names = crate::tool_names::Names::new(&request);
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-        let projected = crate::projection::body_named(
+        let projected = crate::projection::project(
             &provider,
             &request,
             &names,
@@ -401,7 +401,7 @@ fn projection(
             })?;
         }
         let mut see = |seen| observer.see(Event::Normalization(seen));
-        let bytes = serde_json::to_vec(&projected).unwrap_or_default();
+        let bytes = projected.encode().unwrap_or_default();
         let site = format!("{adapter:?} projection");
         let Some(mut wire) = decoded(&mut see, &site, &bytes, 0)? else {
             return Ok(());

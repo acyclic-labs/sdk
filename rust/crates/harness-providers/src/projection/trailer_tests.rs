@@ -6,8 +6,8 @@ use acyclic_harness_core::{
     profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
 };
 use proptest::prelude::*;
-use serde::Serializer as _;
 use serde::de::{MapAccess, Visitor};
+use serde::ser::SerializeMap;
 use serde_json::{Map, json};
 use std::{
     fmt,
@@ -16,14 +16,15 @@ use std::{
 
 // Restore the former map-based serialization as a semantic oracle. Root order
 // comes from the selected serde_json map backend, as it did before this change.
-struct Former<'a, 'body>(&'a Body<'body>);
+struct Former<'a, 'body>(&'a Projection<'body>);
 impl Serialize for Former<'_, '_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         let fields: Map<_, _> = self
             .0
             .fields
-            .iter()
+            .header()
+            .chain(self.0.fields.call_controls())
             .map(|(name, value)| (name.to_owned(), value.clone()))
             .collect();
         for (name, value) in &fields {
@@ -105,7 +106,6 @@ fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields) {
         .bind_model(&provider.model, provider.capacity)
         .unwrap();
     super::super::profile::project(provider.config.adapter, &binding, fields);
-    fields.freeze();
 }
 
 // Print one repeatable configuration-byte identity for the two feature builds.
@@ -119,13 +119,6 @@ fn configuration_pin() {
         "configuration_map_preserves_order={}",
         probe.keys().next().unwrap() == "z"
     );
-    struct Configuration<'a, 'body>(&'a Body<'body>);
-    impl Serialize for Configuration<'_, '_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            self.0
-                .serialize_with_messages(serializer, None, None::<&str>, &[] as &[Value])
-        }
-    }
     let mut digest = blake3::Hasher::new();
     for family in [
         Adapter::Responses,
@@ -143,7 +136,7 @@ fn configuration_pin() {
         };
         let names = crate::tool_names::Names::new(&request);
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-        let mut body = super::super::body_named(
+        let mut body = super::super::project(
             &provider,
             &request,
             &names,
@@ -152,7 +145,8 @@ fn configuration_pin() {
         )
         .unwrap();
         freeze_effort(&provider, &mut body.fields);
-        let bytes = serde_json::to_vec(&Configuration(&body)).unwrap();
+        body.messages.clear();
+        let bytes = body.encode().unwrap();
         println!(
             "configuration_wire={}",
             std::str::from_utf8(&bytes).unwrap()
@@ -195,7 +189,7 @@ proptest! {
                     let admitted = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
                     let names = crate::tool_names::Names::new(admitted.request());
                     let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-                    let mut body = super::super::body_named(&provider, admitted.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
+                    let mut body = super::super::project(&provider, admitted.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
                     // Use the original profile projector to compose the frozen
                     // effort with these independently admitted call controls.
                     freeze_effort(&provider, &mut body.fields);
@@ -220,6 +214,8 @@ proptest! {
                         Adapter::Anthropic => vec!["model", "stream", "system", "cache_control", "thinking", "output_config"],
                         Adapter::Gemini => vec!["systemInstruction"],
                     };
+                    if body.tools.is_some() { expected.push("tools"); }
+                    expected.push(body.messages_field);
                     if family == Adapter::Gemini { expected.push("generationConfig"); }
                     else {
                         expected.push(limit);
@@ -228,8 +224,6 @@ proptest! {
                             if family == Adapter::Chat { expected.push("seed"); }
                         }
                     }
-                    if body.tools.is_some() { expected.push("tools"); }
-                    expected.push(body.messages_field);
                     prop_assert_eq!(&keys, &expected);
                     let config = if family == Adapter::Gemini {
                         let raw = &object.0.iter().find(|(key, _)| key == "generationConfig").unwrap().1;
@@ -246,23 +240,18 @@ proptest! {
                     }
                     // A sorted-map root (the original default build) cannot
                     // satisfy the explicit protocol order, with values unchanged.
-                    let mut sorted: Map<_, _> = body.fields.iter().map(|(name, value)| (name.to_owned(), value.clone())).collect();
+                    let mut sorted: Map<_, _> = body.fields.header().chain(body.fields.call_controls()).map(|(name, value)| (name.to_owned(), value.clone())).collect();
                     sorted.sort_keys();
                     let restored: Vec<_> = sorted.keys().map(String::as_str).collect();
                     prop_assert_ne!(restored.as_slice(), &expected[..expected.len() - usize::from(body.tools.is_some()) - 1]);
 
-                    let mut serializer = serde_json::Serializer::new(io::sink());
-                    let mut map = serializer.serialize_map(None).unwrap();
-                    let cost = acyclic_test_support::measure(|| body.serialize_trailer(&mut map, None).unwrap());
-                    map.end().unwrap();
+                    let cost = acyclic_test_support::measure(|| body.write_selected(&mut io::sink(), None, None::<&str>).unwrap());
                     prop_assert_eq!((cost.count_total, cost.bytes_total), (0, 0));
                     let copied = acyclic_test_support::measure(|| { std::hint::black_box(body.fields.clone()); });
                     prop_assert!(copied.count_total > 0);
                     let mut closed = Closed { writes: 0 };
-                    let mut serializer = serde_json::Serializer::new(&mut closed);
-                    let mut map = serializer.serialize_map(None).unwrap();
-                    let refusal = body.serialize_trailer(&mut map, None).unwrap_err();
-                    prop_assert_eq!(refusal.io_error_kind(), Some(io::ErrorKind::BrokenPipe));
+                    let refusal = body.write_selected(&mut closed, None, None::<&str>).unwrap_err();
+                    prop_assert!(refusal.to_string().contains("model request writer"));
                     prop_assert_eq!(closed.writes, 2);
 
                     if changed && matches!(family, Adapter::Anthropic | Adapter::Responses) {

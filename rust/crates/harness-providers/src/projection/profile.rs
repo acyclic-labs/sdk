@@ -1,8 +1,8 @@
 //! Projection accepts only the sealed result of the profile file resolver.
-use super::fields::{Field, Fields};
 use crate::{Adapter, invalid};
 use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Reasoning};
+use acyclic_model_render::{Field, Fields};
 use serde_json::{Value, json};
 
 fn prefix_cache_key(prefix: [u8; 32]) -> String {
@@ -84,12 +84,15 @@ pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &
         (Adapter::Gemini, Reasoning::Level(effort)) => {
             // This object was constructed by this same projector, never supplied
             // by a caller. The output reservation remains on its original field.
-            if let Some(Value::Object(config)) = fields.get_mut(Field::GenerationConfig) {
+            fields.update(Field::GenerationConfig, |value| {
+                let Some(config) = value.as_object_mut() else {
+                    return;
+                };
                 config.insert(
                     "thinkingConfig".into(),
                     json!({"thinkingLevel":effort,"includeThoughts":true}),
                 );
-            }
+            });
         }
         _ => {}
     }
@@ -120,8 +123,9 @@ mod tests {
                 let origin = provider.reasoning_origin(provider.key.as_deref(), None);
                 let mut files = crate::files::FileText::default();
                 let projected =
-                    crate::projection::body_named(provider, request, &names, &origin, &mut files)?;
-                serde_json::to_vec(&projected)
+                    crate::projection::project(provider, request, &names, &origin, &mut files)?;
+                projected
+                    .encode()
                     .map_err(|_| invalid("cannot encode measured profile projection"))
             })());
         });
@@ -399,7 +403,7 @@ mod tests {
                     let origin = provider.reasoning_origin(provider.key.as_deref(), None);
                     let mut projected = None;
                     let allocation = acyclic_test_support::measure(|| {
-                        projected = Some(crate::projection::body_named(
+                        projected = Some(crate::projection::project(
                             &provider,
                             request.request(),
                             &names,
@@ -414,7 +418,7 @@ mod tests {
                     } else {
                         expected["systemInstruction"]["parts"][0]["text"] = json!(header);
                     }
-                    assert_eq!(serde_json::to_value(&projected).unwrap(), expected);
+                    assert_eq!(projected.value().unwrap(), expected);
                     let mut detached = None;
                     let copied = acyclic_test_support::measure(|| {
                         detached = Some(projected.fields.clone());

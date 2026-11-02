@@ -9,9 +9,8 @@ fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
         Adapter::Gemini => "contents",
         _ => "messages",
     };
-    let generation = crate::projection::wire::Body::fixture(value, field);
-    serde_json::to_value(super::body(&generation, model, adapter))
-        .map_err(|_| invalid("fixture encoding failed"))
+    let generation = crate::projection::wire::Projection::fixture(value, field);
+    crate::json(&encode(&generation, model, adapter)?)
 }
 
 fn spec(adapter: Adapter) -> TokenCounterSpec {
@@ -66,9 +65,8 @@ proptest! {
             let mut original = json!({"model":model, "stream":true, "max_output_tokens":output,
                 "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
             original[field] = json!([{"role":"user","content":text}]);
-            let generation = crate::projection::wire::Body::fixture(original.clone(), field);
-            let input = super::body(&generation, &model, adapter);
-            let counted = serde_json::to_value(&input).unwrap();
+            let generation = crate::projection::wire::Projection::fixture(original.clone(), field);
+            let counted = crate::json(&encode(&generation, &model, adapter).unwrap()).unwrap();
             // Independent wire expectations, rather than comparing two implementations.
             let mut expected = json!({"model":model, "tools":[]});
             expected[field] = original[field].clone();
@@ -84,26 +82,26 @@ proptest! {
             assert_count_wire(&counted, &expected);
             let mut encoded = Vec::with_capacity(serde_json::to_vec(&expected).unwrap().len());
             let cost = acyclic_test_support::measure(|| {
-                serde_json::to_writer(&mut encoded, &input).unwrap();
+                write(&generation, &model, adapter, &mut encoded).unwrap();
             });
             prop_assert_eq!(cost.count_total, 0, "count serialization borrows every field");
             prop_assert_eq!(crate::json(&encoded).unwrap(), expected.clone());
-            if let CountBody::Gemini { request } = &input {
-                let exact = serde_json::to_vec(request).unwrap();
+            if adapter == Adapter::Gemini {
+                let exact = serde_json::to_vec(&expected["generateContentRequest"]).unwrap();
                 let mut restored = Vec::with_capacity(exact.len());
                 let copied = acyclic_test_support::measure(|| {
                     let model = format!("models/{model}");
-                    generation.serialize_fields(
-                        &mut serde_json::Serializer::new(&mut restored), None, Some(&model),
+                    generation.write_selected(
+                        &mut restored, None, Some(&model),
                     ).unwrap();
                 });
-                prop_assert_eq!(restored, exact);
+                prop_assert_eq!(crate::json(&restored).unwrap(), expected["generateContentRequest"].clone());
                 prop_assert!(copied.count_total > cost.count_total,
                     "restoring the temporary model string fails the same allocation oracle");
             }
             // A missing filter/envelope fails the same independent oracle.
             prop_assert!(std::panic::catch_unwind(|| assert_count_wire(&original, &expected)).is_err());
-            prop_assert_eq!(serde_json::to_value(&generation).unwrap(), original);
+            prop_assert_eq!(generation.value().unwrap(), original);
         }
     }
     #[test]

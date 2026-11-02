@@ -1,7 +1,7 @@
 use super::call::Call;
-use super::fields::Fields;
+use acyclic_model_render::Fields;
 use acyclic_model_render::ToolDeclarations;
-use serde::{Serialize, ser::SerializeMap};
+use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -51,77 +51,79 @@ pub(super) struct Chat<'a> {
     pub reasoning_content: Option<&'a RawValue>,
 }
 
-pub(crate) struct Body<'a> {
+impl acyclic_model_render::Segment for Message<'_> {
+    fn write(
+        &self,
+        _: &acyclic_model_render::Provenance,
+        writer: &mut impl std::io::Write,
+    ) -> Result<Option<bool>, acyclic_model_render::RenderError> {
+        serde_json::to_writer(writer, self).map_err(acyclic_model_render::json_error)?;
+        Ok(match self {
+            Self::Gemini { role, .. } => Some(*role == "model"),
+            _ => None,
+        })
+    }
+}
+
+pub(crate) struct Projection<'a> {
+    pub(super) target: acyclic_model_render::Provenance,
     pub(super) fields: Fields,
     pub(super) tools:
         Option<ToolDeclarations<'a, acyclic_harness_core::tool::schema::ModelInput<'a>>>,
+    #[cfg(test)]
+    pub(super) fixture_tools: Option<Value>,
+    #[cfg(test)]
     pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
-impl Serialize for Body<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.serialize_fields(serializer, None, None::<&str>)
-    }
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum Tools<'a, 'body> {
+    Admitted(&'a ToolDeclarations<'body, acyclic_harness_core::tool::schema::ModelInput<'body>>),
+    #[cfg(test)]
+    Generated(&'a Value),
 }
-
-impl Body<'_> {
-    pub(crate) fn serialize_fields<S: serde::Serializer>(
-        &self,
-        serializer: S,
-        include: Option<&[&str]>,
-        model: Option<impl Serialize>,
-    ) -> Result<S::Ok, S::Error> {
-        self.serialize_with_messages(serializer, include, model, &self.messages)
+impl Projection<'_> {
+    pub(super) fn tools(&self) -> Option<Tools<'_, '_>> {
+        #[cfg(test)]
+        if let Some(tools) = &self.fixture_tools {
+            return Some(Tools::Generated(tools));
+        }
+        self.tools.as_ref().map(Tools::Admitted)
+    }
+    pub(crate) fn encode(&self) -> acyclic_harness_core::Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(128);
+        self.write_selected(&mut bytes, None, None::<&str>)?;
+        Ok(bytes)
     }
 
-    pub(super) fn serialize_with_messages<S: serde::Serializer>(
-        &self,
-        serializer: S,
-        include: Option<&[&str]>,
-        model: Option<impl Serialize>,
-        messages: impl Serialize,
-    ) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        for (name, value) in self.fields.header() {
-            if include.is_none_or(|fields| fields.contains(&name))
-                && !(name == "model" && model.is_some())
-            {
-                map.serialize_entry(name, value)?;
-            }
-        }
-        self.serialize_trailer(&mut map, include)?;
-        if let Some(model) = model {
-            map.serialize_entry("model", &model)?;
-        }
-        if let Some(tools) = &self.tools
-            && include.is_none_or(|fields| fields.contains(&"tools"))
-        {
-            map.serialize_entry("tools", tools)?;
-        }
-        map.serialize_entry(self.messages_field, &messages)?;
-        map.end()
+    #[cfg(test)]
+    pub(crate) fn value(&self) -> acyclic_harness_core::Result<Value> {
+        crate::json(&self.encode()?)
     }
 
-    // Generation, count projections and summary children all serialize the
-    // original fields here. In particular, Gemini's already composed effort,
-    // sampling and output reservation remain one generationConfig object.
-    fn serialize_trailer<M: SerializeMap>(
+    pub(crate) fn write_selected(
         &self,
-        map: &mut M,
+        writer: &mut impl std::io::Write,
         include: Option<&[&str]>,
-    ) -> Result<(), M::Error> {
-        for (name, value) in self.fields.call_controls() {
-            if include.is_none_or(|fields| fields.contains(&name)) {
-                map.serialize_entry(name, value)?;
-            }
+        model: Option<impl Serialize>,
+    ) -> acyclic_harness_core::Result<()> {
+        let tools = self.tools();
+        acyclic_model_render::RequestView {
+            target: &self.target,
+            fields: &self.fields,
+            tools: tools.as_ref(),
+            include,
+            model,
         }
-        Ok(())
+        .write(&self.messages, writer)
+        .map_err(|error| crate::invalid(format!("model request encoding: {error}")))
     }
 }
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-impl<'a> Body<'a> {
+impl<'a> Projection<'a> {
     pub(crate) fn fixture(mut value: Value, field: &'static str) -> Self {
         let mut fields = std::mem::take(value.as_object_mut().unwrap());
         let Value::Array(items) = fields.remove(field).unwrap() else {
@@ -131,8 +133,29 @@ impl<'a> Body<'a> {
             .into_iter()
             .map(|item| Message::Item(Item::Json(item)))
             .collect();
+        let family = match field {
+            "input" => crate::Adapter::Responses,
+            "contents" => crate::Adapter::Gemini,
+            _ => crate::Adapter::Anthropic,
+        };
+        let fixture_tools = fields.remove("tools");
+        let mut configuration = Fields::default();
+        for (name, value) in fields {
+            configuration.insert(
+                acyclic_model_render::Field::named(&name).expect("generated protocol field"),
+                value,
+            );
+        }
         Self {
-            fields: Fields::from_values(fields),
+            target: acyclic_model_render::Provenance {
+                family,
+                provider: "generated".into(),
+                model: "generated".into(),
+                endpoint: "https://generated.invalid".into(),
+                credential_scope: None,
+            },
+            fields: configuration,
+            fixture_tools,
             tools: None,
             messages_field: field,
             messages,

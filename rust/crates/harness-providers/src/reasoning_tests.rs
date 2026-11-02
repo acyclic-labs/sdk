@@ -67,7 +67,7 @@ fn check_chat_native(text: &str) {
             }
         }
         let names = crate::tool_names::Names::new(&request);
-        let body = crate::projection::body_named(
+        let body = crate::projection::project(
             &provider,
             &request,
             &names,
@@ -75,7 +75,7 @@ fn check_chat_native(text: &str) {
             &mut crate::files::FileText::default(),
         )
         .unwrap();
-        let bytes = serde_json::to_vec(&body).unwrap();
+        let bytes = body.encode().unwrap();
         let wire = std::str::from_utf8(&bytes).unwrap();
         assert!(
             wire.contains(&token),
@@ -91,16 +91,15 @@ fn check_chat_native(text: &str) {
         assert!(crate::validate_input(crate::Adapter::Chat, &body).is_empty());
         let unknown = provider.reasoning_origin(None, None);
         assert!(unknown.credential_scope.is_none());
-        let body = serde_json::to_vec(
-            &crate::projection::body_named(
-                &provider,
-                &request,
-                &names,
-                &unknown,
-                &mut crate::files::FileText::default(),
-            )
-            .unwrap(),
+        let body = (crate::projection::project(
+            &provider,
+            &request,
+            &names,
+            &unknown,
+            &mut crate::files::FileText::default(),
         )
+        .unwrap())
+        .encode()
         .unwrap();
         let wire = std::str::from_utf8(&body).unwrap();
         assert!(!wire.contains("reasoning_content"));
@@ -134,7 +133,7 @@ fn malformed_owned_native_continuity_refuses_before_request_encoding() {
         });
         let names = crate::tool_names::Names::new(&request);
         let encode = |target: &ReasoningOrigin| {
-            crate::projection::body_named(
+            crate::projection::project(
                 &provider,
                 &request,
                 &names,
@@ -148,7 +147,7 @@ fn malformed_owned_native_continuity_refuses_before_request_encoding() {
         );
         let mut foreign = target;
         foreign.credential_scope = None;
-        let body = serde_json::to_value(encode(&foreign).unwrap()).unwrap();
+        let body = encode(&foreign).unwrap().value().unwrap();
         assert!(crate::validate_input(adapter, &body).is_empty());
         assert!(!body.to_string().contains("must-not-become-fallback-text"));
     }

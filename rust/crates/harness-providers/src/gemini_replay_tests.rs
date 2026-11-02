@@ -125,16 +125,15 @@ fn round_trip(provider: &ResolvedModel, request: ModelRequest, answer: &str, sig
         );
     }
     // GEM-THK-01/04 and O-9: each signed part stays byte-exact and separate.
-    let encoded = serde_json::to_vec(
-        &projection::body_named(
-            provider,
-            restored.request(),
-            &crate::tool_names::Names::new(restored.request()),
-            &provider.reasoning_origin(provider.key.as_deref(), None),
-            &mut crate::files::FileText::default(),
-        )
-        .unwrap(),
+    let encoded = (projection::project(
+        provider,
+        restored.request(),
+        &crate::tool_names::Names::new(restored.request()),
+        &provider.reasoning_origin(provider.key.as_deref(), None),
+        &mut crate::files::FileText::default(),
     )
+    .unwrap())
+    .encode()
     .unwrap();
     for part in signed {
         assert_eq!(
@@ -328,11 +327,11 @@ proptest! {
             output_schema: json!({}), projection_schema: json!({}),
         });
         let encode = |request: &ModelRequest| {
-            serde_json::to_vec(&projection::body_named(
+            (projection::project(
                 &provider, request, &crate::tool_names::Names::new(request),
                 &provider.reasoning_origin(provider.key.as_deref(), None),
                 &mut crate::files::FileText::default(),
-            ).unwrap()).unwrap()
+            ).unwrap()).encode().unwrap()
         };
         let prefix = encode(&request);
         let mut first = json!({"thoughtSignature":signature,"functionCall":{"name":"read_file","args":{"file_path":"a"}}});

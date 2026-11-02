@@ -1,7 +1,6 @@
 pub(crate) mod arguments;
 pub(crate) mod cache;
 mod call;
-mod fields;
 pub(crate) mod gemini;
 mod gemini_results;
 pub(crate) mod image;
@@ -21,10 +20,10 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolResultContent,
     },
 };
-use fields::{Field, Fields};
+use acyclic_model_render::{Field, Fields};
 pub(crate) use profile::validate as validate_profile;
 use serde_json::{Value, json};
-use wire::{Body, Item, Message};
+use wire::{Item, Message, Projection};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
     let mut base = validate_url(&provider.config.base_url)?;
@@ -117,23 +116,23 @@ pub(crate) fn body_with_files(
     request: &ModelRequest,
     files: &mut FileText,
 ) -> Result<Value> {
-    serde_json::to_value(body_named(
+    project(
         provider,
         request,
         &crate::tool_names::Names::new(request),
         &provider.reasoning_origin(provider.key.as_deref(), None),
         files,
-    )?)
-    .map_err(|_| invalid("cannot encode projected request"))
+    )?
+    .value()
 }
 
-pub(crate) fn body_named<'a>(
+pub(crate) fn project<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
     names: &'a crate::tool_names::Names<'_>,
     target: &acyclic_harness_core::model::ReasoningOrigin,
     files: &mut FileText,
-) -> Result<Body<'a>> {
+) -> Result<Projection<'a>> {
     let adapter = provider.config.adapter;
     if provider
         .profile
@@ -325,17 +324,23 @@ pub(crate) fn body_named<'a>(
     }
     let sampling = request.sampling;
     if adapter == Adapter::Gemini {
-        let config = fields.get_mut(Field::GenerationConfig).and_then(Value::as_object_mut)
-            .ok_or_else(|| invalid("sampling projection failed: generationConfig is absent; recovery: reconstruct the Gemini request"))?;
-        for (name, value) in [
-            ("temperature", sampling.temperature.map(Value::from)),
-            ("topP", sampling.top_p.map(Value::from)),
-            ("seed", sampling.seed.map(Value::from)),
-        ] {
-            if let Some(value) = value {
-                config.insert(name.into(), value);
-            }
-        }
+        fields
+            .update(Field::GenerationConfig, |value| {
+                let config = value
+                    .as_object_mut()
+                    .ok_or_else(|| invalid("sampling projection requires generationConfig"))?;
+                for (name, value) in [
+                    ("temperature", sampling.temperature.map(Value::from)),
+                    ("topP", sampling.top_p.map(Value::from)),
+                    ("seed", sampling.seed.map(Value::from)),
+                ] {
+                    if let Some(value) = value {
+                        config.insert(name.into(), value);
+                    }
+                }
+                Ok(())
+            })
+            .ok_or_else(|| invalid("sampling projection requires generationConfig"))??;
     } else {
         for (field, value) in [
             (Field::Temperature, sampling.temperature.map(Value::from)),
@@ -347,16 +352,26 @@ pub(crate) fn body_named<'a>(
             }
         }
     }
-    fields.freeze();
+    #[cfg(test)]
     let messages_field = match adapter {
         Adapter::Responses => "input",
         Adapter::Gemini => "contents",
         _ => "messages",
     };
-    Ok(Body {
+    Ok(Projection {
+        target: acyclic_model_render::Provenance {
+            family: adapter,
+            provider: target.provider.clone(),
+            model: target.model.clone(),
+            endpoint: endpoint(provider)?,
+            credential_scope: target.credential_scope,
+        },
         fields,
         tools,
+        #[cfg(test)]
         messages_field,
+        #[cfg(test)]
+        fixture_tools: None,
         messages,
     })
 }

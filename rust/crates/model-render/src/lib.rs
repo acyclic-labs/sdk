@@ -1,4 +1,6 @@
 //! A model request is a frozen [`Header`], independent item segments and a [`Tail`].
+//! This crate is the only provider request encoder: root fields have one fixed
+//! order ([`Fields`]), and per-call controls follow the conversation.
 //!
 //! Admission owns JSON validation and copying. Rendering borrows the admitted
 //! bytes, has no I/O except the caller's writer, and never looks at another item
@@ -11,6 +13,7 @@
     clippy::disallowed_macros
 )]
 
+mod fields;
 mod item;
 mod notice;
 mod profile;
@@ -20,14 +23,18 @@ mod sink;
 pub mod strict;
 mod tools;
 
+pub use fields::{Field, Fields};
 pub use item::{Family, ItemKind, Provenance, WireItem};
 pub use notice::{Notice, PendingNotices, notice_block};
 pub use profile::{Cache, Effort, Reasoning};
-pub use render::{Header, RenderError, Tail, render, render_summary, seg, summary_artifact};
+pub use render::{
+    Header, RenderError, RenderObserver, RequestView, Segment, Tail, json_error, render,
+    render_summary, seg, summary_artifact,
+};
 pub use tools::{ToolDeclaration, ToolDeclarations};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
-pub const RENDERER_VERSION: u32 = 2;
+pub const RENDERER_VERSION: u32 = 3;
 
 #[cfg(test)]
 mod notice_tests;

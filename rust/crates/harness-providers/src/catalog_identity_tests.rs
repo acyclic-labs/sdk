@@ -11,7 +11,7 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
     provider.model.name = name.into();
     let (request, _) = request(&provider).unwrap();
     let names = crate::tool_names::Names::new(request.request());
-    let body = projection::body_named(
+    let body = projection::project(
         &provider,
         request.request(),
         &names,
@@ -21,7 +21,7 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
     .unwrap();
     if counting {
         let count =
-            serde_json::to_value(crate::counting::wire::body(&body, name, adapter)).unwrap();
+            crate::json(&crate::counting::wire::encode(&body, name, adapter).unwrap()).unwrap();
         let actual = if adapter == Adapter::Gemini {
             count["generateContentRequest"]["model"]
                 .as_str()
@@ -46,7 +46,7 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
             "generation codec preserves the resolved model"
         );
     } else {
-        let generation = serde_json::to_value(body).unwrap();
+        let generation = body.value().unwrap();
         assert_eq!(
             generation["model"], name,
             "generation codec preserves the resolved model"

@@ -1,5 +1,5 @@
 //! Hash the original wire serialization, without a second prompt walk or buffer.
-use super::{wire::Body, wire::Message};
+use super::wire::Projection;
 use crate::ResolvedModel;
 use acyclic_harness_core::{
     Result,
@@ -7,8 +7,7 @@ use acyclic_harness_core::{
     model::{ModelProfileBinding, RESEARCH_CAPTURE_ENABLED, ReasoningOrigin},
 };
 use acyclic_model_render::{Cache, Family};
-use serde::{Serialize, ser::SerializeSeq};
-use std::{cell::RefCell, io::Write};
+use std::io::Write;
 
 const DOMAIN: &[u8] = b"harness:projected-cache-prefix:v1\0";
 
@@ -38,68 +37,35 @@ struct Output {
     breakpoint: Option<ModelCacheBreakpoint>,
 }
 
-struct Writer(RefCell<Output>);
-
-impl Write for &Writer {
+impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let mut output = self.0.borrow_mut();
-        output.bytes.extend_from_slice(bytes);
-        output.hash.update(bytes);
+        self.bytes.extend_from_slice(bytes);
+        self.hash.update(bytes);
         Ok(bytes.len())
     }
-
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-struct Messages<'a, 'body> {
-    messages: &'a [Message<'body>],
-    writer: &'a Writer,
+struct Breakpoint {
+    messages: usize,
+    parent: Option<[u8; 32]>,
 }
-
-impl Serialize for Messages<'_, '_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        let mut sequence = serializer.serialize_seq(Some(self.messages.len()))?;
-        for (index, message) in self.messages.iter().enumerate() {
-            let parent_digest = (index + 1 == self.messages.len())
-                .then(|| *self.writer.0.borrow().hash.finalize().as_bytes());
-            sequence.serialize_element(message)?;
-            if let Some(parent_digest) = parent_digest {
-                let mut output = self.writer.0.borrow_mut();
-                output.breakpoint = Some(ModelCacheBreakpoint {
-                    digest: *output.hash.finalize().as_bytes(),
-                    parent_digest,
-                    messages: self.messages.len() as u64,
-                });
-            }
+impl acyclic_model_render::RenderObserver<Output> for Breakpoint {
+    fn before(&mut self, index: usize, output: &mut Output) {
+        if index + 1 == self.messages {
+            self.parent = Some(*output.hash.finalize().as_bytes());
         }
-        sequence.end()
     }
-}
-
-struct Capture<'a, 'body> {
-    body: &'a Body<'body>,
-    writer: &'a Writer,
-}
-
-impl Serialize for Capture<'_, '_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        self.body.serialize_with_messages(
-            serializer,
-            None,
-            None::<&str>,
-            Messages {
-                messages: &self.body.messages,
-                writer: self.writer,
-            },
-        )
+    fn after(&mut self, index: usize, emitted: bool, output: &mut Output) {
+        if emitted && index + 1 == self.messages {
+            output.breakpoint = self.parent.map(|parent_digest| ModelCacheBreakpoint {
+                digest: *output.hash.finalize().as_bytes(),
+                parent_digest,
+                messages: self.messages as u64,
+            });
+        }
     }
 }
 
@@ -130,14 +96,13 @@ pub(crate) fn attach(
 }
 
 pub(crate) fn encode(
-    body: &Body<'_>,
+    body: &Projection<'_>,
     provider: &ResolvedModel,
     origin: &ReasoningOrigin,
 ) -> Result<Encoded> {
     if !RESEARCH_CAPTURE_ENABLED {
         return Ok(Encoded {
-            bytes: serde_json::to_vec(body)
-                .map_err(|_| crate::invalid("model request encoding failed"))?,
+            bytes: body.encode()?,
             cache: None,
         });
     }
@@ -149,18 +114,28 @@ pub(crate) fn encode(
         hash.update(&(value.len() as u64).to_be_bytes());
         hash.update(value);
     }
-    let writer = Writer(RefCell::new(Output {
+    let mut output = Output {
         bytes: Vec::with_capacity(128),
         hash,
         breakpoint: None,
-    }));
-    Capture {
-        body,
-        writer: &writer,
+    };
+    let tools = body.tools();
+    acyclic_model_render::RequestView {
+        target: &body.target,
+        fields: &body.fields,
+        tools: tools.as_ref(),
+        include: None,
+        model: None::<&str>,
     }
-    .serialize(&mut serde_json::Serializer::new(&writer))
-    .map_err(|_| crate::invalid("model request encoding failed"))?;
-    let output = writer.0.into_inner();
+    .write_observed(
+        &body.messages,
+        &mut output,
+        &mut Breakpoint {
+            messages: body.messages.len(),
+            parent: None,
+        },
+    )
+    .map_err(|error| crate::invalid(format!("model request encoding: {error}")))?;
     // No retention is inferred from a provider default. The admitted Anthropic
     // profile explicitly projects the one top-level ephemeral marker.
     let ttl = if explicit {
@@ -203,13 +178,13 @@ mod tests {
                 credential_scope: Some(scope),
             };
             let (provider, _) = crate::tests::provider(Family::Responses, 200);
-            let one = Body::fixture(json!({"model":"generated","input":[first]}), "input");
-            let two = Body::fixture(json!({"model":"generated","input":[first,last]}), "input");
+            let one = Projection::fixture(json!({"model":"generated","input":[first]}), "input");
+            let two = Projection::fixture(json!({"model":"generated","input":[first,last]}), "input");
             let captured = encode(&two, &provider, &origin).unwrap();
-            let expected = serde_json::to_vec(&two).unwrap();
+            let expected = two.encode().unwrap();
             prop_assert_eq!(&captured.bytes, &expected);
 
-            let original = acyclic_test_support::measure(|| { std::hint::black_box(serde_json::to_vec(&two).unwrap()); });
+            let original = acyclic_test_support::measure(|| { std::hint::black_box(two.encode().unwrap()); });
             let observed = acyclic_test_support::measure(|| { std::hint::black_box(encode(&two, &provider, &origin).unwrap()); });
             prop_assert_eq!((observed.count_total, observed.bytes_total), (original.count_total, original.bytes_total));
             let copied = acyclic_test_support::measure(|| { std::hint::black_box(expected.clone()); });
@@ -237,7 +212,7 @@ mod tests {
             }
             hash.update(&expected[..expected.len() - 2]);
             prop_assert_eq!(breakpoint.digest, *hash.finalize().as_bytes());
-            let changed = Body::fixture(json!({"model":"other","input":[first,last]}), "input");
+            let changed = Projection::fixture(json!({"model":"other","input":[first,last]}), "input");
             prop_assert_ne!(breakpoint.digest,
                 encode(&changed, &provider, &origin).unwrap().cache.unwrap().breakpoint.unwrap().digest);
             let restored = ModelCacheObservation::reported(&metadata).unwrap();
@@ -265,7 +240,7 @@ mod tests {
                 let (request, _) = crate::tests::request(provider).unwrap();
                 let names = crate::tool_names::Names::new(request.request());
                 let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-                let body = super::super::body_named(provider, request.request(), &names,
+                let body = super::super::project(provider, request.request(), &names,
                     &origin, &mut crate::files::FileText::default()).unwrap();
                 encode(&body, provider, &origin).unwrap()
             }

@@ -137,10 +137,8 @@ pub(crate) async fn count(
         };
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation =
-            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let body = wire::body(&generation, &provider.model.name, spec.adapter);
-        let bytes =
-            serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
+            projection::project(provider, request.request(), &names, &origin, &mut files)?;
+        let bytes = wire::encode(&generation, &provider.model.name, spec.adapter)?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
