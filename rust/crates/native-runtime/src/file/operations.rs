@@ -25,13 +25,7 @@ pub fn sync_file(
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
-    sync_file_with_device(
-        file,
-        durability,
-        meter,
-        #[cfg(target_vendor = "apple")]
-        None,
-    )
+    sync_file_target(SyncTarget::Borrowed(file), durability, meter)
 }
 
 pub(super) fn sync_owned_file(
@@ -39,30 +33,20 @@ pub(super) fn sync_owned_file(
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
-    sync_file_with_device(
-        file,
-        durability,
-        meter,
-        #[cfg(target_vendor = "apple")]
-        Some(&file.device),
-    )
+    sync_file_target(SyncTarget::Owned(file), durability, meter)
 }
 
-fn sync_file_with_device(
-    file: &File,
+enum SyncTarget<'a> {
+    Borrowed(&'a File),
+    Owned(&'a NativeFilePayload),
+}
+
+fn sync_file_target(
+    target: SyncTarget<'_>,
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
-    #[cfg(target_vendor = "apple")] held: Option<&crate::device_flush::HeldDevice>,
 ) -> io::Result<()> {
-    let run = || {
-        sync_file_impl(
-            file,
-            durability,
-            meter,
-            #[cfg(target_vendor = "apple")]
-            held,
-        )
-    };
+    let run = || sync_file_impl(target, durability, meter);
     #[cfg(feature = "test-support")]
     return testing::durable_operation(trace_name("file:sync", durability), run);
     #[cfg(not(feature = "test-support"))]
@@ -70,11 +54,19 @@ fn sync_file_with_device(
 }
 
 fn sync_file_impl(
-    file: &File,
+    target: SyncTarget<'_>,
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
-    #[cfg(target_vendor = "apple")] held: Option<&crate::device_flush::HeldDevice>,
 ) -> io::Result<()> {
+    let file = match target {
+        SyncTarget::Borrowed(file) => file,
+        SyncTarget::Owned(file) => &file.file,
+    };
+    #[cfg(target_vendor = "apple")]
+    let held = match target {
+        SyncTarget::Borrowed(_) => None,
+        SyncTarget::Owned(file) => Some(&file.device),
+    };
     if let Some(meter) = meter {
         #[cfg(target_vendor = "apple")]
         return crate::persistence_syscall(|| {
@@ -584,7 +576,7 @@ pub(crate) fn read_at_impl(
 #[cfg(unix)]
 pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     // sync_parent owns the fault boundary; never wrap the flush a second time.
-    sync_file_impl(&File::open(path)?, durability, None)
+    sync_file_impl(SyncTarget::Borrowed(&File::open(path)?), durability, None)
 }
 
 #[cfg(windows)]
@@ -600,5 +592,5 @@ pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Resul
         .share_mode(FILE_SHARE_READ_WRITE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    sync_file_impl(&directory, durability, None)
+    sync_file_impl(SyncTarget::Borrowed(&directory), durability, None)
 }
