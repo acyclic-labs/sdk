@@ -16,7 +16,33 @@ const COUNT: &[u8] = include_bytes!("fixtures/gemini-flash-count.json");
 const MISSING_SIGNATURE: &[u8] = include_bytes!("fixtures/gemini-flash-missing-signature.body");
 const PROMPT: &str = "Use the shell tool to create shell.txt containing exactly the UTF-8 bytes LIVE_dd7e4549fdec4891b0cc299b265e9be8, with no newline or other bytes, then reply DONE.";
 
+struct Capture {
+    call: &'static [u8],
+    refusal: &'static [u8],
+    id: &'static str,
+    signature_length: usize,
+    skill: bool,
+}
+
+const CAPTURES: &[Capture] = &[
+    Capture {
+        call: CALL,
+        refusal: MISSING_SIGNATURE,
+        id: "call_81218",
+        signature_length: 960,
+        skill: false,
+    },
+    Capture {
+        call: include_bytes!("fixtures/gemini-flash-skill.sse"),
+        refusal: include_bytes!("fixtures/gemini-flash-skill-missing-signature.body"),
+        id: "call_1093319",
+        signature_length: 5932,
+        skill: true,
+    },
+];
+
 struct Recorded {
+    capture: &'static Capture,
     requests: Mutex<Vec<Bytes>>,
     native: AtomicUsize,
 }
@@ -33,13 +59,16 @@ impl Recorded {
         let mut requests = self.requests.lock().unwrap();
         let first = requests.is_empty();
         let missing = !first
-            && signed_part(&request.body)
+            && signed_part(&request.body, self.capture.id)
                 .is_none_or(|part| part["thoughtSignature"].as_str().is_none());
         requests.push(request.body);
         if missing {
-            (400, Bytes::from_static(MISSING_SIGNATURE))
+            (400, Bytes::from_static(self.capture.refusal))
         } else {
-            (200, Bytes::from_static(if first { CALL } else { ANSWER }))
+            (
+                200,
+                Bytes::from_static(if first { self.capture.call } else { ANSWER }),
+            )
         }
     }
 }
@@ -121,14 +150,14 @@ fn resolve_with(
     registry.resolve("gemini/gemini-3.8-flash")
 }
 
-fn signed_part(body: &[u8]) -> Option<Value> {
+fn signed_part(body: &[u8], id: &str) -> Option<Value> {
     let value: Value = serde_json::from_slice(body).unwrap();
     value["contents"]
         .as_array()?
         .iter()
         .filter_map(|message| message["parts"].as_array())
         .flatten()
-        .find(|part| part["functionCall"]["id"] == "call_81218")
+        .find(|part| part["functionCall"]["id"] == id)
         .cloned()
 }
 
@@ -140,11 +169,28 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
     ] {
         crate::fuzzing::assert_stream_invariants(seed);
     }
+    for capture in CAPTURES {
+        replay(capture).await?;
+    }
+    Ok(())
+}
+
+async fn replay(capture: &'static Capture) -> Result<()> {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("project");
     std::fs::create_dir(&workspace).unwrap();
+    if capture.skill {
+        let directory = workspace.join(".agents/skills/inventory");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            include_bytes!("fixtures/gemini-flash-skill.md"),
+        )
+        .unwrap();
+    }
     let state = temporary.path().join("state");
     let transport = Arc::new(Recorded {
+        capture,
         requests: Mutex::new(Vec::new()),
         native: AtomicUsize::new(0),
     });
@@ -161,11 +207,31 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
         )
     };
     let harness = Arc::new(LocalHarness::open(open()?).await?);
-    let output = match prompt_settled(&harness, "signed-shell", PROMPT).await? {
+    let prompt = if capture.skill {
+        "/inventory Follow the selected skill precisely."
+    } else {
+        PROMPT
+    };
+    let output = match prompt_settled(&harness, "signed-call", prompt).await? {
         PromptOutcome::Settled(_, output) => output,
-        PromptOutcome::Failed(reason) => panic!("recorded shell turn failed: {reason}"),
+        PromptOutcome::Failed(reason) => panic!("recorded tool turn failed: {reason}"),
     };
     assert_eq!(output.steps, 2);
+    let captured = std::str::from_utf8(capture.call)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(|json| serde_json::from_str::<Value>(json).unwrap())
+        .find_map(|event| {
+            event["candidates"]
+                .as_array()?
+                .iter()
+                .filter_map(|candidate| candidate["content"]["parts"].as_array())
+                .flatten()
+                .find(|part| part["functionCall"]["id"] == capture.id)
+                .cloned()
+        })
+        .expect("original recorded response contains the signed call");
     let native = output
         .transcript
         .iter()
@@ -177,14 +243,43 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
         })
         .expect("canonical output retained the signed call");
     let original: Value = serde_json::from_slice(&native.continuity).unwrap();
-    assert_eq!(original["thoughtSignature"].as_str().unwrap().len(), 960);
-    let continuation = transport.requests.lock().unwrap()[1].clone();
-    assert_eq!(signed_part(&continuation), Some(original.clone()));
-    assert_eq!(transport.native.load(Ordering::SeqCst), 2);
+    assert_eq!(original, captured);
     assert_eq!(
-        std::fs::read(workspace.join("shell.txt")).unwrap(),
-        b"LIVE_dd7e4549fdec4891b0cc299b265e9be8"
+        original["thoughtSignature"].as_str().unwrap().len(),
+        capture.signature_length
     );
+    let continuation = transport.requests.lock().unwrap()[1].clone();
+    assert_eq!(
+        signed_part(&continuation, capture.id),
+        Some(original.clone())
+    );
+    assert_eq!(transport.native.load(Ordering::SeqCst), 2);
+    if capture.skill {
+        let first = transport.requests.lock().unwrap()[0].clone();
+        assert!(
+            std::str::from_utf8(&first)
+                .unwrap()
+                .contains("SKILL_LIVE_27ab6f453aef46a389af6e71a68aed4b")
+        );
+        let request: Value = serde_json::from_slice(&continuation).unwrap();
+        assert!(
+            request["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["parts"].as_array().unwrap().iter().any(|part| {
+                        part["functionResponse"]["id"] == capture.id
+                            && part["functionResponse"]["name"] == "read"
+                    })
+                })
+        );
+    } else {
+        assert_eq!(
+            std::fs::read(workspace.join("shell.txt")).unwrap(),
+            b"LIVE_dd7e4549fdec4891b0cc299b265e9be8"
+        );
+    }
     Arc::try_unwrap(harness).ok().unwrap().disconnect().await?;
 
     let harness = Arc::new(LocalHarness::open(open()?).await?);
@@ -193,7 +288,7 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
         PromptOutcome::Settled(..)
     ));
     let reopened = transport.requests.lock().unwrap()[2].clone();
-    assert_eq!(signed_part(&reopened), Some(original));
+    assert_eq!(signed_part(&reopened, capture.id), Some(original));
     assert_eq!(transport.native.load(Ordering::SeqCst), 3);
     Arc::try_unwrap(harness).ok().unwrap().disconnect().await?;
 

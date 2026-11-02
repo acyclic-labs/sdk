@@ -33,6 +33,12 @@ the original fixtures in `src/fixtures/gemini-flash-provenance.md`. The same
 inputs also reach the production local host's shell and durable continuation
 control; decoder chunk invariance alone cannot establish host continuity.
 
+The Flash skill seed retains the original selected-skill read response with its
+5,932-character signature. The small-event fuzz entry may refuse that frame;
+equal bounded refusals are not positive decode evidence. The host continuity
+control instead uses the recorded catalog's original event bound and must
+successfully decode and retain the complete signed call.
+
 The existing `checked_in_stream_corpus_obeys_the_properties` control replays
 all three recorded SSE bodies through the real Chat adapter and chunk-invariance
 oracle. Each must also decode successfully, so equal refusals cannot qualify a
