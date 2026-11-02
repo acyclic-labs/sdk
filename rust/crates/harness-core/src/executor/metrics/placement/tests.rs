@@ -60,8 +60,11 @@ async fn original_binding_preserves_authority_and_refuses_foreign_sources() -> R
     let agent = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let account = AccountId::new(b"original\0\xff").map_err(export_error)?;
     let provider = Arc::new(MemoryStream::default());
-    let source = Stream::new(provider, agent.machine("compute").map_err(export_error)?)
-        .map_err(export_error)?;
+    let source = Stream::new(
+        provider,
+        agent.machine("compute").map_err(export_error)?.as_str(),
+    )
+    .map_err(export_error)?;
     let original = binding("original.example")?;
     // These are SDK-format values committed by the real stream implementation,
     // not observations of a machine provider. Even a valid value at position 0
@@ -120,7 +123,7 @@ async fn original_binding_preserves_authority_and_refuses_foreign_sources() -> R
     let other = AgentPath::root(&AgentId::from_bytes([3; 16]));
     let shared = source
         .fork(
-            other.machine("compute").map_err(export_error)?,
+            other.machine("compute").map_err(export_error)?.as_str(),
             Some(2),
             Vec::new(),
             IdempotencyKey::unique(),
@@ -155,7 +158,7 @@ async fn original_binding_preserves_authority_and_refuses_foreign_sources() -> R
     stale.version = 1;
     invalid.value = serde_json::to_vec(&stale).map_err(export_error)?.into();
     assert!(project(&agent, &account, source.path(), &invalid).is_err());
-    invalid.value = bytes::Bytes::from_static(b"{}");
+    invalid.value = bytes::Bytes::from_static(b"{}").into();
     assert!(project(&agent, &account, source.path(), &invalid).is_err());
     // Same opaque key under another provider is a different logical authority.
     let replaced = binding("replaced.example")?;
@@ -205,7 +208,7 @@ async fn placement_projection_allocation_does_not_grow_with_stream_history() -> 
     let account = AccountId::new(b"original").map_err(export_error)?;
     let stream = Stream::new(
         Arc::new(MemoryStream::default()),
-        agent.machine("compute").map_err(export_error)?,
+        agent.machine("compute").map_err(export_error)?.as_str(),
     )
     .map_err(export_error)?;
     let value = bytes::Bytes::from(
