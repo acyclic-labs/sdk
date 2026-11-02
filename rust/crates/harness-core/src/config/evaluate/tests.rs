@@ -107,6 +107,10 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         ),
         ("export default import('./models.ts');", "import()"),
         (
+            r"import '\uD800'; export default 0;",
+            "module paths must be valid Unicode",
+        ),
+        (
             "import x from 'node:fs'; export default x;",
             "imports node:fs",
         ),

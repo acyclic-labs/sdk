@@ -261,7 +261,13 @@ pub(crate) fn compile_module(path: &str, source: &[u8]) -> std::result::Result<M
         .body
         .iter()
         .filter_map(|statement| statement.as_module_declaration()?.source())
-        .map(|source| resolve(path, source.value.as_str()))
+        .map(|source| {
+            let specifier = source
+                .value
+                .as_str()
+                .ok_or_else(|| format!("{path}: module paths must be valid Unicode"))?;
+            resolve(path, specifier)
+        })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     imports.sort();
     imports.dedup();
