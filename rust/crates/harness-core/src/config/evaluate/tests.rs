@@ -4,13 +4,16 @@ use serde_json::json;
 struct Files(&'static [(&'static str, &'static str)]);
 
 impl Tree for Files {
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(async move {
             Ok(self
                 .0
                 .iter()
                 .find(|(name, _)| *name == path)
-                .map(|(_, text)| text.as_bytes().to_vec()))
+                .map(|(_, text)| acyclic_stream::OwnedBytes::from_static(text.as_bytes())))
         })
     }
 }
