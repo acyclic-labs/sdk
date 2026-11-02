@@ -67,7 +67,7 @@ fn name(length: u8, encoding: NameEncoding) -> LogicalName {
             (0..length).flat_map(|_| 0xd800_u16.to_le_bytes()).collect()
         }
     };
-    LogicalName::new(encoding, bytes, u32::MAX).unwrap()
+    LogicalName::new(encoding, bytes).unwrap()
 }
 
 // Each variant constructs its own names, ledger, cancellation and capture custody.
@@ -75,7 +75,6 @@ fn check(
     lengths: &[u8],
     leaf_length: u8,
     encoding: NameEncoding,
-    bound: u8,
     denied: u8,
     cancelled: bool,
 ) -> Result<(), TestCaseError> {
@@ -83,7 +82,7 @@ fn check(
         tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     let mut outcomes = Vec::new();
     for old in [false, true] {
-        let mut limits = crate::model::VolumeLimits::default();
+        let limits = crate::model::VolumeLimits::default();
         let parent = NamespacePath::new(
             lengths
                 .iter()
@@ -123,12 +122,6 @@ fn check(
             ..WorkCounters::UNCHARGED
         };
         prop_assert_eq!(work.receipt(), before);
-        match bound {
-            1 => limits.maximum_path_depth = parent.depth() as u16,
-            2 => limits.maximum_component_bytes = 0,
-            3 => limits.maximum_path_bytes = 1,
-            _ => {}
-        }
         if cancelled {
             cancellation.cancel();
         }
@@ -141,7 +134,7 @@ fn check(
             });
         });
         let result = result.unwrap().map_err(|error| format!("{error:?}"));
-        let reached = !cancelled && bound == 0;
+        let reached = !cancelled;
         let success = reached && denied != 1 && denied != 3 && (denied != 2 || lengths.is_empty());
         prop_assert_eq!(result.is_ok(), success);
         let mut delta = WorkCounters::UNCHARGED;
@@ -196,7 +189,7 @@ fn check(
     }
     prop_assert_eq!(&outcomes[0].0, &outcomes[1].0);
     prop_assert_eq!(outcomes[0].1, outcomes[1].1);
-    let extra = u64::from(!cancelled && bound == 0);
+    let extra = u64::from(!cancelled);
     prop_assert_eq!(
         outcomes[1].2.bytes_total,
         outcomes[0].2.bytes_total + extra * std::mem::size_of::<crate::FsError>() as u64
@@ -212,11 +205,9 @@ fn appending_paths_has_exact_heap_and_work_counts() {
         NameEncoding::WindowsUtf16Le,
     ] {
         for lengths in [vec![], vec![1, 7, 3]] {
-            for bound in 0..4 {
-                for denied in 0..4 {
-                    for cancelled in [false, true] {
-                        check(&lengths, 5, encoding, bound, denied, cancelled).unwrap();
-                    }
+            for denied in 0..4 {
+                for cancelled in [false, true] {
+                    check(&lengths, 5, encoding, denied, cancelled).unwrap();
                 }
             }
         }
@@ -233,10 +224,9 @@ fn appending_paths_has_exact_heap_and_work_counts() {
                 1_u8..16,
                 0_u8..3,
                 0_u8..4,
-                0_u8..4,
                 any::<bool>(),
             ),
-            |(lengths, leaf, encoding, bound, denied, cancelled)| {
+            |(lengths, leaf, encoding, denied, cancelled)| {
                 check(
                     &lengths,
                     leaf,
@@ -245,7 +235,6 @@ fn appending_paths_has_exact_heap_and_work_counts() {
                         NameEncoding::PosixBytes,
                         NameEncoding::WindowsUtf16Le,
                     ][encoding as usize],
-                    bound,
                     denied,
                     cancelled,
                 )

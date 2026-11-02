@@ -24,11 +24,8 @@ impl AppendRecord {
         encode_into(&mut buffer, context, entries);
         let mut key_allocation = ReadAllocation::new(meter, 0)?;
         let mut key_buffer = crate::native::vector(key_bytes, meter, &mut key_allocation)?;
-        let mut ranges = [(0, 0); crate::MAX_RECORD_KEYS];
-        for (entry, range) in entries.iter().zip(&mut ranges) {
-            let start = key_buffer.len();
+        for entry in entries {
             key_buffer.extend_from_slice(entry.key);
-            *range = (start, key_buffer.len());
         }
         meter.record_codec(length as u64, (length + key_bytes) as u64, 0)?;
         let mut allocation = Some(allocation);
@@ -42,8 +39,11 @@ impl AppendRecord {
         )?;
         let mut allocation = ReadAllocation::new(meter, 0)?;
         let mut keys = crate::native::vector(entries.len(), meter, &mut allocation)?;
-        for (start, end) in ranges.iter().take(entries.len()) {
-            keys.push(key_owner.slice(*start..*end));
+        let mut start = 0;
+        for entry in entries {
+            let end = start + entry.key.len();
+            keys.push(key_owner.slice(start..end));
+            start = end;
         }
         let mut attributes = crate::native::vector(1, meter, &mut allocation)?;
         let mut name = crate::native::vector(ATTRIBUTE.len(), meter, &mut allocation)?;
@@ -87,22 +87,36 @@ mod tests {
     #[test]
     fn native_encoding_matches_the_contract_and_keeps_key_views_paid()
     -> Result<(), Box<dyn std::error::Error>> {
+        let long_key = vec![b'n'; 4097];
+        let mut next_key = long_key.clone();
+        next_key[4096] = b'o';
+        let mut entries: [ChangeEntryRef<'_>; 2] = entries();
+        entries[0].key = &long_key;
+        entries[1].key = &next_key;
         let observed = Arc::new(Meter::default());
         let meter = observed.original();
-        let record = AppendRecord::changes_native(b"generation", &entries(), &meter)??;
+        let record = AppendRecord::changes_native(b"generation", &entries, &meter)??;
         let expected = AppendRecord::changes(
             b"generation",
-            &entries()
+            &entries
                 .iter()
                 .map(|entry| wire::ChangeEntry {
-                    key: entry.key.into(),
+                    key: bytes::Bytes::copy_from_slice(entry.key),
                     operation: entry.operation.into(),
-                    metadata: entry.metadata.into(),
+                    metadata: bytes::Bytes::copy_from_slice(entry.metadata),
                 })
                 .collect::<Vec<_>>(),
             vec![],
         )?;
         assert_eq!(record, expected);
+        let decoded = decode_changes(&record.value)?;
+        assert_eq!(decoded.entries[1].key.as_ref(), next_key.as_slice());
+        assert_eq!(
+            crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
+                record.clone()
+            ))?,
+            record,
+        );
         assert!(record.value.matches_meter(&meter));
         assert!(
             record
@@ -119,7 +133,7 @@ mod tests {
         drop(headers);
         assert_eq!(
             aliases.last().ok_or("missing key")?.as_ref(),
-            b"nested/file"
+            next_key.as_slice()
         );
         assert!(observed.held.load(Ordering::SeqCst) > 0);
         drop(aliases);

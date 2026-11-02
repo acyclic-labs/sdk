@@ -131,9 +131,14 @@ fn output_part(file: &FileRef) -> MediaPart<'_> {
 pub(super) fn notebook_text_budget(
     path: &str,
     version: &str,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
+    let maximum = maximum
+        .into()
+        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+            maximum.min(crate::tool::output::VIEW_BYTES)
+        });
     let page = ReadPage {
         start: u64::MAX,
         end: u64::MAX,
@@ -153,7 +158,7 @@ pub(super) fn notebook_text_budget(
         },
     };
     let overhead = crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+        crate::executor::json::json_byte_length(&empty, None, history)
     })?;
     Ok(maximum
         .min(crate::tool::output::VIEW_BYTES)
@@ -165,7 +170,7 @@ pub(super) fn notebook_output_bytes(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&output_part(file), u64::MAX - 1, history)
+        crate::executor::json::json_byte_length(&output_part(file), None, history)
     })
     .map(|bytes| bytes + 1) // The preceding sequence comma.
 }
@@ -389,7 +394,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &[],
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -413,7 +418,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &result.0.outputs,
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -426,7 +431,7 @@ impl ToolProjection for FileProjection {
                                 page: result.0.page.as_ref(),
                             },
                         },
-                        u64::MAX,
+                        None,
                         work,
                     );
                 }

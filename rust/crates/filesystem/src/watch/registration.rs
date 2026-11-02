@@ -10,12 +10,12 @@ impl NativeWatch {
         &mut self,
         batch: &WatchBatch,
         policy: &CapturePolicy,
-        maximum_paths: u32,
+        maximum_paths: impl Into<Option<u32>>,
     ) -> Result<(), NativeWatchError> {
         let WatchBatch::Changes { changes, .. } = batch else {
             return Ok(());
         };
-        let mut remaining = maximum_paths;
+        let mut remaining = maximum_paths.into();
         for change in changes {
             let directory = match change {
                 WatchChange::Created(path) | WatchChange::Arrived(path) => path,
@@ -31,7 +31,7 @@ impl NativeWatch {
     pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
         let root = NamespacePath::new(Vec::new(), self.limits)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-        let mut remaining = u32::MAX;
+        let mut remaining = None;
         self.register_tree(&root, &CapturePolicy::default(), &mut remaining, excluded)
     }
 
@@ -39,7 +39,7 @@ impl NativeWatch {
         &mut self,
         directory: &NamespacePath,
         policy: &CapturePolicy,
-        remaining: &mut u32,
+        remaining: &mut Option<u32>,
         excluded: &[&str],
     ) -> Result<(), NativeWatchError> {
         if self.has_subtree_registration() {
@@ -51,7 +51,7 @@ impl NativeWatch {
             .ok_or(NativeWatchError::NativeWorkUnavailable)?
             .clone();
         original.admit(WorkCounters::UNCHARGED)?;
-        if *remaining == 0 {
+        if *remaining == Some(0) {
             return Err(NativeWatchError::InvalidOptions);
         }
         let root = self
@@ -66,9 +66,11 @@ impl NativeWatch {
             policy,
             &original,
             |path, stat, meter| {
-                *remaining = remaining
-                    .checked_sub(1)
-                    .ok_or(NativeWatchError::InvalidOptions)?;
+                if let Some(remaining) = remaining {
+                    *remaining = remaining
+                        .checked_sub(1)
+                        .ok_or(NativeWatchError::InvalidOptions)?;
+                }
                 if stat.file_type() != crate::demand::SourceNodeKind::Directory {
                     return Ok(false);
                 }
@@ -78,6 +80,7 @@ impl NativeWatch {
                     && excluded.iter().any(|name| relative.0 == Path::new(name)))
                     || self
                         .shared
+                        .state
                         .lock()
                         .map_err(|_| NativeWatchError::StatePoisoned)?
                         .excluded

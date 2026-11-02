@@ -25,11 +25,10 @@ pub(in crate::session::client) fn opened(
 pub(in crate::session::client) fn fixture(
     channel: &TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
-    let (_, commands) = mpsc::channel(2);
+    let (_, commands) = commands::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
         credentials: BTreeMap::new(),
-        credential_bytes: 0,
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
@@ -81,7 +80,7 @@ pub(in crate::session::client) fn fixture(
                     )),
                     None,
                 ),
-                sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
+                sender: Arc::new(Outbound::new()),
                 revision: 0,
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
@@ -153,9 +152,10 @@ pub(in crate::session::client) fn route(
 }
 
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
-    let (commands, _) = mpsc::channel(2);
+    let (commands, _) = commands::channel(2);
     Client {
         pool: PoolHandle {
+            executor: std::sync::Arc::clone(&pool.executor),
             connections: super::super::super::Connections::new(),
             commands,
             removed: Arc::clone(&pool.removed),
@@ -165,6 +165,7 @@ pub(in crate::session::client) fn client(pool: &Pool) -> Client {
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
         },
+        registration_timeout: None,
         revisions: Arc::default(),
     }
 }

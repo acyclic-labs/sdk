@@ -83,9 +83,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
     if paths.len() == 0 {
         return Err(PathLookupError::EmptyBatch.into());
     }
-    if u32::try_from(paths.len()).unwrap_or(u32::MAX) > config.limits.maximum_paths_per_batch {
-        return Err(PathLookupError::TooManyPaths.into());
-    }
     let mut total_components = 0_usize;
     for index in 0..paths.len() {
         validate_path(paths.get(index), config, accounting)?;
@@ -238,7 +235,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             query_indices.value.push(item.path_index);
                             let (name, guard) = copy_name(
                                 &paths.get(item.path_index).components()[depth],
-                                limits.maximum_name_bytes,
                                 accounting,
                                 data_custody,
                             )?;
@@ -269,7 +265,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 &cache,
                                 directory,
                                 &names.value,
-                                config.limits.maximum_paths_per_batch,
                                 limits,
                                 accounting,
                                 cancellation,
@@ -341,7 +336,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             &cache,
                             generation.file_table,
                             &file_ids.value,
-                            config.limits.maximum_paths_per_batch,
                             limits,
                             accounting,
                             cancellation,

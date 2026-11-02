@@ -73,8 +73,10 @@ impl LocalMachine {
         &self,
         command: ExecCommand,
         mut handler: H,
-        deadline: Option<std::time::Instant>,
+        deadline: impl Into<Option<std::time::Instant>>,
     ) -> LocalExecution<H> {
+        let deadline = deadline.into();
+        let schedule = deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until);
         let machine = self.id;
         let (maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,
@@ -132,13 +134,9 @@ impl LocalMachine {
                     Ok::<_, StartFailure>((tree, input))
                 })();
                 match started {
-                    Ok((tree, input)) => Ok(tree.stream_capture(
-                        &spawner,
-                        deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
-                        maximum,
-                        input,
-                        handler,
-                    )),
+                    Ok((tree, input)) => {
+                        Ok(tree.stream_capture(&spawner, schedule, maximum, input, handler))
+                    }
                     Err(failure) => {
                         handler.retired(matches!(&failure, StartFailure::Refused(_)));
                         Err((
@@ -178,8 +176,8 @@ impl LocalMachine {
     }
 }
 
-fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError> {
-    let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
+fn admit(command: &ExecCommand) -> Result<(Option<usize>, ProcessControl), ProviderError> {
+    let maximum = command.maximum_output_bytes.map(usize::try_from).transpose()
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),

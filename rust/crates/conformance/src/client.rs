@@ -20,7 +20,7 @@ pub enum Cause {
 
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
-    ConversationEntry, DemandError, StatusRecord, WireSessionError,
+    ConversationEntry, StatusRecord, WireSessionError,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{StreamProvider, session::Client};
@@ -218,6 +218,7 @@ async fn verify_observation(
             "unchanged demand reset the fold or cursor",
         ));
     }
+    // Repeated selections beyond the former default retain one exact follow.
     let composition = client.session().revision();
     for status in [false, true] {
         let mut invalid = selection();
@@ -249,28 +250,17 @@ async fn verify_observation(
             ));
         }
     }
-    // Deliberately over-budget input is refused before any demand mutation.
-    match client.set_view(
-        selection(),
-        std::iter::repeat_with(selection).take(AgentClient::selected_capacity()),
-    ) {
-        Err(AgentClientError::Session(WireSessionError::Demand(DemandError::SelectedCapacity))) => {
-        }
-        result => {
-            return Err(failure(
-                "atomic_capacity_refusal",
-                format!("unexpected {result:?}"),
-            ));
-        }
-    }
+    client
+        .set_view(selection(), std::iter::repeat_with(selection).take(257))
+        .map_err(|error| failure("retain_repeated_selection", error))?;
     if client.conversation().next_sequence() != cursor
         || client.selected_agents().count() != 1
         || client.agent() != &fixture.agent
         || client.session().revision() != composition
     {
         return Err(failure(
-            "atomic_capacity_refusal",
-            "refusal changed admitted demand",
+            "retain_repeated_selection",
+            "repeated selection changed admitted demand",
         ));
     }
     let unknown = match fixture.agent.parent() {
@@ -319,7 +309,7 @@ async fn verify_observation(
             "exact_status",
             "retain_selection",
             "complete_cursor_refusal",
-            "atomic_capacity_refusal",
+            "retain_repeated_selection",
             "unknown_authority",
             "reselection_cursor",
         ],

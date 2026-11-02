@@ -12,7 +12,6 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         return;
     };
     check(!messages.is_empty(), "ANT-SEQ-09", errors);
-    check(messages.len() <= 100_000, "ANT-SEQ-05", errors);
     check(
         user_boundary(
             messages

@@ -244,7 +244,7 @@ impl LocalWorkspace {
     /// A different selected workspace must fit the same grant or launch refuses.
     pub async fn executor(
         self: &Arc<Self>,
-        (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, u64),
+        (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, Option<u64>),
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
         verifier: &crate::core::AuthorityVerifier,

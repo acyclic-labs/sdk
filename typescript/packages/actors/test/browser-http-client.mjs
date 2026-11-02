@@ -19,6 +19,14 @@ function errorCode(error) {
   }
 }
 
+function publishResult(status, detail) {
+  const result = document.createElement("pre");
+  result.id = "result";
+  result.dataset.status = status;
+  result.textContent = detail;
+  document.body.append(result);
+}
+
 try {
   const options = { endpoint: location.origin, token: "conformance" };
   for (const [value, code] of [[-1n, "not_positive"], [0n, "invalid_argument"], [18446744073709551616n, "not_positive"]]) {
@@ -115,9 +123,9 @@ try {
   await assert.rejects(new HttpStreamProvider({ ...options, token: "wrong" }).tail(path), error => error.code === "access_denied");
   await assert.rejects(new HttpStreamProvider({ ...options, maximumResponseBytes: 8 }).readCommit(committed.commitId), error => error.code === "response_too_large");
   assert.equal((await stream.createToken({ expiresIn: "1m", allow: [{ path: "browser", subtree: true, operations: ["read"] }] })).token, "fixture-issued-token");
-  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 13 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
+  publishResult("passed", "Objects lifecycle/framing, 13 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds");
 } catch (error) {
-  globalThis.sdkHttpResult = { status: "failed", detail: error.stack ?? String(error) };
+  publishResult("failed", error.stack ?? String(error));
 }
 
 document.body.dataset.result = globalThis.sdkHttpResult.status;

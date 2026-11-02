@@ -23,13 +23,9 @@ fn assert_rejected(
     mutation: Mutation,
     expected: MutationPlanError,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let failure = MutationPlan::compile(
-        vec![mutation],
-        VolumeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("invalid mutation unexpectedly compiled")?;
+    let failure = MutationPlan::compile(vec![mutation], WorkBudget::UNBOUNDED)
+        .err()
+        .ok_or("invalid mutation unexpectedly compiled")?;
     assert_eq!(failure.error, expected);
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
@@ -56,11 +52,7 @@ fn mixed_batch_compiles_shared_ancestors_once() -> Result<(), Box<dyn std::error
             replace: false,
         },
     ];
-    let plan = MutationPlan::compile(
-        operations.clone(),
-        VolumeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
+    let plan = MutationPlan::compile(operations.clone(), WorkBudget::UNBOUNDED)?;
     assert_eq!(plan.operations(), operations);
     assert_eq!(plan.path_nodes(), 7);
     assert_eq!(plan.ordered_paths().count(), 4);
@@ -79,7 +71,6 @@ fn identity_only_batch_retains_no_path_plan_or_namespace_work()
             file_id,
             mutation: FileMutation::Resize { logical_bytes: 9 },
         }],
-        VolumeLimits::default(),
         WorkBudget::UNBOUNDED,
     )?;
     assert_eq!(plan.ordered_paths().count(), 0);
@@ -108,7 +99,7 @@ fn identity_record_replacement_rejects_mismatched_or_invalid_records()
         file_id,
         mutation: FileMutation::ReplaceRecord { record },
     };
-    let plan = MutationPlan::compile(vec![valid], VolumeLimits::default(), WorkBudget::UNBOUNDED)?;
+    let plan = MutationPlan::compile(vec![valid], WorkBudget::UNBOUNDED)?;
     assert_eq!(plan.ordered_paths().count(), 0);
     assert_rejected(
         Mutation::File {
@@ -139,7 +130,6 @@ fn malformed_ranges_and_root_mutation_fail_before_external_work()
             path: path("/")?,
             logical_bytes: 1,
         }],
-        VolumeLimits::default(),
         WorkBudget::UNBOUNDED,
     )
     .err()
@@ -155,7 +145,6 @@ fn malformed_ranges_and_root_mutation_fail_before_external_work()
             allocated: false,
             extend: false,
         }],
-        VolumeLimits::default(),
         WorkBudget::UNBOUNDED,
     )
     .err()
@@ -289,33 +278,6 @@ fn path_use_count_deduplicates_only_identical_endpoints() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn operation_bound_is_checked_before_plan_allocation() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = VolumeLimits {
-        maximum_mutations_per_batch: 1,
-        ..VolumeLimits::default()
-    };
-    let failure = MutationPlan::compile(
-        vec![
-            Mutation::Resize {
-                path: path("/a")?,
-                logical_bytes: 1,
-            },
-            Mutation::Resize {
-                path: path("/b")?,
-                logical_bytes: 1,
-            },
-        ],
-        limits,
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("oversized batch unexpectedly compiled")?;
-    assert_eq!(failure.error, MutationPlanError::TooManyMutations);
-    assert_eq!(*failure.work, WorkCounters::default());
-    Ok(())
-}
-
-#[test]
 fn flat_plan_memory_is_admitted_before_allocator_access() -> Result<(), Box<dyn std::error::Error>>
 {
     let operation = Mutation::Resize {
@@ -324,18 +286,14 @@ fn flat_plan_memory_is_admitted_before_allocator_access() -> Result<(), Box<dyn 
     };
     let mut operation_budget = WorkBudget::UNBOUNDED;
     operation_budget.allocation_operations = 0;
-    let operation_failure = MutationPlan::compile(
-        vec![operation.clone()],
-        VolumeLimits::default(),
-        operation_budget,
-    )
-    .err()
-    .ok_or("allocation operation unexpectedly admitted")?;
+    let operation_failure = MutationPlan::compile(vec![operation.clone()], operation_budget)
+        .err()
+        .ok_or("allocation operation unexpectedly admitted")?;
     assert_eq!(*operation_failure.work, WorkCounters::default());
 
     let mut peak_budget = WorkBudget::UNBOUNDED;
     peak_budget.peak_allocation_bytes = 0;
-    let peak_failure = MutationPlan::compile(vec![operation], VolumeLimits::default(), peak_budget)
+    let peak_failure = MutationPlan::compile(vec![operation], peak_budget)
         .err()
         .ok_or("allocation peak unexpectedly admitted")?;
     assert_eq!(*peak_failure.work, WorkCounters::default());

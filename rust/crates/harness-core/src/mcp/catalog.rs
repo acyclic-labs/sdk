@@ -6,7 +6,10 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, BinaryHeap},
+    sync::Arc,
+};
 
 /// Model schema selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -54,12 +57,13 @@ pub struct McpCatalog {
 }
 
 impl McpCatalog {
-    /// Digests the replacement, predecessor and allowances.
+    /// Digests the replacement, predecessor and optional host allowances.
+    /// `None` imposes no total tool or byte ceiling and remains part of approval.
     pub fn installation_digest(
         &self,
         previous: Option<&Self>,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
     ) -> Result<[u8; 32]> {
         self.validate(maximum_tools, maximum_bytes)?;
         if previous.is_some_and(|old| old.server != self.server) {
@@ -72,14 +76,12 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| {
-                        crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None)
-                    })
+                    .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )
     }
@@ -92,7 +94,7 @@ impl McpCatalog {
         remote: (&Arc<dyn McpToolTransport>, &Arc<dyn ToolProjection>),
         operation: (OperationId, InteractionId),
         authorization: (&Scope, &AuthorityVerifier, &dyn ToolApprovalVerifier),
-        bounds: (u32, u32),
+        bounds: (Option<u32>, Option<u32>),
     ) -> Result<()> {
         let (transport, projection) = remote;
         let (operation, interaction) = operation;
@@ -125,15 +127,15 @@ impl McpCatalog {
         )
     }
 
-    /// Validates the complete catalog before mutation.
-    pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
+    /// Validates the complete catalog before mutation. `None` is unbounded.
+    pub fn validate(&self, maximum_tools: Option<u32>, maximum_bytes: Option<u32>) -> Result<()> {
         self.validate_checked(maximum_tools, maximum_bytes, &|| Ok(()))
     }
 
     fn validate_checked(
         &self,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         check()?;
@@ -144,13 +146,15 @@ impl McpCatalog {
                 "MCP server namespace cannot contain a dot".into(),
             ));
         }
-        if maximum_tools == 0
-            || maximum_bytes == 0
-            || self.tools.len() as u64 > u64::from(maximum_tools)
+        if maximum_tools == Some(0)
+            || maximum_bytes == Some(0)
+            || maximum_tools.is_some_and(|maximum| self.tools.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::executor::json::json_byte_length(self, u64::from(maximum_bytes), &mut None)?;
+        if let Some(maximum) = maximum_bytes {
+            crate::executor::json::json_byte_length(self, Some(u64::from(maximum)), &mut None)?;
+        }
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         check()?;
         let mut names = BTreeSet::new();
@@ -241,8 +245,8 @@ impl McpCatalog {
     /// Returns selected model schemas in name order.
     pub fn model_definitions(
         &self,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
     ) -> Result<Vec<ToolDefinition>> {
         self.validate(maximum_tools, maximum_bytes)?;
         let mut definitions = self
@@ -262,8 +266,8 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
     ) -> Result<()> {
         self.install_checked(
             registry,
@@ -281,7 +285,7 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        bounds: (u32, u32),
+        bounds: (Option<u32>, Option<u32>),
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         self.validate_checked(bounds.0, bounds.1, check)?;
@@ -293,8 +297,7 @@ impl McpCatalog {
             ));
         }
         let prefix = format!("mcp.{}.", self.server);
-        let mut selected = registry.definitions(None)?;
-        selected.retain(|tool| tool.name.starts_with(&prefix));
+        let selected = registry.definitions_in_namespace(&prefix, None)?;
         let mut expected = Vec::new();
         if let Some(old) = previous {
             for tool in &old.tools {
@@ -313,9 +316,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
+                .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                 .transpose()?,
-            crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(self, None, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {
@@ -362,8 +365,8 @@ impl McpCatalog {
         query: &str,
         after: Option<&str>,
         maximum_results: u32,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: Option<u32>,
+        maximum_bytes: Option<u32>,
     ) -> Result<Vec<ToolDefinition>> {
         self.validate(maximum_tools, maximum_bytes)?;
         if self.discovery == McpDiscoveryPolicy::Disabled {
@@ -377,20 +380,24 @@ impl McpCatalog {
             ));
         }
         let query = query.to_lowercase();
-        let mut tools = self
-            .tools
-            .iter()
-            .filter(|tool| {
-                after.is_none_or(|cursor| tool.name.as_str() > cursor)
-                    && (tool.name.to_lowercase().contains(&query)
-                        || tool.description.to_lowercase().contains(&query))
-            })
-            .collect::<Vec<_>>();
-        tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        let mut tools: BinaryHeap<(&str, usize)> = BinaryHeap::new();
+        for (index, tool) in self.tools.iter().enumerate().filter(|(_, tool)| {
+            after.is_none_or(|cursor| tool.name.as_str() > cursor)
+                && (tool.name.to_lowercase().contains(&query)
+                    || tool.description.to_lowercase().contains(&query))
+        }) {
+            if tools.len() < maximum_results as usize {
+                tools.push((&tool.name, index));
+            } else if let Some(mut last) = tools.peek_mut()
+                && tool.name.as_str() < last.0
+            {
+                *last = (&tool.name, index);
+            }
+        }
         tools
+            .into_sorted_vec()
             .into_iter()
-            .take(maximum_results as usize)
-            .map(|tool| self.definition(tool))
+            .map(|(_, index)| self.definition(&self.tools[index]))
             .collect()
     }
 }

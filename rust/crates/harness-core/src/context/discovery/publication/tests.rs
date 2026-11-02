@@ -168,7 +168,6 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         &scope,
         &volume,
         VolumeOperation::Write,
-        32_768,
         &mut None,
     )?;
     let original = host

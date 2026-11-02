@@ -481,7 +481,7 @@ impl ModelProvider for RecordedModel {
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         let live = self.live.bind_content(reader, maximum_bytes)?;
         Some(Arc::new(Self {

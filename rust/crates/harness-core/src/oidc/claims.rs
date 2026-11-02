@@ -56,7 +56,11 @@ pub(super) fn verify(
     config: &Config,
     keys: &BTreeMap<String, Key>,
 ) -> Result<VerifiedIdentity> {
-    if token.len() > config.limits.maximum_token_bytes {
+    if config
+        .limits
+        .maximum_token_bytes
+        .is_some_and(|maximum| token.len() > maximum)
+    {
         return Err(refused("OIDC token exceeds policy size"));
     }
     let mut parts = token.split('.');
@@ -70,7 +74,6 @@ pub(super) fn verify(
     let header: Header =
         serde_json::from_slice(&bytes).map_err(|_| refused("invalid OIDC header"))?;
     if header.alg != config.algorithm.name()
-        || header.kid.len() > 256
         || header.crit.is_some()
         || header.b64.is_some()
         || header.jku.is_some()
@@ -101,7 +104,6 @@ pub(super) fn verify(
     let unique: BTreeSet<_> = audience.iter().copied().collect();
     if claims.iss != config.issuer
         || claims.sub.is_empty()
-        || claims.sub.len() > 1024
         || claims.exp <= now
         || claims
             .nbf

@@ -173,7 +173,7 @@ fn claim(
         process: lease.funded_process()?,
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
-        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+        events: acyclic_native_runtime::lines::LineBuffer::new(None),
         answer: Outcome::Succeeded(String::new()),
         settlement: None,
         wake: std::task::Waker::noop().clone(),

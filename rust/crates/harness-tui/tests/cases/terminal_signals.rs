@@ -65,7 +65,8 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     let mut rejected = false;
     let mut handoff_deadline = false;
     loop {
-        let deadline = Instant::now() + Duration::from_millis(20);
+        let deadline = (mode == "handoff" && !handoff_deadline && !received.is_empty())
+            .then(|| Instant::now() + Duration::from_millis(20));
         let events = match tty.read_events(deadline) {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
@@ -81,7 +82,7 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             && !handoff_deadline
             && !received.is_empty()
             && events.is_empty()
-            && Instant::now() >= deadline
+            && deadline.is_some_and(|end| Instant::now() >= end)
         {
             tty.write_all(b"HANDOFF-DEADLINE\n")?;
             handoff_deadline = true;
@@ -139,11 +140,11 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn oversized_paste_rejection_preserves_following_numbered_keys()
+fn malformed_paste_rejection_preserves_following_numbered_keys()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut process = Process::start("rejected-paste")?;
     let mut bytes = b"\x1b[200~".to_vec();
-    bytes.resize(bytes.len() + 17 * 1024, b'p');
+    bytes.push(0xff);
     bytes.extend_from_slice(b"\x1b[201~x\x1b[1~\x1b[4~\x1b[15;5~q");
     process.send(&bytes)?;
     assert!(process.wait()?.success());
