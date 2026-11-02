@@ -30,11 +30,12 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
   const close = () => {
     if (!closed) terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
   };
+  const fail = (cause: unknown) => {
+    try { terminate(cause); } catch { /* The original failure remains primary. */ }
+  };
   // A failed terminal producer must also wake an in-flight body read. One
   // lifetime handler retains the original cause; no reaction is added per chunk.
-  void terminal.catch(cause => {
-    try { terminate(cause); } catch { /* The producer failure remains primary. */ }
-  });
+  void terminal.catch(fail);
   signal?.addEventListener("abort", close, { once: true });
   if (signal?.aborted) close();
   let consumed = false;
@@ -53,6 +54,7 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
             // A read can already be rejected when the original owner stops.
             // Preserve that owner's first cause instead of the queued error.
             if (closed) await stopped;
+            fail(cause);
             throw cause;
           }
           if (closed) await stopped;
@@ -83,7 +85,7 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
           return iterator.return(value);
         },
         async throw(cause: unknown) {
-          terminate(cause);
+          fail(cause);
           return iterator.throw(cause);
         },
       };
