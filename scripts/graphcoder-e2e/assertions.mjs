@@ -86,6 +86,7 @@ export function subset(actual, expected) {
 // admit one, regardless of the enclosing process's successful exit.
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
   const error = value && typeof value === "object" ? value.error
+    ?? (value.version === 2 && Array.isArray(value.context) ? value.output?.error : undefined)
     ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
       ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
     : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;

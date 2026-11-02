@@ -76,8 +76,7 @@
           },
           "text": "AFTER_LIVE_4d258c1456764c5dba5fe39c1783e545"
         },
-        "hook_event_name": "PostToolUse",
-        "cwd": "/home/var/live-current-main-f2a8-files/openai/file-tools/workspace"
+        "hook_event_name": "PostToolUse"
       }
     },
     {
@@ -152,8 +151,7 @@
           },
           "text": "AFTER_LIVE_9f050ed4faf34d119a55f068445d0658"
         },
-        "hook_event_name": "PostToolUse",
-        "cwd": "/home/var/live-current-main-f2a8-files/anthropic/file-tools/workspace"
+        "hook_event_name": "PostToolUse"
       }
     }
   ],
