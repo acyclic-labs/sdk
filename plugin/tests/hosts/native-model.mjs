@@ -312,8 +312,8 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
-  assertNativeCompletion(host,completed,answer,fixture.live&&host==='claude-code'
-   ?{model:fixture.live.model,installed:true}:undefined);
+  assertNativeCompletion(host,completed,answer,host==='claude-code'
+   ?{model:nativeModel(host,fixture.live),installed:true}:undefined);
  } catch(error) {
   throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
  }

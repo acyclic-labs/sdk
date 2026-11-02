@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {assertNativeCompletion} from './native-model.mjs';
+import {assertCodexPairTools} from './native-pairs.mjs';
+
+const namespace=JSON.parse(readFileSync(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8')).tool;
 
 // Seeds are the retained real native output, never an invented provider reply.
 export const seeds=['native-completion.json','native-pair-initialization.json',
@@ -46,5 +49,9 @@ export function fuzz(data) {
  try {replacement=JSON.parse(bytes);}catch {replacement=bytes;}
  lines[index]=JSON.stringify(replace(event,fields[(input[2]??0)%fields.length],replacement));
  check(record,lines.join('\n'));
+ const declaration=structuredClone(namespace),declarationFields=paths(declaration);
+ const changed=replace(declaration,declarationFields[(input[2]??0)%declarationFields.length],replacement);
+ try {assertCodexPairTools([{body:{tools:[changed]}}],Boolean((input[0]??0)&1));}
+ catch(error) {assert.equal(error.code,'ERR_ASSERTION','native declaration escaped its admission boundary');}
  for(const host of ['codex','claude-code','pi'])check({...record,host,selection:undefined},input.toString('utf8'));
 }
