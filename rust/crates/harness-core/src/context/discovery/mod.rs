@@ -24,7 +24,7 @@ pub use skills::discover_skills;
 #[cfg(feature = "filesystem-local")]
 #[doc(hidden)]
 pub use skills::discover_skills_at;
-pub use skills::{BUILTIN_SKILLS, SkillCallFields, SkillMetadata, parse_skill_metadata};
+pub use skills::{SkillCallFields, SkillMetadata, parse_skill_metadata};
 mod frontmatter;
 #[doc(hidden)]
 pub use frontmatter::{frontmatter_end, parse_frontmatter, parse_frontmatter_with_body};
@@ -51,7 +51,7 @@ pub use publication::{
 pub use source::{
     DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource, InstructionReader,
     PROJECT_SKILL_ROOTS, SkillCatalog, SkillReader, VolumeDiscovery, capture_instructions,
-    discover_skills_from,
+    discover_layered_skills, discover_skills_from,
 };
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

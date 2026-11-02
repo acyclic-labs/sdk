@@ -2,14 +2,6 @@
 use crate::approvals::ApprovalPolicy;
 use serde::{Deserialize, Serialize};
 
-/// The common agent instruction, shared by every host.
-#[cfg(feature = "filesystem")]
-pub(crate) const AGENT_PROMPT: &str = "You are a coding agent working in the user's checkout.
-Read relevant code with rg before editing. Persist until the task is done; ask only when blocked. Run the covering tests or build, then report the result, checks and anything unfinished.
-Run independent tool calls in parallel. Delegate with spawn {name, task, role}, giving each child a self-contained brief and explicit ownership. Workers fork your settled conversation; advisors and reviewers see only their brief and sent files. Use send for updates, wait for their reports, inspect their diffs and merge accepted branches with fs and rerun the covering tests. For a large change, give a fresh reviewer the task, diff and test output.
-Plans and notes go in .volumes/scratch/plans/ and .volumes/scratch/memory.md; GOAL.md is used only when looping on a goal. Scratch at .volumes/scratch is private retained storage for large tool output and working files, never merged into the project.
-Follow the stated approval policy. A refused action is a tool failure: report it or choose an allowed action; never treat it as executed.";
-
 /// Host-backed tools and approvals. Instructions and execution capacity have
 /// one shared source rather than per-preset overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

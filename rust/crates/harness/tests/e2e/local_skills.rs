@@ -173,13 +173,22 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
             1
         );
     }
-    for (name, _) in acyclic_harness::context::BUILTIN_SKILLS {
+    // Seed skills are read in place from the one seed volume, never copied.
+    for (path, _) in acyclic_harness::seed::TREE {
+        let Some(name) = path
+            .strip_prefix("skills/")
+            .and_then(|path| path.strip_suffix("/SKILL.md"))
+        else {
+            continue;
+        };
         let skill = skills
             .iter()
-            .find(|skill| skill.name == *name)
-            .ok_or("built-in skill absent from the first request")?;
+            .find(|skill| skill.name == name)
+            .ok_or("seed skill absent from the first request")?;
         assert_eq!(skill.source.root.directory, "skills");
-        assert_eq!(skill.source.path, format!("skills/{name}/SKILL.md"));
+        assert_eq!(skill.source.path, *path);
+        let volume = &skill.source.root.volume;
+        assert_eq!(*volume, acyclic_harness::seed::volume(volume.provider())?);
     }
     assert!(!serde_json::to_string(&model.requests())?.contains("BODY-MUST-STAY-LAZY"));
     Ok(())

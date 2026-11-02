@@ -33,7 +33,7 @@ import json,os,pathlib,socket,subprocess,sys,traceback
 sys.path.insert(0,os.environ['FIXTURE_HOST_SUPPORT'])
 from native_mcp import McpClient
 def failed(kind,error,stack):
- pathlib.Path('.volumes/scratch/native-error.txt').write_text(''.join(traceback.format_exception(kind,error,stack)))
+ pathlib.Path('.volumes/home/native-error.txt').write_text(''.join(traceback.format_exception(kind,error,stack)))
  sys.__excepthook__(kind,error,stack)
 sys.excepthook=failed
 args=sys.argv[1:]
@@ -67,9 +67,9 @@ assert prompt in ('failed','cancelled','recursive','first','resumed')
 (cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c','sandbox_workspace_write.writable_roots='+json.dumps([args[args.index('--add-dir')+1]]),'--']
-if prompt=='resumed': assert (cwd/'.volumes/scratch/native-private.txt').read_text()=='first'
+if prompt=='resumed': assert (cwd/'.volumes/home/native-private.txt').read_text()=='first'
 checked=subprocess.run(base+['sh','-c',
- 'set -eu; "$1" agents >/dev/null; printf "%s" "$4" > .volumes/scratch/native-private.txt; '
+ 'set -eu; "$1" agents >/dev/null; printf "%s" "$4" > .volumes/home/native-private.txt; '
  'if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"; printf native > "$3"; '
  'if test "$4" = failed; then exit 17; fi',
  'fixture',os.environ['FIXTURE_ACYCLIC'],os.environ['FIXTURE_OUTSIDE'],prompt+'.txt',prompt],capture_output=True,text=True)
@@ -186,7 +186,7 @@ if prompt=='resumed':
   if scenario=='recursive':
    recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
-   error=pathlib.Path(recursive['cwd'])/'.volumes/scratch/native-error.txt'
+   error=pathlib.Path(recursive['cwd'])/'.volumes/home/native-error.txt'
    assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
@@ -208,7 +208,7 @@ if prompt=='resumed':
    path=root/name
    if path.exists():print('FIXTURE_'+name,path.read_text()[-4000:],flush=True)
   for view in (workspace/'.volumes/agents').glob('*'):
-   error=view/'.volumes/scratch/native-error.txt'
+   error=view/'.volumes/home/native-error.txt'
    if error.is_file():print('FIXTURE_NATIVE_ERROR',view.name,error.read_text()[-4000:],flush=True)
   raise
  finally:

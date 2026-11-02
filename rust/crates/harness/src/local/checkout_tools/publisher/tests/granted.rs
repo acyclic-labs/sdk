@@ -20,7 +20,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     let workspace = fixture.workspace.as_ref().expect("checkout");
     let private = workspace
         .mounts
-        .named(Some("scratch"))?
+        .named(Some("home"))?
         .1
         .view
         .volume

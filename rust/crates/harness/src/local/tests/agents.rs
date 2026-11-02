@@ -1250,7 +1250,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     let child_scratch = &child_state
         .volumes
         .iter()
-        .find(|binding| binding.name == "scratch")
+        .find(|binding| binding.name == "home")
         .ok_or_else(|| Error::NotFound("child scratch volume".into()))?
         .volume;
     assert_ne!(child_scratch, &harness.scratch);
@@ -1270,19 +1270,16 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         2,
         "configured and built-in sources remain separate pinned entries",
     );
+    // Built-in skills are read in place from the one shared seed volume.
+    let seed = &harness.seed.0;
     assert!(child_skills.iter().any(|skill| {
-        skill.name == "context-checkpoint" && &skill.source.root.volume == child_scratch
+        skill.name == "context-checkpoint" && &skill.source.root.volume == seed
     }));
     assert!(
         child_skills
             .iter()
             .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == child_scratch)
-    );
-    assert!(
-        child_skills
-            .iter()
-            .any(|skill| &skill.source.root.volume == child_scratch)
+            .all(|skill| &skill.source.root.volume == seed)
     );
 
     conversation(&harness)
@@ -1304,14 +1301,15 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
     assert_eq!(&project_skill.source.root.volume, &project);
     assert!(parent_skills.iter().any(|skill| {
-        skill.name == "context-checkpoint" && skill.source.root.volume == harness.scratch
+        skill.name == "context-checkpoint" && &skill.source.root.volume == seed
     }));
     assert!(
         parent_skills
             .iter()
             .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| skill.source.root.volume == harness.scratch)
+            .all(|skill| &skill.source.root.volume == seed)
     );
+    // Project skills differ: the child reads its own forked project.
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
         assert!(matches!(

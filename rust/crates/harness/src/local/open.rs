@@ -361,8 +361,8 @@ impl Opening {
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
-        context::skills::seed(&files, &scratch).await?;
-        let volumes = (&owner.project, &scratch, &journal);
+        let seed = files.seed_layer().await?;
+        let volumes = (&owner.project, &scratch, &journal, &seed.0);
         let (scope, signed) = scopes(&self, &issuer, owner.agent, volumes)?;
         let reader = crate::filesystem::FilesystemContentVerifier::new(
             files.clone(),
@@ -411,6 +411,7 @@ impl Opening {
                 writer,
             }),
             targets: workspace_tools.map(super::agents::home).transpose()?,
+            seed: Some(seed.0.clone()),
             ..crate::runtime::Bindings::local()
         }
         .build()?;
@@ -427,6 +428,7 @@ impl Opening {
             project: owner.project.clone(),
             scratch,
             journal,
+            seed,
             verifier,
             signed,
             preset: self.preset,
@@ -458,14 +460,15 @@ impl Opening {
 }
 
 /// The agent turns' runtime scope, and the owner's signed scope over it and
-/// its private journal: the project, scratch and journal volumes, in order.
+/// its private journal: the project, home, journal and seed volumes, in
+/// order. The seed is read-only: no scope grants writing it.
 fn scopes(
     opening: &Opening,
     issuer: &AuthorityRoot,
     agent: AgentId,
-    volumes: (&VolumeRef, &VolumeRef, &VolumeRef),
+    volumes: (&VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef),
 ) -> Result<(RuntimeScope, Scope)> {
-    let (project, scratch, journal) = volumes;
+    let (project, scratch, journal, seed) = volumes;
     let mut grants = Vec::new();
     if opening.config.model.is_some() {
         grants.extend([
@@ -480,6 +483,10 @@ fn scopes(
         }
         grants.push(volume.directory_read_capability("", &mut None)?);
     }
+    grants.extend([
+        seed.capability(VolumeOperation::Read, &mut None)?,
+        seed.directory_read_capability("", &mut None)?,
+    ]);
     grants.extend(opening.preset.tool_grants(&opening.tools)?);
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     grants.extend(
@@ -542,7 +549,7 @@ impl PrivateVolumes {
     async fn open(files: &LocalFilesystem, owner: &owner::Owner) -> Result<Self> {
         let scratch = VolumeRef::new(
             owner.project.provider().clone(),
-            format!("scratch-{}", owner.agent),
+            format!("home-{}", owner.agent),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner.agent),
             &mut None,

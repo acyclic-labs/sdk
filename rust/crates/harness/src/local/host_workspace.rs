@@ -255,7 +255,7 @@ impl HostWorkspace {
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;
-        let scratch = bound("scratch")?;
+        let scratch = bound(crate::filesystem::HOME_VOLUME)?;
         if project.class() != VolumeClass::Project {
             return Err(Error::Invalid(
                 "host child project volume class differs".into(),

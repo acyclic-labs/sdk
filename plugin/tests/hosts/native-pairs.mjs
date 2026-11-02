@@ -155,7 +155,7 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
    capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer})});
   for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
    assert.equal(await readFile(join(workspace,file),'utf8'),bytes,'original native effect missing: '+file);
-  const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/scratch',`native-${phase}-session.json`),'utf8'));
+  const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/home',`native-${phase}-session.json`),'utf8'));
   assertNativeResume(await session('initial'),await session('resumed'));
   return outcome;
  } catch(error) {failure={code:error.code??error.cause?.code??'NATIVE_WORKFLOW_FAILED',message:error.message};throw error;}

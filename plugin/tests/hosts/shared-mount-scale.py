@@ -72,7 +72,7 @@ assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volume
 assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
 (cwd/(prompt+'.txt')).write_text(prompt)
-(cwd/'.volumes/scratch/private.txt').write_text(prompt)
+(cwd/'.volumes/home/private.txt').write_text(prompt)
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) as gate:
  gate.sendall((prompt+'\n').encode())
@@ -148,7 +148,7 @@ sys.exit(17)
                         identity.close()
                         path = pathlib.Path(location['cwd'])
                         assert (path / (reference + '.txt')).read_text() == reference
-                        assert (path / '.volumes/scratch/private.txt').read_text() == reference
+                        assert (path / '.volumes/home/private.txt').read_text() == reference
                         paths.append(path)
                     assert_live()
                     sample = client({'kind': 'resource_probe', 'task': task, 'agents': population,

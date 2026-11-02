@@ -1,5 +1,5 @@
 //! Bounded presentation over the existing process stream. Overflow goes to
-//! the task's scratch mount and is captured by the command's ordinary commit.
+//! the task's home mount and is captured by the command's ordinary commit.
 use std::{
     collections::VecDeque,
     io::{self, Write},
@@ -165,7 +165,7 @@ mod tests {
             prop_assert_eq!(retained_channels.as_slice(), &channels[raw..]);
             prop_assert_eq!(tail.spill.is_some(), bytes.len() > maximum);
             let result = tail.settle(crate::tool::ToolResult {
-                value: serde_json::json!({"exit_code": 0, "spill": ".volumes/scratch/output"}),
+                value: serde_json::json!({"exit_code": 0, "spill": ".volumes/home/output"}),
             }, render)?;
             let projected = serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":result.value["text"]}]}).to_string();
             prop_assert!(projected.len() as u64 <= render);

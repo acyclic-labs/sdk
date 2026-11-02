@@ -59,6 +59,7 @@ pub mod hooks;
 pub mod identity;
 pub mod interaction;
 mod json_literal;
+pub mod layers;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
@@ -101,6 +102,7 @@ pub mod registry;
 pub mod resources;
 pub mod runtime;
 pub mod secrets;
+pub mod seed;
 pub mod source_authorization;
 /// Credited SSE data framing shared by HTTP protocol adapters.
 pub mod sse;

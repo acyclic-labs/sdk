@@ -1,6 +1,28 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// This build's seed layer on this host's provider (see [`crate::seed`]):
+    /// its volume, created and written once per store, and the generation
+    /// every agent reads it at. Agents receive only read grants on it.
+    pub async fn seed_layer(&self) -> Result<(VolumeRef, GenerationRef)> {
+        let volume = crate::seed::volume(&self.provider)?;
+        let reference = self.create_volume(&volume).await?.workspace;
+        let generation = self
+            .seed_once(&reference, &IdempotencyKey::new("seed-v1")?, || {
+                Ok(crate::seed::TREE
+                    .iter()
+                    .map(|(path, bytes)| {
+                        (
+                            format!("/{path}"),
+                            acyclic_stream::OwnedBytes::from_static(bytes),
+                        )
+                    })
+                    .collect())
+            })
+            .await?;
+        Ok((volume, generation))
+    }
+
     /// Initializes absent files once using this host's workspace authority.
     ///
     /// Reserve `key` for this initialization and keep it stable across asset

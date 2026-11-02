@@ -372,7 +372,7 @@ pub fn resolve<'a>(
             .as_deref()
             .ok_or_else(|| invalid("model key is absent"))?,
         system_layers: [
-            crate::preset::AGENT_PROMPT,
+            crate::seed::AGENT_PROMPT,
             &model.family.body,
             &model.model.body,
             &project.0.body,

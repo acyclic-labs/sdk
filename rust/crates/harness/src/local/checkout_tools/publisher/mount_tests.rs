@@ -258,7 +258,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let (file, _) = publisher
         .stage_once(
             operation,
-            ".volumes/scratch/note",
+            ".volumes/home/note",
             b"first",
             "text/plain",
             "note",
@@ -333,7 +333,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         let projected = tool.projection.project(&invocation, &result, None)?.0;
         Ok::<_, Error>((result, projected))
     };
-    let path = ".volumes/scratch/note";
+    let path = ".volumes/home/note";
     let token = serde_json::to_string(&file).map_err(storage)?;
     for version in [serde_json::Value::Null, serde_json::json!(token)] {
         let (result, projected) = run(
@@ -352,7 +352,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let wrong_path = run(
         read_context.clone(),
         read,
-        serde_json::json!({"path": ".volumes/scratch/other", "version": token}),
+        serde_json::json!({"path": ".volumes/home/other", "version": token}),
     )
     .await;
     assert!(wrong_path.is_err());
@@ -446,7 +446,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         publisher
             .stage_once(
                 OperationId::new(),
-                ".volumes/scratch/denied",
+                ".volumes/home/denied",
                 b"denied",
                 "text/plain",
                 "denied",
@@ -460,7 +460,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             "local checkout publication"
         ))
     ));
-    assert!(!directory.path().join(".volumes/scratch/denied").exists());
+    assert!(!directory.path().join(".volumes/home/denied").exists());
     assert_eq!(
         publisher
             .observe_staged_once(
@@ -477,7 +477,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         publisher
             .stage_once(
                 operation,
-                ".volumes/scratch/note",
+                ".volumes/home/note",
                 b"first",
                 "text/plain",
                 "note",
@@ -498,16 +498,16 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .as_ref()
         .ok_or_else(|| Error::NotFound("checkout".into()))?
         .mounts;
-    assert!(!directory.path().join(".volumes/scratch").exists());
+    assert!(!directory.path().join(".volumes/home").exists());
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
         assert_eq!(
-            std::fs::read(directory.path().join(".volumes/scratch/note")).map_err(storage)?,
+            std::fs::read(directory.path().join(".volumes/home/note")).map_err(storage)?,
             b"edited"
         );
         Ok(((), claims))
     })
     .await?;
-    assert!(!directory.path().join(".volumes/scratch").exists());
+    assert!(!directory.path().join(".volumes/home").exists());
     let view = harness.workspace.as_ref().unwrap().view();
     let stop = acyclic_fs::CancellationToken::new();
     let primary_absent = async |path: &str| -> Result<bool> {
@@ -526,7 +526,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             })
         ))
     };
-    assert!(primary_absent("/.volumes/scratch/note").await?);
+    assert!(primary_absent("/.volumes/home/note").await?);
     assert!(primary_absent("/note").await?);
     // The former implementation selected the project writer. This deliberately
     // bypasses routing and must fail the same history-attribution oracle.
@@ -534,7 +534,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .writer_for(&harness.project, view.workspace())?
         .stage_once(
             OperationId::new(),
-            ".volumes/scratch/control",
+            ".volumes/home/control",
             b"wrong history",
             "text/plain",
             "control",
@@ -542,7 +542,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         )?
         .await?;
     assert!(
-        !primary_absent("/.volumes/scratch/control").await?,
+        !primary_absent("/.volumes/home/control").await?,
         "negative control failed to expose the project-history leak"
     );
     assert!(
@@ -552,7 +552,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     );
     assert!(
         publisher
-            .destination(Some(&harness.project), ".volumes/scratch/note", None)
+            .destination(Some(&harness.project), ".volumes/home/note", None)
             .is_err()
     );
     Ok(())

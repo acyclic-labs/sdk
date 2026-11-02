@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 use acyclic_native_runtime::spawn;
 
-pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
+pub(super) const HOME_PATH: &str = ".volumes/home";
 /// The directory in a checkout holding its incarnation token, outside every
 /// workspace view.
 pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
@@ -18,9 +18,9 @@ mod recovery_tests;
 
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
-    let relative = Path::new(SCRATCH_PATH);
+    let relative = Path::new(HOME_PATH);
     let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
-        return Err(Error::Invalid("scratch mount has no parent".into()));
+        return Err(Error::Invalid("home mount has no parent".into()));
     };
     let parent = held_directories(root, parent)?;
     if recover_binding_alias(root, &root.path().join(relative))? {
@@ -567,7 +567,7 @@ pub(super) fn exclude_state(root: &acyclic_fs::HeldRoot) -> Result<()> {
         root,
         &[
             Path::new(super::HOST_VIEW_ROOT),
-            Path::new(SCRATCH_PATH),
+            Path::new(HOME_PATH),
             Path::new(".acyclic-sdk"),
         ],
     )
@@ -642,7 +642,7 @@ mod tests {
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
         let error =
-            create_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
+            create_mount_directory(&directory.path().join("missing"), Path::new(HOME_PATH))
                 .expect_err("the mount parent is absent");
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(error), ..
@@ -656,7 +656,7 @@ mod tests {
         let outside = tempfile::tempdir().map_err(storage)?;
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
-        assert!(create_mount_directory(root.path(), Path::new(SCRATCH_PATH)).is_err());
+        assert!(create_mount_directory(root.path(), Path::new(HOME_PATH)).is_err());
         assert!(!outside.path().join("scratch").exists());
         Ok(())
     }
@@ -667,7 +667,7 @@ mod tests {
         let outside = tempfile::tempdir().map_err(storage)?;
         let root = fixture.path().join("replaced-root");
         std::os::unix::fs::symlink(outside.path(), &root).map_err(storage)?;
-        assert!(create_mount_directory(&root, Path::new(SCRATCH_PATH)).is_err());
+        assert!(create_mount_directory(&root, Path::new(HOME_PATH)).is_err());
         assert!(!outside.path().join(".volumes").exists());
         Ok(())
     }

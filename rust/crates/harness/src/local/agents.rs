@@ -10,7 +10,7 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
+        FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
         TurnExecutors, TurnLimits,
     },
     model::ModelContent,
@@ -184,9 +184,9 @@ impl LocalHarness {
         let scratch = agent
             .volumes
             .iter()
-            .find(|binding| binding.name == "scratch")
+            .find(|binding| binding.name == HOME_VOLUME)
             .map(|binding| &binding.volume)
-            .ok_or_else(|| Error::Invalid("agent has no scratch volume".into()))?;
+            .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
         let verifier = authority.issuer.verifier(&mut None)?;
         #[cfg(any(test, feature = "native-execution"))]
         let journal = agent
@@ -511,7 +511,7 @@ impl LocalHarness {
                     retained: vec![
                         bind(PRIVATE_VOLUME, &self.journal),
                         bind("project", &self.project),
-                        bind(GOAL_VOLUME, &self.scratch),
+                        bind(HOME_VOLUME, &self.scratch),
                     ],
                     brief: None,
                     policy: Some(configured),
