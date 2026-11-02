@@ -23,7 +23,7 @@ pub enum TurnEffect {
         intent: IntentId,
         /// Task brief, staged on the spawning agent's private volume.
         brief: Box<FileRef>,
-        /// The child's role profile, admitted by the spawning agent's role.
+        /// The child's immutable creation snapshot, admitted by its parent.
         profile: super::CreationConfig,
     },
     /// Send a message to the parent or an open child.
