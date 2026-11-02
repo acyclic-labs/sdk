@@ -752,6 +752,40 @@ mod tests {
     }
 
     #[test]
+    fn definite_read_refusal_is_visible_without_another_request() {
+        use super::super::{Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("missing/original-source").unwrap();
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut driver = Driver::new(provider);
+            driver.attach(&mut reader, 0);
+            reader.plan([(
+                Want::Range {
+                    stream: path.clone(),
+                    from: 0,
+                    to: 1,
+                },
+                Priority::Visible,
+            )]);
+            let wake = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&wake);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(reader.residency().requests, 0);
+            assert!(reader.cache().record(&path, 0).is_none());
+            assert!(
+                reader.poll(0).is_empty(),
+                "a definite refusal is not retried"
+            );
+            assert_eq!(
+                reader.issues().map(|(path, _)| path).collect::<Vec<_>>(),
+                vec![&path],
+                "a refused read must become observable rather than stay pending"
+            );
+        });
+    }
+    #[test]
     fn listing_views_keep_original_projection_witness_and_cut() {
         use super::super::{ListingProjection, Priority, ReaderPolicy, Want};
 
