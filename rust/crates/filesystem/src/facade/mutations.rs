@@ -178,30 +178,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         regions: &mut Vec<(Option<FileRecord>, DependencyRegion)>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
-        let mut records = Owned::<Vec<FileId>>::allocate(regions.len(), accounting)?;
+        accounting.check()?;
+        let mut records = crate::kernel::allocation::fixed_index::FixedIndex::<()>::default();
         for (_, region) in regions.iter() {
             accounting.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
             if let DependencyRegion::FileRecord(file_id) = region {
-                let position = crate::kernel::binary_search_with_accounting(
-                    &records.value,
-                    accounting,
-                    |value| value.cmp(file_id),
-                )?;
-                if let Err(index) = position {
-                    accounting.charge(WorkCounters {
-                        bytes_copied: ((records.value.len() - index + 1) * size_of::<FileId>())
-                            as u64,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    records.value.insert(index, *file_id);
-                }
+                records.get_or_try_insert_with(file_id.into_bytes(), accounting, |_| Ok(()))?;
             }
         }
-        let mut index = 0;
-        while let Some((_, region)) = regions.get(index) {
+        let mut retained = 0;
+        for index in 0..regions.len() {
+            let (_, region) = regions.get(index).ok_or(FsError::InvalidDiff)?;
             accounting.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
@@ -213,27 +203,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 _ => None,
             };
             let removed = match file_id {
-                Some(file_id) => crate::kernel::binary_search_with_accounting(
-                    &records.value,
-                    accounting,
-                    |value| value.cmp(file_id),
-                )?
-                .is_ok(),
+                Some(file_id) => records.get(file_id.into_bytes(), accounting)?.is_some(),
                 None => false,
             };
-            if removed {
-                accounting.charge(WorkCounters {
-                    bytes_copied: ((regions.len() - index - 1)
-                        * size_of::<(Option<FileRecord>, DependencyRegion)>())
-                        as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                regions.remove(index);
-            } else {
-                index += 1;
+            if !removed {
+                if retained != index {
+                    // Keep survivors in input order. Removed entries move into
+                    // the tail and are destroyed only after this fallible pass.
+                    // A refusal therefore leaves every original owner alive.
+                    accounting.charge(WorkCounters {
+                        bytes_copied: 3 * size_of::<(Option<FileRecord>, DependencyRegion)>()
+                            as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    regions.swap(retained, index);
+                }
+                retained += 1;
             }
         }
-        records.retire(accounting)
+        regions.truncate(retained);
+        Ok(())
     }
 
     /// Atomically applies one ordered mutation batch to this private checkout.
