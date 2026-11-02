@@ -141,6 +141,10 @@ struct Store {
     path: PathBuf,
     #[cfg(test)]
     reads: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    agent_key_backing: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    agent_key_backing_changes: std::sync::atomic::AtomicUsize,
     /// Unlocked explicitly when dropped: a forked child can retain the open
     /// file description until exec.
     _lock: acyclic_native_runtime::FileLock,
@@ -231,6 +235,10 @@ impl Store {
             _lock: lock,
             #[cfg(test)]
             reads: Default::default(),
+            #[cfg(test)]
+            agent_key_backing: Default::default(),
+            #[cfg(test)]
+            agent_key_backing_changes: Default::default(),
         }))
     }
 
@@ -374,6 +382,19 @@ impl Store {
         private_file::validate_destination(&self.path)?;
         let bytes = acyclic_auth::operation::ProtectedBytes::from_json(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
+        #[cfg(test)]
+        if let Some(
+            agent::Agent::Pending { private_key } | agent::Agent::Active { private_key, .. },
+        ) = &credentials.agent
+        {
+            use std::sync::atomic::Ordering;
+            let backing = private_key.as_ptr() as usize;
+            let previous = self.agent_key_backing.swap(backing, Ordering::Relaxed);
+            if previous != 0 && previous != backing {
+                self.agent_key_backing_changes
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let temporary = sidecar(&self.path, ".next");
         private_file::publish(
             &self.path,

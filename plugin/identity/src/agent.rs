@@ -166,9 +166,7 @@ impl Identity {
         let mut credentials = Credentials {
             endpoint: self.endpoint.clone(),
             session,
-            agent: Some(Agent::Pending {
-                private_key: private_key.clone(),
-            }),
+            agent: Some(Agent::Pending { private_key }),
         };
         credentials = store
             .transact(move |store| {
@@ -214,6 +212,9 @@ impl Identity {
         }
         let result = serde_json::to_value(&registration)
             .map_err(|_| Error::new("invalid_response", "invalid agent registration"))?;
+        let Some(Agent::Pending { private_key }) = credentials.agent.take() else {
+            return Err(Error::new("credential_error", "missing pending agent key"));
+        };
         credentials.agent = Some(Agent::Active {
             private_key,
             registration,
