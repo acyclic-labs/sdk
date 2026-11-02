@@ -27,6 +27,10 @@ impl Precondition {
 /// Provider-boundary failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderError {
+    /// The original failure class and its source, retained together. Attaching
+    /// another source keeps the first one; it never grows a wrapper chain.
+    #[error(transparent)]
+    Caused(ProviderFailure),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("conflict: {0}")]
@@ -68,10 +72,59 @@ pub enum ProviderError {
     Cancelled,
 }
 
+/// A source-bearing provider failure. Private fields keep its classification
+/// free of nested source wrappers.
+#[derive(Clone, Debug)]
+pub struct ProviderFailure {
+    classification: Box<ProviderError>,
+    cause: Arc<dyn std::error::Error + Send + Sync>,
+}
+
+impl fmt::Display for ProviderFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.classification, self.cause)
+    }
+}
+
+impl std::error::Error for ProviderFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
+impl PartialEq for ProviderFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.classification == other.classification && Arc::ptr_eq(&self.cause, &other.cause)
+    }
+}
+impl Eq for ProviderFailure {}
+
 impl ProviderError {
+    /// Attach the original source without changing retry or outcome semantics.
+    /// If a source is already retained, it remains authoritative.
+    pub fn with_cause(self, cause: impl std::error::Error + Send + Sync + 'static) -> Self {
+        match self {
+            Self::Caused(_) => self,
+            classification => Self::Caused(ProviderFailure {
+                classification: Box::new(classification),
+                cause: Arc::new(cause),
+            }),
+        }
+    }
+
+    /// The original outcome class, with the same Machine/operation identity.
+    /// This borrows at most one frame regardless of observation history.
+    pub const fn classification(&self) -> &Self {
+        match self {
+            Self::Caused(failure) => &failure.classification,
+            classification => classification,
+        }
+    }
+
     /// Stable, message-free name of this failure class.
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::Caused(failure) => failure.classification.kind(),
             Self::NotFound(_) => "not_found",
             Self::Conflict(_) => "conflict",
             Self::Unsupported(_) => "unsupported",

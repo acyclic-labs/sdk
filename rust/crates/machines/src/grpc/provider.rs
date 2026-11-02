@@ -95,7 +95,7 @@ machine_mutations! {
                     let frame = transport::run(deadline.as_ref(), output.message())
                         .await
                         .map_err(|stop| stop.command(machine))?
-                        .map_err(|error| command_stream_error(machine, exited, &error))?;
+                        .map_err(|error| command_stream_error(machine, exited, error))?;
                     match frame {
                         None => Err(ProviderError::CommandIndeterminate(machine)),
                         Some(frame) => {

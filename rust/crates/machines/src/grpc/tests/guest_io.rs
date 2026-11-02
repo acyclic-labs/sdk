@@ -746,8 +746,8 @@ async fn exec_terminal_event_completes_without_waiting_for_eof_and_lost_outcomes
         }
         drop(sender);
         assert_eq!(
-            output.next().await.unwrap().unwrap_err(),
-            ProviderError::CommandIndeterminate(machine.id())
+            output.next().await.unwrap().unwrap_err().classification(),
+            &ProviderError::CommandIndeterminate(machine.id())
         );
         assert!(output.next().await.is_none());
     }
@@ -792,13 +792,18 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
             if exited {
                 assert!(output.next().await.is_none());
                 assert!(matches!(
-                    command_stream_error(machine.id(), true, &Status::new(code, "stream failed")),
+                    command_stream_error(machine.id(), true, Status::new(code, "stream failed"))
+                        .classification(),
                     ProviderError::Rejected(_)
                 ));
                 continue;
             }
             sender
-                .send(Err(Status::new(code, "stream failed")))
+                .send(Err(Status::with_details(
+                    code,
+                    "stream failed",
+                    b"original-exec-status".as_slice().into(),
+                )))
                 .await
                 .unwrap();
             drop(sender);
@@ -811,7 +816,25 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
                 std::error::Error::source(&error).is_some(),
                 "command failure lost its original cause: {error}"
             );
-            assert_eq!(error, ProviderError::CommandIndeterminate(machine.id()));
+            let source = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<Status>()
+                .unwrap();
+            assert_eq!(source.code(), code);
+            assert_eq!(source.message(), "stream failed");
+            assert_eq!(source.details(), b"original-exec-status");
+            assert_eq!(error.kind(), "command_indeterminate");
+            let retained = error
+                .clone()
+                .with_cause(std::io::Error::other("replacement cause"));
+            assert_eq!(
+                retained, error,
+                "later observers cannot replace the original cause"
+            );
+            assert_eq!(
+                error.classification(),
+                &ProviderError::CommandIndeterminate(machine.id())
+            );
             assert!(output.next().await.is_none());
         }
     }
