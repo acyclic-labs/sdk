@@ -1,4 +1,4 @@
-//! One demand owner with maintained age order; dispatch never sorts the population.
+//! One demand owner with maintained ready age order; active requests are absent.
 
 use super::{Demand, OpKey, Paging, Priority};
 use std::{
@@ -20,6 +20,9 @@ pub(super) struct Demands {
 struct Entry {
     demand: Demand,
     mark: bool,
+    /// Only ready entries belong to the age index. Dispatch keeps the demand
+    /// and its rotated ticket until the original request settles.
+    ready: bool,
 }
 
 pub(super) struct Ordered<'a> {
@@ -46,21 +49,28 @@ impl Demands {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
     pub(super) fn get(&self, key: &OpKey) -> Option<&Demand> {
         self.entries.get(key).map(|entry| &entry.demand)
     }
 
+    #[cfg(test)]
     pub(super) fn contains_key(&self, key: &OpKey) -> bool {
         self.entries.contains_key(key)
     }
 
     /// A retry keeps the original observations unless a newer plan admitted
-    /// its own. A withdrawn demand cannot be revived by the failed flight.
+    /// its own, and becomes ready at its rotated age. A withdrawn demand
+    /// cannot be revived by the failed flight.
     pub(super) fn restore_paging(&mut self, key: &OpKey, paging: Paging) {
-        if let Some(entry) = self.entries.get_mut(key)
-            && entry.demand.paging.witnesses.is_empty()
-        {
-            entry.demand.paging = paging;
+        if let Some(entry) = self.entries.get_mut(key) {
+            if entry.demand.paging.witnesses.is_empty() {
+                entry.demand.paging = paging;
+            }
+            if !entry.ready {
+                self.order[class(entry.demand.priority)].insert((entry.demand.ticket, key.clone()));
+                entry.ready = true;
+            }
         }
     }
 
@@ -68,12 +78,15 @@ impl Demands {
         self.mark = !self.mark;
     }
 
+    /// Reclassification reports whether this operation already owns a live
+    /// request, including a newly admitted alias of a withdrawn visible want.
     pub(super) fn want(
         &mut self,
         key: OpKey,
         priority: Priority,
         paging: Paging,
         next_ticket: &mut u64,
+        reclassify: impl FnOnce(&OpKey, Priority) -> bool,
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
@@ -84,53 +97,68 @@ impl Demands {
                 priority
             };
             if entry.demand.priority != priority {
-                self.order[class(entry.demand.priority)]
-                    .remove(&(entry.demand.ticket, key.clone()));
-                self.order[class(priority)].insert((entry.demand.ticket, key));
+                reclassify(&key, priority);
+                if entry.ready {
+                    self.order[class(entry.demand.priority)]
+                        .remove(&(entry.demand.ticket, key.clone()));
+                    self.order[class(priority)].insert((entry.demand.ticket, key));
+                }
                 entry.demand.priority = priority;
             }
             entry.mark = self.mark;
         } else {
+            let active = reclassify(&key, priority);
             let ticket = *next_ticket;
             *next_ticket += 1;
-            self.insert(
+            self.insert_entry(
                 key,
                 Demand {
                     priority,
                     paging,
                     ticket,
                 },
+                !active,
             );
         }
     }
 
-    pub(super) fn finish_plan(&mut self) {
+    pub(super) fn finish_plan(&mut self) -> impl Iterator<Item = OpKey> {
         let mark = self.mark;
-        self.entries.retain(|key, entry| {
-            if entry.mark == mark {
-                true
-            } else {
-                self.order[class(entry.demand.priority)]
-                    .remove(&(entry.demand.ticket, key.clone()));
-                false
-            }
-        });
+        let order = &mut self.order;
+        self.entries
+            .extract_if(.., move |_, entry| entry.mark != mark)
+            .map(move |(key, entry)| {
+                if entry.ready {
+                    order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
+                }
+                key
+            })
     }
 
+    #[cfg(test)]
     pub(super) fn insert(&mut self, key: OpKey, demand: Demand) {
         self.remove(&key);
-        self.order[class(demand.priority)].insert((demand.ticket, key.clone()));
+        self.insert_entry(key, demand, true);
+    }
+
+    fn insert_entry(&mut self, key: OpKey, demand: Demand, ready: bool) {
+        if ready {
+            self.order[class(demand.priority)].insert((demand.ticket, key.clone()));
+        }
         self.entries.insert(
             key,
             Entry {
                 demand,
                 mark: self.mark,
+                ready,
             },
         );
     }
 
     pub(super) fn remove(&mut self, key: &OpKey) {
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.remove(key)
+            && entry.ready
+        {
             self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
         }
     }
@@ -161,7 +189,9 @@ impl Demands {
             {
                 self.invalidation_visits += 1;
             }
-            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            if entry.ready {
+                self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            }
         }
     }
 
@@ -171,7 +201,9 @@ impl Demands {
             {
                 self.invalidation_visits += 1;
             }
-            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            if entry.ready {
+                self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
+            }
         }
     }
 
@@ -200,7 +232,8 @@ impl Demands {
         std::mem::take(&mut self.invalidation_visits)
     }
 
-    /// Transfer the admitted observations at the original age rotation.
+    /// Transfer ready membership and admitted observations to the original
+    /// request, retaining its rotated age for a possible retry.
     pub(super) fn dispatch(&mut self, key: &OpKey, ticket: u64) -> Paging {
         let entry = self
             .entries
@@ -208,7 +241,7 @@ impl Demands {
             .expect("dispatch retains its selected demand");
         let order = &mut self.order[class(entry.demand.priority)];
         order.remove(&(entry.demand.ticket, key.clone()));
-        order.insert((ticket, key.clone()));
+        entry.ready = false;
         entry.demand.ticket = ticket;
         std::mem::take(&mut entry.demand.paging)
     }
