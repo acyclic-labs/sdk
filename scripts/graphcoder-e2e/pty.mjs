@@ -51,7 +51,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
-    let index = 0, failure, command;
+    let index = 0, command, failure, errors;
     const snapshots = [];
     function frame() {
       if (failure || index >= input.actions.length || !frames.ready()) return;
@@ -89,14 +89,27 @@ export async function pty(processes, binary, fixture, input, capture) {
     });
     let result;
     try { result = await running.closed; }
+    catch (error) { (errors ??= []).push(error); }
     finally {
       unsubscribe();
       unsubscribe = undefined;
       await new Promise(resolve => screen.write("", resolve));
     }
     const visible = screenText(screen);
-    capture({ ...result, snapshots, visible, actions: index });
-    if (failure) throw failure;
+    if (result) {
+      try { capture({ ...result, snapshots, visible, actions: index }); }
+      catch (error) { (errors ??= []).push(error); }
+    }
+    if (failure) {
+      if (!errors) throw failure;
+      errors.unshift(failure);
+    }
+    if (errors) {
+      if (errors.length === 1) throw errors[0];
+      throw new Error(errors[0].message, {
+        cause: new AggregateError(errors, "terminal action and completion failures"),
+      });
+    }
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
     if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
     else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
