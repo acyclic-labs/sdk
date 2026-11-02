@@ -222,7 +222,16 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             Err(StreamError::NotFound) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        Ok(records.try_next().await?)
+        let record = records.try_next().await?;
+        if record
+            .as_ref()
+            .is_some_and(|record| record.sequence != from)
+        {
+            return Err(Error::Storage(format!(
+                "Machine record source position differs from requested {from}; recovery: read the original authorized Machine target '{target}' at from={from}, limit=1"
+            )));
+        }
+        Ok(record)
     }
 
     async fn original_plan(
