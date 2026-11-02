@@ -271,6 +271,20 @@ async fn settle(
     } else {
         super::compaction::select(compaction.1.clone(), &model.0, model.1.as_ref())?
     };
+    if let Some(output) = settings
+        .sampling
+        .and_then(|sampling| sampling.max_output_tokens)
+    {
+        let capacity = model.1.context_capacity(&model.0)?;
+        match &compaction {
+            crate::context::CompactionPolicy::Disabled => {
+                capacity.output_reservation(Some(output))?;
+            }
+            crate::context::CompactionPolicy::Threshold(policy) => {
+                policy.validate(capacity, Some(output))?;
+            }
+        }
+    }
     Ok(Settings {
         compaction,
         model,

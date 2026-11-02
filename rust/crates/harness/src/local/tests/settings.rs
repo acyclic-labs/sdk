@@ -117,6 +117,11 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
             "effort",
         ),
         (
+            "export default (base) => ({ ...base, sampling: { maxOutputTokens: 8192 } });",
+            AdmissionStatus::Rejected,
+            "requested output exceeds selected model capacity",
+        ),
+        (
             "export default { model: 'other/model' };",
             AdmissionStatus::Rejected,
             "bound by its host",
