@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtempSync, open as fsOpen, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -248,6 +250,44 @@ test("a write that fails with a chunk queued rejects the pending waiter; the que
   assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
 });
 
+test("transcript withdrawal ends active and late spool waits with the original cause", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "e2e-transcript-loss-"));
+  for (const alreadyClosed of [false, true]) await t.test(alreadyClosed ? "retained close" : "active close", async () => {
+    const transcript = createWriteStream(join(directory, `${alreadyClosed}.jsonl`));
+    const closed = once(transcript, "close");
+    if (alreadyClosed) { transcript.destroy(); await closed; }
+    const source = new PassThrough();
+    const events = new Spool(source, new Promise(() => {}), { transcript });
+    const waiting = assert.rejects(events.next(() => false), error => error.kind === "spool" && error.detail.code === "ERR_STREAM_PREMATURE_CLOSE");
+    if (!alreadyClosed) { transcript.destroy(); await closed; }
+    // The original close is the finite boundary: no process exit or timer
+    // may supply a substitute failure when transcript ownership is lost.
+    await finished(transcript, { readable: false, cleanup: true }).catch(() => {});
+    assert.equal(events.ended?.kind, "spool");
+    await waiting;
+    await assert.rejects(events.next(() => true), error => error === events.ended);
+    await assert.rejects(events.history(), error => error === events.ended);
+    source.end();
+  });
+});
+test("transcript withdrawal drops the queued source chunk with its original close error", async () => {
+  // Its full readable buffer holds the original write callback. Destroying
+  // this real stream closes it without injecting a competing write error.
+  const transcript = new PassThrough({ highWaterMark: 1 });
+  const source = new PassThrough();
+  const events = new Spool(source, new Promise(() => {}), { transcript });
+  const waiting = events.next(event => event.n === 2);
+  waiting.catch(() => {});
+  source.write('{"n":1}\n');
+  source.write('{"n":2}\n');
+  assert.equal(events.sequence, 1, "the second chunk is held behind the original transcript drain");
+  const closed = once(transcript, "close");
+  transcript.destroy();
+  await closed;
+  await assert.rejects(waiting, error => error.kind === "spool" && error.detail.code === "ERR_STREAM_PREMATURE_CLOSE");
+  assert.equal(events.sequence, 1, "transcript loss must not publish the queued chunk");
+  source.end();
+});
 test("a source closed without ending still ends the spool and its transcript", async () => {
   const source = new PassThrough();
   let close; const closed = new Promise(resolve => { close = resolve; });
