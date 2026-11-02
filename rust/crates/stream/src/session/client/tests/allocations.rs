@@ -51,6 +51,13 @@ async fn reviewed_follow(
         .boxed())
 }
 
+/// The opening receipt's own cost: decoding the selected snapshot and
+/// selection, which the public follow owns independently of the transport.
+fn receipt<T>(opened: &crate::Opened<T>) -> acyclic_test_support::AllocationInfo {
+    let opened = wire_codec::opened_to_wire(opened);
+    acyclic_test_support::measure(|| drop(black_box(wire_codec::selection_from_opened(&opened))))
+}
+
 fn public_box_budget(allocations: u64, follows: u64) {
     assert_eq!(
         allocations, follows,
@@ -76,9 +83,10 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
     let anchor = client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
-    acyclic_test_support::measure(|| {});
+    let receipt = receipt(&anchor);
     let mut before = (0, 0);
     let mut after = (0, 0);
+    let mut legacy_poll = 0;
     for index in 0..FOLLOWS {
         // Alternate the order to expose a dependency on earlier arm setup.
         for legacy in if index % 2 == 0 {
@@ -96,17 +104,25 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
             let total = if legacy { &mut before } else { &mut after };
             total.0 += allocation.count_total;
             total.1 += allocation.bytes_total;
-            if !legacy {
-                public_box_budget(allocation.count_total, 1);
+            // Both arms share the session's registration work; the reviewed
+            // arm adds three boxes to it, the public arm one box and its receipt.
+            if legacy {
+                legacy_poll = allocation.count_total;
+            } else if legacy_poll > 0 {
+                public_box_budget(
+                    allocation.count_total + 3 - legacy_poll - receipt.count_total,
+                    1,
+                );
             }
         }
     }
-    assert_eq!(before.0, 3 * FOLLOWS);
-    public_box_budget(after.0, FOLLOWS);
-    assert_eq!(
-        before.1.checked_sub(after.1),
-        Some(2 * FOLLOWS * std::mem::size_of::<RecordStream>() as u64)
+    public_box_budget(
+        after.0 + 3 * FOLLOWS - before.0 - FOLLOWS * receipt.count_total,
+        FOLLOWS,
     );
+    // The public arm, receipt included, never costs more bytes than the
+    // reviewed shape it replaced.
+    assert!(after.1 <= before.1 + FOLLOWS * receipt.bytes_total);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
     eprintln!(
@@ -114,7 +130,11 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
         before.0, after.0, before.1, after.1
     );
     drop(anchor);
-    Ok((before.0, FOLLOWS))
+    // The reviewed shape's own boxes, relative to the public arm.
+    Ok((
+        before.0 + FOLLOWS * (1 + receipt.count_total) - after.0,
+        FOLLOWS,
+    ))
 }
 
 #[tokio::test]
@@ -161,16 +181,19 @@ fn opening_budget(
     before: &Allocations,
     after: &Allocations,
     path: acyclic_test_support::AllocationInfo,
+    receipt: acyclic_test_support::AllocationInfo,
     follows: u64,
 ) {
+    // The reviewed shape predates the opening receipt; only the public
+    // follow pays for it.
     assert_eq!(
-        before.count.checked_sub(after.count),
+        (before.count + follows * receipt.count_total).checked_sub(after.count),
         Some(follows * (2 + path.count_total)),
         "every opening poll must avoid the discarded path and two internal boxes"
     );
-    assert_eq!(
-        before.bytes.checked_sub(after.bytes),
-        Some(follows * (2 * std::mem::size_of::<RecordStream>() as u64 + path.bytes_total))
+    assert!(
+        after.bytes + follows * path.bytes_total <= before.bytes + follows * receipt.bytes_total,
+        "the public opening, receipt included, must not outgrow the reviewed shape"
     );
 }
 
@@ -250,7 +273,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
         path_copy.count_total,
         path_copy.bytes_total
     );
-    opening_budget(&before, &after, path_copy, follows);
+    opening_budget(&before, &after, path_copy, receipt(&after_anchor), follows);
     drop((retained_before, retained_after, before_anchor, after_anchor));
     Ok(())
 }

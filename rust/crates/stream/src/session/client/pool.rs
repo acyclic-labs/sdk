@@ -521,7 +521,7 @@ impl Pool {
                                 let link = self.links.get(node).ok_or(StreamError::Unavailable)?;
                                 input.0.bind(Arc::clone(&link.input))?;
                             }
-                            Self::opened(route, id, &opened).err()
+                            Self::opened(route, id, opened).err()
                         }
                     }
                     Err(error) => Some(error),
@@ -669,8 +669,8 @@ impl Pool {
         }
         let applied = opened
             .applied
-            .clone()
-            .map(wire_codec::revision_from_wire)
+            .as_ref()
+            .map(wire_codec::revision_from)
             .transpose()
             .map_err(|_| StreamError::InvalidResponse)?;
         if let Kind::Follow(follow) = &route.kind
@@ -680,10 +680,10 @@ impl Pool {
         }
         Ok(applied)
     }
-    fn opened(route: &mut Route, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
+    fn opened(route: &mut Route, id: u64, opened: wire::SessionOpened) -> Result<(), StreamError> {
         if let Kind::Follow(follow) = &route.kind {
             if follow.bootstrap_head && route.received == 0 {
-                let (_, selected, bootstrap) = wire_codec::selection_from_opened(opened)?;
+                let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
                 route.received = route.progress.select_bootstrap(
                     route.generation,
                     &selected,
@@ -693,7 +693,7 @@ impl Pool {
             }
         }
         if let Some(ready) = route.ready.take() {
-            let _ = ready.send(Ok((id, Some(opened.clone()))));
+            let _ = ready.send(Ok((id, Some(opened))));
         }
         route.observation.record("generation", route.generation);
         route.opened = true;

@@ -38,7 +38,7 @@ pub use head::{
 };
 pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
 pub use record_frames::record_frames;
-pub(crate) use revision::selection_for_follow;
+pub(crate) use revision::{revision_from, selection_for_follow};
 pub use revision::{
     cut_from_wire, cut_proven_by, cut_to_wire, issued_from_wire, opened_to_wire,
     revision_from_wire, revision_to_wire, selection_from_opened, selection_to_wire, tail_response,

@@ -37,7 +37,7 @@ pub fn opened_to_wire<T, E>(value: &crate::Opened<T, E>) -> wire::SessionOpened 
 pub fn selection_from_opened(
     value: &wire::SessionOpened,
 ) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
-    let snapshot = revision_from_wire(value.applied.clone().ok_or(StreamError::InvalidResponse)?)
+    let snapshot = revision_from(value.applied.as_ref().ok_or(StreamError::InvalidResponse)?)
         .map_err(|_| StreamError::InvalidResponse)?;
     let selected = value
         .selection
@@ -104,6 +104,11 @@ pub fn revision_to_wire(value: &Revision) -> wire::Revision {
 
 /// Decodes one revision; an incarnation other than 16 bytes is invalid.
 pub fn revision_from_wire(value: wire::Revision) -> Result<Revision, StreamError> {
+    revision_from(&value)
+}
+
+/// Decodes a borrowed wire revision, copying only the scope it owns.
+pub(crate) fn revision_from(value: &wire::Revision) -> Result<Revision, StreamError> {
     let incarnation = <[u8; 16]>::try_from(value.incarnation.as_ref())
         .map_err(|_| StreamError::InvalidArgument)?;
     Ok(Revision {

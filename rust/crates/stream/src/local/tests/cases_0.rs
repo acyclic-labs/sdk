@@ -1084,6 +1084,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
 async fn local_follow_observes_lifetime_drop_and_late_error()
 -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
+    const CURSOR: &str = "acyclic.stream.follow.cursor";
     for late_error in [false, true] {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -1110,12 +1111,11 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
             },
         )
         .await?;
-        assert!(
-            !captured
-                .fields("acyclic.stream.follow")
-                .contains_key("outcome")
-        );
-        assert_eq!(captured.closed("acyclic.stream.follow"), 0);
+        assert!(!captured.fields(CURSOR).contains_key("outcome"));
+        assert_eq!(captured.closed(CURSOR), 0);
+        // The open is its own operation, complete once the cursor is returned.
+        let open = captured.fields("acyclic.stream.follow");
+        assert_eq!(open.get("outcome").ok_or("missing span field")?, "ok");
         let other = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
@@ -1133,7 +1133,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
             assert!(futures::poll!(records.next()).is_pending());
         }
         drop(records);
-        let fields = captured.fields("acyclic.stream.follow");
+        let fields = captured.fields(CURSOR);
         assert_eq!(
             fields.get("terminal").ok_or("missing span field")?,
             if late_error { "error" } else { "dropped" }
@@ -1148,6 +1148,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
             assert!(!fields.contains_key("outcome"));
             assert!(!fields.contains_key("error.kind"));
         }
+        assert_eq!(captured.closed(CURSOR), 1);
         assert_eq!(captured.closed("acyclic.stream.follow"), 1);
         assert_eq!(captured.closed("origin_parent"), 1);
         assert_eq!(other.closed("foreign_parent"), 0);

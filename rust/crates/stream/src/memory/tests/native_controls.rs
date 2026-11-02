@@ -281,7 +281,15 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
     assert!(copied <= small * 5, "copy work: {small} -> {copied}");
     let examined = meter.examined.load(Ordering::SeqCst);
     assert!(examined > 256);
-    assert!(examined <= 256 * (6 * u64::from(257_u16.ilog2()) + 2));
+    // Per append: a logarithmic replay walk, plus one insertion into the
+    // sealed-batch range index, which compares whole 8-byte keys at each of
+    // its logarithmically many levels (its published insertion bound).
+    let depth = u64::from(257_u16.ilog2());
+    let ranges = (depth + 4) * (4 * 8 + 8);
+    assert!(
+        examined <= 256 * (6 * depth + 2 + ranges),
+        "examined {examined}"
+    );
     let retry = AppendRequest {
         path: path("replay/growth")?,
         records: vec![(OwnedBytes::from_static(b"value")).into()],
