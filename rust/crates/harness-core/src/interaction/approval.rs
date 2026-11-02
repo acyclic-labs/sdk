@@ -71,6 +71,7 @@ impl Interaction {
         selected
             .map(|(start, end)| crate::contract::json_from_slice(&bytes[start..end]))
             .transpose()
+            .map_err(|error| Error::Invalid(error.to_string()))
     }
 }
 
