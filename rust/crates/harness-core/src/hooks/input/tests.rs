@@ -38,7 +38,7 @@ proptest! {
         let event = if post { HookEvent::PostToolUse } else { HookEvent::PreToolUse };
         let task = crate::TaskId::from_bytes(identity);
         let input = HookInput::Tool { invocation: &invocation, response: post.then_some(&response), session_id: Some(task) };
-        let bytes = input.encode(event, Path::new("workspace"))?;
+        let bytes = input.encode(event, Path::new("workspace"), None)?;
         let decoded: Value = serde_json::from_slice(&bytes).unwrap();
         prop_assert_eq!(&decoded["tool_input"], &invocation.arguments);
         prop_assert_eq!(&decoded["tool_name"], &invocation.name);
@@ -49,7 +49,7 @@ proptest! {
         prop_assert_eq!(decoded.get("tool_response"), post.then_some(&response.value));
         prop_assert_eq!(input.subject(event), "custom");
         let supplied = json!({"cwd":"forged", "hook_event_name":"Stop", "text":text, "number":number});
-        let bytes = HookInput::Fields(&supplied).encode(event, Path::new("workspace"))?;
+        let bytes = HookInput::Fields(&supplied).encode(event, Path::new("workspace"), None)?;
         let decoded: Value = serde_json::from_slice(&bytes).unwrap();
         prop_assert_eq!(&decoded["text"], &supplied["text"]);
         prop_assert_eq!(&decoded["number"], &supplied["number"]);
@@ -63,7 +63,7 @@ fn non_object_fields_are_rejected_before_dispatch() {
     for input in [Value::Null, json!(false), json!(["not fields"]), json!(1)] {
         assert!(
             HookInput::Fields(&input)
-                .encode(HookEvent::Stop, Path::new("."))
+                .encode(HookEvent::Stop, Path::new("."), None)
                 .is_err()
         );
     }

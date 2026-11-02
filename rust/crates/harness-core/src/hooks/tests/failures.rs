@@ -71,7 +71,7 @@ async fn imported_on_failure_controls_a_missing_guard() -> Result<()> {
                     &json!({"tool_name":"shell"}),
                     &registry()?,
                     65_536,
-                    |_, _| {
+                    |_, _, _| {
                         std::future::ready(Err(Error::Process(crate::ProcessError::NotFound {
                             exit_code: None,
                             message: "missing guard".into(),

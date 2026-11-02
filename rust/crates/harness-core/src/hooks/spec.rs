@@ -148,6 +148,36 @@ pub enum HookRun {
         /// Explicit shell, or the platform default.
         shell: Option<String>,
     },
+    /// A plugin's `hooks/before-<event>.{sh,ps1}`, pinned by their exact
+    /// bytes at the enabling agent's admitted generation. The target runs
+    /// the form it can: `sh` on POSIX, PowerShell on Windows. It reads
+    /// `{request, config}` on stdin and writes a decision on stdout.
+    Plugin {
+        /// The instance: enabling agent, contributing entry and hook path.
+        instance: String,
+        /// `before-<event>.sh`, if the plugin ships one.
+        sh: Option<String>,
+        /// `before-<event>.ps1`, if the plugin ships one.
+        ps1: Option<String>,
+        /// The plugin's settings, as JSON.
+        config: String,
+        /// Which requests run it (plugin.ts `matcher`); others skip it
+        /// without running anything.
+        matcher: Option<RequestMatch>,
+    },
+}
+
+/// A plugin hook's `matcher` for one event: every named field must match.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(default, deny_unknown_fields)]
+pub struct RequestMatch {
+    /// Normalized actions (`exec`, `read`, `write`, `edit`, `search`, `web`,
+    /// `mcp`, `other`); empty matches every action.
+    pub action: Vec<String>,
+    /// A regular expression over an `exec` request's command.
+    pub command: Option<String>,
+    /// A regular expression over a `read`, `write` or `edit` request's path.
+    pub path: Option<String>,
 }
 
 /// A command failure always records a diagnostic; blocking is explicit.
@@ -171,6 +201,17 @@ impl HookFailure {
 }
 
 impl HookSpec {
+    /// A plugin hook speaks the plugin protocol: `{request, config}` in and
+    /// a decision out. Every other hook speaks its host's.
+    pub(crate) fn plugin(&self) -> Option<(&str, &str)> {
+        match &self.run {
+            HookRun::Plugin {
+                instance, config, ..
+            } => Some((instance, config)),
+            HookRun::Executable { .. } | HookRun::Shell { .. } => None,
+        }
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         let (command, arguments_valid) = match &self.run {
             HookRun::Executable { executable, argv } => (
@@ -184,6 +225,24 @@ impl HookSpec {
                     return Err(Error::Invalid("unknown hook shell".into()));
                 }
                 (command, true)
+            }
+            HookRun::Plugin {
+                sh, ps1, config, ..
+            } => {
+                // A plugin hook that cannot run denies its request.
+                if self.failure != HookFailure::Block {
+                    return Err(Error::Invalid("a plugin hook's failure blocks".into()));
+                }
+                serde_json::from_str::<serde::de::IgnoredAny>(config)
+                    .map_err(|error| Error::Invalid(format!("plugin hook settings: {error}")))?;
+                let script = sh
+                    .as_ref()
+                    .or(ps1.as_ref())
+                    .ok_or_else(|| Error::Invalid("a plugin hook has a script".into()))?;
+                (
+                    script,
+                    sh.iter().chain(ps1).all(|script| !script.contains('\0')),
+                )
             }
         };
         if command.trim().is_empty()

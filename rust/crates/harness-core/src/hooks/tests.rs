@@ -49,6 +49,7 @@ fn command(hook: &HookSpec) -> &str {
     match &hook.run {
         HookRun::Executable { executable, .. } => executable,
         HookRun::Shell { command, .. } => command,
+        HookRun::Plugin { instance, .. } => instance,
     }
 }
 
@@ -503,7 +504,7 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                         &json!({"tool_name":"shell"}),
                         &registry,
                         65_536,
-                        |hook, _| {
+                        |hook, _, _| {
                             finished.set(finished.get() + 1);
                             let result =
                                 if command(hook) == "remaining" {
@@ -632,7 +633,7 @@ async fn shell_hooks_reject_host_tool_aliases() -> Result<()> {
                 &json!({"tool_name":"shell"}),
                 &registry,
                 65_536,
-                |_, _| {
+                |_, _, _| {
                     calls += 1;
                     std::future::ready(Ok((Some(0), vec![], vec![])))
                 },
@@ -663,7 +664,7 @@ async fn tool_catalog_routes_approval_hooks() -> Result<()> {
                 &json!({"tool_name":spec.name}),
                 &registry,
                 65_536,
-                |_, _| {
+                |_, _, _| {
                     calls += 1;
                     std::future::ready(Ok((
                         Some(0),
@@ -853,7 +854,7 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                         &json!({"tool_name":"shell"}),
                         &registry,
                         65_536,
-                        |hook, _| {
+                        |hook, _, _| {
                             finished.set(finished.get() + 1);
                             let stdout = if command(hook) == "guard" {
                                 bytes.to_vec()
@@ -909,21 +910,27 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let (first_tx, first_rx) = oneshot::channel();
     let (second_tx, second_rx) = oneshot::channel();
     let mut receivers = [first_rx, second_rx].into_iter();
-    let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, 65_536, |_, _| {
-        let receiver = receivers.next();
-        let started = &started;
-        async move {
-            started.set(started.get() + 1);
-            Ok((
-                Some(0),
-                receiver
-                    .ok_or_else(|| Error::Invalid("missing hook receiver".into()))?
-                    .await
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                vec![],
-            ))
-        }
-    });
+    let future = hooks.run_commands(
+        HookEvent::PreToolUse,
+        &input,
+        &registry,
+        65_536,
+        |_, _, _| {
+            let receiver = receivers.next();
+            let started = &started;
+            async move {
+                started.set(started.get() + 1);
+                Ok((
+                    Some(0),
+                    receiver
+                        .ok_or_else(|| Error::Invalid("missing hook receiver".into()))?
+                        .await
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    vec![],
+                ))
+            }
+        },
+    );
     futures::pin_mut!(future);
     assert!(future.as_mut().now_or_never().is_none());
     assert_eq!(
@@ -945,7 +952,8 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let output = future.await?;
     assert_eq!(output.blocked.as_deref(), Some("first"));
     assert_eq!(output.additional_context, ["first", "second"]);
-    assert_eq!(output.updated_input, Some(json!({"winner":"second"})));
+    // A denial wins over every rewrite, so none applies.
+    assert_eq!(output.updated_input, None);
     Ok(())
 }
 
@@ -967,7 +975,7 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
             &json!({}),
             &registry()?,
             65_536,
-            |hook, _| {
+            |hook, _, _| {
                 let result = match command(hook) {
                     "timeout" => Err(Error::Process(crate::ProcessError::Timeout {
                         exit_code: None,
@@ -1151,7 +1159,7 @@ exit 2
         4
     );
     let trusted_output = trusted
-        .run_commands(HookEvent::Stop, &json!({}), &registry, 65_536, |_, _| {
+        .run_commands(HookEvent::Stop, &json!({}), &registry, 65_536, |_, _, _| {
             std::future::ready(Ok((Some(2), vec![], b"project guard".to_vec())))
         })
         .await?;
@@ -1200,7 +1208,7 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                 &json!({}),
                 &ToolRegistry::default(),
                 512,
-                |hook, quota| {
+                |hook, quota, _| {
                     let stdout = match &hook.run {
                         HookRun::Executable { executable, .. } if executable == "deny" => {
                             br#"{"continue":false,"stopReason":"deny"}"#.to_vec()
@@ -1250,7 +1258,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
         }])?;
         let mut calls = 0;
         let output = hooks.run_commands(HookEvent::SessionStart, &json!({}), &ToolRegistry::default(), 4096,
-            |hook, quota| {
+            |hook, quota, _| {
                 calls += 1;
                 let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
                     vec![0;1000]
