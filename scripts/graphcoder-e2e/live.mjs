@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
-import { withOwnedCase } from "./suite.mjs";
+import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 import { fileBytes, toolOutcome } from "./assertions.mjs";
@@ -57,7 +57,8 @@ export function requireTools(hooks, names, expectedChildResult) {
   if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
 }
 
-async function runCase(binary, login, root, name) {
+async function runCase(binary, login, root, name, signal) {
+  signal.throwIfAborted();
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   await mkdir(workspace, { recursive: true });
@@ -98,7 +99,7 @@ async function runCase(binary, login, root, name) {
   };
   const begin = performance.now(), phases = [];
   try {
-    const receipt = await withOwnedCase({ processes, onPhase: phase => phases.push(phase), run: async () => {
+    const receipt = await withOwnedCase({ processes, signal, onPhase: phase => phases.push(phase), run: async () => {
       if (name === "session") {
         const text = await invoke(`Reply with exactly ${marker}. Do not use tools.`);
         step = "assert session answer";
@@ -147,6 +148,12 @@ async function runCase(binary, login, root, name) {
 }
 
 async function main() {
+  const cancellation = commandCancellation();
+  try { await campaign(cancellation.signal); }
+  finally { cancellation.dispose(); }
+}
+
+async function campaign(signal) {
   const [binary, output, count, ...selected] = process.argv.slice(2);
   const samples = Number(count);
   assert.ok(/^[1-9][0-9]*$/.test(count ?? "") && Number.isSafeInteger(samples),
@@ -159,8 +166,12 @@ async function main() {
   await mkdir(output); // An existing evidence identity must never be reused.
   const root = scratchDirectory("graphcoder-live-");
   const results = [];
-  for (let sample = 1; sample <= samples; sample++) {
-    for (const name of names) results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name) });
+  sampling: for (let sample = 1; sample <= samples; sample++) {
+    for (const name of names) {
+      signal.throwIfAborted();
+      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal) });
+      if (signal.aborted) break sampling;
+    }
   }
   const cells = names.map(name => {
     const attempts = results.filter(result => result.case === name);
@@ -172,7 +183,8 @@ async function main() {
   const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
     measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
     cells, results,
-    pass: results.every(result => result.status === "pass") };
+    ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
+    pass: !signal.aborted && results.every(result => result.status === "pass") };
   await publishReport(join(output, "matrix.json"), report);
   process.exitCode = report.pass ? 0 : 1;
 }
