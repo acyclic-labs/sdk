@@ -40,7 +40,7 @@ pub(in crate::local) async fn write(
             path,
             source.as_bytes(),
             "text/typescript",
-            path,
+            path.rsplit('/').next().unwrap_or(path),
             u64::MAX,
             &IdempotencyKey::new(format!(
                 "settings:{path}:{}",
