@@ -189,11 +189,15 @@ impl Prepared {
                 .map_err(|_| refused("invalid execution filter length"))?
                 .to_ne_bytes(),
         );
-        for instruction in filter {
-            body.extend_from_slice(&instruction.code.to_ne_bytes());
-            body.extend_from_slice(&[instruction.jt, instruction.jf]);
-            body.extend_from_slice(&instruction.k.to_ne_bytes());
-        }
+        // SAFETY: Instruction is repr(C), and its eight-byte size assertion
+        // equals the sum of its integer fields, so it has no padding. Every
+        // byte is initialized; this immutable native-endian view borrows the
+        // same live slice and cannot outlive it. The decoder uses that same
+        // native layout, so one copy replaces field-by-field serialization.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(filter.as_ptr().cast::<u8>(), std::mem::size_of_val(filter))
+        };
+        body.extend_from_slice(bytes);
         Ok(self.ruleset.as_raw_fd())
     }
 

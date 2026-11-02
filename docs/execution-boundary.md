@@ -133,6 +133,10 @@ individual permitted ports remain in the grant's original Landlock rules.
 Selection costs constant time regardless of roots, ports or agents. The direct
 child hook retains the same grant owner until launch completes; the custodied
 child continues to borrow its bytes from the original launch request.
+Custodied preparation copies the complete native instruction slice once into
+that request, rather than appending each field separately. The shared
+instruction layout has no padding and uses the original native byte order;
+request length validation, descriptor transfer and child decoding are unchanged.
 Enforcement is inherited by descendants. A preparation or launch refusal is
 `tool execution failed: <reason>`; it never retries without confinement.
 Refusals have a concrete native error type. The shared capture completion
