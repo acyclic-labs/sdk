@@ -515,7 +515,7 @@ fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the
 /// operation replays it. An approval request is answered on stdin (`y`
-/// approves); the exit code is 0 once the answer is printed.
+/// approves); the exit code is 0 only for a completed turn.
 pub(super) async fn prompt(
     conversation: &Arc<Conversation>,
     operation: &str,
@@ -595,7 +595,7 @@ async fn diagnostic(
     output.write(task, message.into_bytes()).await
 }
 
-/// Prints the answer text of the prompt's settled `entry`.
+/// Prints the prompt's settled text and returns its committed outcome.
 async fn print(
     conversation: &Conversation,
     entry: &ConversationEntry,
@@ -604,7 +604,7 @@ async fn print(
     let (_, text) = conversation.turn(entry).await?;
     output.write(conversation.task(), text.into_bytes()).await?;
     output.write(conversation.task(), [b'\n']).await?;
-    Ok(0)
+    Ok(u8::from(entry.outcome != TurnOutcome::Completed))
 }
 
 /// The printed answer of prompt `id`, settled as `entry`.
