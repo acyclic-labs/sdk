@@ -226,28 +226,34 @@ mod tests {
     async fn producerless_promise_returns_without_waiting_for_an_external_wake() {
         use futures::FutureExt;
 
-        let (send, _receive) = tokio::sync::mpsc::channel(1);
-        let result = super::run(
-            "await new Promise(() => {})".into(),
-            acyclic_stream::OwnedBytes::from_static(b"[]"),
-            send,
-            tokio_util::sync::CancellationToken::new(),
-            4096,
-            super::super::allocator::EngineAllocator::new(None),
-            super::INTERRUPT_BUDGET,
-        )
-        .now_or_never()
-        .expect("no producer remains to wake this program");
-        assert_eq!(
-            result.unwrap_err(),
-            "JavaScript promise cannot settle: no pending jobs or tool calls"
-        );
+        for code in [
+            "await new Promise(() => {})",
+            "export default new Promise(() => {})",
+        ] {
+            let (send, _receive) = tokio::sync::mpsc::channel(1);
+            let result = super::run(
+                code.into(),
+                acyclic_stream::OwnedBytes::from_static(b"[]"),
+                send,
+                tokio_util::sync::CancellationToken::new(),
+                4096,
+                super::super::allocator::EngineAllocator::new(None),
+                super::INTERRUPT_BUDGET,
+            )
+            .now_or_never()
+            .expect("no producer remains to wake this program");
+            assert_eq!(
+                result.unwrap_err(),
+                "JavaScript promise cannot settle: no pending jobs or tool calls"
+            );
+        }
     }
 
     #[tokio::test]
     async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
         for code in [
             "await tools.code({code:'1'})",
+            "export default tools.code({code:'1'})",
             "await console.log('message')",
         ] {
             let tool = crate::tools::catalog()
