@@ -157,7 +157,11 @@ export class Processes {
           observe?.("closed");
           if (progressFailure) throw progressFailure;
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (report?.termination) result.termination = report.termination;
+          if (report) {
+            result.report_capability = report.capability;
+            const termination = report.termination;
+            if (termination) result.termination = termination;
+          }
           if (!scopeCapture) return result;
           return Promise.resolve().then(() => scopeCapture(result)).then(() => result);
         }).then(resolve, reject);

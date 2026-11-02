@@ -20,6 +20,8 @@ test("selected Windows native producer acknowledges through the original decoder
     await running.requestReport(Date.now() + 500);
     const result = await running.closed;
     assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.report_capability, { generation: result.termination.generation, ready: true });
+    assert.equal(Object.isFrozen(result.report_capability), true);
     assert.equal(result.termination.report_outcome, "empty");
     assert.equal(result.termination.report_acknowledged, true);
     assert.equal(result.termination.missing_wait_report, false);

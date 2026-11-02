@@ -154,6 +154,35 @@ test("original process phase cleanup joins a blocked transcript after physical r
   }
 });
 
+test("reported close retains missing capability without inferring readiness from successful output", async () => {
+  const scope = new Processes();
+  const inspect = "console.log(JSON.stringify({generation:process.env.ACYCLIC_REPORT_GENERATION}));process.stdin.resume()";
+  try {
+    const generations = new Set();
+    for (let index = 0; index < 2; index++) {
+      const running = await scope.startReported(process.execPath, ["-e", inspect]);
+      running.input.end();
+      const result = await running.closed;
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.signal, null);
+      const { generation } = JSON.parse(result.stdout);
+      assert.match(generation, /^[0-9a-f]{32}$/);
+      assert.deepEqual(result.report_capability, { generation, ready: false },
+        "successful output and exit cannot manufacture the selected ready frame");
+      assert.equal(Object.isFrozen(result.report_capability), true);
+      assert.throws(() => { result.report_capability.ready = true; }, TypeError);
+      assert.equal(result.termination, undefined, "missing readiness is separate from a requested diagnostic");
+      await assert.rejects(running.reportReady, error => error.code === "REPORT_CONTROL_ENDED");
+      assert.equal(scope.children.size, 0, "the retained observation follows physical close");
+      generations.add(generation);
+    }
+    assert.equal(generations.size, 2, "each original launch retains its own generation");
+    const ordinary = await scope.run(process.execPath, ["-e", "process.stdout.write('ordinary')"]);
+    assert.equal(ordinary.code, 0, ordinary.stderr);
+    assert.equal(ordinary.report_capability, undefined, "an unreported launch has no selected report owner");
+  } finally { await scope.close(); }
+});
+
 // This is the actual native report producer from the compiled test target,
 // rather than a hand-authored external protocol transcript.
 const probe = process.env.E2E_REPORT_TEST_BINARY;
@@ -224,6 +253,8 @@ test("the selected native execution failure survives readiness and an earlier di
       }
       const result = await running.closed;
       assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.report_capability.ready, mode !== "fail-before-ready");
+      assert.equal(Object.isFrozen(result.report_capability), true);
       if (mode === "fail-foreign") {
         assert.equal(result.termination, undefined, "a foreign generation cannot supply the selected returned cause");
       } else {
@@ -232,6 +263,7 @@ test("the selected native execution failure survives readiness and an earlier di
         assert.ok(Number.isInteger(result.termination.execution_failure.raw_os_error)
           && result.termination.execution_failure.raw_os_error !== 0);
         assert.equal(result.termination.startup_rejection, undefined);
+        assert.equal(result.report_capability.generation, result.termination.generation);
         assert.equal(result.termination.report_acknowledged, mode === "fail-ack");
         if (mode === "fail-ack") assert.equal(result.termination.report_outcome, "empty");
       }

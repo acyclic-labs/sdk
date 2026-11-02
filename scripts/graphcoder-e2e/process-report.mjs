@@ -163,6 +163,9 @@ export class ProcessReport {
     this.#finish(this.#ended ? "write-failed" : "unacknowledged",
       this.#ended ? "control-eof-before-acknowledgement" : "original-drain-deadline");
   }
+  // Snapshot the original generation's ready observation independently of a
+  // diagnostic request, its acknowledgement and the executable's outcome.
+  get capability() { return Object.freeze({ generation: this.generation, ready: this.#ready }); }
   get termination() {
     if (!this.#request && !this.#terminal?.rejection && !this.#executionFailure) return undefined;
     const terminal = this.#terminal ?? { outcome: "unacknowledged", waits: [] };
