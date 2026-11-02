@@ -21,12 +21,24 @@ impl Counter {
     /// provider's own reported input for the request's observed prefix, which
     /// already includes every token the provider adds, plus the canonical bytes
     /// appended since. Each token of appended text spans at least one byte.
-    /// `None` when no observation anchors this request's prefix.
+    /// `None` when no observation anchors this request's prefix, or notices
+    /// require the renderer's expanded byte bound instead of canonical bytes.
     pub(crate) fn bound(&self, request: &PreparedModelRequest) -> Result<Option<u64>> {
         let Some(snapshot) = self.snapshot()? else {
             return Ok(None);
         };
-        if !byte_bound_eligible(request) {
+        if !byte_bound_eligible(request)
+            || request.request().messages.iter().any(|message| {
+                message.content.parts().iter().any(|part| {
+                    matches!(
+                        part,
+                        acyclic_harness_core::model::ModelContentPart::Notices { .. }
+                    )
+                })
+            })
+        {
+            // Notice projection can expand escaping and framing. The existing
+            // count-body path measures that exact rendered representation.
             return Ok(None);
         }
         let (prefix, total) = footprint(request, snapshot.messages)?;

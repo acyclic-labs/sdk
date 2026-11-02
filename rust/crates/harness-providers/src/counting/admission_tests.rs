@@ -285,6 +285,56 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             .count_tokens(&prepared, 5 + u64::from(framing))
             .await?;
         assert_eq!((anchored.input_tokens, sent()), (5 + u64::from(framing), 1));
+        if adapter == Adapter::Anthropic {
+            let mut request = prepared.request().clone();
+            request.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::Notices {
+                    notices: vec![acyclic_model_render::Notice {
+                        source: "files".into(),
+                        kind: "files.changed".into(),
+                        body: json!({"paths":["&'".repeat(128)]}),
+                        wake: false,
+                        coalesce_key: None,
+                    }],
+                }),
+            });
+            for as_parts in [false, true] {
+                if as_parts {
+                    let content = &mut request.messages.last_mut().unwrap().content;
+                    *content = ModelContent::Parts(content.parts().to_vec());
+                }
+                // Restore the old semantic-byte calculation as the negative:
+                // it fits this ceiling but omits the renderer's XML expansion.
+                let old_bound = 5
+                    + serde_json::to_vec(request.messages.last().unwrap())
+                        .unwrap()
+                        .len() as u64
+                    + u64::from(framing);
+                let expanded =
+                    PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(expanded.request());
+                let projected = projection::body_named(
+                    &provider,
+                    expanded.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let expanded_bound = rendered.len() as u64 + u64::from(framing);
+                assert!(expanded_bound > old_bound);
+                let before = sent();
+                let verified = provider.count_tokens(&expanded, old_bound).await?;
+                assert_eq!(
+                    (verified.input_tokens, sent()),
+                    (7 + u64::from(framing), before + 1)
+                );
+                // The exact expanded body still permits zero-HTTP admission.
+                let local = provider.count_tokens(&expanded, expanded_bound).await?;
+                assert_eq!((local.input_tokens, sent()), (expanded_bound, before + 1));
+            }
+        }
     }
     Ok(())
 }
