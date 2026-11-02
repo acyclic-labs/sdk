@@ -80,7 +80,7 @@ pub(super) mod linux {
 
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use std::io::{BufRead, Read};
-    use std::os::fd::AsFd;
+    use std::os::fd::{AsFd, OwnedFd};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::process::{Child, Stdio};
@@ -90,6 +90,7 @@ pub(super) mod linux {
     struct Session {
         child: Child,
         errors: io::PipeReader,
+        lifetime: OwnedFd,
     }
     impl Drop for Session {
         fn drop(&mut self) {
@@ -98,10 +99,31 @@ pub(super) mod linux {
         }
     }
     impl Session {
+        fn new(mut child: Child, errors: io::PipeReader) -> io::Result<Self> {
+            use rustix::process::{Pid, PidfdFlags, pidfd_open};
+            let lifetime = match pidfd_open(Pid::from_child(&child), PidfdFlags::empty()) {
+                Ok(lifetime) => lifetime,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(
+                        io::Error::from(error).kind(),
+                        format!(
+                            "emulator lifetime admission failed: {error}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                        ),
+                    ));
+                }
+            };
+            Ok(Self {
+                child,
+                errors,
+                lifetime,
+            })
+        }
         fn wait(&self, source: &impl AsFd, deadline: Instant) -> io::Result<()> {
             let stderr = &self.errors;
             let mut fds = [
-                PollFd::new(stderr, PollFlags::IN),
+                PollFd::new(&self.lifetime, PollFlags::IN),
                 PollFd::new(source, PollFlags::IN),
             ];
             loop {
@@ -252,9 +274,9 @@ pub(super) mod linux {
             .unwrap();
         // Explicitly release the parent's diagnostic write ends before waiting.
         drop(command);
-        let session = Session { child, errors };
+        let session = Session::new(child, errors).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        if let Some(watch) = watch.as_ref() {
+        if let Some(watch) = watch {
             let mut buffer = [std::mem::MaybeUninit::uninit(); 4096];
             let mut events = rustix::fs::inotify::Reader::new(&watch, &mut buffer);
             while !socket.exists() {
@@ -340,16 +362,14 @@ pub(super) mod linux {
     #[test]
     fn emulator_loss_wins_over_a_ready_consumer() {
         let (errors, writer) = io::pipe().unwrap();
-        let mut session = Session {
-            child: Command::new("sh")
-                .args(["-c", "read hold"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(writer)
-                .spawn()
-                .unwrap(),
-            errors,
-        };
+        let child = Command::new("sh")
+            .args(["-c", "read hold"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(writer)
+            .spawn()
+            .unwrap();
+        let mut session = Session::new(child, errors).unwrap();
         let (reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"R").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
