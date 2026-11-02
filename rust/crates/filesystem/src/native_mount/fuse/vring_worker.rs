@@ -67,7 +67,7 @@ pub(super) fn batch(
             .map_err(io::Error::other)?;
         Ok(Some((Arc::clone(memory), queue.queue.size())))
     })();
-    let prepared = match preparation {
+    let (memory, capacity) = match preparation {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return Ok((Some(kick), false)),
         Err(error) => {
@@ -75,7 +75,6 @@ pub(super) fn batch(
             return Err(error);
         }
     };
-    let (memory, capacity) = prepared;
     let mut batch = control.queues[index as usize].release_for_io(queue);
     drop(memory_guard);
     let result = (|| {
@@ -116,9 +115,11 @@ pub(super) fn batch(
     })();
     if result.is_ok() {
         batch.finish();
-    } else {
-        // The affine batch marks this original queue failed and wakes control
-        // before returning. Physical failure also retires the shared protocol.
+    }
+    // Retire this physical batch before session cleanup can wait on a view.
+    // Failure marks the original queue Unknown and wakes its drain owner.
+    drop(batch);
+    if result.is_err() {
         session.close();
     }
     result.map(|pending| (Some(kick), pending))

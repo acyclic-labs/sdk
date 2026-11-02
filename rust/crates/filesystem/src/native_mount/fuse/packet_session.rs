@@ -12,6 +12,13 @@ const READY: u8 = 2;
 const CLOSED: u8 = 3;
 const PROTOCOL_MAJOR: u32 = 7;
 const PROTOCOL_MINOR: u32 = 31;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_CLOSE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
 // The same maximum as the host session replaced by this entry.
 pub(super) const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
 
@@ -69,6 +76,11 @@ impl Drop for PacketReply<'_> {
 }
 
 impl PacketSession {
+    #[cfg(test)]
+    pub(super) fn probe_close(probe: impl FnOnce() + 'static) {
+        BEFORE_CLOSE.set(Some(Box::new(probe)));
+    }
+
     pub(super) fn new(
         router: PacketRouter,
         maximum_write: u32,
@@ -107,6 +119,10 @@ impl PacketSession {
 
     pub(super) fn close(&self) {
         self.phase.store(CLOSED, Ordering::Release);
+        #[cfg(test)]
+        if let Some(probe) = BEFORE_CLOSE.take() {
+            probe();
+        }
         self.router.close();
     }
 
