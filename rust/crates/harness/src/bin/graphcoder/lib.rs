@@ -213,7 +213,7 @@ fn configure(
         registry.load_catalog(path)?;
     }
     let mut config = registry
-        .graphcoder(&args.workspace, args.model.clone())
+        .graphcoder(&args.workspace, args.model.clone())?
         .working_directory(&std::env::current_dir()?)?;
     if let Some(path) = &args.approval_policy {
         config = config.approval_policy(serde_json::from_slice(&std::fs::read(path)?)?);

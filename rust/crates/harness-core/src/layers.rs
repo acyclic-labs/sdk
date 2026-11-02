@@ -13,12 +13,14 @@ pub const SEED: &str = "seed";
 pub const HOME_PATH: &str = ".volumes/home/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
+/// Tool path of host-published, run-specific system files.
+pub const SYSTEM_PATH: &str = ".volumes/system/";
 /// Tool path of the effective view: `home` over `seed`, read-only.
 pub const EFFECTIVE_PATH: &str = ".volumes/effective/";
 /// Suffix naming a composed file's provenance chain beside it.
 pub const WHY_SUFFIX: &str = ".why.json";
 
-/// Read-only kernel files, served from the seed and never layered.
+/// Read-only system files, served from the seed or run metadata, never the home.
 const SYS: &str = "sys/";
 
 /// How a higher layer's copy of a path combines with the copies below it.
@@ -56,14 +58,38 @@ pub fn is_off(bytes: &[u8]) -> bool {
 }
 
 /// Whether a tool path names a read-only layer view: the effective tree or
-/// the seed. Writes go to the home.
+/// the seed or the host's system metadata. Writes go to the home.
 #[must_use]
 pub fn read_only(path: &str) -> bool {
-    path.starts_with(EFFECTIVE_PATH) || path.starts_with(SEED_PATH)
+    path.starts_with(EFFECTIVE_PATH) || path.starts_with(SEED_PATH) || path.starts_with(SYSTEM_PATH)
+}
+
+/// A host-published read-only layer, shared by every agent in a composition.
+/// The generation is part of the binding, so a later host publication cannot
+/// change what an already-open composition reads.
+#[derive(Clone)]
+pub struct PinnedLayer {
+    /// The volume on the composition's original content reader.
+    pub volume: crate::conversation::VolumeRef,
+    /// Exact generation published by the host.
+    pub generation: crate::resources::GenerationRef,
+}
+
+impl PinnedLayer {
+    pub(crate) fn validate(&self) -> crate::Result<()> {
+        self.volume.validate(&mut None)?;
+        self.generation.validate(&mut None)?;
+        if self.volume.provider() != self.generation.as_resource().provider() {
+            return Err(crate::Error::Invalid(
+                "read-only layer belongs to another provider".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Whether `path` (relative to the effective tree) is layered; `sys/` is
-/// served from the seed alone.
+/// served from the seed or the host's pinned system metadata.
 #[must_use]
 pub fn layered(path: &str) -> bool {
     !path.starts_with(SYS)

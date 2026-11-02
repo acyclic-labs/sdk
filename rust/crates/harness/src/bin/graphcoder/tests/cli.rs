@@ -819,6 +819,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         registry.load_catalog(&model.catalog).unwrap();
         registry
             .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+            .unwrap()
             .without_user_settings()
             .state_directory(fixture._directory.path().join("embedded-state"))
             .working_directory(&fixture.workspace)
@@ -864,6 +865,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
                 &fixture.workspace,
                 Some(format!("graphcoder-qual/{selected}")),
             )
+            .unwrap()
             .without_user_settings()
             .state_directory(fixture._directory.path().join(selected))
             .working_directory(&fixture.workspace)

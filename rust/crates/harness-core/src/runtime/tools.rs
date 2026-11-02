@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH};
+use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH, SYSTEM_PATH};
 
 impl TaskContext {
     /// Retains complete tool output through the existing volume publisher.
@@ -866,7 +866,13 @@ impl ToolContext {
             path.strip_prefix(SEED_PATH),
             self.task().harness.seed.as_ref(),
         ) {
-            return Ok((seed, std::borrow::Cow::Borrowed(relative)));
+            return Ok((&seed.volume, std::borrow::Cow::Borrowed(relative)));
+        }
+        if let (Some(relative), Some(system)) = (
+            path.strip_prefix(SYSTEM_PATH),
+            self.task().harness.system.as_ref(),
+        ) {
+            return Ok((&system.volume, std::borrow::Cow::Borrowed(relative)));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
@@ -919,6 +925,11 @@ impl ToolContext {
         let seed = format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
+            if (relative.starts_with("sys/models/") || relative.starts_with("sys/secrets/"))
+                && self.task().harness.system.is_some()
+            {
+                return Ok(format!("{SYSTEM_PATH}{relative}").into());
+            }
             return if seeded {
                 Ok(seed.into())
             } else {
@@ -989,6 +1000,7 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let expected_generation = self.layer_generation(volume, expected_generation)?;
         let content = self
             .task()
             .content_binding(Some(volume))
@@ -1022,6 +1034,7 @@ impl ToolContext {
         u64,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let expected_generation = self.layer_generation(volume, expected_generation)?;
         let (selected, bytes, hold) = self
             .task()
             .content_binding(Some(volume))
@@ -1070,6 +1083,31 @@ impl ToolContext {
             0
         };
         Ok((selected, bytes, retained))
+    }
+
+    fn layer_generation<'a>(
+        &'a self,
+        volume: &VolumeRef,
+        expected: Option<&'a crate::resources::GenerationRef>,
+    ) -> Result<Option<&'a crate::resources::GenerationRef>> {
+        for layer in self
+            .task()
+            .harness
+            .seed
+            .iter()
+            .chain(self.task().harness.system.iter())
+        {
+            if &layer.volume == volume {
+                if expected.is_some_and(|expected| expected != &layer.generation) {
+                    return Err(Error::Conflict(
+                        "read-only layer version differs from this run".into(),
+                    )
+                    .tool_input());
+                }
+                return Ok(Some(&layer.generation));
+            }
+        }
+        Ok(expected)
     }
 
     /// Resolves a write destination through the original admitted publisher.

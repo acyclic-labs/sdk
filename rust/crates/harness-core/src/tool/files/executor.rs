@@ -320,6 +320,11 @@ impl ToolExecutor for FileTool {
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         if file.is_none() && matches!(self, Self::Read | Self::Edit) {
+            if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
+                // Authority is checked after the asynchronous layer selection;
+                // the effective alias itself never grants a read.
+                return Ok(());
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owned_io = work
                 .map(crate::executor::PreparationIo::from_native_work)

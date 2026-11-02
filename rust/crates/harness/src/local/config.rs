@@ -34,6 +34,7 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
@@ -89,6 +90,19 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Publishes public host metadata under `sys/models/` or `sys/secrets/`.
+    /// The caller must project metadata before calling this method: credentials,
+    /// secret values and private headers do not belong in this read-only layer.
+    /// Files are shared by the run's agents and pinned when the composition opens.
+    #[must_use]
+    pub fn system_file(
+        mut self,
+        path: impl Into<String>,
+        bytes: acyclic_stream::OwnedBytes,
+    ) -> Self {
+        self.system_files.insert(path.into(), bytes);
+        self
+    }
     /// Selects a checkout path and its stock model binding.
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
@@ -171,6 +185,7 @@ impl LocalHarnessConfig {
 
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
+            system_files: Default::default(),
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace),

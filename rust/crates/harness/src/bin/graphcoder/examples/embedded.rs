@@ -65,7 +65,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut registry = Registry::new(Credentials::default())?;
     registry.load_catalog(std::path::Path::new(catalog))?;
     let config = registry
-        .graphcoder(workspace, None)
+        .graphcoder(workspace, None)?
         .without_user_settings()
         .state_directory(std::path::Path::new(state))
         .working_directory(workspace)?;

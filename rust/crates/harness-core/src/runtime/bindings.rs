@@ -7,7 +7,8 @@ pub struct AgentHarness {
     pub(super) scope: RuntimeScope,
     pub(super) content: Option<ContentBindings>,
     pub(super) artifacts: Option<ContentBindings>,
-    pub(super) seed: Option<VolumeRef>,
+    pub(super) seed: Option<crate::layers::PinnedLayer>,
+    pub(super) system: Option<crate::layers::PinnedLayer>,
 }
 
 /// Filesystem commands bound to one provider and immutable volume-name mapping.
@@ -61,7 +62,9 @@ pub struct Bindings {
     /// The read-only seed layer under every agent's home (see
     /// [`crate::seed`]), read through the content reader under the scope's
     /// read grants. Without it the effective view is the home alone.
-    pub seed: Option<VolumeRef>,
+    pub seed: Option<crate::layers::PinnedLayer>,
+    /// Host-owned read-only system files, shared and pinned for this run.
+    pub system: Option<crate::layers::PinnedLayer>,
 }
 
 impl Bindings {
@@ -80,6 +83,9 @@ impl Bindings {
         if let Some(artifacts) = &self.artifacts {
             artifacts.validate()?;
         }
+        for layer in self.seed.iter().chain(self.system.iter()) {
+            layer.validate()?;
+        }
         Ok(Arc::new(AgentHarness {
             targets: self.targets,
             filesystem: self.filesystem,
@@ -87,6 +93,7 @@ impl Bindings {
             content: self.content,
             artifacts: self.artifacts,
             seed: self.seed,
+            system: self.system,
         }))
     }
 }
@@ -108,6 +115,7 @@ impl AgentHarness {
             scope: self.scope.clone(),
             artifacts: self.artifacts.clone(),
             seed: self.seed.clone(),
+            system: self.system.clone(),
         }))
     }
 
