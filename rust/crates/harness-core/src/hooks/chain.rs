@@ -61,9 +61,13 @@ fn fold<'a>(
     runs: impl IntoIterator<Item = (&'a Arc<HookSpec>, Run)>,
     event: HookEvent,
     maximum_bytes: u64,
+    input: Option<Value>,
 ) -> Result<HookOutput> {
-    let mut budget = budget::Budget::new(maximum_bytes)?;
-    let mut output = HookOutput::default();
+    let mut output = HookOutput {
+        updated_input: input,
+        ..HookOutput::default()
+    };
+    let mut budget = budget::Budget::existing(maximum_bytes, &output)?;
     for (hook, run) in runs {
         budget.apply(&mut output, event, &**hook, run);
     }
@@ -74,71 +78,121 @@ fn fold<'a>(
 /// Runs `hooks` (highest authority first) on a before-tool request whose
 /// tool input is `original`. `execute` runs one hook on the original input
 /// (`None`) or on a rewritten one.
-pub(super) async fn judge<F, Fut>(
-    hooks: &[&Arc<HookSpec>],
+pub(super) async fn judge<F, Fut, M>(
+    hooks: &[(&Arc<HookSpec>, Option<&Requests>)],
     event: HookEvent,
     original: &Value,
     (quota, maximum_bytes): (usize, u64),
+    matches: &M,
     execute: &mut F,
 ) -> Result<HookOutput>
 where
     F: FnMut(&Arc<HookSpec>, usize, Option<&Value>) -> Fut,
     Fut: Future<Output = Run>,
+    M: Fn(Option<&Requests>, &Value) -> bool,
 {
-    // Step 1: everything on the request, in parallel.
-    let mut runs: Vec<Run> =
-        futures::future::join_all(hooks.iter().map(|hook| execute(hook, quota, None))).await;
+    // Keep all candidates. A skipped hook has no process or output, and is
+    // reconsidered whenever another hook changes the input.
+    let pending = hooks.iter().map(|(hook, matcher)| {
+        let execution = matches(*matcher, original).then(|| execute(hook, quota, None));
+        async move {
+            match execution {
+                Some(run) => Some(run.await),
+                None => None,
+            }
+        }
+    });
+    let mut runs: Vec<Option<Run>> = futures::future::join_all(pending).await;
+    let classify = |hook: &HookSpec, run: &Option<Run>| match run {
+        Some(run) => answer(hook, event, run),
+        None => Ok(Answer::Allow),
+    };
     let answers = hooks
         .iter()
         .zip(&runs)
-        .map(|(hook, run)| answer(hook, event, run))
+        .map(|((hook, _), run)| classify(hook, run))
         .collect::<Result<Vec<_>>>()?;
     let denied = answers.contains(&Answer::Deny);
-    if denied || !answers.iter().any(|answer| matches!(answer, Answer::Rewrite(_))) {
-        let mut output = fold(hooks.iter().copied().zip(runs), event, maximum_bytes)?;
-        // A denial wins over every rewrite; none of them applies.
+    if denied
+        || !answers
+            .iter()
+            .any(|answer| matches!(answer, Answer::Rewrite(_)))
+    {
+        let mut output = fold(
+            hooks
+                .iter()
+                .zip(runs)
+                .filter_map(|((hook, _), run)| run.map(|run| (*hook, run))),
+            event,
+            maximum_bytes,
+            None,
+        )?;
         if denied {
             output.updated_input = None;
         }
         return Ok(output);
     }
-    // The input each run saw.
     let mut seen: Vec<Option<Value>> = vec![None; hooks.len()];
-    let saw = |seen: &Option<Value>| seen.clone().unwrap_or_else(|| original.clone());
-    let deny = |hook: &Arc<HookSpec>, run: Run| {
-        let mut output = fold([(hook, run)], event, maximum_bytes)?;
-        output.updated_input = None;
-        Ok::<_, Error>(output)
-    };
-    // Step 2: rewrites in authority order, each on the current input.
     let mut current = original.clone();
     for index in 0..hooks.len() {
-        if saw(&seen[index]) != current {
-            runs[index] = execute(hooks[index], quota, Some(&current)).await;
+        let (hook, matcher) = hooks[index];
+        if seen[index].as_ref().unwrap_or(original) != &current {
+            runs[index] = if matches(matcher, &current) {
+                Some(execute(hook, quota, Some(&current)).await)
+            } else {
+                None
+            };
             seen[index] = Some(current.clone());
         }
-        match answer(hooks[index], event, &runs[index])? {
-            Answer::Deny => return deny(hooks[index], runs.swap_remove(index)),
+        match classify(hook, &runs[index])? {
+            Answer::Deny => {
+                return fold(
+                    [(
+                        hook,
+                        runs.swap_remove(index)
+                            .ok_or_else(|| Error::Invalid("missing denying hook outcome".into()))?,
+                    )],
+                    event,
+                    maximum_bytes,
+                    None,
+                );
+            }
             Answer::Rewrite(input) => current = input,
             Answer::Allow | Answer::Ask => {}
         }
     }
-    // Step 3: every hook on the final input, in parallel.
-    let stale: Vec<usize> = (0..hooks.len())
-        .filter(|&index| saw(&seen[index]) != current)
+    let stale: Vec<_> = (0..hooks.len())
+        .filter(|&index| seen[index].as_ref().unwrap_or(original) != &current)
         .collect();
-    let reruns = futures::future::join_all(
-        stale
-            .iter()
-            .map(|&index| execute(hooks[index], quota, Some(&current))),
-    )
-    .await;
+    let pending = stale.iter().map(|&index| {
+        let (hook, matcher) = hooks[index];
+        let execution = matches(matcher, &current).then(|| execute(hook, quota, Some(&current)));
+        async move {
+            match execution {
+                Some(run) => Some(run.await),
+                None => None,
+            }
+        }
+    });
+    let reruns = futures::future::join_all(pending).await;
     for (index, run) in stale.into_iter().zip(reruns) {
         runs[index] = run;
     }
     for index in 0..hooks.len() {
-        match answer(hooks[index], event, &runs[index])? {
-            Answer::Deny => return deny(hooks[index], runs.swap_remove(index)),
+        let hook = hooks[index].0;
+        match classify(hook, &runs[index])? {
+            Answer::Deny => {
+                return fold(
+                    [(
+                        hook,
+                        runs.swap_remove(index)
+                            .ok_or_else(|| Error::Invalid("missing denying hook outcome".into()))?,
+                    )],
+                    event,
+                    maximum_bytes,
+                    None,
+                );
+            }
             Answer::Rewrite(input) if input != current => {
                 return Ok(HookOutput {
                     blocked: Some(
@@ -150,10 +204,16 @@ where
             Answer::Rewrite(_) | Answer::Allow | Answer::Ask => {}
         }
     }
-    // Step 4: the final input, with any ask about it.
-    let mut output = fold(hooks.iter().copied().zip(runs), event, maximum_bytes)?;
-    output.updated_input = Some(current);
-    Ok(output)
+    // Reserve the final input together with every retained hook contribution.
+    fold(
+        hooks
+            .iter()
+            .zip(runs)
+            .filter_map(|((hook, _), run)| run.map(|run| (*hook, run))),
+        event,
+        maximum_bytes,
+        Some(current),
+    )
 }
 
 #[cfg(test)]
