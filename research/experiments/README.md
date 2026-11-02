@@ -104,10 +104,15 @@ explicit admitted choice.
 
 ## Replay and analysis
 
-Use the shipped `model::RecordedModel` and a source `Recording`. Independent
-trial cursors must share immutable recorded data without consuming another
-arm's matches or rebuilding the source history per trial. That shared entrance
-and pre-activation provider binding remain prerequisites.
+Build the source `Conversation::recording()` once and retain it in an
+`Arc<Recording>`. For each trial, call
+`RecordedModel::new(live_provider, Arc::clone(&source), trial_sink)` before
+admitting the harness configuration. Each adapter has independent consumption
+positions over the same immutable events and tool settlements. Reusing an
+adapter shares consumption; constructing a fresh adapter costs one allocation
+without copying calls or walking source history. Content binding preserves that
+trial's positions. The saved whole-scope fork and dormant configuration/grant
+admission remain prerequisites for executing these recipes.
 
 Record the first `DivergenceSink` event (`dispatch`, `key`) per adapter, or an
 explicit observed no-divergence result. Use `replay_key` on exact reconstructed

@@ -15,15 +15,18 @@
 //! later turns carry the live answer, so they match only a request whose
 //! content the source also sent. Other agents keep replaying while
 //! their requests still match. A recorded call serves exactly one request;
-//! identical requests in the source are answered in source order.
+//! identical requests in the source are answered in source order. Adapters
+//! share an immutable source through `Arc<Recording>`; each fresh adapter
+//! consumes independently, without rebuilding or copying source calls.
 //!
 //! Replayed tool calls do not run, so their effects are not reproduced: a
 //! fork's volumes stay as its cut selected them. Executors whose call is a
 //! harness effect (spawn, send, archive, wait) always run
 //! ([`crate::tool::ToolExecutor::replays_recorded`]).
 use super::*;
+use acyclic_collections::{FixedIndex, IndexWork};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStream};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// How a recorded tool call settled.
@@ -50,41 +53,100 @@ pub struct RecordedCall {
     pub tools: Vec<(String, RecordedToolOutcome)>,
 }
 
-/// A source run's completed calls, keyed by [`replay_key`]. Lookup and
-/// consumption are O(1) per request.
+/// A source run's completed calls, keyed by [`replay_key`]. Build once, then
+/// share an `Arc<Recording>` across independently consuming adapters. Call
+/// payloads remain immutable; a trial never clones or rebuilds this source.
 #[derive(Debug, Default, PartialEq)]
 pub struct Recording {
-    calls: HashMap<[u8; 32], VecDeque<RecordedCall>>,
-    remaining: usize,
+    calls: HashMap<[u8; 32], Vec<RecordedCall>>,
+    count: usize,
 }
 
 impl Recording {
     /// Adds `call` as the next answer to the request with replay `key`.
     pub fn insert(&mut self, key: [u8; 32], call: RecordedCall) {
-        self.calls.entry(key).or_default().push_back(call);
-        self.remaining += 1;
+        self.calls.entry(key).or_default().push(call);
+        self.count += 1;
     }
 
-    /// Unused recorded calls.
+    /// Source calls, independent of any trial's consumption.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.remaining
+        self.count
     }
 
-    /// Whether every recorded call has been used.
+    /// Whether the source contains no calls.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.remaining == 0
+        self.count == 0
+    }
+}
+
+/// One position per consumed source key, never a retained call payload.
+/// Fixed-width indexing avoids history-dependent hash-table resizing. A new
+/// key allocates at most two nodes; repeated keys update one existing integer.
+#[derive(Default)]
+struct Cursor {
+    next: FixedIndex<usize, crate::NativeCustody, 32>,
+    used: usize,
+}
+
+impl Cursor {
+    fn take<'s>(
+        &mut self,
+        source: &'s Recording,
+        key: [u8; 32],
+        work: &mut impl IndexWork<Error = Error, Allocation = crate::NativeCustody>,
+    ) -> Result<Option<(usize, &'s RecordedCall)>> {
+        let Some(calls) = source.calls.get(&key) else {
+            work.check()?;
+            return Ok(None);
+        };
+        let next = self.next.get_or_try_insert_with(key, work, |_| Ok(0))?;
+        let Some(call) = calls.get(*next) else {
+            return Ok(None);
+        };
+        let index = *next;
+        *next += 1;
+        self.used += 1;
+        Ok(Some((index, call)))
+    }
+}
+
+/// The original invocation funds cursor nodes before allocation. Portable
+/// calls use the existing unbounded-work choice, not a second private ledger.
+struct CursorWork<'a>(crate::NativeWork<'a>);
+
+impl IndexWork for CursorWork<'_> {
+    type Error = Error;
+    type Allocation = crate::NativeCustody;
+
+    fn check(&mut self) -> Result<()> {
+        self.charge_items(0)
     }
 
-    fn take(&mut self, key: &[u8; 32]) -> Option<RecordedCall> {
-        let queue = self.calls.get_mut(key)?;
-        let call = queue.pop_front()?;
-        self.remaining -= 1;
-        if queue.is_empty() {
-            self.calls.remove(key);
+    fn charge_items(&mut self, items: u64) -> Result<()> {
+        let _ = (self.0, items);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = self.0 {
+            original.admit(acyclic_fs::WorkCounters {
+                items_examined: items,
+                ..Default::default()
+            })?;
         }
-        Some(call)
+        Ok(())
+    }
+
+    fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
+        let _ = (self.0, bytes);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = self.0 {
+            return original
+                .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+                .map(Some)
+                .map_err(Into::into);
+        }
+        Ok(None)
     }
 }
 
@@ -240,8 +302,9 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
 
 #[derive(Default)]
 struct Replay {
-    recording: Recording,
-    tools: HashMap<(OperationId, String), RecordedToolOutcome>,
+    cursor: Cursor,
+    // Original source coordinates: copy the outcome only if it is requested.
+    tools: HashMap<(OperationId, String), ([u8; 32], usize, usize)>,
     /// Turns that went live; each stays live.
     live: std::collections::HashSet<OperationId>,
     diverged: bool,
@@ -250,24 +313,25 @@ struct Replay {
 /// Serves a [`Recording`] while requests match it, then the live provider.
 pub struct RecordedModel {
     live: Arc<dyn ModelProvider>,
+    recording: Arc<Recording>,
     replay: Arc<Mutex<Replay>>,
     sink: Arc<dyn DivergenceSink>,
 }
 
 impl RecordedModel {
-    /// Replays `recording` in front of `live`, reporting divergence to `sink`.
+    /// Bind one independent trial to an immutable source and its live provider.
+    /// Admission shares the source without scanning or copying calls. Reusing
+    /// this adapter shares consumption; construct another for another trial.
     #[must_use]
     pub fn new(
         live: Arc<dyn ModelProvider>,
-        recording: Recording,
+        recording: Arc<Recording>,
         sink: Arc<dyn DivergenceSink>,
     ) -> Self {
         Self {
             live,
-            replay: Arc::new(Mutex::new(Replay {
-                recording,
-                ..Replay::default()
-            })),
+            recording,
+            replay: Arc::new(Mutex::new(Replay::default())),
             sink,
         }
     }
@@ -281,7 +345,7 @@ impl RecordedModel {
     /// Recorded calls no request has used.
     #[must_use]
     pub fn unused(&self) -> usize {
-        self.lock().recording.len()
+        self.recording.len() - self.lock().cursor.used
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Replay> {
@@ -293,13 +357,18 @@ impl RecordedModel {
         &self,
         request: &PreparedModelRequest,
         dispatch: ModelDispatch,
-    ) -> Result<Option<Vec<Vec<u8>>>> {
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<&RecordedCall>> {
         let key = replay_key(request.bytes())?;
         let mut replay = self.lock();
         if replay.live.contains(&dispatch.operation_id) {
             return Ok(None);
         }
-        let Some(call) = replay.recording.take(&key) else {
+        let Some((index, call)) =
+            replay
+                .cursor
+                .take(&self.recording, key, &mut CursorWork(work))?
+        else {
             replay.live.insert(dispatch.operation_id);
             let first = !std::mem::replace(&mut replay.diverged, true);
             drop(replay);
@@ -308,12 +377,13 @@ impl RecordedModel {
             }
             return Ok(None);
         };
-        for (call_id, result) in call.tools {
-            replay
-                .tools
-                .insert((dispatch.operation_id, call_id), result);
+        for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
+            replay.tools.insert(
+                (dispatch.operation_id, call_id.clone()),
+                (key, index, ordinal),
+            );
         }
-        Ok(Some(call.events))
+        Ok(Some(call))
     }
 }
 
@@ -334,7 +404,9 @@ mod tests {
             operations in prop::collection::vec((any::<u8>(), any::<bool>()), 0..256),
         ) {
             let mut recording = Recording::default();
+            let mut cursor = Cursor::default();
             let mut source = Vec::new();
+            let mut inserted = 0;
             for (sequence, (key, insert)) in operations.into_iter().enumerate() {
                 let key = [key; 32];
                 if insert {
@@ -345,22 +417,247 @@ mod tests {
                     };
                     source.push((key, call.clone()));
                     recording.insert(key, call);
+                    inserted += 1;
                 } else {
                     let expected = source.iter().position(|(candidate, _)| *candidate == key)
                         .map(|at| source.remove(at).1);
-                    prop_assert_eq!(recording.take(&key), expected);
+                    let actual = cursor.take(&recording, key, &mut CursorWork(None))
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?
+                        .map(|(_, call)| call.clone());
+                    prop_assert_eq!(actual, expected);
                 }
-                prop_assert_eq!(recording.len(), source.len());
-                prop_assert_eq!(recording.is_empty(), source.is_empty());
+                prop_assert_eq!(recording.len(), inserted);
+                prop_assert_eq!(recording.is_empty(), inserted == 0);
+                prop_assert_eq!(recording.len() - cursor.used, source.len());
             }
             for (key, expected) in source {
-                prop_assert_eq!(recording.take(&key), Some(expected));
+                prop_assert_eq!(
+                    cursor.take(&recording, key, &mut CursorWork(None))
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?
+                        .map(|(_, call)| call.clone()),
+                    Some(expected)
+                );
             }
-            prop_assert_eq!(recording.len(), 0);
-            prop_assert!(recording.calls.is_empty());
-            prop_assert!(recording.take(&[0; 32]).is_none());
-            prop_assert_eq!(recording.len(), 0);
+            prop_assert_eq!(cursor.used, recording.len());
+            prop_assert!(cursor.take(&recording, [0; 32], &mut CursorWork(None))
+                .map_err(|error| TestCaseError::fail(error.to_string()))?.is_none());
+            prop_assert_eq!(cursor.used, recording.len());
         }
+    }
+
+    #[test]
+    fn trial_admission_shares_source_without_copying_its_population() {
+        struct Quiet;
+        impl DivergenceSink for Quiet {
+            fn diverged(&self, _: Divergence) {}
+        }
+        let live: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        for size in [1u64, 2048] {
+            let mut source = Recording::default();
+            for key in 0..size {
+                let mut bytes = [0; 32];
+                bytes[..8].copy_from_slice(&key.to_be_bytes());
+                // Empty opaque operands; no provider event fixture is invented.
+                source.insert(bytes, RecordedCall::default());
+            }
+            let source = Arc::new(source);
+            let mut trial = None;
+            let admission = acyclic_test_support::measure(|| {
+                trial = Some(RecordedModel::new(
+                    Arc::clone(&live),
+                    Arc::clone(&source),
+                    Arc::clone(&sink),
+                ));
+            });
+            assert_eq!(admission.count_total, 1, "one independent replay state");
+            let trial = trial.unwrap();
+            assert!(Arc::ptr_eq(&trial.recording, &source));
+            let copying = acyclic_test_support::measure(|| {
+                std::hint::black_box(source.calls.clone());
+            });
+            assert!(
+                copying.count_total > admission.count_total,
+                "copying the source is the allocation negative control"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_work_is_bounded_by_key_width_not_consumed_history() -> Result<()> {
+        #[derive(Default)]
+        struct Meter {
+            items: u64,
+            allocations: u64,
+        }
+        impl IndexWork for Meter {
+            type Error = Error;
+            type Allocation = crate::NativeCustody;
+            fn check(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn charge_items(&mut self, items: u64) -> Result<()> {
+                self.items += items;
+                Ok(())
+            }
+            fn claim(&mut self, _: u64) -> Result<Self::Allocation> {
+                self.allocations += 1;
+                Ok(None)
+            }
+        }
+        let key = |index: u64| {
+            let mut key = [0; 32];
+            key[..8].copy_from_slice(&index.to_be_bytes());
+            key
+        };
+        let bound = FixedIndex::<usize, crate::NativeCustody, 32>::insertion_bound(1).unwrap();
+        for size in [2u64, 2048] {
+            let mut source = Recording::default();
+            for index in 0..size {
+                source.insert(key(index), RecordedCall::default());
+                source.insert(key(index), RecordedCall::default());
+            }
+            let mut cursor = Cursor::default();
+            let mut work = Meter::default();
+            for index in 0..size - 1 {
+                assert_eq!(cursor.take(&source, key(index), &mut work)?.unwrap().0, 0);
+            }
+            let before = work.items;
+            let allocations = acyclic_test_support::measure(|| {
+                assert_eq!(
+                    cursor
+                        .take(&source, key(size - 1), &mut work)
+                        .unwrap()
+                        .unwrap()
+                        .0,
+                    0
+                );
+            });
+            assert!(work.items - before <= bound.examined_items);
+            assert!(allocations.count_total <= 2);
+            let before = work.allocations;
+            let repeated = acyclic_test_support::measure(|| {
+                assert_eq!(
+                    cursor
+                        .take(&source, key(size - 1), &mut work)
+                        .unwrap()
+                        .unwrap()
+                        .0,
+                    1
+                );
+            });
+            assert_eq!(work.allocations, before);
+            assert_eq!(repeated.count_total, 0);
+            assert!(cursor.take(&source, key(size - 1), &mut work)?.is_none());
+            assert_eq!(cursor.used, size as usize + 1);
+            let mut independent = Cursor::default();
+            assert_eq!(
+                independent
+                    .take(&source, key(size - 1), &mut work)?
+                    .unwrap()
+                    .0,
+                0,
+                "a fresh trial starts at the original first answer"
+            );
+            assert!(
+                cursor.take(&source, key(size - 1), &mut work)?.is_none(),
+                "reusing the consumed cursor is the independence negative control"
+            );
+            if size == 2048 {
+                let mut scanned = 0;
+                let total: usize = source
+                    .calls
+                    .values()
+                    .map(|calls| {
+                        scanned += 1;
+                        calls.len()
+                    })
+                    .sum();
+                assert_eq!(total, size as usize * 2);
+                assert!(
+                    scanned > bound.examined_items,
+                    "recounting history is the examined-item negative control"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn cursor_refusal_and_cancellation_preserve_the_original_answer() -> Result<()> {
+        let mut source = Recording::default();
+        source.insert([0; 32], RecordedCall::default());
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        budget.items_examined = 0;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let retained = work.live_allocation_bytes();
+        let mut cursor = Cursor::default();
+        assert!(matches!(
+            cursor.take(&source, [0; 32], &mut CursorWork(Some(&work))),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { .. }
+                ),
+                ..
+            })
+        ));
+        assert_eq!(cursor.used, 0);
+        assert_eq!(work.live_allocation_bytes(), retained);
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        cancellation.cancel();
+        assert!(matches!(
+            cursor.take(&source, [0; 32], &mut CursorWork(Some(&work))),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cursor.take(&source, [1; 32], &mut CursorWork(Some(&work))),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                ..
+            })
+        ));
+        assert_eq!(cursor.used, 0);
+        assert_eq!(
+            cursor
+                .take(&source, [0; 32], &mut CursorWork(None))?
+                .unwrap()
+                .0,
+            0
+        );
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let retained = work.live_allocation_bytes();
+        let mut funded = Cursor::default();
+        assert_eq!(
+            funded
+                .take(&source, [0; 32], &mut CursorWork(Some(&work)))?
+                .unwrap()
+                .0,
+            0
+        );
+        assert!(work.live_allocation_bytes() > retained);
+        drop(funded);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            retained,
+            "the original ledger retains and refunds cursor storage"
+        );
+        Ok(())
     }
 
     #[test]
@@ -486,6 +783,7 @@ impl ModelProvider for RecordedModel {
         let live = self.live.bind_content(reader, maximum_bytes)?;
         Some(Arc::new(Self {
             live,
+            recording: Arc::clone(&self.recording),
             replay: Arc::clone(&self.replay),
             sink: Arc::clone(&self.sink),
         }))
@@ -510,9 +808,9 @@ impl ModelProvider for RecordedModel {
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>> {
-        match self.take(request, dispatch) {
-            Ok(Some(events)) => Box::pin(futures::stream::iter(
-                events.into_iter().map(|bytes| decode(&bytes)),
+        match self.take(request, dispatch, None) {
+            Ok(Some(call)) => Box::pin(futures::stream::iter(
+                call.events.iter().map(|bytes| decode(bytes)),
             )),
             Ok(None) => self.live.generate(request, dispatch),
             Err(error) => Box::pin(futures::stream::iter([Err(error)])),
@@ -530,7 +828,8 @@ impl ModelProvider for RecordedModel {
         operation: OperationId,
         call_id: &str,
     ) -> Option<RecordedToolOutcome> {
-        self.lock().tools.remove(&(operation, call_id.to_owned()))
+        let (key, index, ordinal) = self.lock().tools.remove(&(operation, call_id.to_owned()))?;
+        Some(self.recording.calls[&key][index].tools[ordinal].1.clone())
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
@@ -560,7 +859,7 @@ impl ModelProvider for RecordedModel {
         dispatch: ModelDispatch,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
-        let Some(events) = self.take(request, dispatch)? else {
+        let Some(call) = self.take(request, dispatch, Some(work))? else {
             return self.live.generate_with_native_work(request, dispatch, work);
         };
         // Each recorded event is admitted on the original ledger exactly as
@@ -568,9 +867,9 @@ impl ModelProvider for RecordedModel {
         crate::NativeFutureBundle::new(work, move || async move {
             NativeModelStream::new(work, move || {
                 futures::stream::iter(
-                    events
-                        .into_iter()
-                        .map(move |bytes| ModelEvent::decode_with_native_work(&bytes, work)),
+                    call.events
+                        .iter()
+                        .map(move |bytes| ModelEvent::decode_with_native_work(bytes, work)),
                 )
             })
         })
