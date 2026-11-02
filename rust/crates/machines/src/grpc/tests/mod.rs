@@ -25,6 +25,7 @@ enum WatchReply {
 }
 
 struct ObservationScript {
+    results: Option<SimulatedMachines>,
     watches: std::collections::VecDeque<WatchReply>,
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
@@ -71,8 +72,33 @@ operation_service! {
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
-    (read_results, ReadResultsRequest, ResultPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn read_results(&self, request: Request<wire::ReadResultsRequest>)
+        -> Result<Response<wire::ResultPage>, Status> {
+        let WatchReply::Script(script) = &self.watch else {
+            return Err(Status::unimplemented("read_results"));
+        };
+        let original = {
+            let mut script = script.lock().expect("observation script");
+            let original = script.results.clone().ok_or_else(|| Status::unimplemented("read_results"))?;
+            script.calls.push("read_results");
+            original
+        };
+        let request = request.into_inner();
+        let cursor = decode_result_cursor(request.cursor.as_ref())
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let credit = NonZeroU32::new(request.credit)
+            .ok_or_else(|| Status::invalid_argument("result credit is zero"))?;
+        let page = original.read_results(cursor, credit).await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        Ok(Response::new(wire::ResultPage {
+            cursor: Some(page.cursor.into()),
+            machines: page.machines.into_iter().map(TryInto::try_into)
+                .collect::<Result<_, ProviderError>>()
+                .map_err(|error| Status::failed_precondition(error.to_string()))?,
+            next: page.next.map(Into::into),
+        }))
+    }
     async fn create(&self, request: Request<wire::CreateMachineRequest>)
         -> Result<Response<wire::MachineAdmission>, Status> {
         let request = request.into_inner();
@@ -383,6 +409,7 @@ fn scripted_operation_service(
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042").expect("operation");
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine");
     let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
+        results: None,
         watches: watches.into(),
         inspections: inspections.into(),
         calls: Vec::new(),

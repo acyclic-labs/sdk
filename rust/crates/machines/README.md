@@ -100,6 +100,16 @@ Dropping the waiting future stops local observation without cancelling the nativ
 operation. Persist the original key for recovery after process restart; the SDK
 uses the service's durable operation journal.
 
+Native lifecycle operations use `acyclic_actors::call` under the original supplied
+journal root, at `calls/<idempotency-key>`. The request is delivered inline:
+acceptance commits with the pending Machine state, and the single terminal and
+settled marker commit with the final Machine state. A logical no-op needs only
+that terminal commit. Cancellation uses the same settled marker without waiting
+for the physical transition. Cancellation after acceptance and loss of the
+original physical producer retain `Indeterminate`; neither permits redispatch.
+A terminal committed before cancellation remains the original result. This
+format has no migration path from the retired private operation envelopes.
+
 `results::ResultCursor` binds the original operation, terminal owner, immutable
 extent and child index. Its `Settlement` distinguishes a Streams `CommitId` from
 a native controller partition's nonzero revision; neither is interchangeable
