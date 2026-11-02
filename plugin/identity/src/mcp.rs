@@ -1278,7 +1278,11 @@ mod tests {
         client.close();
         // Serving joins the original operation before returning. Observe the
         // retained approval after that completion, without probing admission.
-        client.served.await.expect("served").expect("transport");
+        (&mut client.served)
+            .await
+            .expect("served")
+            .expect("transport");
+        assert!(client.next_reply().await.is_none());
         assert!(client.server.lock().await.pending.is_some());
     }
 

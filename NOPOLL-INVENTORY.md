@@ -8,7 +8,10 @@ Identity cancellation retention successor:
 
 The original real transport control keeps its ping and cancellation reply
 assertions. Its final assertion now directly checks that device approval survived
-the completed cancellation. Area cleanup deletes the request-ID counter, busy
+the completed cancellation. After joining the real transport, the same control
+also requests a missing reply and requires the original writer's retained
+withdrawal to return `None`, without a timer or a new request. Area cleanup
+deletes the request-ID counter, busy
 reply branch and readiness loop. Additional tools/call and ping requests change
 from two per probe attempt to zero; the existing EOF and serving-task join remain
 one each. The final approval check takes one existing server lock. No new event,
