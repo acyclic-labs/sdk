@@ -45,7 +45,14 @@ impl Write for ConsoleIo {
     }
 }
 
-static CONSOLE: OnceLock<Arc<Owner<ConsoleIo>>> = OnceLock::new();
+impl super::console_owner::CloseWake for Arc<ffi::ConsoleClose> {
+    fn close(&self) -> io::Result<()> {
+        self.signal()
+    }
+}
+
+type ConsoleOwner = Owner<ConsoleIo, Arc<ffi::ConsoleClose>>;
+static CONSOLE: OnceLock<Arc<ConsoleOwner>> = OnceLock::new();
 fn console_control(event: u32) -> bool {
     if matches!(event, 0 | 1 | 2 | 5 | 6)
         && let Some(owner) = CONSOLE.get()
@@ -60,14 +67,15 @@ fn console_control(event: u32) -> bool {
 /// Windows console owner. Driver operations run outside the owner lock;
 /// restoration waits for cancellation acknowledgement before undoing modes.
 pub struct Tty {
-    owner: Arc<Owner<ConsoleIo>>,
+    owner: Arc<ConsoleOwner>,
     reader: File,
+    closed: Arc<ffi::ConsoleClose>,
     decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
 /// Output half using the console owner's existing I/O/restoration boundary.
 pub struct Output {
-    owner: Arc<Owner<ConsoleIo>>,
+    owner: Arc<ConsoleOwner>,
 }
 /// Bytes per console call. Each call runs under its own write deadline
 /// (PROBE_TIMEOUT, 100 ms). Measured on the local console: one 4 MiB call
@@ -200,7 +208,8 @@ impl Tty {
             },
             &Capabilities::default(),
         );
-        let owner = Owner::new(guard, ffi::cancel_thread);
+        let closed = Arc::new(ffi::ConsoleClose::new()?);
+        let owner = Owner::notifying(guard, ffi::cancel_thread, Arc::clone(&closed));
         CONSOLE
             .set(Arc::clone(&owner))
             .map_err(|_| io::ErrorKind::AlreadyExists)?;
@@ -214,6 +223,7 @@ impl Tty {
         Ok(Self {
             owner,
             reader,
+            closed,
             decoder: Decoder::default(),
             capabilities: None,
         })
@@ -291,21 +301,13 @@ impl ProbeIo for Tty {
         if bytes.is_empty() {
             return Ok(0);
         }
-        loop {
-            self.owner.check_open()?;
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(0);
-            }
-            let count = ffi::console_read(
-                self.reader.as_raw_handle() as usize,
-                bytes,
-                deadline.min(now + std::time::Duration::from_millis(1)),
-            )?;
-            if count != 0 {
-                return Ok(count);
-            }
-        }
+        self.owner.check_open()?;
+        ffi::console_read(
+            self.reader.as_raw_handle() as usize,
+            &self.closed,
+            bytes,
+            deadline,
+        )
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();
@@ -405,6 +407,49 @@ mod tests {
         assert_ne!(raw.input_mode & 512, 0);
         assert_ne!(raw.output_mode & 4, 0);
         assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("input-close") {
+            let (mut tty, output_half) = tty.split();
+            let closing = std::thread::spawn(move || drop(output_half));
+            let result = tty.receive(&mut [0; 24], Instant::now() + Duration::from_secs(5));
+            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+            closing
+                .join()
+                .map_err(|_| io::Error::other("input close worker panicked"))?;
+            // Exercise the native wait even when the concurrent close won
+            // before session admission. The same event remains published.
+            let result = ffi::console_read(
+                tty.reader.as_raw_handle() as usize,
+                &tty.closed,
+                &mut [0; 24],
+                Instant::now() + Duration::from_secs(5),
+            );
+            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+            // Removing only the published event fails that same close oracle
+            // at the native deadline, without an unbounded blocked control.
+            let unpublished = ffi::ConsoleClose::new()?;
+            assert_eq!(
+                ffi::console_read(
+                    tty.reader.as_raw_handle() as usize,
+                    &unpublished,
+                    &mut [0; 24],
+                    Instant::now() + Duration::from_millis(1),
+                )?,
+                0
+            );
+            let restored = ffi::console_state(
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
+            )?;
+            assert_eq!(restored.input_mode, baseline.input_mode);
+            assert_eq!(restored.output_mode, baseline.output_mode);
+            assert_eq!(restored.input_page, baseline.input_page);
+            assert_eq!(restored.output_page, baseline.output_page);
+            std::fs::write(
+                path,
+                b"input close joined; unpublished event refused the close oracle",
+            )?;
+            return Ok(());
+        }
         // The ConPTY host sends one 100-byte input packet. A zero-capacity
         // receive must consume nothing; the next receive may consume only 24.
         std::fs::write(path.with_extension("input-ready"), b"input")?;
