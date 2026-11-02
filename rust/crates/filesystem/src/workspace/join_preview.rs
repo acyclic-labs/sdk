@@ -39,6 +39,14 @@ pub struct JoinPreview<A: 'static, O: 'static> {
     owner: ReadOwner<State<A, O>>,
 }
 
+/// One selected regular file borrowing its original immutable preview hold.
+/// Selection happens once; byte pages do not repeat the namespace lookup.
+pub struct JoinContent<'p, A: 'static, O: 'static> {
+    preview: &'p mut JoinPreview<A, O>,
+    record: crate::kernel::FileRecord,
+    side: ConflictSide,
+}
+
 struct State<A: 'static, O: 'static> {
     // One borrowed body page retires before its pins and original read frame.
     content: Option<crate::kernel::FileRangeRead>,
@@ -280,66 +288,36 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    /// Borrows one exact regular-file range from a selected pinned side.
-    /// An absent file or binding returns `None`; an empty range returns an
-    /// empty slice. The next range replaces this single page after its borrow
-    /// ends, without retaining earlier pages or advancing the row cursors.
-    /// Uses the same cumulative credit and cancellation as the preview.
-    pub async fn conflict_range(
+    /// Selects one regular file under the preview's original work and hold.
+    /// An absent file or binding returns `None`. Selection loads no body and
+    /// advances neither row cursor. The borrowed reader reuses this exact
+    /// record and pinned side for every subsequent range.
+    pub async fn open_conflict_content(
         &mut self,
         conflict: &MergeConflict,
         side: ConflictSide,
-        range: crate::ByteRange,
-    ) -> crate::MeasuredResult<OperationReceipt<Option<&[u8]>>, WorkspaceError> {
-        let (state, mut accounting) = self.owner.borrow();
-        let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            if let Some(previous) = state.content.take() {
-                previous.retire(&mut accounting)?;
-            }
-            accounting.check()?;
-            let (workspace, generation) = state.plan.side_workspace(side);
-            let cancellation = accounting.cancellation();
-            let record = workspace
-                .volume
-                .fs
-                .workspace_merge_record_with_accounting(
-                    &workspace.volume,
-                    generation,
-                    conflict,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            if let Some(record) = record {
-                state.content = Some(
-                    workspace
-                        .volume
-                        .fs
-                        .workspace_merge_range_with_accounting(
-                            &workspace.volume,
-                            record,
-                            range,
-                            &mut accounting,
-                            cancellation,
-                        )
-                        .await?,
-                );
-            }
-            state.failed = false;
-            Ok::<_, WorkspaceError>(())
-        }
-        .await;
-        let work = accounting.spent();
-        result
-            .map(|()| OperationReceipt {
-                value: state.content.as_ref().map(|read| read.bytes.as_slice()),
+    ) -> crate::MeasuredResult<OperationReceipt<Option<JoinContent<'_, A, O>>>, WorkspaceError>
+    {
+        let selected = self.conflict_record(conflict, side).await?;
+        let work = selected.work;
+        let Some(record) = selected.value else {
+            return Ok(OperationReceipt { value: None, work });
+        };
+        if record.kind != FileKind::Regular {
+            self.owner.borrow().0.failed = true;
+            return Err(OperationFailure::new(
+                FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular).into(),
                 work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+            ));
+        }
+        Ok(OperationReceipt {
+            value: Some(JoinContent {
+                preview: self,
+                record,
+                side,
+            }),
+            work,
+        })
     }
 
     /// Advances the original changed-path frontier, excluding unresolved files.
@@ -444,6 +422,59 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     /// Cumulative work on the same original frame, including typed refusals.
     pub fn work(&mut self) -> WorkCounters {
         self.owner.borrow().1.spent()
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinContent<'_, A, O> {
+    /// Borrows one exact range; an empty range returns an empty slice. The
+    /// next range replaces this single page after its borrow ends. No earlier
+    /// page is accumulated, and no namespace lookup or new allowance occurs.
+    /// Refusal or withdrawal terminates the original preview.
+    pub async fn read_range(
+        &mut self,
+        range: crate::ByteRange,
+    ) -> crate::MeasuredResult<OperationReceipt<&[u8]>, WorkspaceError> {
+        let (state, mut accounting) = self.preview.owner.borrow();
+        let result = async {
+            if state.failed {
+                return Err(FsError::InvalidDiff.into());
+            }
+            state.failed = true;
+            if let Some(previous) = state.content.take() {
+                previous.retire(&mut accounting)?;
+            }
+            accounting.check()?;
+            let (workspace, _) = state.plan.side_workspace(self.side);
+            let cancellation = accounting.cancellation();
+            state.content = Some(
+                workspace
+                    .volume
+                    .fs
+                    .workspace_merge_range_with_accounting(
+                        &workspace.volume,
+                        self.record,
+                        range,
+                        &mut accounting,
+                        cancellation,
+                    )
+                    .await?,
+            );
+            state.failed = false;
+            Ok::<_, WorkspaceError>(())
+        }
+        .await;
+        let work = accounting.spent();
+        result
+            .map(|()| OperationReceipt {
+                value: state
+                    .content
+                    .as_ref()
+                    .unwrap_or_else(|| unreachable!("successful range retains its original output"))
+                    .bytes
+                    .as_slice(),
+                work,
+            })
+            .map_err(|error| OperationFailure::new(error, work))
     }
 }
 

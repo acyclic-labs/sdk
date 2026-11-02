@@ -462,56 +462,41 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?
                 .value;
+            let mut content = pages
+                .open_conflict_content(row.value(), side)
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
             if let Some(record) = record {
+                let content = content.as_mut().ok_or("selected body missing")?;
                 let FilePayload::InlineRegular(expected) = record.payload else {
                     return Err("selected conflict body changed representation".into());
                 };
                 for (index, chunk) in expected.as_bytes().chunks(2).enumerate() {
-                    let read = pages
-                        .conflict_range(
-                            row.value(),
-                            side,
-                            crate::ByteRange {
-                                offset: (index * 2) as u64,
-                                length: chunk.len() as u64,
-                            },
-                        )
+                    let read = content
+                        .read_range(crate::ByteRange {
+                            offset: (index * 2) as u64,
+                            length: chunk.len() as u64,
+                        })
                         .await
                         .map_err(|failure| failure.error)?;
-                    assert_eq!(read.value, Some(chunk));
+                    assert_eq!(read.value, chunk);
                 }
                 assert_eq!(
-                    pages
-                        .conflict_range(
-                            row.value(),
-                            side,
-                            crate::ByteRange {
-                                offset: expected.as_bytes().len() as u64,
-                                length: 0
-                            },
-                        )
+                    content
+                        .read_range(crate::ByteRange {
+                            offset: expected.as_bytes().len() as u64,
+                            length: 0
+                        },)
                         .await
                         .map_err(|failure| failure.error)?
                         .value,
-                    Some(b"".as_slice())
+                    b"".as_slice()
                 );
             } else {
-                assert!(
-                    pages
-                        .conflict_range(
-                            row.value(),
-                            side,
-                            crate::ByteRange {
-                                offset: 0,
-                                length: 2
-                            },
-                        )
-                        .await
-                        .map_err(|failure| failure.error)?
-                        .value
-                        .is_none()
-                );
+                assert!(content.is_none());
             }
+            drop(content);
             let conflict_path = pages
                 .conflict_path(row.value(), side)
                 .await
@@ -743,14 +728,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         .value;
     assert!(
         range_pages
-            .conflict_range(
-                &shared_conflict,
-                crate::ConflictSide::Ours,
-                crate::ByteRange {
-                    offset: 0,
-                    length: 2
-                },
-            )
+            .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
             .await
             .is_err(),
         "selected content minted another item allowance"
@@ -769,20 +747,19 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             .await
             .map_err(|failure| failure.error)?
             .value;
+        let mut content = native_pages
+            .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("native body missing")?;
         let mut live = None;
         for offset in [0, 2, 0] {
-            let read = native_pages
-                .conflict_range(
-                    &shared_conflict,
-                    crate::ConflictSide::Ours,
-                    crate::ByteRange { offset, length: 2 },
-                )
+            let read = content
+                .read_range(crate::ByteRange { offset, length: 2 })
                 .await
                 .map_err(|failure| failure.error)?;
-            assert_eq!(
-                read.value,
-                Some(&b"main"[offset as usize..offset as usize + 2])
-            );
+            assert_eq!(read.value, &b"main"[offset as usize..offset as usize + 2]);
             let current = original.live_allocation_bytes();
             if let Some(previous) = live {
                 assert_eq!(current, previous, "earlier content pages retained credit");
@@ -791,18 +768,15 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         }
         range_cancel.cancel();
         assert!(
-            native_pages
-                .conflict_range(
-                    &shared_conflict,
-                    crate::ConflictSide::Ours,
-                    crate::ByteRange {
-                        offset: 0,
-                        length: 2
-                    },
-                )
+            content
+                .read_range(crate::ByteRange {
+                    offset: 0,
+                    length: 2
+                })
                 .await
                 .is_err()
         );
+        drop(content);
         assert!(native_pages.next_clean().await.is_err());
         assert!(original.live_allocation_bytes() < live.unwrap());
     }
@@ -905,24 +879,26 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         .await
         .map_err(|failure| failure.error)?
         .value;
+    let mut pinned_content = pinned_range_pages
+        .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+        .await
+        .map_err(|failure| failure.error)?
+        .value
+        .ok_or("pinned body missing")?;
     assert!(matches!(
         plan.apply_sides(options, selections).await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
-        pinned_range_pages
-            .conflict_range(
-                &shared_conflict,
-                crate::ConflictSide::Ours,
-                crate::ByteRange {
-                    offset: 0,
-                    length: 4
-                },
-            )
+        pinned_content
+            .read_range(crate::ByteRange {
+                offset: 0,
+                length: 4
+            })
             .await
             .map_err(|failure| failure.error)?
             .value,
-        Some(b"main".as_slice())
+        b"main".as_slice()
     );
     for (path, expected) in [
         ("/clean", b"clean".as_slice()),

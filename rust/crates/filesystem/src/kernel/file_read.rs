@@ -47,7 +47,8 @@ impl FileRangeRead {
 
     /// Drops this read's physical output before retiring its original charge.
     /// Native bytes already carry the guard; ordinary bytes use the same frame
-    /// that admitted this read. No allocation or new admission is required.
+    /// that admitted this read, and must not have escaped through a clone.
+    /// No allocation or new admission is required.
     pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         let bytes = self.logical_owned_bytes;
         drop(self);
