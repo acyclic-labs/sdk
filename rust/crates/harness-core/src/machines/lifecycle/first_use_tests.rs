@@ -6,6 +6,38 @@ use tokio::sync::watch;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// Count the actual table entrances in the production selection path. Warm
+// execution must retain its admitted position instead of searching again.
+thread_local! {
+    static TARGET_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Default)]
+pub(super) struct TargetHasher(std::collections::hash_map::RandomState);
+
+pub(super) struct TargetHash(
+    <std::collections::hash_map::RandomState as std::hash::BuildHasher>::Hasher,
+);
+
+impl std::hash::BuildHasher for TargetHasher {
+    type Hasher = TargetHash;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        TargetHash(std::hash::BuildHasher::build_hasher(&self.0))
+    }
+}
+
+impl std::hash::Hasher for TargetHash {
+    fn finish(&self) -> u64 {
+        TARGET_LOOKUPS.with(|count| count.set(count.get() + 1));
+        std::hash::Hasher::finish(&self.0)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        std::hash::Hasher::write(&mut self.0, bytes);
+    }
+}
+
 // Every operation reaches the real simulator. Only its original inspection
 // response is held, so overlapping first uses are deterministic.
 struct HeldInspection {
@@ -153,12 +185,25 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 calls: AtomicUsize::new(0),
                 executor: Arc::new(NeverRun),
             });
+            let lookups = TARGET_LOOKUPS.get();
             let target = OnFirstUse::new(
                 &machines,
                 AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
                 "machine",
                 executors.clone(),
             )?;
+            assert_eq!(TARGET_LOOKUPS.get() - lookups, 1);
+            // Negative control: the previous last-target scan examines the
+            // entire unrelated roster for this same admitted target.
+            let mut scanned = 0;
+            assert_eq!(
+                machines.targets.iter().position(|candidate| {
+                    scanned += 1;
+                    candidate.name == "machine"
+                }),
+                Some(target_count - 1)
+            );
+            assert_eq!(scanned, target_count);
             let mut first = Box::pin(target.executor());
             tokio::select! {
                 () = provider.entered.notified() => {},
@@ -213,10 +258,16 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             }
             assert_eq!(executors.calls.load(Ordering::Relaxed), 1);
             let inspections = provider.inspections.load(Ordering::Relaxed);
+            let lookups = TARGET_LOOKUPS.get();
             for _ in 0..callers {
                 assert!(Arc::ptr_eq(&target.executor().await?, &executors.executor));
             }
             assert_eq!(provider.inspections.load(Ordering::Relaxed), inspections);
+            assert_eq!(
+                TARGET_LOOKUPS.get(),
+                lookups,
+                "warm target was selected again"
+            );
             assert_eq!(
                 provider.inner.list_machines(None, 2).await?.machines.len(),
                 1
