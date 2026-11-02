@@ -198,9 +198,6 @@ pub(in crate::core_state) fn compare_native_context(
     {
         return Ok(false);
     }
-    if !index_ready(root, log, work, cxl)? {
-        rebuild_index(root, log, work, cxl)?;
-    }
     let old_parent = current
         .as_ref()
         .and_then(|record| record.0.parent_context_id);
@@ -222,6 +219,9 @@ pub(in crate::core_state) fn compare_native_context(
         allocation: Some(allocation),
     })?;
     if old_parent != new_parent {
+        if !index_ready(root, log, work, cxl)? {
+            rebuild_index(root, log, work, cxl)?;
+        }
         for parent in old_parent.into_iter().chain(new_parent) {
             check(work, cxl)?;
             work.charge(crate::WorkCounters {
