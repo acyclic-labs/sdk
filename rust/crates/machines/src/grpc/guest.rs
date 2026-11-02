@@ -15,13 +15,14 @@ pub(super) fn command_error(machine: MachineId, value: &tonic::Status) -> Provid
 pub(super) fn command_stream_error(
     machine: MachineId,
     exited: bool,
-    _value: &tonic::Status,
+    value: tonic::Status,
 ) -> ProviderError {
-    if exited {
+    let classification = if exited {
         ProviderError::Rejected("exec stream failed after its terminal result".into())
     } else {
         ProviderError::CommandIndeterminate(machine)
-    }
+    };
+    classification.with_cause(value)
 }
 
 pub(super) fn decode_exec_output(
