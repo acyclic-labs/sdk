@@ -38,19 +38,39 @@ struct Fields {
     terminal: bool,
     stage: bool,
     outcome: bool,
+    fail_at: Option<&'static str>,
+    matched: bool,
+}
+impl Fields {
+    fn field(&mut self, field: &tracing::field::Field) {
+        self.matched |= self.fail_at == Some(field.name());
+    }
 }
 impl Visit for Fields {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.field(field);
         self.queued |= field.name() == "native.queued" && value;
     }
     fn record_str(&mut self, field: &tracing::field::Field, _: &str) {
+        self.field(field);
         self.terminal |= field.name() == "native.terminal";
         self.outcome |= field.name() == "outcome";
     }
     fn record_u64(&mut self, field: &tracing::field::Field, _: u64) {
+        self.field(field);
         self.stage |= field.name() == "stage";
     }
-    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+        self.field(field);
+    }
+}
+
+struct SubscriberFailure {
+    field: &'static str,
+    worker: bool,
+    occurrence: usize,
+    seen: AtomicUsize,
+    panics: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -60,12 +80,16 @@ struct Probe {
     consumed: Arc<Mutex<Option<io::Result<()>>>>,
     sender: std::thread::ThreadId,
     delay: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+    failure: Option<Arc<SubscriberFailure>>,
 }
 impl<S: tracing::Subscriber> Layer<S> for Probe {
     fn on_record(&self, _: &tracing::Id, record: &Record<'_>, _: LayerContext<'_, S>) {
-        let mut fields = Fields::default();
+        let mut fields = Fields {
+            fail_at: self.failure.as_ref().map(|failure| failure.field),
+            ..Fields::default()
+        };
         record.record(&mut fields);
-        if fields.queued || fields.terminal || fields.stage || fields.outcome {
+        if fields.queued || fields.terminal || fields.stage || fields.outcome || fields.matched {
             assert!(
                 self.admission.try_lock().is_ok(),
                 "callback under admission"
@@ -99,6 +123,14 @@ impl<S: tracing::Subscriber> Layer<S> for Probe {
                 *self.consumed.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
             }
         }
+        if let Some(failure) = &self.failure
+            && fields.matched
+            && failure.worker == (std::thread::current().id() != self.sender)
+            && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
+        {
+            failure.panics.fetch_add(1, Ordering::SeqCst);
+            panic!("original subscriber control: {}", failure.field);
+        }
     }
 }
 
@@ -113,6 +145,7 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
         consumed: Arc::default(),
         sender: std::thread::current().id(),
         delay: Arc::default(),
+        failure: None,
     };
     let credit = Arc::new(tokio::sync::Semaphore::new(1));
     let (export, mut output) = Export::channel(Arc::clone(&credit), true);
@@ -422,5 +455,138 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
             std::mem::size_of::<NativeJob>()
         );
     });
+    Ok(())
+}
+
+#[test]
+fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()> {
+    struct CountWake(AtomicUsize);
+    impl std::task::Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    // Each row panics once in the SAME original subscriber, before work,
+    // after physical completion, or after terminal wake custody transfers.
+    for (field, worker, occurrence) in [
+        ("stage", false, 1),
+        ("native.queued", false, 1),
+        ("native.queued", true, 1),
+        ("native.started", true, 1),
+        ("stage", true, 1),
+        ("native.terminal", true, 1),
+        ("error.os", true, 1),
+        ("outcome", true, 1),
+        ("stage", true, 2),
+    ] {
+        for outcome in 0..3 {
+            if field == "error.os" && outcome != 1 {
+                continue;
+            }
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let workers = NativeWorkers::single(sender, crate::workers::AdmissionState::new());
+            let failure = Arc::new(SubscriberFailure {
+                field,
+                worker,
+                occurrence,
+                seen: AtomicUsize::new(0),
+                panics: AtomicUsize::new(0),
+            });
+            let probe = Probe {
+                admission: Arc::clone(&workers.admission),
+                original: Arc::default(),
+                consumed: Arc::default(),
+                sender: std::thread::current().id(),
+                delay: Arc::default(),
+                failure: Some(Arc::clone(&failure)),
+            };
+            let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(probe));
+            tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
+                let waiting =
+                    obs::waiting("persistence-completion", 9, std::future::pending::<()>());
+                let _entered = waiting.context().enter();
+                let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
+                    .err()
+                    .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
+                let original_code = actual.raw_os_error();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let called = Arc::clone(&calls);
+                let mut task = task(move || {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    match outcome {
+                        0 => Ok(()),
+                        1 => Err(actual),
+                        _ => panic!("original operation panic remains distinct"),
+                    }
+                })?;
+                let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+                let waker = Waker::from(Arc::clone(&wake));
+                let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+                assert!(
+                    original
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .poll_result(&waker)
+                        .is_pending()
+                );
+                let fence = Arc::new(OperationFence::default());
+                if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
+                    *completion = Some(Arc::clone(&fence));
+                }
+                assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
+                let receiver = crate::sync::Mutex::new(receiver);
+                let job = crate::workers::receive_job(&receiver, &workers.admission)
+                    .ok_or(io::ErrorKind::BrokenPipe)?;
+                std::thread::spawn(move || {
+                    if let Some(waker) = job.run() {
+                        waker.wake();
+                    }
+                })
+                .join()
+                .map_err(|_| io::Error::other("original worker panicked"))?;
+
+                // Joining the physical worker makes each oracle synchronous;
+                // a missing terminal or lost wake fails without waiting again.
+                assert_eq!(failure.panics.load(Ordering::SeqCst), 1);
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(wake.0.load(Ordering::SeqCst), 1);
+                assert!(
+                    fence
+                        .state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .complete
+                );
+                let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+                let mut state = original.lock().unwrap_or_else(PoisonError::into_inner);
+                assert!(!state.task_pending);
+                assert!(state.waker.is_none());
+                assert_eq!(state.panic.is_some(), outcome == 2);
+                match outcome {
+                    0 => assert!(matches!(state.result.take(), Some(Ok(())))),
+                    1 => assert_eq!(
+                        state
+                            .result
+                            .take()
+                            .and_then(Result::err)
+                            .and_then(|error| error.raw_os_error()),
+                        original_code
+                    ),
+                    _ => {
+                        assert!(state.result.is_none());
+                        assert_eq!(
+                            state
+                                .panic
+                                .as_ref()
+                                .and_then(|payload| payload.downcast_ref::<&str>().copied()),
+                            Some("original operation panic remains distinct")
+                        );
+                    }
+                }
+                Ok(())
+            })?;
+        }
+    }
     Ok(())
 }

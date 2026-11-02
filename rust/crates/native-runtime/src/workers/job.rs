@@ -43,10 +43,12 @@ pub(crate) enum NativeJob {
 impl NativeJob {
     pub(crate) fn submission_error(span: &tracing::Span, error: &io::Error) {
         if !span.is_disabled() {
-            if let Some(code) = error.raw_os_error() {
-                span.record("error.os", code);
-            }
-            acyclic_observability::record_outcome(span, Some(obs::kind(error)));
+            obs::project(|| {
+                if let Some(code) = error.raw_os_error() {
+                    span.record("error.os", code);
+                }
+                acyclic_observability::record_outcome(span, Some(obs::kind(error)));
+            });
         }
     }
 
@@ -81,7 +83,9 @@ impl NativeJob {
             ..
         } = self
         {
-            progress.record("stage", stage);
+            obs::project(|| {
+                progress.record("stage", stage);
+            });
         }
     }
     #[cfg(feature = "test-support")]
@@ -255,11 +259,15 @@ fn run_task(
     let (observation, queued) = observation;
     // A received job proves its own successful transfer even if the sender is
     // preempted before projecting acceptance outside the admission lock.
-    observation.record("native.queued", queued);
-    observation.record("native.started", true);
-    let _turn = crate::task::PersistenceTurn::enter(progress.clone());
+    obs::project(|| {
+        observation.record("native.queued", queued);
+        observation.record("native.started", true);
+    });
+    let turn = crate::task::PersistenceTurn::enter(progress.clone());
     if let Some(progress) = &progress {
-        progress.record("stage", 2_u64);
+        obs::project(|| {
+            progress.record("stage", 2_u64);
+        });
     }
     let run = || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
@@ -272,19 +280,24 @@ fn run_task(
         }
         let waker = terminal.publish(&observation);
         if let Some(progress) = &progress {
-            progress.record("stage", 4_u64);
+            obs::project(|| {
+                progress.record("stage", 4_u64);
+            });
         }
         // This shared owner retains the state's charge until it is released,
         // including when the observer has already taken the result.
         crate::sync::release(terminal);
-        drop(progress);
+        obs::project(|| drop(progress));
         waker
     };
     #[cfg(feature = "test-support")]
-    if let Some(scope) = scope {
-        return scope.run(run);
-    }
-    run()
+    let run = || match scope {
+        Some(scope) => scope.run(run),
+        None => run(),
+    };
+    let waker = run();
+    obs::project(|| drop((turn, observation)));
+    waker
 }
 
 #[cfg(all(test, not(loom)))]

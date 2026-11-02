@@ -18,6 +18,14 @@ pub(crate) use tracing::field::Empty;
 pub use wait_report::{WaitReport, WaitSnapshot};
 pub use waiting::{Waiting, waiting, waiting_sync};
 
+/// A diagnostic callback cannot interrupt an accepted native producer or take
+/// its terminal wake. Keep this boundary outside admission/completion locks;
+/// the callback's panic is not the operation's result and is not reported back
+/// through the same failed subscriber.
+pub(crate) fn project(record: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(record));
+}
+
 macro_rules! span {
     ($level:ident, $name:literal $(, $($fields:tt)*)?) => {
         $crate::obs::OperationSpan::new(tracing::span!(tracing::Level::$level, $name, $($($fields)*)?))
