@@ -90,8 +90,32 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     let put = writer.put(bytes.clone(), Vec::new()).await?;
     let verified = put.verified().ok_or("publication is known")?;
     let digest = verified.digest;
+    let empty = writer
+        .put(OwnedBytes::new(), vec![digest])
+        .await?
+        .verified()
+        .ok_or("empty publication is known")?
+        .digest;
+    let manifest = writer
+        .put_manifest(crate::Manifest {
+            parts: vec![
+                crate::Part {
+                    digest,
+                    length: bytes.len() as u64,
+                },
+                crate::Part {
+                    digest,
+                    length: bytes.len() as u64,
+                },
+            ],
+            edges: vec![empty],
+        })
+        .await?
+        .verified()
+        .ok_or("manifest publication is known")?
+        .digest;
     let root = RootId::new(b"original-publication".to_vec())?;
-    let retained = writer.retain(&root, vec![digest]).await?;
+    let retained = writer.retain(&root, vec![manifest]).await?;
     let minimum = RevisionCut::of(retained.revision.ok_or("retain commits a revision")?);
     let selected = Store::new(Applied {
         inner: Arc::clone(store.medium()),
@@ -106,14 +130,50 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
         .await?;
     assert_eq!(object.body(), &bytes);
     assert!(object.head().revision.is_none());
+    let full_manifest = [bytes.as_ref(), bytes.as_ref()].concat();
+    for (selected, range, expected) in [
+        (digest, ByteRange::new(1, 4), &bytes[1..4]),
+        (empty, ByteRange::FULL, &b""[..]),
+        (manifest, ByteRange::FULL, full_manifest.as_slice()),
+        (
+            manifest,
+            ByteRange::new(bytes.len() as u64 - 1, bytes.len() as u64 + 1),
+            &full_manifest[bytes.len() - 1..bytes.len() + 1],
+        ),
+    ] {
+        let object = reader.get(selected, range, expected.len() as u64).await?;
+        assert_eq!(object.body().as_ref(), expected);
+        assert_eq!(object.start(), range.start);
+        assert!(object.revision().is_none());
+    }
+    for selected in [digest, manifest] {
+        assert_eq!(
+            reader
+                .get(selected, ByteRange::FULL, 1)
+                .await
+                .err()
+                .map(|e| e.code),
+            Some(ErrorCode::QuotaExceeded),
+        );
+        assert_eq!(
+            reader
+                .get(selected, ByteRange::new(0, u64::MAX), u64::MAX)
+                .await
+                .err()
+                .map(|e| e.code),
+            Some(ErrorCode::RangeNotSatisfiable),
+        );
+    }
     let head = reader.head(digest).await?;
     assert_eq!(head.digest, digest);
     assert_eq!(head.length, bytes.len() as u64);
     assert!(head.revision.is_none());
-    let page = reader.list(None, 1).await?;
-    assert_eq!(page.digests, vec![digest]);
+    let page = reader.list(None, 3).await?;
+    let mut expected = vec![digest, empty, manifest];
+    expected.sort();
+    assert_eq!(page.digests, expected);
     assert!(page.revision.is_none());
-    assert_eq!(reader.usage().await?.blobs, 1);
+    assert_eq!(reader.usage().await?.blobs, 3);
 
     let budget = Arc::new(Budget::new(u64::MAX));
     *budget.writes.lock().unwrap() = Some(0);
