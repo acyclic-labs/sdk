@@ -2,7 +2,7 @@ use super::*;
 use crate::guest::{CancellationToken, GuestError};
 use crate::invocation::Invocation;
 use crate::local::{FailureDisposition, FailureEntry};
-use acyclic_stream::{ChildrenPageRequest, ReadRequest, RevisionCut};
+use acyclic_stream::{ChildrenPageRequest, CommittedMutation, ReadRequest, RevisionCut};
 use futures::TryStreamExt as _;
 
 struct Rejects {
@@ -73,7 +73,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         Arc::new(SystemClock),
     );
     runtime.track(address.clone())?;
-    runtime.drain_actor(&address).await?; // Establish placement outside the counted delivery.
+    runtime.drain_actor(&address).await?;
     let invocation = Invocation::new(
         address.clone(),
         "inbox".into(),
@@ -83,6 +83,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let ticket = store.enqueue_invoke(&invocation).await?;
     let snapshot = store.load(&address).await?;
     let epoch = snapshot.state().ok_or("missing original state")?.epoch();
+    assert_eq!(epoch, 0, "idle discovery must not claim placement");
     let wrong = Trigger::Record {
         subscription: "inbox".into(),
         sequence: ticket.record().sequence + 1,
@@ -125,11 +126,21 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     assert_eq!(receipt.ticket(), &ticket);
     assert_eq!(receipt.state().commit_id, receipt.reply().commit_id);
     let retained = store.load(&address).await?;
+    assert_eq!(retained.tail, receipt.revision());
+    let publication = provider.read_commit(receipt.commit_id()).await?;
+    let mut states = publication
+        .mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            CommittedMutation::Append(append) if &append.path == snapshot.path() => Some(append),
+            _ => None,
+        });
     assert_eq!(
-        retained.tail - snapshot.tail,
-        1,
+        states.next().map(|append| append.records.as_slice()),
+        Some(std::slice::from_ref(receipt.state())),
         "failure consumes input and replies in one state publication"
     );
+    assert!(states.next().is_none());
     let state = retained.state().ok_or("missing terminal state")?;
     assert_eq!(state.checkpoint(), Some(&checkpoint));
     assert_eq!(state.cursor("inbox"), Some(1));
