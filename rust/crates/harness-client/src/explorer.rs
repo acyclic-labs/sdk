@@ -54,6 +54,62 @@ mod tests {
     use acyclic_harness_core::agent::AgentId;
     use acyclic_stream::{AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream};
 
+    #[test]
+    fn history_seeks_preserve_exclusive_ends_at_the_sequence_boundary() {
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let agent = AgentPath::root(&AgentId::try_from(format!("{:032x}", 1)).unwrap());
+            let path = agent.conversation().unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"original history".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"history-end".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let head = provider.head(path.clone()).await.unwrap();
+            let original = head.last.unwrap();
+            let mut explorer = Explorer::new(ReaderPolicy::default()).unwrap();
+            explorer.reader.cache_mut().observe_tail(&path, head.tail);
+            explorer
+                .reader
+                .cache_mut()
+                .observe_origin(&path, head.origin);
+            explorer.reader.cache_mut().insert_record(
+                &path,
+                original.sequence,
+                original.value.clone(),
+                None,
+            );
+            explorer.open(agent, 4);
+            assert_eq!(explorer.history().len(), 1);
+            for start in [u64::MAX - 1, u64::MAX] {
+                explorer.seek(start);
+                let mut wants = Vec::new();
+                explorer.history_wants(explorer.history.as_ref().unwrap(), &mut wants);
+                assert!(matches!(
+                    &wants[0].0,
+                    Want::Range { stream, from, to }
+                        if stream == &path && *from == start && *to == u64::MAX
+                ));
+                assert!(wants.iter().all(|(want, _)| match want {
+                    Want::Range { from, to, .. } => from <= to,
+                    _ => false,
+                }));
+                assert!(explorer.history().is_empty());
+            }
+            explorer.jump_end();
+            let rows = explorer.history();
+            let value = rows[0].value.as_ref().unwrap();
+            assert_eq!(value.as_ref(), original.value.as_slice());
+            assert_eq!(value.as_ptr(), original.value.as_slice().as_ptr());
+            explorer.reader.cache_mut().forget(&path);
+            assert!(explorer.history().is_empty());
+        });
+    }
+
     /// Directory data comes from the actual provider. Only the first and
     /// late pages remain cached, as after scrolling through a large tree.
     #[test]
@@ -1046,7 +1102,7 @@ impl Explorer {
                 Want::Range {
                     stream: history.stream.clone(),
                     from: history.from,
-                    to: history.from + u64::from(rows),
+                    to: history.from.saturating_add(u64::from(rows)),
                 },
                 Priority::Visible,
             ));
@@ -1085,10 +1141,12 @@ impl Explorer {
         let Some(start) = self.history_start(history) else {
             return Vec::new();
         };
-        let end = match self.reader.cache().tail(&history.stream) {
-            Some(tail) => tail.min(start + history.rows as u64),
-            None => start + history.rows as u64,
-        };
+        let end = start.saturating_add(history.rows as u64);
+        let end = self
+            .reader
+            .cache()
+            .tail(&history.stream)
+            .map_or(end, |tail| tail.min(end));
         self.reader
             .cache()
             .records(&history.stream, start, end)
