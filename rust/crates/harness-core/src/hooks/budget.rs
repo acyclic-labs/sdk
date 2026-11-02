@@ -200,7 +200,10 @@ impl Budget {
                     State::Available { .. } => (
                         output.blocked.is_some(),
                         output.approval.is_some(),
-                        output.diagnostics.iter().any(|failure| failure.blocking),
+                        // A retained rewrite is mandatory: losing it must never
+                        // dispatch the unchecked original request.
+                        output.updated_input.is_some()
+                            || output.diagnostics.iter().any(|failure| failure.blocking),
                     ),
                     State::Exhausted {
                         denied,
