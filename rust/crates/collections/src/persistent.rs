@@ -236,6 +236,23 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         self.root.as_ref().and_then(Node::body)
     }
 
+    // Only the newly allocated insertion path is mutated. Its nodes are
+    // present, uniquely owned branches; inherited nodes never enter here.
+    fn unpublished_branch(&mut self) -> (&mut usize, &mut Bit, &mut Self, &mut Self) {
+        let Some(Node(Some(root))) = &mut self.root else {
+            unreachable!("the unpublished insertion path retains its node")
+        };
+        let Some(Body {
+            depth,
+            kind: Kind::Branch { bit, low, high },
+            ..
+        }) = Arc::get_mut(root)
+        else {
+            unreachable!("the unpublished insertion path owns one branch")
+        };
+        (depth, bit, low, high)
+    }
+
     fn visible_body<W: IndexReadWork>(
         &self,
         work: &mut W,
@@ -481,11 +498,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                         (Self::default(), sibling)
                     };
                     *destination = Self::node(minimum, Kind::Branch { bit, low, high }, work)?;
-                    let body = Arc::get_mut(destination.root.as_mut().unwrap().0.as_mut().unwrap())
-                        .unwrap_or_else(|| unreachable!("the unpublished path has one owner"));
-                    let Kind::Branch { low, high, .. } = &mut body.kind else {
-                        unreachable!("the path just constructed a branch")
-                    };
+                    let (_, _, low, high) = destination.unpublished_branch();
                     destination = if selected_high { high } else { low };
                     view = selected;
                 }
@@ -508,17 +521,8 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         let mut cursor = &mut result;
         for position in 0..depth {
             work.charge_items(1)?;
-            let body = Arc::get_mut(cursor.root.as_mut().unwrap().0.as_mut().unwrap())
-                .unwrap_or_else(|| unreachable!("the unpublished path has one owner"));
-            body.depth = depths[position / 8][position % 8];
-            let Kind::Branch {
-                bit,
-                low,
-                high: upper,
-            } = &mut body.kind
-            else {
-                unreachable!("the copied path contains a branch")
-            };
+            let (height, bit, low, upper) = cursor.unpublished_branch();
+            *height = depths[position / 8][position % 8];
             cursor = if high(&key, *bit) { upper } else { low };
         }
         Ok(result)
