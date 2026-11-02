@@ -327,16 +327,34 @@ struct Messages<'a> {
 }
 impl Serialize for Messages<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::Error;
         let mut seq = serializer.serialize_seq(None)?;
-        for message in self.input {
-            seq.serialize_element(&Message {
-                role: message.role,
-                content: &message.content,
-            })?;
+        for (index, message) in self.input.iter().enumerate() {
+            if message.role == ModelRole::Tool {
+                if message.content.parts().is_empty() {
+                    return Err(S::Error::custom(
+                        "tool message has no original paired result",
+                    ));
+                }
+                for (part_index, part) in message.content.parts().iter().enumerate() {
+                    seq.serialize_element(&Message {
+                        role: message.role,
+                        content: &message.content,
+                        result: Some((index, part_index, part)),
+                    })?;
+                }
+            } else {
+                seq.serialize_element(&Message {
+                    role: message.role,
+                    content: &message.content,
+                    result: None,
+                })?;
+            }
         }
         seq.serialize_element(&Message {
             role: ModelRole::Assistant,
             content: self.response,
+            result: None,
         })?;
         seq.end()
     }
@@ -345,6 +363,7 @@ impl Serialize for Messages<'_> {
 struct Message<'a> {
     role: ModelRole,
     content: &'a ModelContent,
+    result: Option<(usize, usize, &'a ModelContentPart)>,
 }
 impl Serialize for Message<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -352,16 +371,18 @@ impl Serialize for Message<'_> {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("role", &self.role)?;
         if self.role == ModelRole::Tool {
-            let [
+            let Some((
+                _,
+                _,
                 ModelContentPart::ToolResult {
                     call_id,
                     name,
                     content,
                 },
-            ] = self.content.parts()
+            )) = self.result
             else {
                 return Err(S::Error::custom(
-                    "tool message requires one original paired result",
+                    "tool message requires an original paired result",
                 ));
             };
             map.serialize_entry("tool_call_id", call_id)?;
@@ -420,12 +441,26 @@ impl Serialize for Message<'_> {
         if !self.content.parts().is_empty() {
             #[derive(Serialize)]
             struct Metadata<'a> {
-                acyclic_content: &'a ModelContent,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                acyclic_content: Option<&'a ModelContent>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                original_message_index: Option<usize>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                original_part_index: Option<usize>,
             }
             map.serialize_entry(
                 "metadata",
                 &Metadata {
-                    acyclic_content: self.content,
+                    // Retain the complete original group once. Every result
+                    // points back to its message and position without copying
+                    // or serializing the group once per member.
+                    acyclic_content: self
+                        .result
+                        .filter(|(_, part, _)| *part != 0)
+                        .is_none()
+                        .then_some(self.content),
+                    original_message_index: self.result.map(|(message, _, _)| message),
+                    original_part_index: self.result.map(|(_, part, _)| part),
                 },
             )?;
         }
@@ -473,29 +508,43 @@ impl Serialize for DisplayContent<'_> {
 struct Calls<'a>(&'a [ModelContentPart]);
 impl Serialize for Calls<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::Error;
         let mut seq = serializer.serialize_seq(None)?;
         for part in self.0 {
             if let ModelContentPart::ToolCall(call) = part {
-                if !call.arguments.is_object() {
-                    return Err(S::Error::custom("Inspect tool arguments require an object"));
-                }
                 #[derive(Serialize)]
                 struct Call<'a> {
                     id: &'a str,
                     function: &'a str,
-                    arguments: &'a serde_json::Value,
+                    arguments: Arguments<'a>,
                     r#type: &'static str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    parse_error: Option<&'static str>,
                 }
                 seq.serialize_element(&Call {
                     id: &call.call_id,
                     function: &call.name,
-                    arguments: &call.arguments,
+                    arguments: Arguments(&call.arguments),
                     r#type: "function",
+                    parse_error: (!call.arguments.is_object()).then_some(
+                        "Original arguments are not an object; retained in message metadata",
+                    ),
                 })?;
             }
         }
         seq.end()
+    }
+}
+
+/// Inspect requires an object even for a refused call. Its parse error marks
+/// this empty display; the unchanged original arguments remain in metadata.
+struct Arguments<'a>(&'a serde_json::Value);
+impl Serialize for Arguments<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        if self.0.is_object() {
+            self.0.serialize(serializer)
+        } else {
+            Empty {}.serialize(serializer)
+        }
     }
 }
 

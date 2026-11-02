@@ -192,6 +192,127 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<()> {
+    use crate::{conversation::Limits, model::PreparedModelRequest, tool::ToolDefinition};
+    for arguments in [
+        Value::Null,
+        json!(false),
+        json!(7),
+        json!("raw"),
+        json!([1]),
+        json!({}),
+    ] {
+        let mut request = request("generated parallel calls".into());
+        request.tools = vec![ToolDefinition {
+            name: "read".into(),
+            revision: "generated".into(),
+            description: "Read".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"object"}),
+            projection_schema: json!({"type":"object"}),
+        }];
+        request.messages[1].content = ModelContent::Parts(
+            (0..3)
+                .map(|index| {
+                    ModelContentPart::ToolCall(ToolCall::new(
+                        format!("call-{index}"),
+                        "read".into(),
+                        if index == 0 {
+                            arguments.clone()
+                        } else {
+                            json!({})
+                        },
+                    ))
+                })
+                .collect(),
+        );
+        request.messages[2].content = ModelContent::Parts(
+            (0..3)
+                .map(|index| ModelContentPart::ToolResult {
+                    call_id: format!("call-{index}"),
+                    name: "read".into(),
+                    content: match index {
+                        0 => ToolResultContent::Error {
+                            message: "Original refused call".into(),
+                        },
+                        1 => ToolResultContent::Json {
+                            value: json!({"original":1}),
+                        },
+                        _ => ToolResultContent::Parts {
+                            parts: vec![crate::model::ModelDataPart::Text {
+                                text: "Original text".into(),
+                            }],
+                        },
+                    },
+                })
+                .collect(),
+        );
+        // Exercise the shared admission, not merely a codec-shaped mock.
+        let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+        let bytes = prepared.bytes();
+        let call = Call::new(source(), &admission(bytes)?, bytes)?;
+        let mut output = Vec::new();
+        call.write(
+            &mut output,
+            "2026-11-02T00:00:00Z",
+            &ModelContent::Text("done".into()),
+            None,
+        )?;
+        let log: Value = serde_json::from_slice(&output).map_err(invalid)?;
+        let messages = log["samples"][0]["messages"].as_array().expect("messages");
+        assert_eq!(
+            messages.len(),
+            6,
+            "three original results become three Inspect messages"
+        );
+        for index in 0..3 {
+            assert_eq!(
+                messages[1]["tool_calls"][index]["id"],
+                messages[index + 2]["tool_call_id"]
+            );
+            assert_eq!(messages[index + 2]["metadata"]["original_message_index"], 2);
+            assert_eq!(
+                messages[index + 2]["metadata"]["original_part_index"],
+                index
+            );
+        }
+        let display = &messages[1]["tool_calls"][0];
+        assert!(display["arguments"].is_object());
+        assert_eq!(display["parse_error"].is_string(), !arguments.is_object());
+        assert_eq!(
+            messages[1]["metadata"]["acyclic_content"][0]["arguments"],
+            arguments
+        );
+        assert_eq!(messages[2]["error"]["message"], "Original refused call");
+        assert_eq!(messages[3]["content"], r#"{"original":1}"#);
+        assert_eq!(messages[4]["content"][0]["text"], "Original text");
+        assert_eq!(
+            messages[2]["metadata"]["acyclic_content"],
+            serde_json::to_value(&request.messages[2].content).map_err(invalid)?
+        );
+        assert!(
+            messages[3]["metadata"]["acyclic_content"].is_null(),
+            "the full group is serialized only once"
+        );
+        assert!(messages[4]["metadata"]["acyclic_content"].is_null());
+        if !arguments.is_object() {
+            let ModelContent::Parts(parts) = &mut request.messages[2].content else {
+                unreachable!()
+            };
+            let ModelContentPart::ToolResult { content, .. } = &mut parts[0] else {
+                unreachable!()
+            };
+            *content = ToolResultContent::Json { value: json!({}) };
+            assert!(
+                PreparedModelRequest::prepare(request, Limits::default(), None).is_err(),
+                "invalid arguments only admit their original error result"
+            );
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn arbitrary_text_survives_json_without_coalescing_unknown_measurements(text in any::<String>()) {
@@ -290,17 +411,39 @@ fn output_failure_stops_without_flush_or_success() -> Result<()> {
 
 #[test]
 fn borrowed_encoding_has_no_history_sized_allocations() -> Result<()> {
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            panic!("no exporter flush")
+        }
+    }
+    let mut single_result_bytes = 0;
     for messages in [1, 32, 1024] {
         let mut request = request("generated allocation control".into());
-        request.messages = vec![request.messages[0].clone(); messages];
+        let ModelContent::Part(result) = &request.messages[2].content else {
+            unreachable!()
+        };
+        request.messages[2].content = ModelContent::Parts(vec![result.clone(); messages]);
         let bytes = serde_json::to_vec(&request).map_err(invalid)?;
         let call = Call::new(source(), &admission(&bytes)?, &bytes)?;
         let response = ModelContent::Text("generated response".into());
+        let mut count = Count(0);
         let borrowed = acyclic_test_support::measure(|| {
-            call.write(std::io::sink(), "2026-11-02T00:00:00Z", &response, None)
+            call.write(&mut count, "2026-11-02T00:00:00Z", &response, None)
                 .expect("borrowed serialization");
         });
         assert_eq!(borrowed.count_total, 0);
+        if messages == 1 {
+            single_result_bytes = count.0;
+        }
+        assert!(
+            count.0 <= single_result_bytes * messages,
+            "the original group is not written once per result"
+        );
         // A whole-file buffer is the negative control, not an exporter path.
         let buffered = acyclic_test_support::measure(|| {
             let mut output = Vec::new();

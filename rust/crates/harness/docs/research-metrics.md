@@ -247,10 +247,14 @@ and optional committed `ModelUsageRecord` to `Call::write`. Foreign usage is
 refused. Scope, agent, stream, operation and sequence remain the observation
 identity; the replay key groups equal content across observations.
 
-Replay requests, embedded harness-owned JSON and recorded model events use the
-same complete-value decoder as admitted requests. They do not add serde's
-unrelated default nesting ceiling. Opaque tool JSON still keeps its existing
-portable record contract; malformed JSON and trailing data are refused.
+Replay requests and recorded model events use the same complete-value decoder
+as admitted requests, without serde's unrelated default nesting ceiling.
+JSON embedded in harness-owned text first passes the saved-record codec's
+existing depth admission. Encoded strings share that allowance; they cannot
+restart it. Deeper or malformed embedded content remains opaque text, with UUID
+normalization preserved, rather than rejecting the request or recursively
+constructing an unbounded tree. Opaque tool JSON keeps its portable record
+contract; malformed outer JSON and trailing data are refused.
 
 Prefer `Call::settlement(journal, terminal_record)` when the original terminal
 record is available. It checks the original operation, step, purpose and source
@@ -270,6 +274,11 @@ unknown and remains an empty list.
 Readable text, reasoning and tool pairs use Inspect's native fields. Files,
 notices, configuration, native continuity and structured projections remain in
 message metadata; no media is fetched and no substitute text is invented.
+Grouped tool results stream into separate Inspect messages in original order.
+Their complete original group appears once, on the first result; each result
+retains its original message and part index. A refused call with non-object
+arguments has an empty Inspect display object and an explicit `parse_error`;
+the unchanged original arguments remain in the assistant message metadata.
 Usage remains the original record in sample metadata, with absent measurements
 preserved. Inspect creation time is supplied by the exporting caller; execution
 timestamps and normalized token totals remain unknown. No score is inferred.
