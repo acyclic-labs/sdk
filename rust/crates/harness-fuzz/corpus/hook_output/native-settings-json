@@ -1,0 +1,1 @@
+{"hooks":{"PreToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"guard","args":["one argument"],"onFailure":"block"}]}],"Stop":[{"hooks":[{"type":"command","command":"guard"}]}]}}

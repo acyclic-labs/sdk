@@ -4,6 +4,8 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
+/// Language-independent source/model coverage and reachability checks.
+pub mod correspondence;
 pub mod differential;
 mod fixtures;
 pub use fixtures::source_path;

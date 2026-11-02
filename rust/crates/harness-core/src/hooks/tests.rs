@@ -1078,11 +1078,9 @@ exit 2
                 .ok_or_else(|| Error::Invalid("fixture parent missing".into()))?,
         )
         .map_err(process_error)?;
-        std::fs::write(
-            path,
-            serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?,
-        )
-        .map_err(process_error)
+        let bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
+        crate::native_settings::codec_fuzz::check(&bytes)?;
+        std::fs::write(path, bytes).map_err(process_error)
     };
     write(
         &home,
@@ -1090,6 +1088,15 @@ exit 2
         &json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.name,"hooks":[hook]}]}}),
     )?;
     let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
+    // Configuration input, not a fabricated command-output fixture: the second
+    // selector must refuse the whole import before publishing the first group.
+    crate::native_settings::codec_fuzz::check(
+        &serde_json::to_vec(&json!({"hooks":{"PreToolUse":[
+            {"matcher":"shell","hooks":[hook]},
+            {"matcher":"[","hooks":[hook]}
+        ]}}))
+        .map_err(|error| Error::Invalid(error.to_string()))?,
+    )?;
     for path in [
         ".claude/settings.json",
         ".claude/settings.local.json",
@@ -1097,9 +1104,11 @@ exit 2
     ] {
         write(&workspace, path, &project)?;
     }
-    std::fs::write(workspace.join(".codex/config.toml"), format!(
+    let toml = format!(
         "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
-    )).map_err(process_error)?;
+    );
+    crate::native_settings::codec_fuzz::check(toml.as_bytes())?;
+    std::fs::write(workspace.join(".codex/config.toml"), toml).map_err(process_error)?;
     let registry = registry()?;
     let hooks = NativeSettings::load(
         SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex")),
