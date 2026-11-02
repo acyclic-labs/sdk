@@ -661,6 +661,15 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             }
         )
     }
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        Self::select(&self.observation.lock().await.0, machine)?;
+        self.journal.follow_events(after).await
+    }
+
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         acyclic_observability::async_operation!(
             "acyclic.machines.recover",

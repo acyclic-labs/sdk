@@ -5,7 +5,7 @@ Streams. Its `source` identifies the parent or checkpoint, and `inherited`
 declares the fork fidelity. Wire and JavaScript projections retain their
 existing source/fidelity fields.
 
-Machines protocol 1.5 is shape-free. Customers choose an immutable image and
+Machines protocol 1.6 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
@@ -76,6 +76,17 @@ cargo add acyclic-machines
 ```
 
 `Machines` wraps a `MachinesProvider`; the crate also includes a gRPC client. Qualify an immutable image digest before creation and retain idempotency keys for mutation recovery. Inspect an operation when its outcome is indeterminate rather than assuming failure.
+
+`Machine::follow_events(after_sequence)` and `MachinesProvider::follow_events`
+replay events strictly after the original sequence cursor, then wait on the same
+producer for live events. `None` starts at sequence one. Retain the last delivered
+sequence to resume without replaying earlier history. A cursor beyond the retained
+tail is invalid; a cursor already after `Destroyed` is refused. Delivery of
+`Destroyed` ends the stream. Losing the producer or remote stream before that
+terminal returns `Unavailable`, never a successful end or a polling restart.
+Dropping interest does not mutate the Machine. The gRPC projection is the single
+server-streaming `FollowEvents` RPC; the native projection follows the original
+committed Streams journal. Each delivery copies or decodes only its selected event.
 
 Once a gRPC mutation is admitted, its completion wait consumes the original
 operation watch. Its producer publishes terminal success, failure or cancellation;

@@ -427,6 +427,13 @@ message EventPage {
   repeated MachineEvent events = 1;
   uint64 next_sequence = 2;
 }
+// Exclusive cursor. Events are replayed without gaps, then delivered live.
+// Destroyed ends the stream; producer loss before it is UNAVAILABLE.
+message FollowEventsRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 after_sequence = 3;
+}
 message UsageRequest {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
@@ -627,6 +634,7 @@ service MachinesService {
   rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { action: "machines/read-checkpoint" extractor: "machines.read-checkpoint" }; }
   rpc ListMachines(ListMachinesRequest) returns (MachinePage) { option (acyclic.validation.v1.auth) = { action: "machines/list" extractor: "machines.list-visible" }; }
   rpc Events(EventsRequest) returns (EventPage) { option (acyclic.validation.v1.auth) = { action: "machines/follow" extractor: "machines.follow" }; }
+  rpc FollowEvents(FollowEventsRequest) returns (stream MachineEvent) { option (acyclic.validation.v1.auth) = { action: "machines/follow" extractor: "machines.follow" }; }
   rpc Usage(UsageRequest) returns (UsageReceipt) { option (acyclic.validation.v1.auth) = { action: "machines/read-usage" extractor: "machines.read-usage" }; }
   rpc Cancel(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/cancel" extractor: "machines.cancel-operation" }; }
   rpc InspectOperation(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read-operation" }; }

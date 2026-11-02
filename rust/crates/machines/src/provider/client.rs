@@ -55,6 +55,16 @@ impl Machine {
     pub async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError> {
         self.machines.provider.exec(self.id, command).await
     }
+    /// Follows original events after an exclusive cursor, through Destroyed.
+    pub async fn follow_events(
+        &self,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        self.machines
+            .provider
+            .follow_events(self.id, after_sequence)
+            .await
+    }
     /// Enrolls a selected volume and settles its original operation watch.
     pub async fn attach_volume(
         &self,

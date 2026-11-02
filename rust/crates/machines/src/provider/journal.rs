@@ -16,6 +16,8 @@ pub(crate) struct Journal {
     // At most one physical transition runs under the incarnation's admission
     // lock. This is its live producer, never an operation/result registry.
     producer: Mutex<Option<(OperationId, tokio::sync::watch::Receiver<bool>)>>,
+    // Followers borrow lifetime, never retain the incarnation's producer.
+    lifetime: tokio::sync::watch::Sender<()>,
 }
 
 pub(crate) enum Admission {
@@ -40,6 +42,7 @@ impl Journal {
             root,
             machine,
             producer: Mutex::new(None),
+            lifetime: tokio::sync::watch::Sender::new(()),
         }
     }
 
@@ -346,6 +349,47 @@ impl Journal {
             .boxed())
     }
 
+    pub(crate) async fn follow_events(
+        &self,
+        after: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        let machine = self.machine;
+        let path = self.path(format_args!("machines/{machine}"))?;
+        let head = self.head(path.clone()).await?;
+        let from = after.unwrap_or(0);
+        if from > head.tail {
+            return Err(ProviderError::Invalid(
+                "Machine event cursor exceeds its tail".into(),
+            ));
+        }
+        if from == head.tail && decode::<EventObservation>(head)?.state == MachineState::Destroyed {
+            return Err(ProviderError::Conflict(
+                "Machine event cursor is already terminal".into(),
+            ));
+        }
+        let mut lifetime = self.lifetime.subscribe();
+        let request = acyclic_stream::FollowRequest::new(path, from);
+        let records = tokio::select! {
+            records = self.streams.follow(request) => records.map_err(storage)?,
+            _ = lifetime.changed() => return Err(ProviderError::Unavailable),
+        };
+        let records = acyclic_stream::records_only(records);
+        Ok(super::events::checked(
+            machine,
+            after,
+            (records, lifetime),
+            move |(mut records, mut lifetime)| async move {
+                let record = tokio::select! {
+                    biased;
+                    record = records.next() => record.ok_or(ProviderError::Unavailable)?.map_err(storage)?,
+                    _ = lifetime.changed() => return Err(ProviderError::Unavailable),
+                };
+                let event = machine_event(machine, record)?;
+                Ok(Some((event, (records, lifetime))))
+            },
+        ))
+    }
+
     pub(crate) async fn events(
         &self,
         after: Option<u64>,
@@ -379,13 +423,7 @@ impl Journal {
         let mut events = Vec::new();
         while let Some(record) = records.next().await {
             let record = record.map_err(storage)?;
-            let value: MachineObservation = decode_bytes(record.value.as_ref())?;
-            events.push(MachineEvent {
-                machine: self.machine,
-                sequence: record.sequence + 1,
-                observed_at_unix_ms: value.changed_at_unix_ms,
-                fact: EventFact::State(value.state),
-            });
+            events.push(machine_event(self.machine, record)?);
         }
         let next_sequence = events
             .last()
@@ -399,6 +437,37 @@ impl Journal {
 
 #[cfg(test)]
 mod tests;
+
+// Read-only projection of the original versioned observation envelope.
+#[derive(Deserialize)]
+struct EventObservation {
+    id: MachineId,
+    state: MachineState,
+    changed_at_unix_ms: u64,
+}
+
+fn machine_event(
+    machine: MachineId,
+    record: acyclic_stream::Record,
+) -> Result<MachineEvent, ProviderError> {
+    // The journal owns the full contract. Event readers need only its state
+    // projection and must not allocate a second contract or endpoint vector.
+    let value: EventObservation = decode_bytes(record.value.as_ref())?;
+    if value.id != machine {
+        return Err(ProviderError::Rejected(
+            "Machine event journal identity differs".into(),
+        ));
+    }
+    Ok(MachineEvent {
+        machine,
+        sequence: record
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| ProviderError::Rejected("Machine event sequence exhausted".into()))?,
+        observed_at_unix_ms: value.changed_at_unix_ms,
+        fact: EventFact::State(value.state),
+    })
+}
 
 async fn producer_lost(producer: &mut tokio::sync::watch::Receiver<bool>) {
     let published = producer.wait_for(|published| *published).await.is_ok();

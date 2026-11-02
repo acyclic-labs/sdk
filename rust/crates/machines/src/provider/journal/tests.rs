@@ -64,6 +64,91 @@ impl StreamProvider for HeldHead {
 }
 
 #[tokio::test]
+async fn event_follow_uses_one_original_subscription_across_admission_and_owner_loss()
+-> Result<(), Box<dyn std::error::Error>> {
+    let MutationOutcome::Created(mut machine) = SimulatedMachines::default()
+        .create(CreateMachine::new(
+            IdempotencyKey::new(),
+            Some(Image::custom([7; 32])?),
+            [8; 32],
+        ))
+        .await?
+    else {
+        panic!("original create observation");
+    };
+    let streams = Arc::new(HeldHead::default());
+    let journal = Journal::new(
+        streams.clone(),
+        StreamPath::new(format!("machine-tests/{}", machine.id))?,
+        machine.id,
+    );
+    journal.enroll(machine.clone()).await?;
+    let heads = streams.heads.load(Ordering::Relaxed);
+    let (release, released) = tokio::sync::oneshot::channel();
+    *streams.release.lock().unwrap() = Some(released);
+    let mut opening = Box::pin(journal.follow_events(Some(1)));
+    assert!(futures::poll!(&mut opening).is_pending());
+    assert_eq!(streams.heads.load(Ordering::Relaxed), heads + 1);
+
+    // Publish through the original commit owner between captured head and follow.
+    let key = IdempotencyKey::new();
+    machine.state = MachineState::Destroying;
+    let Admission::Original(publication) = journal
+        .begin(key, [9; 32], Some(&machine), || Ok(|| {}))
+        .await?
+    else {
+        panic!("original lifecycle admission");
+    };
+    machine.state = MachineState::Destroyed;
+    journal
+        .finish(
+            key,
+            [9; 32],
+            publication,
+            &machine,
+            MutationOutcome::MachineDestroyed(machine.id),
+        )
+        .await?;
+    release.send(()).unwrap();
+    let mut events = opening.await?;
+    for (sequence, state) in [(2, MachineState::Destroying), (3, MachineState::Destroyed)] {
+        let event = events.next().await.unwrap()?;
+        assert_eq!(event.machine, machine.id);
+        assert_eq!(event.sequence, sequence);
+        assert_eq!(event.fact, EventFact::State(state));
+    }
+    assert!(events.next().await.is_none());
+    assert_eq!(streams.heads.load(Ordering::Relaxed), heads + 3);
+    assert_eq!(streams.follows.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        journal.follow_events(Some(3)).await,
+        Err(ProviderError::Conflict(_))
+    ));
+    assert!(matches!(
+        journal.follow_events(Some(4)).await,
+        Err(ProviderError::Invalid(_))
+    ));
+
+    machine.id = MachineId::new();
+    machine.state = MachineState::Running;
+    let original = Journal::new(
+        streams.clone(),
+        StreamPath::new(format!("machine-tests/{}", machine.id))?,
+        machine.id,
+    );
+    original.enroll(machine.clone()).await?;
+    let mut lost = original.follow_events(Some(1)).await?;
+    assert!(futures::poll!(lost.next()).is_pending());
+    drop(original);
+    assert!(matches!(
+        futures::poll!(lost.next()),
+        std::task::Poll::Ready(Some(Err(ProviderError::Unavailable)))
+    ));
+    assert!(lost.next().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn held_watch_head_keeps_lifecycle_admission_and_original_terminal_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let MutationOutcome::Created(mut machine) = SimulatedMachines::default()

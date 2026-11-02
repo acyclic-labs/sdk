@@ -616,7 +616,8 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let limit = usize::try_from(limit)
                     .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?;
-                let events = state.events.get(&machine).map_or(&[][..], Vec::as_slice);
+                let retained = state.events.get(&machine).map(|events| events.borrow());
+                let events = retained.as_deref().map_or(&[][..], Vec::as_slice);
                 // Events are retained without gaps, and sequence one is at offset zero.
                 // The exclusive sequence cursor therefore names the next offset directly.
                 let start = usize::try_from(after_sequence.unwrap_or_default())
@@ -642,6 +643,57 @@ impl MachinesProvider for SimulatedMachines {
             }
         )
     }
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        let state = self.state.lock().await;
+        let events = state
+            .events
+            .get(&machine)
+            .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        let from = usize::try_from(after_sequence.unwrap_or(0))
+            .map_err(|_| ProviderError::Invalid("event cursor exceeds retained events".into()))?;
+        {
+            let values = events.borrow();
+            if from > values.len() {
+                return Err(ProviderError::Invalid(
+                    "event cursor exceeds retained events".into(),
+                ));
+            }
+            if from == values.len()
+                && values
+                    .last()
+                    .is_some_and(|event| event.fact == EventFact::State(MachineState::Destroyed))
+            {
+                return Err(ProviderError::Conflict(
+                    "event cursor is already after Destroyed".into(),
+                ));
+            }
+        }
+        let receiver = events.subscribe();
+        drop(state);
+        Ok(crate::provider::events::checked(
+            machine,
+            after_sequence,
+            (receiver, from),
+            |(mut receiver, mut from)| async move {
+                loop {
+                    let event = receiver.borrow_and_update().get(from).cloned();
+                    if let Some(event) = event {
+                        from += 1;
+                        return Ok(Some((event, (receiver, from))));
+                    }
+                    receiver
+                        .changed()
+                        .await
+                        .map_err(|_| ProviderError::Unavailable)?;
+                }
+            },
+        ))
+    }
+
     async fn usage(
         &self,
         machine: MachineId,

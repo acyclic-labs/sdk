@@ -17,6 +17,7 @@ fn two() -> NonZeroU32 {
     NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN)
 }
 
+mod events;
 mod forks;
 mod operations;
 mod replay;
