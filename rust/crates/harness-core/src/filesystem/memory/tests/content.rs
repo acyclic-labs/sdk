@@ -3,7 +3,11 @@ use crate::IdempotencyKey;
 
 #[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 128 * 1024).await?;
+    // Hosted agents admit the portable file ceiling, which exceeds the
+    // volume's staging capacity even when the actual artifact is small.
+    let storage =
+        MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
+            .await?;
     let operation = OperationId::new();
     let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
     let mut source = futures::io::Cursor::new(bytes.as_slice());
@@ -64,6 +68,42 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
         Err(Error::Conflict(_))
     ));
     assert_eq!(storage.read(&original).await?.as_ref(), bytes.as_slice());
+    // Intersecting staging capacity must not widen a smaller publisher credit.
+    let limited = FilesystemContentPublisher::new(
+        storage.host.clone(),
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        4,
+        None,
+    )?;
+    let refused = OperationId::new();
+    let mut oversized = futures::io::Cursor::new(b"12345".as_slice());
+    assert!(
+        limited
+            .stage_stream_once(
+                refused,
+                "over-credit",
+                &mut oversized,
+                "text/plain",
+                "over-credit",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await
+            .is_err()
+    );
+    assert!(
+        limited
+            .observe_staged_once(
+                refused,
+                None,
+                4,
+                crate::conversation::ContentAccess::default()
+            )?
+            .await?
+            .0
+            .is_none()
+    );
     Ok(())
 }
 
