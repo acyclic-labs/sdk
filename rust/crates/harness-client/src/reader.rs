@@ -1385,7 +1385,14 @@ impl Reader {
         }
     }
 
-    fn fail(&mut self, failure: Failure, now: u64) {
+    fn fail(&mut self, failure: Failure, now: u64) -> bool {
+        let overloaded = match failure {
+            Failure::Unavailable => false,
+            Failure::Overloaded => true,
+            Failure::Refused | Failure::Denied | Failure::RetentionLost | Failure::Changed => {
+                return false;
+            }
+        };
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
         let shift = (self.failures - 1).min(20);
@@ -1397,9 +1404,10 @@ impl Reader {
         // Deterministic jitter spreads reconnecting clients apart.
         let jitter = self.next_id.wrapping_mul(0x9E37_79B9) % (backoff / 4 + 1);
         self.retry_at = now.saturating_add(backoff + jitter);
-        if failure == Failure::Overloaded {
+        if overloaded {
             self.prefetch_paused_until = now.saturating_add(backoff.saturating_mul(4));
         }
+        true
     }
 
     fn recovered(&mut self) -> bool {
@@ -1636,11 +1644,13 @@ impl Reader {
         self.readable() && now >= self.retry_at
     }
 
-    /// A live follow failed to open or ended: back off like a read.
+    /// A live follow failed to open or ended: only transient failures back off,
+    /// as with finite reads. Definite failures retain their source disposition.
     pub fn follow_failed(&mut self, failure: Failure, now: u64) {
-        self.generation += 1;
-        self.follow_backoff = true;
-        self.fail(failure, now);
+        if self.fail(failure, now) {
+            self.generation += 1;
+            self.follow_backoff = true;
+        }
     }
 
     /// A wanted follow opened: it no longer waits on the retry deadline.

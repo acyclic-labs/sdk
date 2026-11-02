@@ -752,7 +752,7 @@ mod tests {
 
     #[test]
     fn definite_read_refusal_is_visible_without_another_request() {
-        use super::super::{Priority, ReadIssue, ReaderPolicy, Want};
+        use super::super::{Connectivity, Priority, ReadIssue, ReaderPolicy, Want};
 
         futures::executor::block_on(async {
             let provider = Arc::new(MemoryStream::default());
@@ -790,6 +790,8 @@ mod tests {
                 reader.issue(&path).unwrap(),
                 reader.issues.get(&path).unwrap()
             ));
+            assert_eq!(reader.connectivity(), Connectivity::Online);
+            assert_eq!(reader.next_deadline(), None);
 
             #[cfg(any(feature = "agents", feature = "wasm"))]
             {
@@ -809,6 +811,38 @@ mod tests {
                 assert!(std::ptr::eq(latest_issue, original_issue));
                 assert!(std::ptr::eq(page_issue, original_issue));
             }
+
+            let available = StreamPath::new("available/original-source").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: available.clone(),
+                    records: vec![b"unrelated committed row".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"publish-available-source".to_vec())
+                        .unwrap(),
+                })
+                .await
+                .unwrap();
+            reader.plan([path.clone(), available.clone()].map(|stream| {
+                (
+                    Want::Range {
+                        stream,
+                        from: 0,
+                        to: 1,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(
+                reader.cache().record(&available, 0).unwrap().as_ref(),
+                b"unrelated committed row",
+                "a definite refusal cannot delay another stream"
+            );
+            assert_eq!(
+                reader.issue(&path),
+                Some(&ReadIssue::Refused(StreamError::NotFound))
+            );
 
             provider
                 .append(AppendRequest {
