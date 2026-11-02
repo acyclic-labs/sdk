@@ -71,7 +71,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
         assert_eq!(work.allocations.live_bytes(), 0);
     }
     let mut work = AuthorityWork::new(budget, &cancellation);
-    let mut earlier = work.vec_owned::<u8>(31)?;
+    let earlier = work.vec_owned::<u8>(31)?;
     let read = store.read(object_id, bytes.len() as u64, &mut work).await?;
     assert_eq!(read.bytes.as_ref(), bytes);
     assert_eq!(work.allocations.live_bytes(), 31 + bytes.len() as u64);
