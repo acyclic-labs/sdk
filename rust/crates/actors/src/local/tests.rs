@@ -747,14 +747,19 @@ async fn place<P: StreamProvider + ?Sized>(
     store: &Store<P>,
     address: &ActorReference,
 ) -> Result<(), Error> {
-    let mut prepared = PreparedPublish::foreign(key("create")?);
+    let path = store.path(address)?;
+    let mut prepared = PreparedPublish::foreign(key(&format!("create/{path}"))?);
     for effect in store.create(address, inbox(address)?, None)? {
         prepared.join(effect)?;
     }
     let created = store.provider().commit(prepared.into_request()?).await?;
     PreparedPublish::settle(&created)?;
     store
-        .claim(&store.load(address).await?, 1, key("place")?)
+        .claim(
+            &store.load(address).await?,
+            1,
+            key(&format!("place/{path}"))?,
+        )
         .await
         .map(|_| ())
 }
