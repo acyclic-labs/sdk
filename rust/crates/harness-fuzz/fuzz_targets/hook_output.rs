@@ -13,8 +13,8 @@ use acyclic_harness::{TaskId, tool};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
-// Include the production pure decoder and normalized types. No native runner,
-// model provider, process, or public testing API is needed by this target.
+// Keep the production decoder coverage alongside the shared chain oracle.
+// Neither path invokes a native runner, model provider or external process.
 #[path = "../../harness-core/src/hooks/spec.rs"]
 mod spec;
 use spec::{HookEvent, HookFailure, HookSpec};
