@@ -27,6 +27,16 @@ cargo run --locked --example capture
 cargo run --locked --example replay
 ```
 
+Refresh only the current agent record and checkpoint writers with:
+
+```sh
+cargo run --locked --example capture -- --only-agents --extend-goldens
+```
+
+Agent capture names include the shared record version. Previous captures and
+their provenance stay unchanged; waiting-status and checkpoint seeds retain
+both a retained action binding and an explicit absent binding for external hosts.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

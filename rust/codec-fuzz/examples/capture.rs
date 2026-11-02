@@ -174,6 +174,16 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-agents") {
+        let prefix = agent_prefix();
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(&prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_agents(&mut manifest)?;
+        return finish(&manifest, &prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-objects") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
         for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
@@ -337,17 +347,19 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     capture_semantic(&mut manifest)?;
     // Preserve historical bytes without reintroducing obsolete writers.
+    let current_agents = agent_prefix();
     for line in std::fs::read_to_string("corpus/SOURCES.tsv")?
         .lines()
         .filter(|line| {
-            matches!(
-                line.split('\t').next(),
-                Some(
-                    "actor_codecs/timer"
-                        | "object_persistence/head-live"
-                        | "object_persistence/head-dying"
+            (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
+                || matches!(
+                    line.split('\t').next(),
+                    Some(
+                        "actor_codecs/timer"
+                            | "object_persistence/head-live"
+                            | "object_persistence/head-dying"
+                    )
                 )
-            )
         })
     {
         manifest.push_str(line);
@@ -360,15 +372,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "conversation::encode_attachment_manifest from an empty admitted attachment list",
         &mut manifest,
     )?;
-    for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
-        save(
-            "harness_codecs",
-            name,
-            &bytes,
-            "harness-core canonical agent record, effect and checkpoint encoders",
-            &mut manifest,
-        )?;
-    }
+    capture_agents(&mut manifest)?;
     for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
         save(
             "harness_codecs",
@@ -738,6 +742,29 @@ fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
             &name,
             &bytes,
             "Manifest::encode and complete GenerationId::to_bytes with explicit mutation/flush/compaction, fault, original-site selector and torn-prefix configuration; original LocalMedium operation and Schedule oracle",
+            manifest,
+        )?;
+    }
+    Ok(())
+}
+
+fn agent_prefix() -> String {
+    format!(
+        "harness_codecs/agent-v{}-",
+        acyclic_harness_core::agent::RECORD_VERSION
+    )
+}
+
+fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
+        save(
+            "harness_codecs",
+            &format!(
+                "agent-v{}-{name}",
+                acyclic_harness_core::agent::RECORD_VERSION
+            ),
+            &bytes,
+            "harness-core canonical agent record, effect and checkpoint encoders",
             manifest,
         )?;
     }
