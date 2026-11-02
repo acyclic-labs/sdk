@@ -1,4 +1,5 @@
 use crate::{StreamError, StreamPath};
+use std::borrow::Cow;
 
 /// Encodes a stream name as an injective canonical product resource.
 /// Callers obtain the path from the owning Stream parser before admission.
@@ -31,11 +32,7 @@ pub fn stream_resource_matches(resource: &str, path: &StreamPath) -> bool {
 pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
     envelope(resource)?;
     if let Some(encoded) = resource.strip_prefix("streams:/") {
-        if encoded.contains('%') {
-            StreamPath::validate(&decode_stream_name(encoded)?)?;
-        } else {
-            StreamPath::validate(encoded)?;
-        }
+        StreamPath::validate(&decode_stream_name(encoded)?)?;
     }
     Ok(())
 }
@@ -59,7 +56,10 @@ pub fn stream_path(resource: &str) -> Result<StreamPath, StreamError> {
     StreamPath::new(decode_stream_name(encoded)?)
 }
 
-fn decode_stream_name(encoded: &str) -> Result<String, StreamError> {
+fn decode_stream_name(encoded: &str) -> Result<Cow<'_, str>, StreamError> {
+    if !encoded.contains('%') {
+        return Ok(Cow::Borrowed(encoded));
+    }
     let mut path = Vec::new();
     for (index, component) in encoded.split('/').enumerate() {
         if index != 0 {
@@ -74,7 +74,9 @@ fn decode_stream_name(encoded: &str) -> Result<String, StreamError> {
             path.push(byte);
         }
     }
-    String::from_utf8(path).map_err(|_| StreamError::InvalidPath)
+    String::from_utf8(path)
+        .map(Cow::Owned)
+        .map_err(|_| StreamError::InvalidPath)
 }
 
 #[cfg(test)]
@@ -107,6 +109,7 @@ mod tests {
     -> Result<(), StreamError> {
         for path in [
             "events",
+            "reader/inherited-conversation",
             ".acyclic/fs/volume",
             "caf%C3%A9/release.v1",
             "literal%2F/key",
@@ -155,6 +158,9 @@ mod tests {
                         owned.count_total, borrowed.count_total
                     );
                 } else {
+                    // The canonical name already is the decoded name: only
+                    // the requested final StreamPath owner may allocate.
+                    assert_eq!(direct.count_total, 1);
                     let work = acyclic_test_support::measure(|| {
                         validate_resource(std::hint::black_box(&resource)).unwrap();
                     });
@@ -208,6 +214,14 @@ mod tests {
             };
             assert_eq!(validate_resource(resource), validated);
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
+            #[cfg(not(target_arch = "wasm32"))]
+            if !resource.contains('%') {
+                let work = acyclic_test_support::measure(|| {
+                    let _ = stream_path(std::hint::black_box(resource));
+                    let _ = validate_resource(std::hint::black_box(resource));
+                });
+                assert_eq!(work.count_total, 0);
+            }
             for path in ["events", "a/b", "a.b", "caf%C3%A9", "fs/volume"] {
                 assert!(!stream_resource_matches(
                     resource,
