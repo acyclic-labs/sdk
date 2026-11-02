@@ -56,6 +56,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     let operation = OperationId::new();
     let executor = base.clone().with_task_context(&original, operation)?;
     let input = TurnInput {
+        max_steps: None,
         operation_id: operation,
         input: ModelContent::Text("input".into()),
         selected_context: None,
@@ -217,6 +218,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
         )?;
         let journal = Journal::default();
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::from_bytes([28; 16]),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
@@ -383,6 +385,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         allowed()?,
     )?;
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("ordered batch".into()),
         selected_context: None,
@@ -569,6 +572,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([1; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
@@ -777,6 +781,7 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([1; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
@@ -824,6 +829,7 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([77; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
@@ -888,6 +894,7 @@ async fn malformed_tool_arguments_return_to_the_model_without_dispatch() -> Resu
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([79; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
@@ -942,6 +949,7 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([80; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
@@ -1132,6 +1140,7 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
         )?;
         let journal = Journal::default();
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::from_bytes([78; 16]),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
@@ -1196,6 +1205,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
             .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_task_context(&original, operation)?;
             let input = TurnInput {
+                max_steps: None,
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,

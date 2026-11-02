@@ -765,6 +765,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .executor
                 .execute_progress(
                     ExecutorInput {
+                        max_steps: None,
                         operation_id: turn,
                         input: open.input.clone().unwrap_or(content),
                         selected_context: open.selected.clone(),

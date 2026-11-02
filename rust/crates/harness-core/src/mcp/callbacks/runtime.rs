@@ -144,6 +144,7 @@ impl McpRuntimeCallbacks {
             .model_step(
                 self.journal.as_ref(),
                 &TurnInput {
+                    max_steps: None,
                     operation_id: operation,
                     input,
                     selected_context: None,

@@ -74,57 +74,73 @@ impl ModelProvider for ContinuingModel {
 async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_steps() -> Result<()>
 {
     for turns in [1, 16, 17, 100, 1_000] {
-        let provider = Arc::new(ContinuingModel {
-            turns,
-            warm: true,
-            seen: AtomicUsize::new(0),
-        });
-        let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let executor = uncompacted_executor(
-            Model::new("test".into(), "continuation".into(), "1".into())?,
-            provider.clone(),
-            ContextPipeline::default(),
-            echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
-        )
-        .with_tool_authority(
-            RuntimeScope::new(
-                Capabilities::new(["model:generate", "tool:call:example.echo"]),
-                Limits::default(),
-            )?,
-            allowed()?,
-        )?;
-        let input = TurnInput {
-            operation_id: OperationId::new(),
-            input: ModelContent::Text("input".into()),
-            selected_context: None,
+        let budgets = if turns == 17 {
+            vec![None, Some(1), Some(turns + 1)]
+        } else {
+            vec![None]
         };
-        let issuer = crate::core::AuthorityRoot::new(
-            "continuation",
-            [89; 32],
-            crate::core::Authority {
-                kind: crate::core::AggregateKind::Conversation,
-                id: crate::ConversationId::from_bytes([89; 16]).to_string(),
-            },
-        );
-        let journal = Journal {
-            8: Some(issuer.verifier(&mut None)?),
-            ..Default::default()
-        };
-        let result = StockExecution::ordinary(&executor)
-            .execute_progress(&input, &journal)
-            .await;
-        assert!(
-            result.is_ok(),
-            "stock execution failed: {:?}",
-            result.as_ref().err()
-        );
-        let ExecutionProgress::Ready(output) = result? else {
-            return Err(Error::Invalid("scripted stock turn did not settle".into()));
-        };
-        assert_eq!(output.text, "done");
-        assert_eq!(output.steps, turns + 1);
-        assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
-        assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
+        for max_steps in budgets {
+            let provider = Arc::new(ContinuingModel {
+                turns,
+                warm: true,
+                seen: AtomicUsize::new(0),
+            });
+            let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let executor = uncompacted_executor(
+                Model::new("test".into(), "continuation".into(), "1".into())?,
+                provider.clone(),
+                ContextPipeline::default(),
+                echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                allowed()?,
+            )?;
+            let input = TurnInput {
+                max_steps,
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("input".into()),
+                selected_context: None,
+            };
+            let issuer = crate::core::AuthorityRoot::new(
+                "continuation",
+                [89; 32],
+                crate::core::Authority {
+                    kind: crate::core::AggregateKind::Conversation,
+                    id: crate::ConversationId::from_bytes([89; 16]).to_string(),
+                },
+            );
+            let journal = Journal {
+                8: Some(issuer.verifier(&mut None)?),
+                ..Default::default()
+            };
+            let result = StockExecution::ordinary(&executor)
+                .execute_progress(&input, &journal)
+                .await;
+            if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
+                assert!(
+                    matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
+                );
+                assert_eq!(provider.seen.load(Ordering::SeqCst), maximum as usize);
+                assert_eq!(tool.0.load(Ordering::SeqCst), maximum as usize);
+                continue;
+            }
+            assert!(
+                result.is_ok(),
+                "stock execution failed: {:?}",
+                result.as_ref().err()
+            );
+            let ExecutionProgress::Ready(output) = result? else {
+                return Err(Error::Invalid("scripted stock turn did not settle".into()));
+            };
+            assert_eq!(output.text, "done");
+            assert_eq!(output.steps, turns + 1);
+            assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
+            assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
+        }
     }
     Ok(())
 }
@@ -143,6 +159,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     let journal = storage.journal();
     let journal = journal.as_ref();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("input".into()),
         selected_context: None,
@@ -242,6 +259,7 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
     .with_limits(limits);
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("input".into()),
         selected_context: None,

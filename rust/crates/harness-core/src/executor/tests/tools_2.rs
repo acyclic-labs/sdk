@@ -121,6 +121,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         )?;
         let journal = Journal::default();
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::from_bytes([29; 16]),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
@@ -292,6 +293,7 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             )?;
             let journal = Journal::default();
             let input = TurnInput {
+                max_steps: None,
                 operation_id: OperationId::from_bytes([41; 16]),
                 input: ModelContent::Text("hello".into()),
                 selected_context: None,
@@ -361,6 +363,7 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
         )
     };
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([83; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,

@@ -42,7 +42,7 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
         let mut steps = 0_u32;
-        loop {
+        while input.max_steps.is_none_or(|maximum| steps < maximum) {
             let step = steps;
             steps = steps.checked_add(1).ok_or_else(|| {
                 stock_boundary(
@@ -120,6 +120,11 @@ impl StockExecution<'_> {
             }
             append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
         }
+        Err(stock_boundary(
+            self.io,
+            crate::wire::ErrorCode::Conflict,
+            "executor step limit reached",
+        ))
     }
 
     pub(super) fn has_completed_message(&self, events: &[ModelEvent]) -> Result<bool> {

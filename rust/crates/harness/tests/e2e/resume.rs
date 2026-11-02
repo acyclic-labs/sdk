@@ -87,6 +87,7 @@ impl Identity {
 
     fn input(&self) -> TurnInput {
         TurnInput {
+            max_steps: None,
             operation_id: self.operation,
             input: ModelContent::Text(INSTRUCTION.into()),
             selected_context: None,

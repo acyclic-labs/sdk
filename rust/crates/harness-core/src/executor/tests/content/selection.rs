@@ -162,6 +162,7 @@ fn input(count: usize, text: &str) -> TurnInput {
         })
         .collect();
     TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([9; 16]),
         input: messages.last().unwrap().content.clone(),
         selected_context: Some(SelectedModelContext {

@@ -149,6 +149,7 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
             };
             let journal = Journal::default();
             let input = TurnInput {
+                max_steps: None,
                 operation_id: operation,
                 input: ModelContent::Text("rejected".into()),
                 selected_context: None,

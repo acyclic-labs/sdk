@@ -17,6 +17,7 @@ async fn private_cut() -> Result<CutFixture> {
         ToolRegistry::default(),
     );
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("current question".into()),
         selected_context: None,

@@ -78,6 +78,7 @@ pub(super) async fn review_model(
             .ok_or_else(|| Error::Invalid("approver identity is incomplete".into()))?,
     );
     let input = TurnInput {
+        max_steps: Some(1),
         operation_id: operation,
         input: ModelContent::Text(crate::executor::stock_string_copy(
             std::str::from_utf8(request.bytes()).map_err(storage)?,

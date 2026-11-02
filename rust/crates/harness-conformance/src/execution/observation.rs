@@ -78,6 +78,7 @@ where
     publish(&storage, &case.seed).await?;
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
+        max_steps: case.max_steps,
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.take_instruction()?),
         selected_context: None,

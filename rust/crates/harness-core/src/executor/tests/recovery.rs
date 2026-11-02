@@ -28,6 +28,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
         ..Limits::default()
     });
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("small input".into()),
         selected_context: None,
@@ -61,6 +62,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
         ToolRegistry::default(),
     );
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("current".into()),
         selected_context: None,
@@ -112,6 +114,7 @@ async fn operation_identity_rejects_changed_input() -> Result<()> {
     let _ = executor
         .execute(
             TurnInput {
+                max_steps: None,
                 operation_id,
                 input: ModelContent::Text("first".into()),
                 selected_context: None,
@@ -123,6 +126,7 @@ async fn operation_identity_rejects_changed_input() -> Result<()> {
         executor
             .execute(
                 TurnInput {
+                    max_steps: None,
                     operation_id,
                     input: ModelContent::Text("changed".into()),
                     selected_context: None,
@@ -157,6 +161,7 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
         OperationId::from_bytes([32; 16]),
     ];
     let input = |operation_id| TurnInput {
+        max_steps: None,
         operation_id,
         input: ModelContent::Text("same input".into()),
         selected_context: None,
@@ -348,6 +353,7 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
             ToolRegistry::default(),
         );
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::new(),
             input: ModelContent::Text("question".into()),
             selected_context: None,
@@ -381,6 +387,7 @@ async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
     );
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("start".into()),
         selected_context: None,
@@ -429,6 +436,7 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
     );
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("start".into()),
         selected_context: None,

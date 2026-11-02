@@ -130,6 +130,7 @@ async fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call(
             None => executor,
         };
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::new(),
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
@@ -195,6 +196,7 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         ToolRegistry::default(),
     );
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("current".into()),
         selected_context: None,
@@ -244,6 +246,7 @@ async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()>
         executor
             .execute(
                 TurnInput {
+                    max_steps: None,
                     operation_id: OperationId::new(),
                     input: ModelContent::Text("current".into()),
                     selected_context: None,
@@ -276,6 +279,7 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
             ToolRegistry::default(),
         );
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::new(),
             input: ModelContent::Text("current".into()),
             selected_context: None,
@@ -335,6 +339,7 @@ async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() 
         ToolRegistry::default(),
     );
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("c".repeat(5_000)),
         selected_context: None,
@@ -411,6 +416,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
             ToolRegistry::default(),
         );
         let input = TurnInput {
+            max_steps: None,
             operation_id,
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
@@ -648,6 +654,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     .with_max_output_tokens(1024)?;
     let journal = Journal::default();
     let parent = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("parent response".into()),
         selected_context: None,

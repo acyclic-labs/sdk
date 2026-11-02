@@ -43,6 +43,7 @@ async fn initialize(text: &[String; 3], invalid: bool) -> State {
     .with_max_output_tokens(512)
     .unwrap();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([3; 16]),
         input: ModelContent::Text(format!("current:{}", text[2])),
         selected_context: None,

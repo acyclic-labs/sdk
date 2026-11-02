@@ -106,6 +106,7 @@ async fn complete_batch_keeps_each_signature_through_execution_and_replay() -> R
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("user".into()),
         selected_context: None,

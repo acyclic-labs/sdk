@@ -243,6 +243,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         None,
     )?;
     let turn = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("inspect".into()),
         selected_context: None,

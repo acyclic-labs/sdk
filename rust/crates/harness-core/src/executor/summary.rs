@@ -53,6 +53,7 @@ impl StockExecution<'_> {
             content_admission: Default::default(),
         };
         let input = TurnInput {
+            max_steps: Some(1),
             operation_id,
             input: instruction,
             selected_context: None,

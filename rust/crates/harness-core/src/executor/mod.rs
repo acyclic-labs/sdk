@@ -176,6 +176,8 @@ pub struct TurnInput {
     /// Exact, separately recorded canonical history selection for this turn.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
+    /// Explicit caller budget; `None` continues until the original turn settles.
+    pub max_steps: Option<u32>,
 }
 
 impl TurnInput {
@@ -195,6 +197,7 @@ impl TurnInput {
         input.validate_turn_input(&mut None)?;
         selected_context.validate_for_input(&input, None)?;
         Ok(Self {
+            max_steps: None,
             operation_id,
             input,
             selected_context: Some(selected_context),

@@ -205,6 +205,7 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
         .with_tool_authority(scope, policy.clone())?
         .with_task_context(&task, operation)?;
         let input = TurnInput {
+            max_steps: None,
             operation_id: operation,
             input: ModelContent::Text("input".into()),
             selected_context: None,

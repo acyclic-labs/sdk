@@ -141,6 +141,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
             let guard = tracing::dispatcher::set_default(&dispatch);
             let operation = OperationId::from_bytes([64; 16]);
             let input = TurnInput {
+                max_steps: None,
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
@@ -378,6 +379,7 @@ async fn complete_failures_obey_pinned_render_limits() -> Result<()> {
         )?
         .with_limits(limits);
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::from_bytes([65; 16]),
             input: ModelContent::Text("input".into()),
             selected_context: None,

@@ -129,6 +129,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
     .with_max_output_tokens(8_192)?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: Some(1),
         operation_id: OperationId::new(),
         input: ModelContent::Text("exact ÃƒÂ©\0\r\n".into()),
         selected_context: None,
@@ -202,6 +203,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     )
     .with_inherited_prefix(root_file, journal.clone())?;
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([67; 16]),
         input: ModelContent::Text("child task; fresh scratch".into()),
         selected_context: None,
@@ -260,6 +262,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
     )?;
     let journal = Journal::default();
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::from_bytes([14; 16]),
         input: ModelContent::Text("bounded".into()),
         selected_context: None,
@@ -592,6 +595,7 @@ mod prepared_request_reuse_properties {
         .unwrap();
         let current = ModelContent::Text(format!("current:{}", text[2]));
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::new(),
             input: current.clone(),
             selected_context: None,
@@ -763,6 +767,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         .await?
         .with_inherited_prefix(prefix, journal.clone())?;
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::from_bytes([83; 16]),
             input: ModelContent::Text("child task".into()),
             selected_context: None,
