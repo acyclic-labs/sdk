@@ -50,6 +50,22 @@ const MACHINES: &str = "machines";
 pub const TARGET_STATUS: &str = "status";
 const ID_HEX: usize = 32;
 
+/// Decode an already validated canonical identity, without a second validation.
+fn id_bytes(text: &str) -> [u8; 16] {
+    let digit = |byte: u8| {
+        if byte <= b'9' {
+            byte - b'0'
+        } else {
+            byte - b'a' + 10
+        }
+    };
+    let mut bytes = [0; 16];
+    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+    }
+    bytes
+}
+
 /// 128-bit agent identity, canonical lowercase hex. It is also the actor id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -71,15 +87,7 @@ impl AgentId {
     /// The id's 16 bytes.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; 16] {
-        let mut bytes = [0; 16];
-        let digits = self.0.as_bytes().chunks_exact(2);
-        for (byte, pair) in bytes.iter_mut().zip(digits) {
-            let digit = |c: &u8| char::from(*c).to_digit(16).unwrap_or_default() as u8;
-            for c in pair {
-                *byte = (*byte << 4) | digit(c);
-            }
-        }
-        bytes
+        id_bytes(&self.0)
     }
 
     /// Derives a child id from the parent and the spawning intent, so a retried
@@ -205,12 +213,18 @@ impl AgentPath {
     /// The agent's own id, the last path segment.
     #[must_use]
     pub fn id(&self) -> AgentId {
-        AgentId(
-            self.text
-                .rsplit_once('/')
-                .map_or(self.text.as_str(), |(_, id)| id)
-                .to_owned(),
-        )
+        AgentId(self.id_text().to_owned())
+    }
+
+    /// This agent's original identity bytes, without allocation or ancestry
+    /// traversal. The canonical path was validated when it was constructed.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 16] {
+        id_bytes(self.id_text())
+    }
+
+    fn id_text(&self) -> &str {
+        &self.text[self.text.len() - ID_HEX..]
     }
 
     /// Nesting depth; zero for a root.
@@ -373,10 +387,14 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
+        let leaf = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
         for depth in [1, 8, MAX_DEPTH] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
-                descendant = descendant.child(&AgentId::from_bytes([3; 16]))?;
+                descendant = descendant.child(&AgentId::from_bytes(leaf))?;
             }
             let text = descendant.as_str().to_owned();
             let original = text.as_ptr();
@@ -396,6 +414,20 @@ mod tests {
             });
             assert_eq!(owned_ids.count_total, depth as u64 + 1);
             for calls in [1, 100, 1000] {
+                let expected = if depth == 1 { [2; 16] } else { leaf };
+                let fixed_identity = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert_eq!(black_box(&parsed).id_bytes(), expected);
+                    }
+                });
+                assert_eq!(fixed_identity.count_total, 0);
+                // Retain the former conversion as an allocation negative control.
+                let copied_identity = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert_eq!(black_box(&parsed).id().to_bytes(), expected);
+                    }
+                });
+                assert_eq!(copied_identity.count_total, calls);
                 let borrowed = acyclic_test_support::measure(|| {
                     for _ in 0..calls {
                         assert!(black_box(&root).contains(black_box(&parsed)));

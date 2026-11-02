@@ -611,7 +611,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             })?
             .volume
             .clone();
-        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id().to_bytes()) {
+        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id_bytes()) {
             return Err(Error::Unauthorized(
                 "device grant belongs to another agent".into(),
             ));

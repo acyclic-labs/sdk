@@ -430,7 +430,7 @@ impl DeviceRunner {
                         .encode(),
                 )
                 .as_bytes()
-            || run.grant.agent().map(|id| id.into_bytes()) != Some(command.agent.id().to_bytes())
+            || run.grant.agent().map(|id| id.into_bytes()) != Some(command.agent.id_bytes())
         {
             return Err("the command was sent to another connection of the device".into());
         }

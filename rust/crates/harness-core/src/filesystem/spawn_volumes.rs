@@ -97,9 +97,7 @@ fn spawned_volume(
 ) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
     let source = &binding.volume;
     let owner = match source.owner() {
-        VolumeOwner::Agent(_) => {
-            VolumeOwner::Agent(crate::AgentId::from_bytes(child.id().to_bytes()))
-        }
+        VolumeOwner::Agent(_) => VolumeOwner::Agent(crate::AgentId::from_bytes(child.id_bytes())),
         other => other.clone(),
     };
     let destination = VolumeRef::new(

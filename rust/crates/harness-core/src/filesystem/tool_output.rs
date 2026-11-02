@@ -47,7 +47,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
-        if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id().to_bytes())) {
+        if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id_bytes())) {
             return Err(Error::Unauthorized(
                 "an observation derives from the agent's own scope".into(),
             ));

@@ -38,7 +38,7 @@ impl DeviceLifecycle {
     }
 
     fn check(&self, agent: &AgentPath) -> std::result::Result<(), crate::agent::Error> {
-        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id().to_bytes()) {
+        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id_bytes()) {
             return Err(crate::agent::Error::Turn(Box::new(Error::Unauthorized(
                 "device lifecycle belongs to another agent".into(),
             ))));
