@@ -115,7 +115,10 @@ fn require_volume_operations(
     )?;
     for operation in operations {
         let prefix = operation.capability_prefix();
-        history.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+        history.codec_charge(
+            crate::executor::json::JsonCodecCharge::Inspect { items: 1 },
+            true,
+        )?;
         history.copy_bytes((prefix.len() + 64) as u64)?;
         if !crate::conversation::contains_content_label(grants, prefix, digest) {
             return Err(Error::FilesystemAccessConfiguration(surface));
