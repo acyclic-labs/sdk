@@ -51,6 +51,11 @@ export async function waitForHook(path, match, closed) {
   };
   watcher.on("change", scan);
   watcher.on("error", failed);
+  watcher.once("close", () => {
+    if (!settled) failed(Object.assign(new Error(
+      "hook watcher closed before its event; step=hook-watch; recovery=inspect the original watcher and rerun the selected case",
+    ), { code: "HOOK_WATCH_CLOSED" }));
+  });
   scan();
   closed.then(async result => {
     if (settled) return;

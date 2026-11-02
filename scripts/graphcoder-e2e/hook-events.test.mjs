@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { once } from "node:events";
 import fs from "node:fs";
 import { appendFile, open, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -22,7 +23,7 @@ test("hook subscription covers retained records, later appends and process exit"
       if (row.sequence === 1) { retainedVisits++; observed(); }
       return row.sequence === 2;
     }, open);
-    await retained;
+    await Promise.race([retained, next]);
     await appendFile(path, '{"sequence":');
     await appendFile(path, '2}\n');
     assert.deepEqual(await next, { sequence: 2 });
@@ -64,22 +65,51 @@ test("hook notifications share bounded reads before original exit", async t => {
     });
     syncBuiltinESMExports();
     observation = waitForHook(path, row => { visited.push(row.sequence); return false; }, closed);
-    const missing = assert.rejects(observation, { code: "HOOK_SOURCE_EXITED" });
+    observation.catch(() => {});
     await Promise.race([started, observation]);
     for (let sequence = 1; sequence <= 8; sequence++) {
       const changed = new Promise((resolve, reject) => { notified = { resolve, reject }; });
       await appendFile(path, `${JSON.stringify({ sequence })}\n`);
-      await changed;
+      await Promise.race([changed, observation]);
     }
     publishExit({ code: 0, signal: null });
     releaseRead();
-    await missing;
+    await assert.rejects(observation, { code: "HOOK_SOURCE_EXITED" });
     assert.deepEqual(visited, [1, 2, 3, 4, 5, 6, 7, 8], "the original cursor lost or repeated appended records");
     assert.ok(reads <= 3, `notification burst queued redundant reads: ${reads}`);
     t.diagnostic(`original notifications=${notifications}, file reads=${reads}, record visits=${visited.length}`);
   } finally {
     publishExit({ code: 1, signal: null });
     releaseRead();
+    await observation?.catch(() => {});
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hook watcher closure retains source loss before original process exit", async t => {
+  const root = scratchDirectory("hook-watch-loss-"), path = join(root, "hooks.jsonl");
+  let watcher, observation, publishExit, published;
+  const closed = new Promise(resolve => { publishExit = resolve; });
+  const retained = new Promise(resolve => { published = resolve; });
+  try {
+    await writeFile(path, '{"sequence":1}\n');
+    const watch = fs.watch;
+    t.mock.method(fs, "watch", (...args) => { watcher = watch(...args); return watcher; });
+    syncBuiltinESMExports();
+    observation = waitForHook(path, () => { published(); return false; }, closed);
+    observation.catch(() => {});
+    await Promise.race([retained, observation]);
+    // Withdraw the actual native source, then seal the original process. Its
+    // later exit must not replace the watcher's earlier terminal failure.
+    const stopped = once(watcher, "close");
+    watcher.close();
+    await stopped;
+    publishExit({ code: 3, signal: null });
+    await assert.rejects(observation, { code: "HOOK_WATCH_CLOSED" });
+  } finally {
+    publishExit({ code: 1, signal: null });
     await observation?.catch(() => {});
     t.mock.restoreAll();
     syncBuiltinESMExports();
