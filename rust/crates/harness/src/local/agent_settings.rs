@@ -478,7 +478,7 @@ mod tests {
         for (path, source) in [
             (
                 "plugins.ts",
-                "import {enabled} from './switch'; export default {guard: {enabled}};",
+                "import {enabled} from './switch.ts'; export default {guard: {enabled}};",
             ),
             ("switch.ts", "export const enabled = true;"),
             (
@@ -491,7 +491,7 @@ mod tests {
             ),
             (
                 "plugins/openai/provider.ts",
-                "import {temperature} from './sampling'; export default base => ({...base, sampling: {...base.sampling, temperature}});",
+                "import {temperature} from './sampling.ts'; export default base => ({...base, sampling: {...base.sampling, temperature}});",
             ),
             (
                 "plugins/openai/sampling.ts",
@@ -551,7 +551,7 @@ mod tests {
             ),
             (
                 "plugins/openai/provider.ts",
-                "import {temperature} from './sampling'; export default base => ({...base, tools: base.tools.map((tool, i) => i ? tool : {...tool, definition: {...tool.definition, description: 'User replacement'}}), sampling: {...base.sampling, temperature}});",
+                "import {temperature} from './sampling.ts'; export default base => ({...base, tools: base.tools.map((tool, i) => i ? tool : {...tool, definition: {...tool.definition, description: 'User replacement'}}), sampling: {...base.sampling, temperature}});",
             ),
         ] {
             write(&harness, path, source).await?;
