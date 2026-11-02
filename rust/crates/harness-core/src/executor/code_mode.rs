@@ -364,7 +364,7 @@ impl StockExecution<'_> {
                                 // Borrow the engine's JSON without allocating a second value tree.
                                 let values = serde_json::from_str(&arguments.value).map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log arguments are not JSON"))?;
                                 let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
-                                let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}", parent.operation_id), work))?;
+                                let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}:result", parent.operation_id), work))?;
                                 #[cfg(feature = "filesystem")]
                                 let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
                                 tokio::select! {

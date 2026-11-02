@@ -20,7 +20,10 @@ const bind = async (name, input) => {
     try { return await rpc(name, input); }
     catch (error) {
         if (error.class === 'not_found' && name === 'read') return null;
-        if (error.class === 'conflict') throw new ConflictError(input.path, await read(input.path));
+        // Refresh is diagnostic: its refusal or failure cannot replace the
+        // original write outcome or confer any additional read permission.
+        if (error.class === 'conflict')
+            throw new ConflictError(input.path, await read(input.path).catch(() => null));
         if (error.class === 'denied' || error.class === 'unauthorized') throw new DeniedError(error.message);
         throw error;
     }

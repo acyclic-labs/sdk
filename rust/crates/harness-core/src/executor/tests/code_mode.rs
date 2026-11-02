@@ -698,6 +698,179 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> Result<()> {
+    use crate::conversation::VolumeOperation;
+    use crate::runtime::Bindings;
+
+    for (read_tool, read_volume) in [(true, true), (false, true), (true, false)] {
+        let code = r#"
+            import {read, write, ConflictError, DeniedError} from 'acyclic';
+            await write('file.txt', 'original', 'absent');
+            let current, path, readDenied = false;
+            try { await write('file.txt', 'replacement', 'absent'); throw new Error('write succeeded'); }
+            catch (error) {
+                if (!(error instanceof ConflictError)) throw error;
+                path = error.path;
+                current = error.current === null ? null : error.current.text();
+            }
+            try { await read('file.txt'); }
+            catch (error) { if (!(error instanceof DeniedError)) throw error; readDenied = true; }
+            export default {path, current, readDenied};
+        "#;
+        let (mut executor, _, _) = executor(code, allowed()?, false)?;
+        for tool in [crate::tool::files::read()?, crate::tool::files::write()?] {
+            executor.tools.register((tool, None), &mut None, None)?;
+        }
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+        let content = storage.content_bindings();
+        let mut grants = vec![
+            "tool:call:code".into(),
+            "tool:call:write".into(),
+            content
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+        ];
+        if read_tool {
+            grants.push("tool:call:read".into());
+        }
+        if read_volume {
+            grants.push(
+                content
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?,
+            );
+        }
+        let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
+        let task = Bindings {
+            scope: scope.clone(),
+            content: Some(content.clone()),
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), content)?;
+        let operation = OperationId::new();
+        executor = executor
+            .with_tool_authority(scope, allowed()?)?
+            .with_task_context(&task, operation)?;
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "program".into(),
+            "code".into(),
+            json!({"code": code}),
+            None,
+        )?;
+        let journal = storage.journal();
+        let ExecutionProgress::Ready(result) = StockExecution::ordinary(&executor)
+            .code(
+                journal.as_ref(),
+                (operation, 0),
+                &invocation,
+                &mut Vec::new(),
+            )
+            .await?
+        else {
+            panic!("conflicting write did not settle");
+        };
+        assert_eq!(
+            crate::tools::code_mode::output(&result.value)?,
+            &json!({"path": "file.txt", "current": if read_tool && read_volume { Some("original") } else { None }, "readDenied": !(read_tool && read_volume)})
+        );
+        let (_, bytes, _) = storage
+            .content_reader()
+            .read_private_path(
+                storage.volume(),
+                "",
+                "file.txt",
+                None,
+                65536,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        assert_eq!(&*bytes, b"original");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
+    let code = "await console.log({agent:'worker'}); console.log('drained'); export default null";
+    let (executor, _, _) = executor(code, allowed()?, false)?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
+    let internal = stage_json(
+        journal.as_ref(),
+        operation,
+        "checkpoint:private",
+        &json!({"version": 1, "private": true}),
+        None,
+    )
+    .await?;
+    assert!(internal.path().starts_with(".system/execution/"));
+    let invocation = ToolInvocation::for_model_call(
+        operation,
+        0,
+        "program".into(),
+        "code".into(),
+        json!({"code":code}),
+        None,
+    )?;
+    let ExecutionProgress::Ready(result) = StockExecution::ordinary(&executor)
+        .code(
+            journal.as_ref(),
+            (operation, 0),
+            &invocation,
+            &mut Vec::new(),
+        )
+        .await?
+    else {
+        panic!("console publication did not finish");
+    };
+    assert_eq!(
+        crate::tools::code_mode::output(&result.value)?,
+        &Value::Null
+    );
+    // The owner sees the same directory that observers follow, using ordinary
+    // listing and pinned reads rather than the journal's private payload loader.
+    let directory = format!("tools/.results/{operation}");
+    let (generation, page) = storage
+        .list_private_directory(&directory, None, None, 2)
+        .await?;
+    assert_eq!(page.entries.len(), 2);
+    assert!(!page.has_more);
+    let mut values = Vec::new();
+    for entry in &page.entries {
+        let name = std::str::from_utf8(entry.name.as_bytes())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let (_, bytes, _) = storage
+            .content_reader()
+            .read_private_path(
+                storage.volume(),
+                "",
+                &format!("{directory}/{name}"),
+                Some(&generation),
+                65536,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(value["kind"], "code.log");
+        assert_eq!(value["call_id"], "program");
+        values.push(value);
+    }
+    values.sort_unstable_by_key(|value| value["ordinal"].as_u64().unwrap());
+    assert_eq!(values[0]["values"], json!([{ "agent": "worker" }]));
+    assert_eq!(values[1]["values"], json!(["drained"]));
+    Ok(())
+}
+
 #[tokio::test]
 async fn retained_inner_context_survives_both_replay_entry_points_without_running_js() -> Result<()>
 {

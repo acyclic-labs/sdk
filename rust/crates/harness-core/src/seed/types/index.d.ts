@@ -15,7 +15,7 @@ export type Version = string & { readonly __brand: "Version" };
 /** "30s", "5m", "2h", or milliseconds. */
 export type Duration = `${number}${"s" | "m" | "h"}` | number;
 
-/** An `ifVersion` or `check` failed; nothing was written. `current` is the file now (null if absent). */
+/** An `ifVersion` or `check` failed; nothing was written. `current` is the file now (null if absent or unavailable to read). */
 export class ConflictError extends Error { readonly name: "ConflictError"; readonly path: Path; readonly current: File | null }
 /** The timeout passed first. What you waited on keeps running. */
 export class TimeoutError extends Error { readonly name: "TimeoutError" }
