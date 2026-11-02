@@ -22,6 +22,22 @@ enum State {
     },
 }
 
+/// How a command's outcome is read: its failure policy, and whether it
+/// speaks the plugin protocol (a decision) rather than its host's.
+pub(super) struct Protocol(HookFailure, bool);
+
+impl From<HookFailure> for Protocol {
+    fn from(policy: HookFailure) -> Self {
+        Self(policy, false)
+    }
+}
+
+impl From<&HookSpec> for Protocol {
+    fn from(hook: &HookSpec) -> Self {
+        Self(hook.failure, hook.plugin().is_some())
+    }
+}
+
 /// Only the ledger constructs this token. Decoding retained strings/arguments
 /// and growing the outcome require ownership of an accepted reservation.
 pub(super) struct Reservation<'a> {
@@ -80,13 +96,17 @@ impl Budget {
         &mut self,
         output: &mut HookOutput,
         event: HookEvent,
-        policy: HookFailure,
+        policy: impl Into<Protocol>,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
     ) {
+        let Protocol(policy, plugin) = policy.into();
         let blocking = policy.blocks(event);
         match result {
             Ok((code, stdout, stderr)) => {
-                let plan = if code != Some(0) && (code != Some(2) || blocking) {
+                let plan = if plugin && matches!(code, Some(0 | 2)) {
+                    Plan::decision(code, &stdout, &stderr)
+                        .unwrap_or_else(|message| Plan::invalid(message, blocking, code))
+                } else if plugin || code != Some(0) && (code != Some(2) || blocking) {
                     Plan::exit(code, &stderr, blocking)
                 } else {
                     Plan::inspect(output, event, code, &stdout, &stderr)

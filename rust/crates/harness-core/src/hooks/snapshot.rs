@@ -70,10 +70,11 @@ impl Serialize for Binding {
     }
 }
 
-struct Commands<'a>(&'a [Arc<HookSpec>]);
+// A plugin's matcher is part of its spec; the compiled form is derived.
+struct Commands<'a>(&'a [(Arc<HookSpec>, Option<super::Requests>)]);
 impl Serialize for Commands<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.0.iter().map(AsRef::as_ref))
+        serializer.collect_seq(self.0.iter().map(|(hook, _)| &**hook))
     }
 }
 

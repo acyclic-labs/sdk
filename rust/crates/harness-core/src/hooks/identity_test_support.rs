@@ -43,7 +43,7 @@ pub async fn assert_canonical_tool_consumers(call: &crate::model::ToolCall) -> c
                 failure: HookFailure::Block,
             }],
         }])?;
-        let output = hooks.run_commands(event, &json!({"tool_name":invocation.name}), &ToolRegistry::default(), 4096, |_,_| async {
+        let output = hooks.run_commands(event, &json!({"tool_name":invocation.name}), &ToolRegistry::default(), 4096, |_, _, _| async {
             Ok((Some(0), br#"{"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"canonical guard","additionalContext":"canonical guard"}}"#.to_vec(), Vec::new()))
         }).await?;
         match event {
