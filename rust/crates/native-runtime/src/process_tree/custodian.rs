@@ -1539,13 +1539,13 @@ mod handoff_tests {
         // A running reader's native framing refusal travels over that SAME
         // original pipe. Active and late Link waiters retain the first cause;
         // neither may mistake process loss for the tree's retirement event.
-        for (bytes, native) in [
-            (
-                b"invalid handover\n".as_slice(),
-                Some(ERROR_INVALID_DATA.cast_signed()),
-            ),
-            (b"\xff\n".as_slice(), None),
-        ] {
+        for truncated in [false, true] {
+            let frame = [0; Opened::FRAME_BYTES];
+            let bytes = if truncated {
+                &frame[..frame.len() - 1]
+            } else {
+                frame.as_slice()
+            };
             let running = Arc::new(launch()?);
             let done = event(true, None)?;
             let active = Link {
@@ -1553,18 +1553,19 @@ mod handoff_tests {
                 done: done.try_clone()?,
             };
             let waiter = std::thread::spawn(move || active.await_members());
-            running
-                .input
-                .lock()
-                .map_err(|_| poisoned())?
-                .as_mut()
-                .ok_or(io::ErrorKind::BrokenPipe)?
-                .write_all(bytes)?;
-            let error = waiter.join().unwrap().unwrap_err();
-            assert_eq!(error.raw_os_error(), native);
-            if native.is_none() {
-                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            {
+                let mut input = running.input.lock().map_err(|_| poisoned())?;
+                input
+                    .as_mut()
+                    .ok_or(io::ErrorKind::BrokenPipe)?
+                    .write_all(bytes)?;
+                if truncated {
+                    // EOF completes the original partial-frame producer.
+                    drop(input.take());
+                }
             }
+            let error = waiter.join().unwrap().unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_DATA.cast_signed()));
             let late = Link {
                 custodian: Arc::clone(&running),
                 done: done.try_clone()?,
