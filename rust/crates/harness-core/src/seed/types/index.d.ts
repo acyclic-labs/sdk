@@ -7,6 +7,8 @@
 // more rights than you. Each settings write is confirmed in live/agents/self/admissions/<version>.json (`Admission`).
 // Records on disk use these types' field names (generated from the harness's types). `At<P>` is the record at a path.
 
+import type { AgentConfig, Config, Policy } from './config';
+
 /* Files -------------------------------------------------------------- */
 
 export type Path = string;
@@ -272,7 +274,7 @@ export function call<T extends Action | ToolRef>(
  * `export default (base: AgentConfig): AgentConfig => ({ ...base, model: "..." })`. policy.ts, context.ts and schedules
  * are plain values. Static imports only; no live state, clock or network; the result is plain data.
  */
-export type Config<T> = T | ((base: T) => T);
+export type { AgentConfig, Config } from './config';
 
 /**
  * `live/agents/self/admissions/<version>.json`, for each write of a settings file, context.ts or a schedule. Confirm with
@@ -287,18 +289,6 @@ export interface Admission {
   /** context.ts: the context revision it produced. */
   readonly revision: number | null;
   readonly at: string;
-}
-
-/** `.volumes/home/agent.ts` (a child's: `live/agents/<n>/home/agent.ts`). A model your permissions disallow is "rejected". */
-export interface AgentConfig {
-  /** "<provider>/<model>" from sys/models/. */
-  model: string;
-  effort: "low" | "medium" | "high" | null;
-  sampling: { temperature: number | null; topP: number | null; maxOutputTokens: number | null };
-  /** Run inside another agent host instead of the built-in loop. */
-  host: "builtin" | "claude-code" | "codex" | "pi";
-  /** Replay the recording at this path instead of a live model. */
-  replay: Path | null;
 }
 
 /** To change a plugin's code, copy its folder into .volumes/home/plugins/ under a new name. */
@@ -345,12 +335,7 @@ export interface PluginManifest {
  * unless denied here or above. `path` is in the subject's tree; for "spawn" it matches child names, for "call" actions
  * or tool paths. Notes only: `{ only: [{ path: ".volumes/home/plans/**", actions: ["write"] }] }`.
  */
-export interface Policy {
-  deny?: Rule[];
-  /** Anything no `only` rule matches is denied. */
-  only?: Rule[];
-}
-export interface Rule { path: string; actions: ("read" | "write" | "append" | "spawn" | "call")[] }
+export type { Policy, Rule } from './config';
 
 /** `.volumes/home/schedules/<n>.ts`: a 5-field cron in an IANA timezone, or once `at` (ISO 8601). Remove it to stop. */
 export type Schedule = ({ cron: string; timezone: string } | { at: string }) & { to: string; message: string | object };
