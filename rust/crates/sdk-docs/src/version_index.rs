@@ -1,6 +1,23 @@
 use super::*;
 
-pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
+/// Canonical schema bytes held through one admission and publication.
+pub(super) struct DocsSchema(Vec<u8>);
+
+impl DocsSchema {
+    pub fn new() -> Result<Self, Error> {
+        Ok(Self(serde_json::to_vec_pretty(&schema_json()?)?))
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+pub(super) fn validate_version_index(
+    index: &VersionIndex,
+    output_dir: &Path,
+    schema: &DocsSchema,
+) -> Result<(), Error> {
     let mut candidates = HashSet::new();
     for entry in &index.release_candidates {
         if entry.publication_status != PublicationStatus::Candidate
@@ -10,7 +27,7 @@ pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) ->
                 "candidate catalog entry claims registry release evidence".into(),
             ));
         }
-        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        validate_version_entry(entry, &Channel::Release, output_dir, schema)?;
         if !candidates.insert(&entry.version) {
             return Err(Error::Invalid("duplicate release candidate".into()));
         }
@@ -28,7 +45,7 @@ pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) ->
                 "historical prerelease requires a released prerelease identity".into(),
             ));
         }
-        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        validate_version_entry(entry, &Channel::Release, output_dir, schema)?;
         if !prereleases.insert(&entry.version) {
             return Err(Error::Invalid("duplicate historical prerelease".into()));
         }
@@ -43,7 +60,7 @@ pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) ->
             ));
         }
         stable_version(&entry.version)?;
-        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        validate_version_entry(entry, &Channel::Release, output_dir, schema)?;
         if !release_versions.insert(entry.version.as_str()) {
             return Err(Error::Invalid(format!(
                 "version index contains duplicate release {}",
@@ -52,7 +69,7 @@ pub(super) fn validate_version_index(index: &VersionIndex, output_dir: &Path) ->
         }
     }
     if let Some(preview) = &index.preview {
-        validate_version_entry(preview, &Channel::Preview, output_dir)?;
+        validate_version_entry(preview, &Channel::Preview, output_dir, schema)?;
     }
     if let Some(latest) = &index.latest {
         stable_version(&latest.version)?;
@@ -116,10 +133,11 @@ pub(super) fn validate_latest_release(index: &VersionIndex) -> Result<(), Error>
     }
 }
 
-pub(super) fn validate_version_entry(
+fn validate_version_entry(
     entry: &VersionEntry,
     expected_channel: &Channel,
     output_dir: &Path,
+    docs_schema: &DocsSchema,
 ) -> Result<(), Error> {
     if &entry.channel != expected_channel {
         return Err(Error::Invalid(format!(
@@ -229,7 +247,7 @@ pub(super) fn validate_version_entry(
             entry.version
         )));
     }
-    validate_schema_sidecar(output_dir, entry)?;
+    validate_schema_sidecar(output_dir, entry, docs_schema)?;
     if data.version != entry.version {
         return Err(Error::Invalid(format!(
             "version index entry {} data version is {}",
@@ -271,9 +289,10 @@ pub(super) fn validate_version_entry(
     Ok(())
 }
 
-pub(super) fn validate_schema_sidecar(
+fn validate_schema_sidecar(
     output_dir: &Path,
     entry: &VersionEntry,
+    schema: &DocsSchema,
 ) -> Result<(), Error> {
     let data_path = output_dir.join(&entry.data_file);
     let sidecar_path = data_path
@@ -295,9 +314,8 @@ pub(super) fn validate_schema_sidecar(
             sidecar_path.display()
         )));
     }
-    let expected = serde_json::to_vec_pretty(&schema_json()?)?;
     let actual = fs::read(&sidecar_path)?;
-    if actual != expected {
+    if actual != schema.bytes() {
         return Err(Error::Invalid(format!(
             "version index entry {} schema sidecar does not match the pinned schema",
             entry.version
