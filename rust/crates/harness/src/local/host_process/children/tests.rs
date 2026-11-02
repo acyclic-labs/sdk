@@ -277,8 +277,15 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             prompt: "follow-up".into(),
         },
     ];
+    let mut previous: Option<TurnClaim> = None;
     for (turn, action) in prompts.into_iter().enumerate() {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
+        if let Some(previous) = &previous {
+            assert_eq!(running.claim.agent, previous.agent);
+            assert_ne!(running.claim.operation, previous.operation);
+            assert_eq!(running.claim.turn, previous.turn + 1);
+            assert_eq!(fs::read(view.join("nested.txt"))?, b"turn");
+        }
         let mut command = completed_write(&view, &format!("turn-{turn}"));
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
@@ -309,6 +316,23 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             inner.process.spawn(&mut command, inner.claim.operation)?;
             wait_exit(&mut inner)?;
             finish_turn(&nested, "idle", &mut inner)?;
+            let foreign = sessions
+                .request(
+                    "idle",
+                    SessionAction::Complete {
+                        claim: inner.claim.clone(),
+                        outcome: inner
+                            .settlement
+                            .clone()
+                            .ok_or("nested child retained no settlement")?,
+                    },
+                    false,
+                )
+                .expect_err("a parent-local name cannot authorize another child's reply");
+            assert!(
+                matches!(foreign, Error::Conflict(ref message) if message.contains("native completion selects another child")),
+                "{foreign}"
+            );
             assert!(!view.join("nested.txt").exists(), "nested work is private");
             host_files::request(
                 &view,
@@ -321,6 +345,7 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             assert!(!cwd.join("nested.txt").exists(), "outer work is private");
         }
         finish_turn(&sessions, "idle", &mut running)?;
+        previous = Some(running.claim.clone());
     }
     host_files::request(
         cwd,
