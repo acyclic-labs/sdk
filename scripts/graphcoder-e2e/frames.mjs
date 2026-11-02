@@ -39,21 +39,29 @@ export class TerminalFrames {
   dispose() { for (const handler of this.handlers) handler.dispose(); }
 }
 
-// A failed task and a refused action (GraphCoder's ✗ status line) are
-// failures unless the awaited condition names them; a refusal is named by any
-// awaited text it contains.
-const failures = visible => [...visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g)];
-const expected = (failure, condition) => failure[1] !== undefined
-  ? typeof condition?.task_failure === "string" && condition.task_failure.length > 0
-    && failure[1].startsWith(condition.task_failure)
-  : (condition?.contains ?? []).some(text => text.length > 0 && failure[2].includes(text));
+// Query errors are rendered in the status row, outside the task transcript.
+export function queryFailure(visible) {
+  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
+  return /^(?:storage failure:|Usage query ended:)/.test(notice) ? notice : undefined;
+}
+function* failures(visible) {
+  for (const failure of visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g))
+    yield { text: failure[0], reason: failure[1] ?? failure[2],
+      kind: failure[1] !== undefined ? "task_failure" : "action_refusal" };
+  const notice = queryFailure(visible);
+  if (notice) yield { text: notice, reason: notice, kind: "query_failure" };
+}
+const expected = (failure, condition) => failure.kind === "action_refusal"
+  ? (condition?.contains ?? []).some(text => text.length > 0 && failure.reason.includes(text))
+  : typeof condition?.[failure.kind] === "string" && condition[failure.kind].length > 0
+    && failure.reason.startsWith(condition[failure.kind]);
 export class FailureHistory {
   #handled = new Set();
   unexpected(visible, condition) {
-    return failures(visible).find(failure => !expected(failure, condition)
-      && !this.#handled.has(failure[0]))?.[0];
+    for (const failure of failures(visible)) if (!expected(failure, condition)
+      && !this.#handled.has(failure.text)) return failure.text;
   }
   accept(visible, condition) {
-    for (const failure of failures(visible)) if (expected(failure, condition)) this.#handled.add(failure[0]);
+    for (const failure of failures(visible)) if (expected(failure, condition)) this.#handled.add(failure.text);
   }
 }

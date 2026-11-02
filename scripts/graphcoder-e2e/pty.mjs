@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
 import { executionSucceeded } from "./assertions.mjs";
 
@@ -30,6 +30,7 @@ export function rawNeedles(actions) {
 export function matches(screen, raw, condition, visible = screenText(screen)) {
   return (condition.contains ?? []).every(text => visible.includes(text))
     && (!condition.task_failure || expectedTaskFailure(visible, condition))
+    && (!condition.query_failure || queryFailure(visible)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
     && (condition.raw ?? []).every(text => raw.has(text))
