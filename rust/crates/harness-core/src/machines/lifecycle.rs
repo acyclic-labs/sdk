@@ -47,6 +47,42 @@ pub struct MachineBinding {
     pub forked_from: Option<MachineId>,
 }
 
+impl MachineBinding {
+    /// Decodes the original settled record for an already-authorized target.
+    ///
+    /// The original reader supplies `target` from its selected binding path;
+    /// this function does not authenticate a record or infer its account or
+    /// agent from its payload. A fork retains the original record envelope.
+    /// Runtime and offline views share this one format/position boundary.
+    /// No read, provider operation, wait or state is added. Decoding allocates
+    /// only the owned binding and scales with this record's encoded bytes.
+    ///
+    /// # Errors
+    /// When the record is not the settled position, does not decode, or has a
+    /// foreign target or unsupported version. The provisioning plan at zero
+    /// cannot certify a settled binding even if its value decodes.
+    pub fn decode(target: &str, record: &acyclic_stream::Record) -> Result<Self> {
+        let refuse = |reason: std::fmt::Arguments<'_>| {
+            Error::Storage(format!(
+                "Machine binding {reason}; recovery: read the original authorized target binding at from=1, limit=1"
+            ))
+        };
+        if record.sequence != 1 {
+            return Err(refuse(format_args!(
+                "is not at the settled source position"
+            )));
+        }
+        let binding: Self = crate::contract::json_from_slice(&record.value)
+            .map_err(|error| refuse(format_args!("does not decode: {error}")))?;
+        if binding.version != MACHINE_BINDING_VERSION || binding.target != target {
+            return Err(refuse(format_args!(
+                "has an unsupported version or a different target"
+            )));
+        }
+        Ok(binding)
+    }
+}
+
 /// First record at the binding path: choose before allocating. The second
 /// record is the settled binding, so both reads seek one fixed position.
 #[derive(Clone, Serialize, Deserialize)]
@@ -144,14 +180,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let Some(record) = self.binding_record(agent, target, 1).await? else {
             return Ok(None);
         };
-        let binding: MachineBinding = serde_json::from_slice(&record.value)
-            .map_err(|error| Error::Storage(format!("Machine binding does not decode: {error}")))?;
-        if binding.version != MACHINE_BINDING_VERSION || binding.target != target {
-            return Err(Error::Storage(
-                "Machine binding has an unsupported version or a different target".into(),
-            ));
-        }
-        Ok(Some(binding))
+        MachineBinding::decode(target, &record).map(Some)
     }
 
     async fn binding_record(

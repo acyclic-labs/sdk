@@ -21,7 +21,7 @@ pub struct Source<'a> {
 
 /// Projects the borrowed receipt of the original `call::Journal` into outcomes.
 ///
-/// Supply its original terminal record, or the original observed fence record
+/// Supply its original terminal record, or the first original fence record
 /// when its terminal is absent. Source position/commit/path are checked
 /// against that receipt. The caller supplies already-authorized source evidence:
 /// this function cannot certify fabricated source records or a forged account.
@@ -73,7 +73,9 @@ pub fn project(
         }
         "original_call_terminal"
     } else {
-        if receipt.fence != Some(selected) || !matches!(receipt.outcome, Outcome::Indeterminate(_))
+        if receipt.fence != Some(selected)
+            || record.sequence != 0
+            || !matches!(receipt.outcome, Outcome::Indeterminate(_))
         {
             return Err(refuse("has no original terminal or settling fence"));
         }

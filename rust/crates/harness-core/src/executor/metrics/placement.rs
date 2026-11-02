@@ -4,11 +4,7 @@
 //! and certifies neither physical topology nor resource measurements.
 
 use super::{Batch, Row, Table, batch, export_error};
-use crate::{
-    Result,
-    agent::AgentPath,
-    machines::{MACHINE_BINDING_VERSION, MachineBinding},
-};
+use crate::{Result, agent::AgentPath, machines::MachineBinding};
 use acyclic_auth::addressing::AccountId;
 use acyclic_stream::{Record, StreamPath};
 
@@ -37,21 +33,13 @@ pub fn project(
             "Machine placement {reason}; recovery: read the original settled binding at agent.machine(target), from=1, limit=1"
         ))
     };
-    if record.sequence != 1 {
-        return Err(refuse("is not at the settled source position"));
-    }
-    let binding: MachineBinding = crate::contract::json_from_slice(&record.value)
-        .map_err(|error| refuse(&format!("does not decode: {error}")))?;
     let target = selected
         .as_str()
         .strip_prefix(agent.as_str())
-        .and_then(|suffix| suffix.strip_prefix("/machines/"));
-    if binding.version != MACHINE_BINDING_VERSION
-        || target != Some(binding.target.as_str())
-        || binding.target.contains('/')
-    {
-        return Err(refuse("has a foreign source, target or version"));
-    }
+        .and_then(|suffix| suffix.strip_prefix("/machines/"))
+        .filter(|target| !target.is_empty() && !target.contains('/'))
+        .ok_or_else(|| refuse("has a foreign source or target"))?;
+    let binding = MachineBinding::decode(target, record)?;
     let mut row = Row::stream(Some(agent.as_str()), account, selected, record, "placement");
     row.binding_version = Some(binding.version);
     row.provider = Some(

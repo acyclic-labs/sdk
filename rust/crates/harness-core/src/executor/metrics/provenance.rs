@@ -139,11 +139,7 @@ fn required<'a>(batch: &'a Batch, name: &str, row: usize) -> Result<&'a str> {
 /// This function adds no capture, IO wait, fsync, flush or publication step;
 /// publish its output only after success through the caller's volume commit.
 pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
-    if batch.data.schema() != batch.table.schema() {
-        return Err(export_error(
-            "PROV batch schema differs from metrics v1 table",
-        ));
-    }
+    batch.validate_schema()?;
     let mut out = Output(NTriplesSerializer::new().for_writer(writer));
     for row in 0..batch.data.num_rows() {
         let path = text(batch, "agent_path", row)?;

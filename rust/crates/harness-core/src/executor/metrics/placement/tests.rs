@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     agent::AgentId,
+    machines::MACHINE_BINDING_VERSION,
     resources::{ProviderRef, SandboxRef},
 };
 use acyclic_stream::{IdempotencyKey, MemoryStream, Stream};
