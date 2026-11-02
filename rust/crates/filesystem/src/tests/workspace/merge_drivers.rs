@@ -217,6 +217,11 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
     main.write_text("/deleted", "modified").await?;
     agent.write_text("/added", "agent-add").await?;
     main.write_text("/added", "main-add").await?;
+    let mut linking = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(linking, hard_link("/added", "/a"))?;
+    let TransactionCommit::Committed(_) = commit(&mut linking).await? else {
+        return Err("earlier conflict alias did not commit".into());
+    };
     agent.write_text("/clean", "clean").await?;
     main.write_text("/target", "target").await?;
 
@@ -321,7 +326,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             return Err("preview file content changed representation".into());
         };
         assert_eq!(bytes.as_bytes(), expected);
-        assert_eq!(record.link_count, 1);
+        assert_eq!(record.link_count, if name == "added" { 2 } else { 1 });
         assert!(record.bindings.is_some());
     }
     root.retire(&mut accounting)?;
@@ -435,9 +440,16 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 assert!(path.work.items_examined > before.items_examined);
                 assert_eq!(path.value.is_some(), record.is_some());
                 if let Some(path) = path.value {
+                    if matches!(row.value(), crate::MergeConflict::Binding { .. })
+                        && side == crate::ConflictSide::Ours
+                    {
+                        // The occupying file's earlier alias differs from the
+                        // binding location returned above for the same side.
+                        assert_eq!(namespace_path_text(path.value())?, "/a");
+                    }
                     assert!(matches!(
                         namespace_path_text(path.value())?.as_str(),
-                        "/shared" | "/deleted" | "/added"
+                        "/shared" | "/deleted" | "/added" | "/a"
                     ));
                     selected_paths.push(path);
                 }
@@ -534,7 +546,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
     for path in &selected_paths {
         assert!(matches!(
             namespace_path_text(path.value())?.as_str(),
-            "/shared" | "/deleted" | "/added"
+            "/shared" | "/deleted" | "/added" | "/a"
         ));
     }
     assert_eq!(conflict_paths.len(), 8);
