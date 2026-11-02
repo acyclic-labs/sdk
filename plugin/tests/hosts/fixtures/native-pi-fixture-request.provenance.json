@@ -1,0 +1,12 @@
+{
+  "schema": "acyclic.native-capture.v1",
+  "producer": "@earendil-works/pi-ai@1.1.0 native openai-responses serializer",
+  "command": "node --test plugin/tests/hosts/authenticated-pi-provider.test.mjs",
+  "request_path": "/native-installed-pi-recursive/v1/responses",
+  "body_sha256": "21066c5d3b6850d2f714d7a8ff25b4db4b28b3b7d73e0203305f452806ee011c",
+  "controls_sha256": "2e4103158265446664c14b855631ac998bf03bd4d105fbed4e5a13c4baa7ca66",
+  "provider_sha256": "49ddc23aaf4cf3008a870a6317ebfc74cc2c2b55965e0c6b2430705b0afd35b9",
+  "omission": "HTTP authorization headers omitted; body retained byte-identically from the actual native SDK request",
+  "model_requests": 0,
+  "upstream_credentials": 0
+}

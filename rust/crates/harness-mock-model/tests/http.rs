@@ -14,6 +14,116 @@ impl Drop for Server {
 }
 
 #[tokio::test]
+async fn native_capability_authenticates_before_body_or_script_consumption() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("script.json");
+    let record = directory.path().join("requests.jsonl");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../scripts/graphcoder-e2e/cases/installed-pi-recursive.json"
+    ))
+    .unwrap();
+    std::fs::write(
+        &script,
+        json!({"cases":{"native-installed-pi-recursive":fixture["model"]}}).to_string(),
+    )
+    .unwrap();
+    // This is the server's actual issued credential, never a provider key or
+    // a placeholder bypassing the native SDK's authentication requirement.
+    let capability = "1234567890abcdef".repeat(4);
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
+            .args([
+                "--script",
+                script.to_str().unwrap(),
+                "--record",
+                record.to_str().unwrap(),
+            ])
+            .env("ACYCLIC_E2E_MODEL_CAPABILITY", &capability)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(server.0.stdout.take().unwrap()).lines();
+    let ready = lines.next().unwrap().unwrap();
+    assert!(!ready.contains(&capability));
+    let ready: Value = serde_json::from_str(&ready).unwrap();
+    assert_eq!(ready["event"], "ready");
+    let root = format!("http://127.0.0.1:{}", ready["port"]);
+    let url = format!("{root}/native-installed-pi-recursive/v1/responses");
+    let client = reqwest::Client::new();
+    let body =
+        include_str!("../../../../plugin/tests/hosts/fixtures/native-pi-fixture-request.json");
+    let authorization = format!("Bearer {capability}");
+    for supplied in [
+        None,
+        Some(format!("Bearer {}0", capability)),
+        Some(format!("Bearer {}0", &capability[..63])),
+        Some(format!("bearer {capability}")),
+        Some(capability.clone()),
+    ] {
+        let mut request = client.post(&url).body("{");
+        if let Some(supplied) = supplied {
+            request = request.header("authorization", supplied);
+        }
+        let denied = request.send().await.unwrap();
+        assert_eq!(denied.status(), 401);
+        assert!(denied.bytes().await.unwrap().is_empty());
+    }
+    assert!(std::fs::read(&record).unwrap().is_empty());
+    let alternate = client
+        .post(format!(
+            "{root}//native-installed-pi-recursive/v1/responses"
+        ))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(alternate.status(), 401);
+    assert!(std::fs::read(&record).unwrap().is_empty());
+    // Removing the protected prefix cannot select the same script anonymously.
+    let anonymous = client
+        .post(format!("{root}/installed-pi-recursive/v1/responses"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 409);
+    let admitted = client
+        .post(&url)
+        .header("authorization", authorization)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+    assert!(admitted.text().await.unwrap().contains("native_parent"));
+    for _ in 0..2 {
+        let event = lines.next().unwrap().unwrap();
+        assert!(!event.contains(&capability));
+        assert!(event.contains("\"event\":\"request\""));
+    }
+    let recorded = std::fs::read_to_string(&record).unwrap();
+    assert!(!recorded.contains(&capability));
+    let records: Vec<Value> = recorded
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["step"], Value::Null);
+    assert_eq!(records[1]["case"], "installed-pi-recursive");
+    assert_eq!(records[1]["step"], 0);
+    assert_eq!(
+        records[1]["body"],
+        serde_json::from_str::<Value>(body).unwrap()
+    );
+    // The original process is the response producer. Retirement closes its
+    // listener; no readiness loop or replacement server can satisfy this call.
+    server.0.kill().unwrap();
+    server.0.wait().unwrap();
+    assert!(client.post(&url).body(body).send().await.is_err());
+}
+
+#[tokio::test]
 async fn original_orphan_script_receives_its_admitted_listener_endpoint() {
     let directory = tempfile::tempdir().unwrap();
     let script = directory.path().join("script.json");

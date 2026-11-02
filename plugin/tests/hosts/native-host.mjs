@@ -39,9 +39,22 @@ export function parseNativeProxy(text) {
  return proxy;
 }
 
+export function nativeFixture(url, credential) {
+ if(credential===undefined)return;
+ assert.ok(typeof credential==='string'&&/^[a-f0-9]{64}$/.test(credential),
+  'step=admit native fixture credential; recovery=use the original runner-issued in-memory capability');
+ let endpoint;
+ try {endpoint=new URL(url);}
+ catch(cause) {throw new Error('step=admit authenticated native fixture; recovery=use the original authenticated loopback model route',{cause});}
+ assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1'&&endpoint.port&&
+  !endpoint.username&&!endpoint.password&&!endpoint.search&&!endpoint.hash&&/^\/native-[^/]+\/v1$/.test(endpoint.pathname),
+  'step=admit authenticated native fixture; recovery=use the original authenticated loopback model route');
+ return {baseUrl:endpoint.href,credential};
+}
+
 // Require the fixture's provider contract from the same admitted package/bin.
 // An unsupported provider must never acquire an installed workspace owner.
-export function nativeProvider(native,live) {
+export function nativeProvider(native,live,fixture) {
  if(live!==undefined) {
   assert.ok(live&&typeof live==='object'&&!Array.isArray(live),
    'step=admit live native configuration; recovery=supply model, profile and provider');
@@ -61,6 +74,7 @@ export function nativeProvider(native,live) {
   return proxy?live.provider:provider;
  }
  if(native.provider!==null)return native.provider;
+ if(nativeFixture(fixture?.url,fixture?.nativeCapability))return 'authenticated-responses';
  const error=new Error(`step=admit native provider: ${native.package.name}@${native.package.version} has no supported keyless Responses interface; recovery=select a native Pi release with a supported keyless Responses provider before running installed-pi-recursive`);
  error.code='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER';
  throw error;

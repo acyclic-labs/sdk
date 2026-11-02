@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {nativeProvider,parseNativeProxy} from './native-host.mjs';
+import {nativeFixture,nativeProvider,parseNativeProxy} from './native-host.mjs';
 
 const {dependencies}=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8'));
 const hosts=Object.entries(dependencies).filter(([name])=>['@openai/codex','@anthropic-ai/claude-code','@earendil-works/pi-coding-agent'].includes(name));
@@ -13,5 +13,6 @@ export function fuzz(data) {
  check(()=>parseNativeProxy(text));
  let live;
  try {live=JSON.parse(text);}catch {return;}
+ check(()=>nativeFixture(live?.url,live?.credential));
  for(const [name,version] of hosts)check(()=>nativeProvider({package:{name,version}},live));
 }
