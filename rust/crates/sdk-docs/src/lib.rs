@@ -13,14 +13,19 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod cargo_targets;
+mod digest;
 #[doc(hidden)]
 pub use cargo_targets::is_library_target;
+#[doc(hidden)]
+pub use digest::{format_digest, sha256_hex};
 mod child;
 #[doc(hidden)]
 pub mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
 mod path_identity;
+#[doc(hidden)]
+pub use path_identity::normalize_path;
 mod public_api;
 mod relative_spans;
 mod render_cache;

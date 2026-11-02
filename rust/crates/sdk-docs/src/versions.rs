@@ -149,7 +149,7 @@ pub(super) fn is_portable_version_byte(byte: u8) -> bool {
 }
 
 pub(super) fn hex_version(bytes: &[u8]) -> String {
-    hex_digest("~", bytes)
+    format_digest(&["~"], bytes, "")
 }
 
 pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {
@@ -182,9 +182,6 @@ pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {
 }
 pub(super) fn format_id(id: Id) -> String {
     id.0.to_string()
-}
-pub(super) fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 pub(super) fn slugify(value: &str) -> String {
     value.replace('_', "-").to_ascii_lowercase()

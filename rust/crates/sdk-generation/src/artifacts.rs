@@ -114,9 +114,6 @@ pub(super) fn absolute(path: &Path) -> Result<PathBuf, CliError> {
             .join(path))
     }
 }
-pub(super) fn path_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
 pub(super) fn profile_error(error: impl std::fmt::Display) -> CliError {
     CliError(format!("profile error: {error}"))
 }
@@ -138,21 +135,6 @@ pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
         ring::digest::digest(&ring::digest::SHA256, bytes).as_ref(),
         "",
     )
-}
-pub(super) fn format_digest(prefixes: &[&str], digest: &[u8], suffix: &str) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(
-        prefixes.iter().map(|part| part.len()).sum::<usize>() + digest.len() * 2 + suffix.len(),
-    );
-    for prefix in prefixes {
-        result.push_str(prefix);
-    }
-    for &byte in digest {
-        result.push(DIGITS[(byte >> 4) as usize] as char);
-        result.push(DIGITS[(byte & 0xf) as usize] as char);
-    }
-    result.push_str(suffix);
-    result
 }
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     let mut file = fs::File::open(path).map_err(io_error)?;

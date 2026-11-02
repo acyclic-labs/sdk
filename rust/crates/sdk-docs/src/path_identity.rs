@@ -1,3 +1,8 @@
+/// Formats a path lossily with forward slashes, without resolving or validating it.
+pub fn normalize_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 // Compare path components explicitly so Windows Rustdoc paths can be replayed
 // on any host. Device namespaces other than verbatim drive/UNC remain distinct.
 pub fn components(path: &str, windows: bool) -> Option<Vec<String>> {

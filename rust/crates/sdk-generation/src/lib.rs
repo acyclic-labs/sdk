@@ -29,6 +29,7 @@ mod toolchains;
 use toolchains::*;
 mod artifacts;
 use sdk_docs::is_library_target;
+use sdk_docs::{format_digest, normalize_path as path_string};
 #[doc(hidden)]
 pub mod cache_record;
 use sdk_docs::concrete_versions;

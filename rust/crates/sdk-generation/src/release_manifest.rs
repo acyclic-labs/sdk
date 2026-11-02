@@ -1,4 +1,5 @@
 use cargo_metadata::Metadata;
+use sdk_docs::normalize_path as path_string;
 use sdk_docs::{
     scenarios::{ScenarioMode, ScenarioSource},
     Channel, PublicationStatus,
@@ -292,10 +293,6 @@ pub fn validate(
         }
     }
     Ok(())
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 fn mode_name(mode: ScenarioMode) -> &'static str {

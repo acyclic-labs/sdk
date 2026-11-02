@@ -193,13 +193,13 @@ impl ProfileSpec {
         let features = self
             .features
             .iter()
-            .map(|feature| crate::hex_digest("", feature.as_bytes()))
+            .map(|feature| crate::format_digest(&[], feature.as_bytes(), ""))
             .collect::<Vec<_>>()
             .join(",");
         ProfileId(format!(
             "p{};t{};d{};f{}",
-            crate::hex_digest("", self.package.as_bytes()),
-            crate::hex_digest("", self.target.as_bytes()),
+            crate::format_digest(&[], self.package.as_bytes(), ""),
+            crate::format_digest(&[], self.target.as_bytes(), ""),
             u8::from(self.default_features),
             features
         ))
