@@ -25,11 +25,12 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
         let mut expected = Vec::new();
         let mut original = None;
         for (ordinal, call_id, anchor) in [
-            (1, "invalid/cell/id 🦀".to_owned(), None),
+            (1, "wire:🦀".to_owned(), None),
             (2, "reused".to_owned(), Some(1)),
             (3, "reused".to_owned(), None),
             (4, "long".repeat(40), Some(2)),
         ] {
+            ToolInvocation::validate_identity(&call_id, Some("NotebookEdit"), &mut None)?;
             let operation_id = OperationId::from_bytes([ordinal; 16]);
             let id = operation_id.to_string();
             let mut arguments = json!({
