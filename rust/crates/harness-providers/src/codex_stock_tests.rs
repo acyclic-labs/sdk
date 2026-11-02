@@ -175,10 +175,16 @@ async fn stock(broken: bool) -> Result<()> {
         // base_url. Disable the new local choice to expose precisely that route.
         provider.codex_login = None;
         provider.key = Some("fixture-key".into());
-        Arc::make_mut(&mut provider.config).token_counter =
-            crate::catalog::default_catalog()["openai"]
-                .token_counter
-                .clone();
+        let mut counter = crate::catalog::default_catalog()["openai"]
+            .token_counter
+            .clone()
+            .ok_or_else(|| invalid("fixture inherited counter is absent"))?;
+        // Generated counter configuration on the original catalog: framing
+        // alone fills this context, so the byte shortcut cannot admit the
+        // unchanged stock task. It must reach the inherited, absent route.
+        counter.framing_tokens = u32::try_from(provider.capacity.context_tokens)
+            .map_err(|_| invalid("fixture context exceeds counter framing"))?;
+        Arc::make_mut(&mut provider.config).token_counter = Some(counter);
     }
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.
