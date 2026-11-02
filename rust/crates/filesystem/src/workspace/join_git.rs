@@ -63,19 +63,6 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         .await
 }
 
-/// The record `path` binds in `view`, if any.
-async fn bound_record<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    view: &Generation<A, O>,
-    path: &str,
-    cancellation: &CancellationToken,
-) -> Result<Option<WorkspaceStat>, WorkspaceError> {
-    match view.stat(path, WorkBudget::UNBOUNDED, cancellation).await {
-        Ok(receipt) => Ok(Some(receipt.value)),
-        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
-        Err(failure) => Err(failure.error),
-    }
-}
-
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     /// Finds a conflicted file whose identity exactly one side replaced at
     /// `path` with a single-link regular file it created.
@@ -108,24 +95,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             id: self.base.id,
             publication_closure: None,
         };
-        let Some((parent, _)) = path.rsplit_once('/') else {
+        // The namespace and lookup backing are temporary; only scalar records
+        // escape. Keep parsing, authorization and reads on the original frame.
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        let parsed = customer_path_with_accounting(path, volume.config, accounting, cancellation)?;
+        let (_allocation, namespace) = (parsed.1, parsed.0);
+        let Some((_, name)) = namespace.split_last() else {
             return Ok(None);
         };
-        let mut path_accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
-        let parsed =
-            customer_path_with_accounting(path, volume.config, &mut path_accounting, cancellation)?;
-        let (_allocation, namespace) = (parsed.1, parsed.0);
-        let (_, name) = namespace
-            .split_last()
-            .ok_or(WorkspaceError::InvalidMergeResolution)?;
-        let parent = if parent.is_empty() { "/" } else { parent };
-        if bound_record(editing, path, cancellation)
-            .await?
-            .is_none_or(|record| record.file_id != file_id)
-        {
+        let entry = {
+            let selected = read_core::lookup_paths(
+                &editing.workspace,
+                GenerationSelector::Exact(editing.id),
+                std::slice::from_ref(&namespace),
+                accounting,
+                cancellation,
+            )
+            .await?;
+            let (_allocation, lookup) = (selected.1, selected.0);
+            *lookup.entries.first().ok_or(FsError::InvalidDiff)?
+        };
+        if entry.record.is_none_or(|record| record.file_id != file_id) {
             return Ok(None);
         }
-        let Some(directory) = bound_record(editing, parent, cancellation).await? else {
+        let Some(directory) = entry.parent else {
             return Ok(None);
         };
         if directory.kind != FileKind::Directory

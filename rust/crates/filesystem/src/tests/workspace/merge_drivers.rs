@@ -313,6 +313,16 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .await
         )?;
         let prepared_components = calibration.work().source_path_components;
+        let view = calibration.describe_conflict_file(conflict.clone()).await?;
+        assert_eq!(view.kind, ConflictKind::Binary);
+        assert_eq!(
+            view.theirs,
+            ConflictValue::Record {
+                generation: pins.2,
+                file_id: replacement
+            }
+        );
+        assert!(calibration.work().source_path_components > prepared_components);
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut bounded = value!(
