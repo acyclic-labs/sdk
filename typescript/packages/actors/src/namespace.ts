@@ -6,7 +6,6 @@ import type * as Semantic from "./generated/semantic/actors/readonly.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const noDeploymentEnvelope = new Uint8Array(0);
 const randomId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 export type LocationHint = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me";
 export interface ActorGetOptions { readonly locationHint?: LocationHint; }
@@ -178,7 +177,7 @@ export class ActorStub {
   }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeActorRequest {
     return { actorId: this.#actor, namespace: this.#namespace,
-      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
+      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: new Uint8Array(0),
       ...(this.#hint === undefined ? {} : {locationHint:this.#hint}),
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }

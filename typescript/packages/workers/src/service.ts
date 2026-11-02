@@ -4,7 +4,6 @@ import type { ActorsClient, ActorsCallOptions } from "@acyclic-labs/actors";
 import type { semantic as Semantic } from "@acyclic-labs/actors";
 
 const encoder = new TextEncoder();
-const noDeploymentEnvelope = new Uint8Array(0);
 
 /** Private Worker binding retaining the original invocation callable and receiver. */
 export class WorkerServiceBinding {
@@ -24,7 +23,7 @@ export class WorkerServiceBinding {
   get identity(): ResourceIdentity { return new ResourceIdentity(this.#account, encoder.encode(this.#worker)); }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeWorkerRequest {
     return { workerName: this.#worker,
-      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
+      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: new Uint8Array(0),
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }
   async fetch(input: RequestInfo | URL, init?: RequestInit, options?: ActorsCallOptions): Promise<Response> {

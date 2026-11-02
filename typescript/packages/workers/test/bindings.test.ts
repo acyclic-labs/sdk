@@ -12,10 +12,15 @@ test("deployment declarations become scoped namespace and private service handle
   const requests: unknown[] = [];
   const record = (request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest) => {
     expect(request.accountId).toEqual(account);
-    requests.push({...request, accountId: Uint8Array.from(request.accountId)});
+    if (!(request.deploymentEnvelope instanceof Uint8Array)) throw new TypeError("binding envelope must own transferable bytes");
+    // Transfer this request's envelope exactly as an IPC adapter can. A shared
+    // empty backing buffer would leave the next request detached and unclonable.
+    const received = structuredClone(request, {transfer:[request.deploymentEnvelope.buffer]});
+    expect(received.deploymentEnvelope).toEqual(new Uint8Array());
+    requests.push(received);
     // A transport owns these request bytes, never the handle's retained scope.
     if (request.accountId instanceof Uint8Array) request.accountId.fill(120);
-    return {status:200,headers:[],body:request.body};
+    return {status:200,headers:[],body:received.body};
   };
   let actorReads = 0, workerReads = 0;
   const actorTransport = {get invokeActor() {
@@ -66,10 +71,10 @@ test("deployment declarations become scoped namespace and private service handle
     return accountField.get!.call(this);
   }});
   try {
-    await actor.rpc("actorCall", new Uint8Array([1]));
-    await worker.rpc("workerCall", new Uint8Array([2]));
-    await actor.rpc("actorWarm", new Uint8Array([3]));
-    await worker.rpc("workerWarm", new Uint8Array([4]));
+    expect(await actor.rpc("actorCall", new Uint8Array([1]))).toEqual(new Uint8Array([1]));
+    expect(await worker.rpc("workerCall", new Uint8Array([2]))).toEqual(new Uint8Array([2]));
+    expect(await actor.rpc("actorWarm", new Uint8Array([3]))).toEqual(new Uint8Array([3]));
+    expect(await worker.rpc("workerWarm", new Uint8Array([4]))).toEqual(new Uint8Array([4]));
     // Negative control: the former getter repeats the real Rust identity decode.
     expect(projections).toBe(0);
   } finally { Object.defineProperty(ResourceIdentity.prototype,"account", accountField); }
