@@ -11,7 +11,7 @@ fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<(
     let pty = rustix_openpty::openpty(None, None)?;
     let _master = File::from(pty.controller);
     let mut tty = RawTty::from_file(File::from(pty.user))?;
-    let result = tty.receive(&mut [0; 8], Instant::now() + Duration::from_millis(1));
+    let result = tty.try_receive(&mut [0; 8]);
     let restored = tty.restore();
     // The old implementation slept until the deadline and returned zero,
     // keeping lifecycle::active locked for the entire wait.
@@ -196,7 +196,7 @@ fn real_trace(
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
     if select {
-        match super::darwin::Readiness::select(&tty.file) {
+        match super::darwin::Readiness::select(&tty.input.file) {
             Ok(readiness) => tty.readiness = Some(readiness),
             Err(error) => {
                 tty.restore()?;
@@ -262,7 +262,7 @@ fn real_trace(
         controller_device,
         "controller custody must survive until restoration acknowledgement"
     );
-    let restored = tcgetattr(&tty.file)?;
+    let restored = tcgetattr(&tty.input.file)?;
     assert_eq!(restored.input_modes, tty.original.input_modes);
     assert_eq!(restored.output_modes, tty.original.output_modes);
     assert_eq!(restored.control_modes, tty.original.control_modes);
@@ -279,7 +279,7 @@ fn real_trace(
         );
     }
     assert_eq!(
-        status_flags::settable_status_flags(&tty.file)?,
+        status_flags::settable_status_flags(&tty.input.file)?,
         original_flags
     );
     assert_eq!(drained?, expected);

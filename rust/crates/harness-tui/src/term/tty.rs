@@ -1,17 +1,73 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 
-use super::{PROBE_TIMEOUT, ProbeIo};
+use super::PROBE_TIMEOUT;
+
+struct Input {
+    file: File,
+    changed: UnixStream,
+}
+
+/// Pins the original terminal and lifecycle wake descriptors while the caller
+/// waits outside the state lock. No descriptor is reopened or duplicated.
+pub(crate) struct InputWait {
+    input: Arc<Input>,
+    #[cfg(target_vendor = "apple")]
+    readiness: acyclic_native_runtime::terminal::Readiness<2>,
+}
+
+pub(crate) trait InputReadiness {
+    fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<bool>;
+}
+
+impl InputReadiness for InputWait {
+    fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<bool> {
+        #[cfg(target_vendor = "apple")]
+        use std::os::fd::AsFd;
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        #[cfg(target_vendor = "apple")]
+        return self.readiness.wait(
+            [
+                active.then(|| self.input.file.as_fd()),
+                Some(self.input.changed.as_fd()),
+            ],
+            timeout,
+        );
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            use rustix::event::{PollFd, PollFlags, Timespec, poll};
+            let mut sources = [
+                PollFd::new(&self.input.changed, PollFlags::IN),
+                PollFd::new(&self.input.file, PollFlags::IN),
+            ];
+            let sources = if active {
+                &mut sources[..]
+            } else {
+                &mut sources[..1]
+            };
+            let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
+            match poll(sources, Some(&timeout)) {
+                Ok(count) => Ok(count != 0),
+                Err(rustix::io::Errno::INTR) => Ok(true),
+                Err(error) => Err(error.into()),
+            }
+        }
+    }
+}
 
 /// Exclusive controlling-terminal connection with raw mode and descriptor flags
 /// restored by the owning lifecycle before releasing ownership. DEC
 /// modes are undone before the original line discipline is restored.
 pub(crate) struct RawTty {
-    file: File,
+    input: Arc<Input>,
+    changed: UnixStream,
+    notified: bool,
     original: Termios,
     flags: OFlags,
     #[cfg(target_vendor = "apple")]
@@ -24,8 +80,16 @@ impl RawTty {
     pub fn from_file(file: File) -> io::Result<Self> {
         let original = tcgetattr(&file)?;
         let flags = fcntl_getfl(&file)?;
+        let (changed, notification) = UnixStream::pair()?;
+        changed.set_nonblocking(true)?;
+        notification.set_nonblocking(true)?;
         let mut tty = Self {
-            file,
+            input: Arc::new(Input {
+                file,
+                changed: notification,
+            }),
+            changed,
+            notified: false,
             original,
             flags,
             #[cfg(target_vendor = "apple")]
@@ -38,15 +102,65 @@ impl RawTty {
         Ok(tty)
     }
 
+    pub(crate) fn input_wait(&self) -> io::Result<InputWait> {
+        #[cfg(target_vendor = "apple")]
+        use std::os::fd::AsFd;
+        Ok(InputWait {
+            input: Arc::clone(&self.input),
+            #[cfg(target_vendor = "apple")]
+            readiness: acyclic_native_runtime::terminal::Readiness::readable([
+                self.input.file.as_fd(),
+                self.input.changed.as_fd(),
+            ])?,
+        })
+    }
+
+    /// State transitions and acknowledgement share the lifecycle lock, so one
+    /// pending byte coalesces every change without a lost wake or queue growth.
+    pub(crate) fn notify(&mut self) -> io::Result<()> {
+        if !self.notified {
+            loop {
+                match self.changed.write(&[1]) {
+                    Ok(1) => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Ok(_) => return Err(io::ErrorKind::WriteZero.into()),
+                    Err(error) => return Err(error),
+                }
+            }
+            self.notified = true;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_input(&mut self) -> io::Result<()> {
+        if self.notified {
+            loop {
+                match (&self.input.changed).read(&mut [0; 1]) {
+                    Ok(1) => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Ok(_) => return Err(io::ErrorKind::NotConnected.into()),
+                    Err(error) => return Err(error),
+                }
+            }
+            self.notified = false;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_receive(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        (&self.input.file).read(bytes)
+    }
+
     pub(crate) fn size(&self) -> io::Result<ratatui::layout::Size> {
-        let size = rustix::termios::tcgetwinsize(&self.file)?;
+        let size = rustix::termios::tcgetwinsize(&self.input.file)?;
         Ok(ratatui::layout::Size::new(size.ws_col, size.ws_row))
     }
 
     /// Restore while the lifecycle still holds exclusive ownership. There is
     /// no destructor restoration: retained state can outlive a newer session.
     pub fn restore(&mut self) -> io::Result<()> {
-        let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original);
+        let termios = tcsetattr(&self.input.file, OptionalActions::Now, &self.original);
         #[cfg(target_os = "macos")]
         let termios = termios.and_then(|()| {
             if !self
@@ -58,19 +172,19 @@ impl RawTty {
                 // across tcsetattr. FIONREAD runs ttypend without consuming
                 // input: queued bytes reenter the original line discipline
                 // and the synthetic PENDIN bit is cleared (xnu tty.c/ttnread).
-                let _ = rustix::io::ioctl_fionread(&self.file)?;
+                let _ = rustix::io::ioctl_fionread(&self.input.file)?;
             }
             Ok(())
         });
-        let flags = fcntl_setfl(&self.file, self.flags);
+        let flags = fcntl_setfl(&self.input.file, self.flags);
         termios.and(flags).map_err(Into::into)
     }
 
     pub(crate) fn reapply(&mut self) -> io::Result<()> {
         let mut raw = self.original.clone();
         raw.make_raw();
-        tcsetattr(&self.file, OptionalActions::Now, &raw)?;
-        fcntl_setfl(&self.file, self.flags | OFlags::NONBLOCK)?;
+        tcsetattr(&self.input.file, OptionalActions::Now, &raw)?;
+        fcntl_setfl(&self.input.file, self.flags | OFlags::NONBLOCK)?;
         Ok(())
     }
 
@@ -110,7 +224,7 @@ pub(crate) fn write_until(
 impl NonblockingWrite for RawTty {
     fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         super::counters::wrote();
-        self.file.write(bytes)
+        (&self.input.file).write(bytes)
     }
 
     #[cfg(not(target_vendor = "apple"))]
@@ -120,7 +234,7 @@ impl NonblockingWrite for RawTty {
         let timeout = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| io::ErrorKind::InvalidInput)?;
         match poll(
-            &mut [PollFd::new(&self.file, PollFlags::OUT)],
+            &mut [PollFd::new(&self.input.file, PollFlags::OUT)],
             Some(&timeout),
         ) {
             Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
@@ -132,17 +246,17 @@ impl NonblockingWrite for RawTty {
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
         super::counters::waited();
         if self.readiness.is_none() {
-            self.readiness = Some(darwin::Readiness::register(&self.file)?);
+            self.readiness = Some(darwin::Readiness::register(&self.input.file)?);
         }
         match &mut self.readiness {
-            Some(readiness) => readiness.wait(&self.file, deadline),
+            Some(readiness) => readiness.wait(&self.input.file, deadline),
             None => Err(io::ErrorKind::NotConnected.into()),
         }
     }
 }
 
-impl ProbeIo for RawTty {
-    fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+impl RawTty {
+    pub(crate) fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
         while !bytes.is_empty() {
             let count = self.write_until(bytes, deadline)?;
             if count == 0 {
@@ -152,12 +266,6 @@ impl ProbeIo for RawTty {
         }
         self.flush()
     }
-
-    fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
-        // The lifecycle takes its state lock around this call. Never sleep
-        // while holding it: a pending input read must not starve frame output.
-        self.file.read(bytes)
-    }
 }
 
 impl Write for RawTty {
@@ -166,13 +274,13 @@ impl Write for RawTty {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        (&self.input.file).flush()
     }
 }
 
 #[cfg(target_vendor = "apple")]
 mod darwin {
-    use acyclic_native_runtime::terminal::Writable;
+    use acyclic_native_runtime::terminal::Readiness as NativeReadiness;
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
     use nix::sys::time::TimeSpec;
     use std::fs::File;
@@ -187,7 +295,7 @@ mod darwin {
     /// poll(2) reports POLLNVAL for terminals.)
     pub(super) enum Readiness {
         Kqueue(Kqueue),
-        Select(Writable),
+        Select(NativeReadiness<1>),
     }
 
     fn event(file: &File, flags: EvFlags) -> io::Result<KEvent> {
@@ -216,7 +324,7 @@ mod darwin {
 
         /// The /dev/tty alias's wait; also what tests force on any terminal.
         pub(super) fn select(file: &File) -> io::Result<Self> {
-            Ok(Self::Select(Writable::new(file.as_fd())?))
+            Ok(Self::Select(NativeReadiness::writable([file.as_fd()])?))
         }
 
         pub(super) fn wait(&mut self, file: &File, deadline: Instant) -> io::Result<()> {
@@ -230,7 +338,9 @@ mod darwin {
                         Err(error) => Err(error.into()),
                     }
                 }
-                Self::Select(writable) => writable.wait(file.as_fd(), remaining),
+                Self::Select(writable) => {
+                    writable.wait([Some(file.as_fd())], remaining).map(|_| ())
+                }
             }
         }
     }

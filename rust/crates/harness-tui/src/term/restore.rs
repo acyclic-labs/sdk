@@ -190,20 +190,6 @@ impl<W: Write> RestoreGuard<W> {
         &mut self.writer
     }
 
-    /// Input cannot mutate the displayed state. Keep this operation narrow:
-    /// exposing the writer here would also permit untracked output changes.
-    #[cfg(all(unix, not(loom)))]
-    pub(crate) fn receive(
-        &mut self,
-        bytes: &mut [u8],
-        deadline: std::time::Instant,
-    ) -> io::Result<usize>
-    where
-        W: super::ProbeIo,
-    {
-        self.writer.receive(bytes, deadline)
-    }
-
     pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         if !self.undo.is_empty() {
             return Err(io::ErrorKind::AlreadyExists.into());
@@ -347,6 +333,19 @@ impl<W: Write> RestoreGuard<W> {
             self.undo.remove(index);
         }
         Ok(())
+    }
+}
+
+#[cfg(all(unix, not(loom)))]
+impl RestoreGuard<super::tty::RawTty> {
+    /// Input and wake acknowledgement cannot mutate displayed state. Keep
+    /// these operations nonblocking and narrower than exposing the writer.
+    pub(crate) fn try_receive(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.writer.try_receive(bytes)
+    }
+
+    pub(crate) fn acknowledge_input(&mut self) -> io::Result<()> {
+        self.writer.acknowledge_input()
     }
 }
 

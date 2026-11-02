@@ -14,7 +14,6 @@ struct Wire {
     fail_at: Option<usize>,
     sends: usize,
     outer_seen: bool,
-    gap: bool,
     broken: u8,
     sent: Vec<u8>,
 }
@@ -46,9 +45,6 @@ impl ProbeIo for Wire {
         if buffer.is_empty() || (self.broken == 1 && self.outer_seen) {
             return Ok(0);
         }
-        if std::mem::take(&mut self.gap) {
-            return Err(io::ErrorKind::WouldBlock.into());
-        }
         let Some(packet) = self.packets.front() else {
             return Ok(0);
         };
@@ -65,7 +61,6 @@ impl ProbeIo for Wire {
             self.outer_seen |= packet == b"\x1b[?62;1c";
             self.packets.pop_front();
             self.offset = 0;
-            self.gap = !self.packets.is_empty();
         }
         Ok(copied)
     }
@@ -128,7 +123,6 @@ pub fn run(
         fail_at,
         sends: 0,
         outer_seen: false,
-        gap: false,
         broken,
         sent: Vec::new(),
     };
@@ -152,13 +146,9 @@ pub fn run(
         let mut events = decoder.take_events();
         let mut buffer = [0; 24];
         loop {
-            let count = match wire.receive(&mut buffer, Instant::now() + PROBE_TIMEOUT) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-                result => {
-                    assert!(result.is_ok(), "{result:?}");
-                    result.unwrap_or(0)
-                }
-            };
+            let result = wire.receive(&mut buffer, Instant::now() + PROBE_TIMEOUT);
+            assert!(result.is_ok(), "{result:?}");
+            let count = result.unwrap_or(0);
             if count == 0 {
                 break;
             }
