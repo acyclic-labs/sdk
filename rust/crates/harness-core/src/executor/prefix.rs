@@ -38,7 +38,8 @@ impl StockExecution<'_> {
         }
         let mut results = Vec::new();
         let mut hook_context = Vec::new();
-        for event in retained.events {
+        for event in stock_events_into_iter(retained.events, self.io)? {
+            let event = event?;
             let (invocation, metadata, native) = match event {
                 ModelEvent::ReasoningBlock { block } => {
                     self.append_assistant_part(
@@ -66,7 +67,10 @@ impl StockExecution<'_> {
                     call.metadata,
                     call.native,
                 ),
-                _ => continue,
+                event => {
+                    stock_retire_event(event, self.io)?;
+                    continue;
+                }
             };
             let (_, call_records) = self
                 .tool_records(journal, input.operation_id, step, &invocation.call_id)

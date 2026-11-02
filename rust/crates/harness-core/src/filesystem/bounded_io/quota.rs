@@ -93,7 +93,7 @@ impl<'a> DecodeReservation<'a> {
         Ok(())
     }
 
-    pub(in crate::filesystem) fn retain_part(&mut self, bytes: u64) -> Result<()> {
+    pub(crate) fn retain_part(&mut self, bytes: u64) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = &mut self.custody {
             return self.io.absorb_native_custody(custody.split_off(bytes)?);
