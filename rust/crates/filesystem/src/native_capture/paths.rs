@@ -22,7 +22,9 @@ pub(super) fn clone_capture_name(
     let mut bytes = capture_vec(name.as_bytes().len(), meter)?;
     bytes.extend_from_slice(name.as_bytes());
     meter.clone().record(copied).map_err(capture_demand_error)?;
-    LogicalName::new(name.encoding(), bytes, u32::MAX).map_err(CaptureError::from)
+    // The immutable source already owns its canonical spelling proof. The
+    // Destination path bounds remain with the original path constructor.
+    Ok(LogicalName::from_validated_bytes(name.encoding(), bytes))
 }
 
 pub(super) fn clone_capture_prefix(
