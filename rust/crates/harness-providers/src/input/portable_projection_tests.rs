@@ -32,16 +32,15 @@ fn whitespace_wire(early: bool) -> (Value, Vec<u8>) {
             });
         }
     }
-    let encoded = serde_json::to_vec(
-        &projection::body_named(
-            &provider,
-            &request,
-            &crate::tool_names::Names::new(&request),
-            &provider.reasoning_origin(provider.key.as_deref(), None),
-            &mut crate::files::FileText::default(),
-        )
-        .unwrap(),
+    let encoded = projection::body_named(
+        &provider,
+        &request,
+        &crate::tool_names::Names::new(&request),
+        &provider.reasoning_origin(provider.key.as_deref(), None),
+        &mut crate::files::FileText::default(),
     )
+    .unwrap()
+    .encode()
     .unwrap();
     assert!(
         encoded.windows(signed.len()).any(|bytes| bytes == signed),

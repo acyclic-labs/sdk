@@ -44,22 +44,24 @@ proptest! {
                 family, provider:"provider".into(), model:"model".into(),
                 endpoint:"https://example.invalid".into(), credential_scope:None,
             };
-            let header = Header::new(target.clone(), [1;32], RENDERER_VERSION,
-                json!({"model":"model"}).as_object().unwrap(), None).unwrap();
+            let mut fields = Fields::default();
+            fields.insert(Field::Model, json!("model"));
+            let header = Header::new(target.clone(), RENDERER_VERSION, &fields, None).unwrap();
+            let tail = Tail::new(&fields).unwrap();
             let first = notice(Some("files".into()), 1, vec![text.clone()]);
             let frozen = notice_block(target.clone(), &[first]).unwrap();
             let stored = serde_json::to_vec(&frozen).unwrap();
             let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
             let mut before = Vec::new();
-            render(&header, [&reopened], Tail, &mut before).unwrap();
+            render(&header, [&reopened], &tail, &mut before).unwrap();
             let later = notice_block(target.clone(), &[notice(Some("files".into()), 2, vec!["later".into()])]).unwrap();
             let mut after = Vec::new();
-            render(&header, [&reopened, &later], Tail, &mut after).unwrap();
-            let prefix = &before[..before.len()-Tail.bytes().len()];
+            render(&header, [&reopened, &later], &tail, &mut after).unwrap();
+            let prefix = &before[..before.len()-tail.bytes().len()];
             prop_assert!(after.starts_with(prefix));
             let rewritten = notice_block(target, &[notice(Some("files".into()), 3, vec!["rewritten".into()])]).unwrap();
             let mut negative = Vec::new();
-            render(&header, [&rewritten, &later], Tail, &mut negative).unwrap();
+            render(&header, [&rewritten, &later], &tail, &mut negative).unwrap();
             prop_assert!(!negative.starts_with(prefix), "editing rendered history must break the oracle");
             let value: Value = serde_json::from_slice(&after).unwrap();
             let field = match family { Family::Responses=>"input", Family::Gemini=>"contents", _=>"messages" };

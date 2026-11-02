@@ -65,28 +65,13 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
     Ok(resolved.into())
 }
 
-/// Both native admission and browser preparation borrow the same projected input.
-#[derive(Serialize)]
-#[serde(untagged)]
-pub(crate) enum CountBody<'a, 'b> {
-    Direct(CountInput<'a, 'b>),
-    Gemini {
-        #[serde(rename = "generateContentRequest")]
-        request: CountInput<'a, 'b>,
-    },
-}
-
-pub(crate) struct CountInput<'a, 'b> {
-    generation: &'a crate::projection::wire::Body<'b>,
-    model: &'a str,
+/// Both native admission and browser preparation count the same projected
+/// request, rendered once more by the one renderer with the count subset.
+pub(crate) fn body(
+    generation: crate::projection::wire::Request<'_>,
+    model: &str,
     adapter: Adapter,
-}
-
-pub(crate) fn body<'a, 'b>(
-    generation: &'a crate::projection::wire::Body<'b>,
-    model: &'a str,
-    adapter: Adapter,
-) -> CountBody<'a, 'b> {
+) -> Result<Vec<u8>> {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
         if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
@@ -94,42 +79,16 @@ pub(crate) fn body<'a, 'b>(
         } else {
             model
         };
-    let input = CountInput {
-        generation,
-        model,
-        adapter,
-    };
+    let input = generation.into_count(model, adapter);
+    let mut bytes = Vec::with_capacity(128);
     if adapter == Adapter::Gemini {
-        CountBody::Gemini { request: input }
+        bytes.extend_from_slice(br#"{"generateContentRequest":"#);
+        input.render(&mut bytes)?;
+        bytes.push(b'}');
     } else {
-        CountBody::Direct(input)
+        input.render(&mut bytes)?;
     }
-}
-
-impl Serialize for CountInput<'_, '_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        if self.adapter == Adapter::Gemini {
-            self.generation
-                .serialize_fields(serializer, None, Some(CountModel(self.model)))
-        } else {
-            self.generation
-                .serialize_fields(serializer, Some(fields(self.adapter)), None::<&str>)
-        }
-    }
-}
-
-struct CountModel<'a>(&'a str);
-
-impl Serialize for CountModel<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_str(&format_args!("models/{}", self.0))
-    }
+    Ok(bytes)
 }
 
 pub(crate) fn fields(adapter: Adapter) -> &'static [&'static str] {

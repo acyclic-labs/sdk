@@ -6,51 +6,32 @@ use acyclic_harness_core::{
     profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
 };
 use proptest::prelude::*;
-use serde::Serializer as _;
 use serde::de::{MapAccess, Visitor};
 use serde_json::{Map, json};
-use std::{
-    fmt,
-    io::{self, Write},
-};
+use std::fmt;
 
-// Restore the former map-based serialization as a semantic oracle. Root order
-// comes from the selected serde_json map backend, as it did before this change.
-struct Former<'a, 'body>(&'a Body<'body>);
-impl Serialize for Former<'_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        let fields: Map<_, _> = self
-            .0
-            .fields
-            .iter()
-            .map(|(name, value)| (name.to_owned(), value.clone()))
-            .collect();
-        for (name, value) in &fields {
-            map.serialize_entry(name, value)?;
-        }
-        if let Some(tools) = &self.0.tools {
-            map.serialize_entry("tools", tools)?;
-        }
-        map.serialize_entry(self.0.messages_field, &self.0.messages)?;
-        map.end()
+// The former map-based serialization as a semantic oracle: every root field,
+// the declarations and the conversation in one map, whatever its key order.
+fn former(body: &Request<'_>) -> Value {
+    let mut map = Map::new();
+    for (name, value) in body.fields.header().chain(body.fields.call_controls()) {
+        map.insert(name.to_owned(), value.clone());
     }
+    if let Some(tools) = body.fields.tools() {
+        map.insert("tools".into(), serde_json::from_str(tools.get()).unwrap());
+    }
+    map.insert(
+        conversation(body.target.family).into(),
+        serde_json::to_value(&body.messages).unwrap(),
+    );
+    Value::Object(map)
 }
 
-struct Closed {
-    writes: usize,
-}
-impl Write for Closed {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.writes += 1;
-        if self.writes == 1 {
-            Ok(bytes.len())
-        } else {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        panic!("serialization must not flush")
+fn conversation(family: Adapter) -> &'static str {
+    match family {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        Adapter::Anthropic | Adapter::Chat => "messages",
     }
 }
 
@@ -105,7 +86,6 @@ fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields) {
         .bind_model(&provider.model, provider.capacity)
         .unwrap();
     super::super::profile::project(provider.config.adapter, &binding, fields);
-    fields.freeze();
 }
 
 // Print one repeatable configuration-byte identity for the two feature builds.
@@ -119,13 +99,6 @@ fn configuration_pin() {
         "configuration_map_preserves_order={}",
         probe.keys().next().unwrap() == "z"
     );
-    struct Configuration<'a, 'body>(&'a Body<'body>);
-    impl Serialize for Configuration<'_, '_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            self.0
-                .serialize_with_messages(serializer, None, None::<&str>, &[] as &[Value])
-        }
-    }
     let mut digest = blake3::Hasher::new();
     for family in [
         Adapter::Responses,
@@ -152,7 +125,8 @@ fn configuration_pin() {
         )
         .unwrap();
         freeze_effort(&provider, &mut body.fields);
-        let bytes = serde_json::to_vec(&Configuration(&body)).unwrap();
+        body.messages.clear();
+        let bytes = body.encode().unwrap();
         println!(
             "configuration_wire={}",
             std::str::from_utf8(&bytes).unwrap()
@@ -202,8 +176,11 @@ proptest! {
                     let encoded = super::super::cache::encode(&body, &provider, &origin).unwrap();
                     let wire = &encoded.bytes;
                     let actual: Value = serde_json::from_slice(wire).unwrap();
-                    let former = serde_json::to_vec(&Former(&body)).unwrap();
-                    prop_assert_eq!(&actual, &serde_json::from_slice::<Value>(&former).unwrap());
+                    prop_assert_eq!(&actual, &former(&body));
+                    // The header, then the conversation, then the call trailer.
+                    let header = body.header().unwrap();
+                    let tail = body.tail().unwrap();
+                    prop_assert!(wire.starts_with(header.bytes()) && wire.ends_with(tail.bytes()));
                     prop_assert_eq!(crate::validate_input(family, &actual), Vec::<&str>::new());
                     let object: Object = serde_json::from_slice(wire).unwrap();
                     let keys: Vec<_> = object.0.iter().map(|(key, _)| key.as_str()).collect();
@@ -220,6 +197,9 @@ proptest! {
                         Adapter::Anthropic => vec!["model", "stream", "system", "cache_control", "thinking", "output_config"],
                         Adapter::Gemini => vec!["systemInstruction"],
                     };
+                    let header_keys = expected.len();
+                    if body.fields.tools().is_some() { expected.push("tools"); }
+                    expected.push(conversation(family));
                     if family == Adapter::Gemini { expected.push("generationConfig"); }
                     else {
                         expected.push(limit);
@@ -228,8 +208,6 @@ proptest! {
                             if family == Adapter::Chat { expected.push("seed"); }
                         }
                     }
-                    if body.tools.is_some() { expected.push("tools"); }
-                    expected.push(body.messages_field);
                     prop_assert_eq!(&keys, &expected);
                     let config = if family == Adapter::Gemini {
                         let raw = &object.0.iter().find(|(key, _)| key == "generationConfig").unwrap().1;
@@ -246,24 +224,14 @@ proptest! {
                     }
                     // A sorted-map root (the original default build) cannot
                     // satisfy the explicit protocol order, with values unchanged.
-                    let mut sorted: Map<_, _> = body.fields.iter().map(|(name, value)| (name.to_owned(), value.clone())).collect();
-                    sorted.sort_keys();
-                    let restored: Vec<_> = sorted.keys().map(String::as_str).collect();
-                    prop_assert_ne!(restored.as_slice(), &expected[..expected.len() - usize::from(body.tools.is_some()) - 1]);
-
-                    let mut serializer = serde_json::Serializer::new(io::sink());
-                    let mut map = serializer.serialize_map(None).unwrap();
-                    let cost = acyclic_test_support::measure(|| body.serialize_trailer(&mut map, None).unwrap());
-                    map.end().unwrap();
-                    prop_assert_eq!((cost.count_total, cost.bytes_total), (0, 0));
-                    let copied = acyclic_test_support::measure(|| { std::hint::black_box(body.fields.clone()); });
-                    prop_assert!(copied.count_total > 0);
-                    let mut closed = Closed { writes: 0 };
-                    let mut serializer = serde_json::Serializer::new(&mut closed);
-                    let mut map = serializer.serialize_map(None).unwrap();
-                    let refusal = body.serialize_trailer(&mut map, None).unwrap_err();
-                    prop_assert_eq!(refusal.io_error_kind(), Some(io::ErrorKind::BrokenPipe));
-                    prop_assert_eq!(closed.writes, 2);
+                    // Gemini's header has one slot, so only order of several
+                    // slots can distinguish the two builds.
+                    if header_keys > 1 {
+                        let mut sorted: Map<_, _> = body.fields.header().map(|(name, value)| (name.to_owned(), value.clone())).collect();
+                        sorted.sort_keys();
+                        let restored: Vec<_> = sorted.keys().map(String::as_str).collect();
+                        prop_assert_ne!(restored.as_slice(), &expected[..header_keys]);
+                    }
 
                     if changed && matches!(family, Adapter::Anthropic | Adapter::Responses) {
                         let mut unsupported = request.clone();

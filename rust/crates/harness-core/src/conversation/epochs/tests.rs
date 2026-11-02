@@ -829,9 +829,8 @@ fn summary_header(
 ) -> acyclic_model_render::Header {
     acyclic_model_render::Header::new(
         target.clone(),
-        [7; 32],
         acyclic_model_render::RENDERER_VERSION,
-        &serde_json::Map::new(),
+        &acyclic_model_render::Fields::default(),
         index,
     )
     .unwrap()

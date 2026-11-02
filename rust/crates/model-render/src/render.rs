@@ -1,6 +1,6 @@
 use crate::selection::{Selection, select};
-use crate::{Family, ItemKind, Provenance, RENDERER_VERSION, WireItem};
-use serde_json::{Map, Value, value::RawValue};
+use crate::{Family, Fields, ItemKind, Provenance, RENDERER_VERSION, WireItem};
+use serde_json::{Value, value::RawValue};
 use std::{
     fmt,
     io::{self, Write},
@@ -36,81 +36,47 @@ impl std::error::Error for RenderError {}
 #[derive(Clone, Debug)]
 pub struct Header {
     target: Provenance,
-    epoch: [u8; 32],
     prefix: Vec<u8>,
     summary_permitted: bool,
     summary_artifact: Option<usize>,
 }
 impl Header {
-    /// Pins the renderer version, epoch, target protocol and fixed root fields.
+    /// Pins the renderer version, target protocol and the header slots of
+    /// `fields`, in their fixed schema order, then the encoded tools.
     /// `summary_artifact` pins one index in the epoch's frozen summary set;
     /// `None` selects portable text and is the alloy default. Changing that
     /// choice requires another epoch, just like changing the root fields.
+    /// Call controls are never part of the header: [`Tail`] encodes them.
     ///
     /// # Errors
-    /// Refuses another renderer version, a second conversation input field, or
-    /// per-step tool controls that could conflict with the request purpose.
+    /// Refuses another renderer version or an invalid target.
     pub fn new(
         target: Provenance,
-        epoch: [u8; 32],
         version: u32,
-        fields: &Map<String, Value>,
+        fields: &Fields,
         summary_artifact: Option<usize>,
     ) -> Result<Self, RenderError> {
         target.validate()?;
-        let family = target.family;
         if version != RENDERER_VERSION {
             return Err(RenderError::InvalidItem("unsupported renderer version"));
         }
-        if ["messages", "input", "contents"]
-            .iter()
-            .any(|key| fields.contains_key(*key))
-        {
-            return Err(RenderError::InvalidItem(
-                "header cannot contain conversation items",
-            ));
-        }
-        if ["tool_choice", "toolConfig"]
-            .iter()
-            .any(|key| fields.contains_key(*key))
-        {
-            return Err(RenderError::InvalidItem(
-                "per-step tool controls belong outside the frozen header",
-            ));
-        }
-        // GenerateContent's NONE controls function declarations only. It
-        // cannot establish that a built-in server tool will not execute.
-        let summary_permitted = family != Family::Gemini
-            || fields.get("tools").is_none_or(|tools| {
-                tools.as_array().is_some_and(|tools| {
-                    tools.iter().all(|tool| {
-                        tool.as_object().is_some_and(|tool| {
-                            tool.len() == 1
-                                && tool
-                                    .get("functionDeclarations")
-                                    .is_some_and(Value::is_array)
-                        })
-                    })
-                })
-            });
-        let mut prefix = serde_json::to_vec(fields).map_err(RenderError::Json)?;
-        prefix.pop(); // The encoded object always ends with its closing brace.
-        if !fields.is_empty() {
+        let mut prefix = vec![b'{'];
+        for (name, value) in fields.header() {
+            entry(&mut prefix, name, value)?;
             prefix.push(b',');
         }
-        serde_json::to_writer(&mut prefix, family.input()).map_err(RenderError::Json)?;
+        if let Some(tools) = fields.tools() {
+            entry(&mut prefix, "tools", tools)?;
+            prefix.push(b',');
+        }
+        serde_json::to_writer(&mut prefix, target.family.input()).map_err(RenderError::Json)?;
         prefix.extend_from_slice(b":[");
         Ok(Self {
+            summary_permitted: target.family != Family::Gemini || !fields.server_tools(),
             target,
-            epoch,
             prefix,
-            summary_permitted,
             summary_artifact,
         })
-    }
-    /// Epoch identity; a changed header requires a changed epoch in the owner.
-    pub fn epoch(&self) -> &[u8; 32] {
-        &self.epoch
     }
     /// Stable prefix before the conversation array, with no per-request state.
     pub fn bytes(&self) -> &[u8] {
@@ -128,13 +94,121 @@ impl Header {
     }
 }
 
-/// Request closers. Moving per-request state belongs here, never in an item.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Tail;
+fn entry(
+    out: &mut Vec<u8>,
+    name: &str,
+    value: &(impl serde::Serialize + ?Sized),
+) -> Result<(), RenderError> {
+    serde_json::to_writer(&mut *out, name).map_err(RenderError::Json)?;
+    out.push(b':');
+    serde_json::to_writer(out, value).map_err(RenderError::Json)
+}
+
+/// Request closer: the conversation array's end, then the per-call controls.
+/// Moving per-request state belongs here, never in the header or an item.
+/// Ordinary and summary calls share this one encoder.
+#[derive(Clone, Debug)]
+pub struct Tail {
+    bytes: Vec<u8>,
+    summary: Option<Family>,
+}
 impl Tail {
+    /// The ordinary trailer for `fields`' call controls.
+    ///
+    /// # Errors
+    /// Model JSON encoding failed.
+    pub fn new(fields: &Fields) -> Result<Self, RenderError> {
+        Self::encode(fields.call_controls(), None, None)
+    }
+
+    /// The same trailer with tool invocation disabled in the target family's
+    /// own control. Suppression replaces any ordinary tool choice.
+    ///
+    /// # Errors
+    /// Model JSON encoding failed.
+    pub fn summary(fields: &Fields, family: Family) -> Result<Self, RenderError> {
+        let none = match family {
+            Family::Responses | Family::Chat => Value::from("none"),
+            Family::Anthropic => serde_json::json!({"type":"none"}),
+            Family::Gemini => serde_json::json!({"functionCallingConfig":{"mode":"NONE"}}),
+        };
+        let name = if family == Family::Gemini {
+            "toolConfig"
+        } else {
+            "tool_choice"
+        };
+        let controls = fields
+            .call_controls()
+            .filter(|(field, _)| !matches!(*field, "tool_choice" | "toolConfig"));
+        Self::encode(controls, Some((name, &none)), Some(family))
+    }
+
+    fn encode<'a>(
+        controls: impl Iterator<Item = (&'static str, &'a Value)>,
+        suppression: Option<(&'static str, &'a Value)>,
+        summary: Option<Family>,
+    ) -> Result<Self, RenderError> {
+        let mut bytes = vec![b']'];
+        for (name, value) in controls.chain(suppression) {
+            bytes.push(b',');
+            entry(&mut bytes, name, value)?;
+        }
+        bytes.push(b'}');
+        Ok(Self { bytes, summary })
+    }
+
     /// Bytes outside the cacheable conversation prefix.
-    pub const fn bytes(self) -> &'static [u8] {
-        b"]}"
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// One conversation array element. The renderer owns separators, so an
+/// element writes only its own JSON, or nothing when the target drops it.
+pub trait Segment {
+    /// Writes this element for `target`. For a written Gemini element,
+    /// returns whether it is a model turn when that is known.
+    ///
+    /// # Errors
+    /// A projection refusal or the first writer refusal; never retried.
+    fn write(
+        &self,
+        target: &Provenance,
+        writer: &mut impl Write,
+    ) -> Result<Option<bool>, RenderError>;
+}
+
+impl<T: Segment + ?Sized> Segment for &T {
+    fn write(
+        &self,
+        target: &Provenance,
+        writer: &mut impl Write,
+    ) -> Result<Option<bool>, RenderError> {
+        (**self).write(target, writer)
+    }
+}
+
+impl Segment for WireItem {
+    fn write(
+        &self,
+        target: &Provenance,
+        writer: &mut impl Write,
+    ) -> Result<Option<bool>, RenderError> {
+        let Some(raw) = seg(target, self)? else {
+            return Ok(None);
+        };
+        writer
+            .write_all(raw.get().as_bytes())
+            .map_err(RenderError::Write)?;
+        Ok(self.gemini_model_turn(raw))
+    }
+}
+
+/// Maps a serializer failure, keeping the caller's writer error typed.
+pub fn json_error(error: serde_json::Error) -> RenderError {
+    match error.io_error_kind() {
+        Some(kind) => RenderError::Write(io::Error::new(kind, error)),
+        None => RenderError::Json(error),
     }
 }
 
@@ -190,23 +264,28 @@ pub fn summary_artifact<'a, T: ?Sized>(
 
 /// Writes exactly the caller-selected epoch items. There is no history window,
 /// look-behind, reordering, request-sized allocation or hidden input read.
-/// Each emitted item costs one separator and one borrowed-byte write.
+/// Each emitted item costs one separator and its own write.
 ///
 /// # Errors
 /// Returns the first projection or writer refusal; it never waits or retries.
-pub fn render<'a>(
+pub fn render<S: Segment>(
     header: &Header,
-    items: impl IntoIterator<Item = &'a WireItem>,
-    tail: Tail,
+    items: impl IntoIterator<Item = S>,
+    tail: &Tail,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
+    if tail.summary.is_some() {
+        return Err(RenderError::InvalidItem(
+            "a summary trailer requires a summary instruction",
+        ));
+    }
     render_request(header, items, tail, None, writer)
 }
 
 /// Appends one transient summary instruction to the selected epoch range and
-/// disables tool invocation for that request. The header and prior item bytes
-/// are identical to ordinary rendering; provider cache hits are a separate
-/// guarantee (Anthropic tool-choice changes invalidate message caching).
+/// disables tool invocation through the summary [`Tail`]. The header and prior
+/// item bytes are identical to ordinary rendering; provider cache hits are a
+/// separate guarantee (Anthropic tool-choice changes invalidate message caching).
 ///
 /// # Errors
 /// Refuses Gemini built-in tools before writing any request bytes: its function
@@ -214,27 +293,58 @@ pub fn render<'a>(
 /// [`render`]. A nonempty Gemini range must end with an admitted model turn;
 /// otherwise rendering refuses after the unchanged prefix, before appending an
 /// instruction. No summary instruction is persisted as conversation history.
-pub fn render_summary<'a>(
+pub fn render_summary<S: Segment>(
     header: &Header,
-    items: impl IntoIterator<Item = &'a WireItem>,
+    items: impl IntoIterator<Item = S>,
     instruction: &str,
+    tail: &Tail,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
     if instruction.is_empty() {
         return Err(RenderError::InvalidItem("missing summary instruction"));
+    }
+    if tail.summary != Some(header.target.family) {
+        return Err(RenderError::InvalidItem(
+            "summary generation requires the matching protocol summary trailer",
+        ));
     }
     if !header.summary_permitted {
         return Err(RenderError::InvalidItem(
             "Gemini built-in tools cannot be disabled for summary generation",
         ));
     }
-    render_request(header, items, Tail, Some(instruction), writer)
+    render_request(header, items, tail, Some(instruction), writer)
 }
 
-fn render_request<'a>(
+/// Writes the renderer's separator lazily, just before an element's first
+/// byte, so a dropped element leaves no trace.
+struct Element<'a, W> {
+    writer: &'a mut W,
+    separator: &'static [u8],
+    wrote: bool,
+}
+
+impl<W: Write> Write for Element<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if !self.wrote {
+            self.writer.write_all(self.separator)?;
+            self.wrote = true;
+        }
+        self.writer.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+fn render_request<S: Segment>(
     header: &Header,
-    items: impl IntoIterator<Item = &'a WireItem>,
-    tail: Tail,
+    items: impl IntoIterator<Item = S>,
+    tail: &Tail,
     summary: Option<&str>,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
@@ -245,12 +355,14 @@ fn render_request<'a>(
     let mut separator = b"".as_slice();
     let mut last_gemini_model = None;
     for item in items {
-        if let Some(raw) = seg(&header.target, item)? {
-            last_gemini_model = Some(item.gemini_model_turn(raw));
-            writer.write_all(separator).map_err(RenderError::Write)?;
-            writer
-                .write_all(raw.get().as_bytes())
-                .map_err(RenderError::Write)?;
+        let mut element = Element {
+            writer: &mut writer,
+            separator,
+            wrote: false,
+        };
+        let turn = item.write(&header.target, &mut crate::sink::Sink(&mut element))?;
+        if element.wrote {
+            last_gemini_model = Some(turn);
             separator = b",";
         }
     }
@@ -299,17 +411,7 @@ fn render_request<'a>(
                 )
             }
         }
-        .map_err(|error| match error.io_error_kind() {
-            Some(kind) => RenderError::Write(io::Error::new(kind, error)),
-            None => RenderError::Json(error),
-        })?;
-        let controls = match header.target.family {
-            Family::Responses | Family::Chat => b"],\"tool_choice\":\"none\"}".as_slice(),
-            Family::Anthropic => b"],\"tool_choice\":{\"type\":\"none\"}}",
-            Family::Gemini => b"],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"NONE\"}}}",
-        };
-        writer.write_all(controls).map_err(RenderError::Write)
-    } else {
-        writer.write_all(tail.bytes()).map_err(RenderError::Write)
+        .map_err(json_error)?;
     }
+    writer.write_all(tail.bytes()).map_err(RenderError::Write)
 }
