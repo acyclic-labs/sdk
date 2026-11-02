@@ -552,11 +552,7 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-<<<<<<< HEAD
-            let scroll = if overlay.is_some() || source.is_some() {
-=======
-            let panel_scroll = if overlay.is_some() || diff_open {
->>>>>>> 8b41c36e92 (Remove default totals and admit complete durable agent effects)
+            let panel_scroll = if overlay.is_some() || source.is_some() {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
