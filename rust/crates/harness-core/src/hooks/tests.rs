@@ -910,21 +910,27 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let (first_tx, first_rx) = oneshot::channel();
     let (second_tx, second_rx) = oneshot::channel();
     let mut receivers = [first_rx, second_rx].into_iter();
-    let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, 65_536, |_, _, _| {
-        let receiver = receivers.next();
-        let started = &started;
-        async move {
-            started.set(started.get() + 1);
-            Ok((
-                Some(0),
-                receiver
-                    .ok_or_else(|| Error::Invalid("missing hook receiver".into()))?
-                    .await
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                vec![],
-            ))
-        }
-    });
+    let future = hooks.run_commands(
+        HookEvent::PreToolUse,
+        &input,
+        &registry,
+        65_536,
+        |_, _, _| {
+            let receiver = receivers.next();
+            let started = &started;
+            async move {
+                started.set(started.get() + 1);
+                Ok((
+                    Some(0),
+                    receiver
+                        .ok_or_else(|| Error::Invalid("missing hook receiver".into()))?
+                        .await
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    vec![],
+                ))
+            }
+        },
+    );
     futures::pin_mut!(future);
     assert!(future.as_mut().now_or_never().is_none());
     assert_eq!(
