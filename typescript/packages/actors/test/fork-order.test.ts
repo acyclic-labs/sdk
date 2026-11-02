@@ -25,6 +25,8 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
         return { status: 200, headers: [], body: request.body };
       },
       async forkActor(request) {
+        expect(request.accountId).toEqual(new TextEncoder().encode("account"));
+        expect(request.namespace).toBe("ClassOne");
         expect(request.childActorId).toBe("child");
         forks.push(request.actorId);
         return { actor: { actorId: request.childActorId } };
@@ -40,8 +42,11 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     const namespace = new ActorNamespaceBinding(new TextEncoder().encode("account"), "ClassOne", transport as never, "OBJECTS");
     const barrier = () => namespace.getByName("barrier").rpc("barrier", new Uint8Array());
     const child = namespace.idFromName("child");
+    const selected = child.reference;
+    Object.defineProperty(child, "reference", {get() { throw new Error("substituted public child reference"); }});
 
     const success = namespace.getByName("success");
+    Object.defineProperty(success, "reference", {get() { throw new Error("substituted public parent reference"); }});
     const slow = success.rpc("slow", new Uint8Array());
     const fast = success.rpc("fast", new Uint8Array());
     await entered.get("success")!.promise;
@@ -55,7 +60,7 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     expect(forks).toEqual([]);
     gates.get("success")!.resolve();
     await slow;
-    expect((await forked).equals(child.reference)).toBe(true);
+    expect((await forked).equals(selected)).toBe(true);
     expect(forks).toEqual(["success"]);
     gates.get("late")!.resolve();
     await late;
@@ -99,6 +104,7 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     const invokeOnly = new ActorNamespaceBinding(new TextEncoder().encode("account"), "ClassOne", { invokeActor: transport.invokeActor } as never, "OBJECTS");
     await expect(invokeOnly.getByName("success").fork(child, [])).rejects.toThrow("cannot fork");
     const outside = new ActorNamespaceBinding(new TextEncoder().encode("account"), "ClassTwo", transport as never, "OBJECTS").idFromName("child");
+    Object.defineProperty(outside, "reference", {get() { return selected; }});
     await expect(success.fork(outside, [])).rejects.toThrow("outside");
     await expect(success.fork(namespace.idFromName("success"), [])).rejects.toThrow("itself");
   } finally {
