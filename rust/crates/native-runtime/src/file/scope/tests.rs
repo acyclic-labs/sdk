@@ -41,9 +41,11 @@ fn owned_control_reuses_only_current_file_health() -> io::Result<()> {
     let alias = original.reopen()?;
     let payload = Arc::clone(&native.file);
     let health = native.health.clone();
+    let (release, released) = std::sync::mpsc::sync_channel(1);
     let (checked, verification) = std::sync::mpsc::sync_channel(1);
-    let terminal = crate::tests::complete(native.control_async(
+    let mut control = native.control_async(
         move |file, _| {
+            released.recv().map_err(io::Error::other)?;
             let current = ACTIVE_FILES.with(Cell::get);
             let before = queries();
             write_all_at(file, 0, b"owned", None)?;
@@ -100,10 +102,14 @@ fn owned_control_reuses_only_current_file_health() -> io::Result<()> {
             checked.send(()).map_err(io::Error::other)
         },
         None,
-    )?);
+    )?;
+    // Fix admission before allowing poison, then observe only after every
+    // callback check. The result cannot race the initial submission poll.
+    crate::tests::submit(&mut control);
+    release.send(()).map_err(io::Error::other)?;
     verification.recv().map_err(io::Error::other)?;
     assert_eq!(
-        terminal.unwrap_err().to_string(),
+        crate::tests::complete(control).unwrap_err().to_string(),
         "prior native I/O completion on this file is uncertain"
     );
     assert_eq!(std::fs::read(original.path())?, b"owned");
