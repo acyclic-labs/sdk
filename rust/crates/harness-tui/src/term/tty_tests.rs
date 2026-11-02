@@ -139,11 +139,30 @@ struct Traced<'a> {
     tty: &'a mut RawTty,
     trace: Vec<Op>,
     spin: bool,
+    blocked: Option<std::sync::mpsc::Sender<()>>,
+}
+impl Traced<'_> {
+    fn release_drain(&mut self) -> io::Result<()> {
+        if let Some(blocked) = self.blocked.take() {
+            blocked
+                .send(())
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "PTY drain ended"))?;
+        }
+        Ok(())
+    }
 }
 impl NonblockingWrite for Traced<'_> {
     fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let result = self.tty.try_write(bytes);
+        let returned_without_room = self.spin
+            && self.trace.last() == Some(&Op::Wait)
+            && matches!(&result, Err(error) if error.kind() == io::ErrorKind::WouldBlock);
         record(&mut self.trace, &result);
+        if returned_without_room {
+            // Keep the broken wait's next EAGAIN in the real trace before
+            // allowing the controller to drain. Scheduling cannot hide it.
+            self.release_drain()?;
+        }
         result
     }
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
@@ -153,6 +172,7 @@ impl NonblockingWrite for Traced<'_> {
             std::thread::yield_now();
             Ok(())
         } else {
+            self.release_drain()?;
             self.tty.wait_writable(deadline)
         }
     }
@@ -161,56 +181,87 @@ impl NonblockingWrite for Traced<'_> {
 const FRAME: usize = 256 * 1024;
 
 /// Write a frame far larger than the kernel PTY queue (1 KiB on macOS, 4 KiB
-/// on Linux) while the emulator side starts reading late.
+/// on Linux). The emulator starts draining only after the write gets EAGAIN.
 /// `select` forces Darwin's /dev/tty-alias wait (unlimited select) on any
 /// terminal; elsewhere every terminal has the one poll(2) wait.
-fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Result<Vec<Op>> {
+fn real_trace(
+    user: File,
+    controller: File,
+    spin: bool,
+    select: bool,
+    bytes: &[u8],
+) -> io::Result<Vec<Op>> {
     let controller_device = controller.metadata()?.rdev();
-    let drain = std::thread::spawn(move || {
-        let mut controller = controller;
-        std::thread::sleep(Duration::from_millis(20));
-        let mut total = 0;
-        let mut buffer = [0; 65536];
-        while total < FRAME {
-            match controller.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => total += count,
-            }
-        }
-        // Keep the controller in the join result until restoration is acknowledged.
-        (controller, total)
-    });
     let original_flags = status_flags::settable_status_flags(&user)?;
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
     if select {
-        tty.readiness = Some(super::darwin::Readiness::select(&tty.file)?);
+        match super::darwin::Readiness::select(&tty.file) {
+            Ok(readiness) => tty.readiness = Some(readiness),
+            Err(error) => {
+                tty.restore()?;
+                return Err(error);
+            }
+        }
     }
     #[cfg(not(target_vendor = "apple"))]
     let _ = select;
+    let (blocked, backpressure) = std::sync::mpsc::channel();
+    let expected = bytes.len();
+    let drain = std::thread::spawn(move || {
+        let mut controller = controller;
+        let drained = backpressure
+            .recv()
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer ended before EAGAIN")
+            })
+            .and_then(|()| {
+                let mut total = 0;
+                let mut buffer = [0; 65536];
+                while total < expected {
+                    match controller.read(&mut buffer) {
+                        Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                        Ok(count) => total += count,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(total)
+            });
+        // Keep the controller in the join result until restoration is acknowledged.
+        (controller, drained)
+    });
     let mut traced = Traced {
         tty: &mut tty,
         trace: Vec::new(),
         spin,
+        blocked: Some(blocked),
     };
-    let written = write_all(&mut traced, &vec![b'x'; FRAME], write_until);
-    let trace = traced.trace;
+    let written = write_all(&mut traced, bytes, write_until);
+    let trace = std::mem::take(&mut traced.trace);
+    // A writer that exits before backpressure closes the event producer.
+    drop(traced);
     if let Err(error) = written {
-        tty.restore()?;
+        let restored = tty.restore();
+        // A partial failed write must also end the controller's pending read.
+        drop(tty);
+        let _ = drain
+            .join()
+            .map_err(|_| io::Error::other("drain panicked"))?;
+        restored?;
         return Err(error);
     }
     // Joining transfers controller custody; worker completion cannot hang up
     // the slave while its owner restores termios and descriptor flags.
-    let (controller, drained) = drain
-        .join()
-        .map_err(|_| io::Error::other("drain panicked"))?;
+    let drained = drain.join();
+    let restored = tty.restore();
+    let (controller, drained) = drained.map_err(|_| io::Error::other("drain panicked"))?;
+    restored?;
     assert_eq!(
         controller.metadata()?.rdev(),
         controller_device,
         "controller custody must survive until restoration acknowledgement"
     );
-    let restored = tty.restore();
-    restored.expect("restoration acknowledged while controller is retained");
     let restored = tcgetattr(&tty.file)?;
     assert_eq!(restored.input_modes, tty.original.input_modes);
     assert_eq!(restored.output_modes, tty.original.output_modes);
@@ -231,7 +282,7 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
         status_flags::settable_status_flags(&tty.file)?,
         original_flags
     );
-    assert_eq!(drained, FRAME);
+    assert_eq!(drained?, expected);
     drop(controller);
     Ok(trace)
 }
@@ -252,6 +303,7 @@ fn assert_waits_make_progress(trace: &[Op]) {
 
 #[test]
 fn real_pty_waits_only_until_writable() -> io::Result<()> {
+    let bytes = vec![b'x'; FRAME];
     for select in [false, true] {
         let pty = rustix_openpty::openpty(None, None)?;
         let trace = real_trace(
@@ -259,9 +311,34 @@ fn real_pty_waits_only_until_writable() -> io::Result<()> {
             File::from(pty.controller),
             false,
             select,
+            &bytes,
         )?;
         assert_waits_make_progress(&trace);
     }
+    let pty = rustix_openpty::openpty(None, None)?;
+    let trace = real_trace(
+        File::from(pty.user),
+        File::from(pty.controller),
+        true,
+        false,
+        &bytes,
+    )?;
+    assert!(std::panic::catch_unwind(|| assert_waits_make_progress(&trace)).is_err());
+
+    // No write means no EAGAIN producer. Its closure must finish the same
+    // real controller wait with a typed error, rather than strand the join.
+    let pty = rustix_openpty::openpty(None, None)?;
+    assert_eq!(
+        real_trace(
+            File::from(pty.user),
+            File::from(pty.controller),
+            false,
+            false,
+            &[],
+        )
+        .map_err(|error| error.kind()),
+        Err(io::ErrorKind::BrokenPipe)
+    );
     Ok(())
 }
 
@@ -284,28 +361,21 @@ fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
             return Ok(());
         }
     }
+    let bytes = vec![b'x'; FRAME];
     for select in [false, true] {
         let pty = rustix_openpty::openpty(None, None)?;
         let high = rustix::io::fcntl_dupfd_cloexec(&pty.user, 1500)?;
         drop(pty.user);
-        let trace = real_trace(File::from(high), File::from(pty.controller), false, select)?;
+        let trace = real_trace(
+            File::from(high),
+            File::from(pty.controller),
+            false,
+            select,
+            &bytes,
+        )?;
         assert_waits_make_progress(&trace);
     }
     Ok(())
-}
-
-#[test]
-#[should_panic(expected = "without room")]
-fn negative_control_spinning_wait_is_detected() {
-    let pty = rustix_openpty::openpty(None, None).unwrap_or_else(|error| panic!("{error}"));
-    let trace = real_trace(
-        File::from(pty.user),
-        File::from(pty.controller),
-        true,
-        false,
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
-    assert_waits_make_progress(&trace);
 }
 
 #[test]
