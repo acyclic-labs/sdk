@@ -1,5 +1,41 @@
 # Polling and timed-wait inventory
 
+Identity HTTP-entry observation successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1279` | Three-second entry timeout before blocked-output progress check | Await the actual handler's one-shot entry together with original transport output and HTTP task termination. | Source complete; runtime qualification pending |
+| `plugin/identity/src/mcp.rs:1341` | Three-second entry timeout before fault/drain check | Use that same shared entry wait and preserve the original fault, physical drain and credential assertions. | Source complete; runtime qualification pending |
+| `plugin/identity/src/mcp.rs:1212` | Separate cancellation-test entry selector | Replace the duplicate selector with the same wait, including HTTP producer loss. | Source complete; runtime qualification pending |
+
+The existing HTTP handler sends one entry event before releasing its first
+response. Its one-shot channel retains entry before subscription and exposes
+sender loss. The shared wait also observes the original HTTP JoinHandle and
+the transport's ordered output channel: HTTP/entry/writer withdrawal returns
+`UnexpectedEof`, while premature operation output returns `InvalidData`. It adds
+no retry or readiness deadline. Successful entry still precedes the original
+operation's Server-mutex release and credential assertions.
+
+One real transport/HTTP fixture control omits device approval to exercise the
+original pre-HTTP login refusal, then separately aborts the original HTTP producer
+before entry observation. It requires `InvalidData` and `UnexpectedEof`, closes
+the original transport and joins its serving task. The named source-loss control
+passed on Linux x86_64 (one test, 0.01 s). Existing successful entry, blocked
+output, EOF, cancellation and fault controls remain unexecuted for this change.
+
+Area cleanup centralizes three entry waits, deletes the duplicate biased select,
+and replaces the shared fixture's coalescing entry Notify with a one-shot event.
+Per converted wait, readiness timer arms change one to zero and one HTTP task
+observation is added; the selector has three fixed branches. Fixture setup
+replaces one Arc/Notify allocation with one one-shot channel allocation and one
+Arc/Mutex sender slot: one to two fixed allocations, with one sender-slot lock
+per handler entry. The existing cancellation fixture already has that one-shot
+and sender slot. No product operation, serving task, payload copy, syscall,
+round trip or durability barrier is added. Failure diagnostics do not copy reply
+payloads. Native allocation counts and event latency are unmeasured. The admission
+retry loop and broader census remain open; these edits leave no readiness timeout
+in this MCP source file.
+
 Identity transport fixture event successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
@@ -39,8 +75,9 @@ Channel block allocation is library-managed and unmeasured. Per observation,
 dispatch examines one event without scanning history; no whole-channel worst-case
 allocation guarantee is claimed. Added product tasks, workers, syscalls, copies,
 round trips and durability barriers are zero. The guard adds no allocation.
-Native syscall counts and event latency remain unmeasured. The two HTTP-entry
-timeouts, admission retry loop and other census survivors remain open.
+Native syscall counts and event latency remain unmeasured. The HTTP-entry
+timeouts are addressed above; the admission retry loop and other census survivors
+remain open.
 
 Identity drain observation successor:
 
