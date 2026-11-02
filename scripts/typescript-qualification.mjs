@@ -48,10 +48,13 @@ async function create(output, sourceSha, buildReceipt, retained) {
       const { expanded } = archiveUtils.readBoundedGzip(archive, 104_857_600, 536_870_912);
       const prefix = `${directory}/dist/`;
       const expected = build.outputs.filter(file => file.path.startsWith(prefix));
-      const observed = archiveUtils.tarEntries(expanded)
-        .filter(entry => entry.path.startsWith("package/dist/") && entry.type !== "5")
-        .map(entry => ({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${archiveUtils.sha256(entry.body)}`, bytes: entry.body.length }))
-        .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+      const observed = [];
+      for (const entry of archiveUtils.tarEntries(expanded)) {
+        if (entry.path.startsWith("package/dist/") && entry.type !== "5") {
+          observed.push({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${archiveUtils.sha256(entry.body)}`, bytes: entry.body.length });
+        }
+      }
+      observed.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
       if (!expected.length || JSON.stringify(expected) !== JSON.stringify(observed)) fail(`archive dist differs from compiler output: ${packageEntry.asset}`);
     }
     const [sha256, size] = digest(archive);

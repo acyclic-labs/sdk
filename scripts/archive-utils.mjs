@@ -51,8 +51,9 @@ export function tarPayload(bytes, isCanonical, caseInsensitive = process.platfor
   return payload;
 }
 
-export function tarEntries(tar) {
-  const result = [];
+// Validation advances with consumption. Admission callers exhaust the iterator
+// before publishing any selected output, including the final end marker.
+export function* tarEntries(tar) {
   let offset = 0;
   while (offset + 512 <= tar.length) {
     const header = tar.subarray(offset, offset + 512);
@@ -60,7 +61,7 @@ export function tarEntries(tar) {
       if (offset + 1024 > tar.length || !tar.subarray(offset).every(byte => byte === 0)) {
         throw new Error("archive has an invalid end marker");
       }
-      return result;
+      return;
     }
     const rawChecksum = field(header, 148, 8).trim();
     if (!/^[0-7]+$/.test(rawChecksum)) throw new Error("archive member has an invalid checksum");
@@ -80,7 +81,7 @@ export function tarEntries(tar) {
     const bodyStart = offset + 512;
     const bodyEnd = bodyStart + size;
     if (bodyEnd > tar.length) throw new Error("archive member is truncated");
-    result.push({ path, type, size, body: tar.subarray(bodyStart, bodyEnd) });
+    yield { path, type, size, body: tar.subarray(bodyStart, bodyEnd) };
     offset = bodyStart + Math.ceil(size / 512) * 512;
   }
   throw new Error("archive lacks an end marker");
