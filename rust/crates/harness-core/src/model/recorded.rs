@@ -178,8 +178,8 @@ fn embedded_value(text: &str, maximum_depth: u32) -> Option<serde_json::Value> {
         std::marker::PhantomData::<serde_json::Value>,
         text.as_bytes(),
         JsonBounds {
-            maximum_bytes: text.len() as u64,
-            maximum_items: text.len() as u64,
+            maximum_bytes: Some(text.len() as u64),
+            maximum_items: Some(text.len() as u64),
             maximum_depth,
         },
         None,
