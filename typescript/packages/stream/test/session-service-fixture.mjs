@@ -69,9 +69,9 @@ export function sessionService(wire, open) {
         for await (const input of requests) {
           switch (input.body.case) {
             case "hello":
-              if (input.body.value.version !== 2) throw Object.assign(new Error("unsupported session version"), { code: "unsupported" });
+              if (input.body.value.version !== 3) throw Object.assign(new Error("unsupported session version"), { code: "unsupported" });
               credit.bytes = input.body.value.receiveBytes; credit.frames = input.body.value.receiveFrames;
-              emit(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 2, nodeId: "fixture" }) }));
+              emit(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 3, nodeId: "fixture" }) }));
               if (input.body.value.interest !== undefined) interest(input.body.value.interest);
               break;
             case "interest":

@@ -16,6 +16,23 @@ pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
 /// It is the only non-error close code; any other code is a [`StreamError`].
 pub const END_CODE: &str = "end";
 
+/// One input frame on its original call generation. No total length or EOF
+/// is inferred from the data; only the ordered input terminal closes it.
+pub fn input_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
+    let after = data.after.as_ref().ok_or(StreamError::InvalidArgument)?;
+    let next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+    if !after.opaque.is_empty()
+        || after.next != next
+        || data.accepted != 0
+        || data.durable != 0
+        || !matches!(&data.item, Some(wire::session_data::Item::ActorCall(bytes))
+            if !bytes.is_empty() && bytes.len() <= crate::MAX_RECORD_BYTES)
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(next)
+}
+
 /// One fragment of a finite one-shot reply: an Actors call or a children page.
 pub fn reply_chunk(item: Option<&wire::session_data::Item>) -> Option<&bytes::Bytes> {
     match item {

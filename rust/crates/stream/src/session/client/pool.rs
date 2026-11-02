@@ -215,12 +215,14 @@ impl Pool {
         }
     }
     pub(super) fn fail_link(&mut self, node: &str, error: &StreamError) {
-        if let Some(mut link) = self.links.remove(node)
+        let mut link = self.links.remove(node);
+        if let Some(link) = &mut link
             && let Some(observation) = &mut link.observation
         {
             observation.finish(Some(error));
         }
         self.fail_node(node, error);
+        drop(link);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
         // Cursor drops happen before their owner's replacement Open. Removal
@@ -292,6 +294,48 @@ impl Pool {
                 let _ = sent.send(queued);
                 Ok(())
             }
+            Command::Input {
+                id,
+                frame,
+                mut credit,
+                sent,
+            } => {
+                let route = self.routes.get(&id).filter(|route| {
+                    route.opened
+                        && route.live()
+                        && matches!(&route.kind, Kind::ActorCall(call) if call.input)
+                });
+                let Some(route) = route else {
+                    let _ = sent.send(Err(StreamError::Unavailable));
+                    return Ok(());
+                };
+                if sent.is_closed() {
+                    return Ok(());
+                }
+                let node = route.node.clone();
+                if let Some(credit) = &mut credit {
+                    credit.debit()?;
+                }
+                if matches!(frame.body, Some(Body::InputEnd(_))) {
+                    route
+                        .input
+                        .as_ref()
+                        .ok_or(StreamError::Unavailable)?
+                        .0
+                        .finishing(sent)?;
+                    // The original queue verdict is insufficient for half-close:
+                    // retain its waiter until the peer accepts ordered EOF.
+                    return self.queue(&node, frame).map(|_| ());
+                }
+                let queued = self.queue(&node, frame)?;
+                if queued.is_ok()
+                    && let Some(credit) = credit
+                {
+                    credit.accepted();
+                }
+                let _ = sent.send(queued);
+                Ok(())
+            }
             Command::Open(open) => {
                 let OpenCommand {
                     id,
@@ -306,6 +350,7 @@ impl Pool {
                     records,
                     ready,
                     observation,
+                    input,
                 } = *open;
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
@@ -344,6 +389,7 @@ impl Pool {
                         records,
                         ready: Some(ready),
                         observation,
+                        input,
                     },
                 );
                 if self.links.contains_key(&self.home) {
@@ -466,6 +512,10 @@ impl Pool {
                         if let Some(error) = conflict {
                             Some(error)
                         } else {
+                            if let Some(input) = &route.input {
+                                let link = self.links.get(node).ok_or(StreamError::Unavailable)?;
+                                input.0.bind(Arc::clone(&link.input))?;
+                            }
                             Self::opened(route, id, &opened).err()
                         }
                     }
@@ -486,6 +536,9 @@ impl Pool {
                 }
             }
             Some(Body::Closed(closed)) => {
+                if let Some(input) = &route.input {
+                    input.0.close(StreamError::from_session_close(&closed.code));
+                }
                 let error = Self::closed(route, &closed);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.
@@ -532,6 +585,19 @@ impl Pool {
                     Ok(())
                 }
             }
+            Some(Body::InputEnd(end)) if route.opened && end.trailers.is_empty() => route
+                .input
+                .as_ref()
+                .ok_or(StreamError::InvalidResponse)?
+                .0
+                .finished(),
+            Some(Body::Window(grant)) if route.opened => route
+                .input
+                .as_ref()
+                .ok_or(StreamError::InvalidResponse)?
+                .0
+                .window
+                .grant(&grant),
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -670,7 +736,12 @@ impl Pool {
                 link.applied_revision = applied.revision;
                 Ok(())
             }
-            Some(Body::Window(_)) => Ok(()),
+            Some(Body::Window(grant)) => self
+                .links
+                .get(node)
+                .ok_or(StreamError::Unavailable)?
+                .input
+                .grant(grant),
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -777,6 +848,9 @@ impl Pool {
 
     pub(super) fn reject(&mut self, id: u64, error: StreamError) {
         if let Some(mut route) = self.routes.remove(&id) {
+            if let Some(input) = &route.input {
+                input.0.close(error.clone());
+            }
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }
@@ -802,6 +876,9 @@ impl Pool {
             .collect::<Vec<_>>();
         for id in ids {
             if let Some(mut route) = self.routes.remove(&id) {
+                if let Some(input) = &route.input {
+                    input.0.close(error.clone());
+                }
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Err(error.clone()));
                 }
@@ -815,6 +892,9 @@ impl Pool {
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
         for (_, mut route) in std::mem::take(&mut self.routes) {
+            if let Some(input) = &route.input {
+                input.0.close(error.clone());
+            }
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }

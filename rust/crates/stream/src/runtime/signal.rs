@@ -1,4 +1,4 @@
-use super::sync::Mutex;
+use super::sync::{Arc, Mutex};
 use crate::StreamError;
 use std::{
     collections::VecDeque,
@@ -10,6 +10,27 @@ pub(crate) struct Signal<T> {
     // Lock order: never nested with cursor, admission, or another signal lock.
     // Wakers run only after unlocking; no guard crosses an await.
     state: Mutex<(VecDeque<T>, Option<Waker>)>,
+}
+
+/// The original release observation follows the backing's final owner.
+pub(crate) struct Guard<T> {
+    sender: Arc<Signal<T>>,
+    value: Option<T>,
+}
+impl<T> Guard<T> {
+    pub(crate) fn new(sender: Arc<Signal<T>>, value: T) -> Self {
+        Self {
+            sender,
+            value: Some(value),
+        }
+    }
+}
+impl<T> Drop for Guard<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            let _ = self.sender.send(value);
+        }
+    }
 }
 impl<T> Signal<T> {
     pub(crate) fn new() -> Self {

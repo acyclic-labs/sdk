@@ -94,9 +94,9 @@ export class SessionNode {
     this.received.push(input);
     switch (input.body.case) {
       case "hello":
-        if (input.body.value.version !== 2) throw new StreamError("unsupported", "unsupported session version");
+        if (input.body.value.version !== 3) throw new StreamError("unsupported", "unsupported session version");
         connection.credit = { bytes: input.body.value.receiveBytes, frames: input.body.value.receiveFrames };
-        connection.output.push(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 2, nodeId: connection.node }) }));
+        connection.output.push(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 3, nodeId: connection.node }) }));
         if (input.body.value.interest !== undefined) this.interest(connection, input.body.value.interest);
         break;
       case "interest":

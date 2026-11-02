@@ -307,6 +307,7 @@ fn open(
         records,
         ready,
         observation: cursor.observation.operation.clone(),
+        input: None,
     }));
     boundary(pool, model, wakes & 4 != 0)?;
     model.open(id);
