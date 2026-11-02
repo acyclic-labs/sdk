@@ -174,6 +174,21 @@ pub(super) mod linux {
         );
         output.stdout
     }
+    fn write_frame(
+        control: &mut UnixStream,
+        output: &mut impl Write,
+        length: u64,
+    ) -> io::Result<()> {
+        let copied = io::copy(&mut Read::take(control, length), output)?;
+        if copied != length {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "original frame producer closed before its declared bytes; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+            ));
+        }
+        output.write_all(b"\x1b[6n")?;
+        output.flush()
+    }
     // Runs inside the original emulator's PTY. A DSR reply proves the emulator
     // consumed all preceding frame bytes; process exit alone cannot prove that.
     fn frame_child(root: &Path) -> io::Result<()> {
@@ -193,15 +208,7 @@ pub(super) mod linux {
             assert_eq!(resized, *b"G", "screen resize command completed");
         }
         let mut output = io::stdout().lock();
-        let copied = io::copy(&mut Read::take(&mut control, length), &mut output)?;
-        if copied != length {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "original frame producer closed before its declared bytes; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
-            ));
-        }
-        output.write_all(b"\x1b[6n")?;
-        output.flush()?;
+        write_frame(&mut control, &mut output, length)?;
         let mut reply = Vec::new();
         stdin.lock().read_until(b'R', &mut reply)?;
         if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
@@ -367,6 +374,28 @@ pub(super) mod linux {
             .take(8)
             .map(|row| format!("{row:<24}"))
             .collect()
+    }
+    #[test]
+    fn incomplete_frame_cannot_request_consumption() {
+        let (bytes, _) = fixtures().into_iter().next().unwrap();
+        let partial = &bytes[..bytes.len() - 1];
+        let (mut source, mut sender) = UnixStream::pair().unwrap();
+        sender.write_all(partial).unwrap();
+        drop(sender);
+        let (mut terminal, mut emitted) = UnixStream::pair().unwrap();
+        assert_eq!(
+            write_frame(&mut source, &mut terminal, bytes.len().try_into().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        drop(terminal);
+        let mut actual = Vec::new();
+        emitted.read_to_end(&mut actual).unwrap();
+        assert_eq!(
+            actual, partial,
+            "incomplete bytes cannot issue a DSR request"
+        );
     }
     #[test]
     fn emulator_loss_wins_over_a_ready_consumer() {
