@@ -247,9 +247,10 @@ impl CallPath {
     }
 
     fn open(&self, fence: Option<&StreamPath>) -> impl Iterator<Item = CommitCondition> {
-        std::iter::once(&self.settled)
-            .chain(fence)
-            .map(|path| CommitCondition::Absent { path: path.clone() })
+        std::iter::once(CommitCondition::Absent {
+            path: self.settled.clone(),
+        })
+        .chain(fence.map(|path| CommitCondition::Absent { path: path.clone() }))
     }
 }
 
