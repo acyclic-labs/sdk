@@ -85,7 +85,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         key: &IdempotencyKey,
         class: InternalContentClass,
         io: Option<&PreparationIo>,

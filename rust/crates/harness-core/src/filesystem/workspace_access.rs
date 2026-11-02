@@ -109,10 +109,7 @@ fn require_volume_operations(
     use crate::store::history::HistoryIo as _;
     let volume = volume.ok_or(Error::FilesystemAccessConfiguration(surface))?;
     let mut history = io.history_io();
-    let digest = volume.identity_digest(
-        crate::store::default_projection_read_limits().maximum_bytes,
-        &mut Some(&mut history),
-    )?;
+    let digest = volume.identity_digest(None, &mut Some(&mut history))?;
     for operation in operations {
         let prefix = operation.capability_prefix();
         history.codec_charge(
