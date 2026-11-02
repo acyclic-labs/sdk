@@ -49,7 +49,7 @@ impl WebExecutor {
     async fn dispatch(
         &self,
         invocation: &ToolInvocation,
-        maximum: u64,
+        maximum: Option<u64>,
         work: NativeWork<'_>,
     ) -> Result<(ToolResult, NativeCustody)> {
         if invocation.name == "url_fetch" {
@@ -145,16 +145,16 @@ fn decode<T: crate::filesystem::UploadRecord>(
 
 fn output(
     value: &impl Serialize,
-    maximum: u64,
+    maximum: Option<u64>,
     work: NativeWork<'_>,
 ) -> Result<(ToolResult, NativeCustody)> {
-    let (value, held) = crate::tool::value(value, Some(maximum), work)?;
+    let (value, held) = crate::tool::value(value, maximum, work)?;
     Ok((ToolResult { value }, held))
 }
 
 fn rejection(
     error: Error,
-    maximum: u64,
+    maximum: Option<u64>,
     work: NativeWork<'_>,
 ) -> Result<(ToolResult, NativeCustody)> {
     use crate::web::WebRejectionCode;
