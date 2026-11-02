@@ -13,7 +13,7 @@ import { conversation } from "./conversation.mjs";
 import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
-export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "custom-slash-command", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
+export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "custom-slash-command", "shell", "file-tools", "child-result", "child-message", "nested-children", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
   executionSucceeded(result);
@@ -33,6 +33,8 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
   const remaining = new Set(names);
   const mergeCwd = mergeWorkspace === undefined ? undefined : toNamespacedPath(mergeWorkspace);
   const children = new Map();
+  const requireMessage = remaining.has("send");
+  let sent = !requireMessage;
   let merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
@@ -46,6 +48,10 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
       assert.ok(!children.has(child), "journey repeated a spawned child");
       const selected = { agent: child, name: hook.tool_response.name, consumed: false };
       children.set(child, selected);
+    } else if (hook.tool_name === "send" && requireMessage) {
+      assert.ok(children.has(hook.tool_input?.agent), "message used a different canonical child");
+      assert.equal(hook.tool_input.message, expectedChildResult, "message changed the selected child input");
+      sent = true;
     } else if (hook.tool_name === "wait" && hook.tool_response?.settled?.length) {
       const agents = hook.tool_input?.agents;
       const reference = Array.isArray(agents) && agents.length === 1 ? agents[0] : undefined;
@@ -72,6 +78,7 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
   if (expectedChildResult !== undefined) {
     assert.equal(children.size, expectedChildren, "journey spawned a different child set");
+    assert.ok(sent, "missing completed message to the spawned child");
     for (const child of children.values()) assert.ok(child.consumed, "missing completed public wait for the spawned child's result");
     if (expectedChildren === 2) {
       const [first, second] = children.keys();
@@ -112,12 +119,13 @@ export async function runCase(binary, login, root, name, signal, { model = "open
     try { return (await readFile(hookFile, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   };
-  const collaborate = async (task, followup) => {
+  const collaborate = async (task, followup, intermediate) => {
     hooksPending = true;
     const fixture = { workspace, env, args: ["--workspace", workspace,
       "--settings-root", settings, ...providerArgs] };
     await conversation(processes, binary, fixture, { operation, turns: [
       { id: "spawn", text: task, answer: "SPAWNED" },
+      ...(intermediate === undefined ? [] : [intermediate]),
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
     requireReportCapability(captures.at(-1), recovery);
@@ -195,6 +203,13 @@ export async function runCase(binary, login, root, name, signal, { model = "open
         step = "assert original worker and descendant settlements";
         const recorded = childHooks = await hooks();
         requireTools(recorded, ["spawn", "wait"], marker, undefined, 2);
+      } else if (name === "child-message") {
+        await collaborate("Spawn exactly one child named worker. Its initial task is: Reply with exactly READY. On your next message, reply with exactly that message and no additional text. Preserve the returned canonical child path. End this turn with exactly SPAWNED so the spawn commits.",
+          "Use wait with the exact canonical worker path. Read its settled idle answer to the committed message, then reply with exactly that answer and no additional text.",
+          { id: "send", text: `Use send with the exact canonical worker path and message ${marker}. End this turn with exactly SENT so the message commits.`, answer: "SENT" });
+        step = "assert original child received and settled the committed message";
+        const recorded = childHooks = await hooks();
+        requireTools(recorded, ["spawn", "send", "wait"], marker);
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl", marker);
