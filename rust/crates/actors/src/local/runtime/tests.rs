@@ -390,6 +390,11 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
         );
         runtime.track(address.clone())?;
         assert!(runtime.drain().await.is_empty());
+        let idle = store.load(&address).await?;
+        assert_eq!(idle.state().map(State::epoch), Some(0));
+        assert!(matches!(store.bind_state(idle, 0), Err(Error::Conflict)));
+        let idle = store.load(&address).await?;
+        store.claim(&idle, 1, key("idle/claim")?).await?;
         if let Some(deadline) = original {
             let snapshot = store.load(&address).await?;
             let epoch = snapshot.state().ok_or("missing state")?.epoch();
@@ -398,17 +403,22 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             binding.flush(key("idle/original")?).await?;
         }
         let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
-        // MemoryStream operations complete synchronously. This drives the
-        // actual dispatcher until every original event owner is pending.
+        // Pending may be a cooperative yield, so it does not establish that
+        // the dispatcher has finished observing the original alarm.
         assert!(futures::poll!(host.as_mut()).is_pending());
-        assert_eq!(runtime.ready.next_deadline(), original);
-        assert_eq!(runtime.counts().1, 0, "resident must be idle");
         let snapshot = store.load(&address).await?;
         let epoch = snapshot.state().ok_or("missing state")?.epoch();
         let mut binding = store.bind_state(snapshot, epoch)?;
         binding.transaction(|state| state.alarm(Some(50)))?;
         binding.flush(key("idle/replacement")?).await?;
-        assert!(futures::poll!(host.as_mut()).is_pending());
+        let generation = if original.is_some() { 2 } else { 1 };
+        let delivered = observe_while_running(
+            host.as_mut(),
+            state_after(&store, &address, |state| {
+                state.alarm().delivered_generation == Some(generation)
+            }),
+        )
+        .await?;
         assert_eq!(
             records(&*provider, "out/changed-alarm").await?,
             vec![Bytes::from_static(if original.is_some() {
@@ -418,7 +428,7 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             })],
             "the original activation must deliver the changed alarm once"
         );
-        assert_eq!(runtime.ready.next_deadline(), None);
+        assert_eq!(delivered.alarm().pending(), None);
     }
     Ok(())
 }
@@ -778,6 +788,43 @@ async fn records<P: StreamProvider + ?Sized>(
         .await
         .into_iter()
         .collect::<Result<_, _>>()?)
+}
+
+// Observe committed production state while the real dispatcher runs. Provider
+// errors/closure and dispatcher failure terminate the observation; a pending
+// executor poll is never interpreted as a completed scheduling turn.
+async fn state_after(
+    store: &Store<MemoryStream>,
+    actor: &ActorReference,
+    predicate: impl Fn(&State) -> bool,
+) -> Result<State, Box<dyn std::error::Error>> {
+    let mut records = acyclic_stream::records_only(
+        store
+            .provider()
+            .follow(acyclic_stream::FollowRequest::new(store.path(actor)?, 0))
+            .await?,
+    );
+    while let Some(record) = records.next().await {
+        let state = State::decode(&record?.value)?;
+        if predicate(&state) {
+            return Ok(state);
+        }
+    }
+    Err(StreamError::Unavailable.into())
+}
+
+async fn observe_while_running<T>(
+    serving: std::pin::Pin<&mut impl Future<Output = Result<Infallible, Error>>>,
+    observation: impl Future<Output = Result<T, Box<dyn std::error::Error>>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    futures::pin_mut!(observation);
+    match futures::future::select(serving, observation).await {
+        futures::future::Either::Left((result, _)) => match result {
+            Ok(never) => match never {},
+            Err(error) => Err(error.into()),
+        },
+        futures::future::Either::Right((result, _)) => result,
+    }
 }
 
 /// Two actors from one manifest bind different inbox paths and first cursors
@@ -1395,8 +1442,6 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
     let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
         .with_limits(RuntimeLimits::new(1, 1)?);
     runtime.track(address.clone())?;
-    let claim = runtime.ready.take().ok_or("missing initial placement")?;
-    runtime.execute(claim).await.map_err(|(_, error)| error)?;
     for expected in 0..64 {
         let work = runtime.ready.take().ok_or("rotation work disappeared")?;
         runtime.execute(work).await.map_err(|(_, error)| error)?;
@@ -1436,7 +1481,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
             .await?
             .state()
             .and_then(|state| state.cursor("inbox")),
-        Some(1)
+        Some(2)
     );
     let work = runtime.ready.take().ok_or("missing cold work")?;
     assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
@@ -1447,7 +1492,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     );
     assert_eq!(
         records(&*provider, "out/hot").await?,
-        vec![Bytes::from_static(b"r0")]
+        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
     );
     runtime.drain_actor(&hot).await?;
     assert_eq!(
@@ -1498,7 +1543,11 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
                 .await?
                 .state()
                 .and_then(|state| state.cursor("inbox")),
-            Some(0)
+            Some(1)
+        );
+        assert_eq!(
+            records(&*provider, "out/event-lease").await?,
+            vec![Bytes::from_static(b"r0")]
         );
     }
     assert!(

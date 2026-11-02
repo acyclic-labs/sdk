@@ -49,28 +49,56 @@ async fn clock_schedule(
     let waker = Waker::from(Arc::clone(&notifications));
     let mut context = Context::from_waker(&waker);
     let conflicts = AtomicUsize::new(0);
+    let (reported, mut failures) = futures::channel::mpsc::unbounded();
     let mut serving = Box::pin(runtime.run(|address, error| {
         assert!(
             replace_epoch && address == &first && matches!(error, Error::Conflict),
             "unexpected delivery failure: {error}"
         );
         assert_eq!(conflicts.fetch_add(1, Ordering::SeqCst), 0);
+        reported
+            .unbounded_send(())
+            .expect("failure observer dropped");
     }));
 
-    // The real MemoryStream and original Package execute synchronously until
-    // their original event producers park. No timer, retry or readiness loop.
-    assert!(serving.as_mut().poll(&mut context).is_pending());
-    assert_eq!(runtime.ready.next_deadline(), Some(110));
-    assert_eq!(runtime.ready.alarm_count(), 3);
-    assert_eq!(runtime.counts().1, 0);
+    // A pending dispatcher poll may be a cooperative yield between actors.
+    // Observe all three original committed inputs before advancing their clock.
+    let armed = observe_while_running(
+        serving.as_mut(),
+        futures::future::try_join3(
+            state_after(&store, &first, |state| state.cursor("inbox") == Some(1)),
+            state_after(&store, &second, |state| state.cursor("inbox") == Some(1)),
+            state_after(&store, &future, |state| state.cursor("inbox") == Some(1)),
+        ),
+    )
+    .await?;
+    for (state, deadline) in [(&armed.0, 110), (&armed.1, 120), (&armed.2, 130)] {
+        assert_eq!(state.alarm().deadline_unix_ms, Some(deadline));
+        assert_eq!(state.alarm().delivered_generation, None);
+    }
+    let activation_tail = provider.tail(root()?).await?;
+    let (dispatch_store, dispatch_actor) = runtime.dispatcher_store()?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&dispatch_store, &dispatch_actor, |state| {
+            state
+                .cursor("activation")
+                .is_some_and(|cursor| cursor >= activation_tail)
+        }),
+    )
+    .await?;
 
+    let mut early = clock.sleep_until(110);
+    assert!(early.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
     control.advance_to(109)?;
     assert!(
         notifications.0.load(Ordering::SeqCst) > 0,
         "lost clock wake"
     );
-    assert!(serving.as_mut().poll(&mut context).is_pending());
+    assert!(early.as_mut().poll(&mut context).is_pending());
+    drop(early);
+    assert!(futures::poll!(serving.as_mut()).is_pending());
     assert!(records(&*provider, "out/clock-first").await?.is_empty());
 
     let replacement = if replace_epoch {
@@ -81,16 +109,16 @@ async fn clock_schedule(
         None
     };
 
-    // Both an installed waiter and a not-yet-observed future retain the same
-    // original advance. Neither owns the clock producer.
-    let mut reached = clock.sleep_until(110);
-    if observed_before_advance {
-        assert!(reached.as_mut().poll(&mut context).is_pending());
-    }
-    control.advance_to(110)?;
-    reached.await?;
-    assert!(serving.as_mut().poll(&mut context).is_pending());
-    if let Some(replacement) = replacement {
+    if let Some(replacement) = &replacement {
+        // The replacement's original activation reports the stale epoch before
+        // time advances. Older activation entries cannot re-place it afterwards.
+        observe_while_running(serving.as_mut(), async {
+            failures
+                .next()
+                .await
+                .ok_or_else(|| StreamError::Unavailable.into())
+        })
+        .await?;
         assert_eq!(conflicts.load(Ordering::SeqCst), 1);
         assert!(records(&*provider, "out/clock-first").await?.is_empty());
         let refused = store.load(&first).await?;
@@ -101,19 +129,43 @@ async fn clock_schedule(
         assert_eq!(state.cursor("inbox"), Some(1));
         assert_eq!(state.alarm().deadline_unix_ms, Some(110));
         assert_eq!(state.alarm().delivered_generation, None);
+    }
+
+    // Both an installed waiter and a not-yet-observed future retain the same
+    // original advance. Neither owns the clock producer.
+    let mut reached = clock.sleep_until(110);
+    if observed_before_advance {
+        assert!(reached.as_mut().poll(&mut context).is_pending());
+    }
+    control.advance_to(110)?;
+    reached.await?;
+    if replacement.is_some() {
         // Only this explicit placement may claim epoch 3 and deliver the
         // still-committed alarm; the stale dispatcher may not publish it.
         runtime.track(first.clone())?;
-        assert!(serving.as_mut().poll(&mut context).is_pending());
     } else {
         assert_eq!(conflicts.load(Ordering::SeqCst), 0);
     }
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &first, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
     assert_eq!(
         records(&*provider, "out/clock-first").await?,
         vec![Bytes::from_static(b"a1")]
     );
     assert!(records(&*provider, "out/clock-second").await?.is_empty());
-    assert_eq!(runtime.ready.next_deadline(), Some(120));
+    assert_eq!(
+        store
+            .load(&second)
+            .await?
+            .state()
+            .and_then(|state| state.alarm().pending()),
+        Some(120)
+    );
 
     notifications.0.store(0, Ordering::SeqCst);
     assert_eq!(control.advance_to(109), Err(ClockError::Reversed));
@@ -126,7 +178,13 @@ async fn clock_schedule(
     );
 
     control.advance_to(120)?;
-    assert!(serving.as_mut().poll(&mut context).is_pending());
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &second, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
     assert_eq!(
         records(&*provider, "out/clock-first").await?,
         vec![Bytes::from_static(b"a1")]
@@ -135,7 +193,14 @@ async fn clock_schedule(
         records(&*provider, "out/clock-second").await?,
         vec![Bytes::from_static(b"a1")]
     );
-    assert_eq!(runtime.ready.next_deadline(), Some(130));
+    assert_eq!(
+        store
+            .load(&future)
+            .await?
+            .state()
+            .and_then(|state| state.alarm().pending()),
+        Some(130)
+    );
     for address in [&first, &second] {
         let snapshot = store.load(address).await?;
         let state = snapshot.state().ok_or("missing alarm state")?;
@@ -161,6 +226,8 @@ async fn clock_schedule(
     } else {
         Some(pending)
     };
+    let mut retained = clock.sleep_until(130);
+    assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
     drop(control);
     assert!(
@@ -170,14 +237,15 @@ async fn clock_schedule(
     if let Some(pending) = pending {
         assert_eq!(pending.await, Err(ClockError::ProducerDropped));
     }
+    assert_eq!(retained.await, Err(ClockError::ProducerDropped));
     assert_eq!(
         clock.sleep_until(130).await,
         Err(ClockError::ProducerDropped)
     );
     clock.sleep_until(120).await?;
     assert!(matches!(
-        serving.as_mut().poll(&mut context),
-        Poll::Ready(Err(Error::Clock(ClockError::ProducerDropped)))
+        serving.await,
+        Err(Error::Clock(ClockError::ProducerDropped))
     ));
     assert!(records(&*provider, "out/clock-future").await?.is_empty());
     let snapshot = store.load(&future).await?;
