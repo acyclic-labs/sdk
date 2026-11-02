@@ -11,6 +11,10 @@ use crate::model::ModelDispatch;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Original cache, placement, sharing and usage facts for the same live files.
+#[cfg(feature = "research")]
+pub mod resources;
+
 /// A projection cannot supply the requested original fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

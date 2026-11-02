@@ -102,6 +102,11 @@ pub struct ModelUsageProjection<'a> {
     pub estimated_cost: ModelCostEstimate<'a>,
 }
 
+impl ModelUsageProjection<'_> {
+    /// Usage-file layout, distinct from the source journal and aggregate layouts.
+    pub const VERSION: u32 = 2;
+}
+
 fn currency_valid(currency: &str) -> bool {
     currency.len() == 3 && currency.bytes().all(|byte| byte.is_ascii_uppercase())
 }
@@ -122,6 +127,13 @@ fn family_cost(
 struct Family {
     tokens: Option<u64>,
     cost: Option<u128>,
+}
+
+struct UsageEstimate<'a> {
+    call: ModelUsageProjection<'a>,
+    input_tokens: Option<u64>,
+    #[cfg(feature = "research")]
+    input_cost: Option<u128>,
 }
 
 // One interpretation of included/subset/additional counters serves both the
@@ -187,8 +199,28 @@ impl ModelUsageRecord {
     /// Uses the same price interpretation as `estimate`, without IO or allocation.
     pub fn cache_savings(&self, price: &ModelPriceRecord) -> Result<Option<i128>, ModelPriceError> {
         price.validate_for(self)?;
+        let selected = self.completed.then(|| self.input_family(price)).flatten();
+        Ok(self.cache_savings_validated(price, selected.and_then(|input| input.cost)))
+    }
+
+    fn input_family(&self, price: &ModelPriceRecord) -> Option<Family> {
+        family(
+            self.tokens.input,
+            price.input_nano_units_per_million,
+            &[
+                (self.tokens.cached, price.cached),
+                (self.tokens.cache_write, price.cache_write),
+            ],
+        )
+    }
+
+    fn cache_savings_validated(
+        &self,
+        price: &ModelPriceRecord,
+        selected_input: Option<u128>,
+    ) -> Option<i128> {
         if !self.completed {
-            return Ok(None);
+            return None;
         }
         let ordinary = |rate| match rate {
             TokenPrice::Included => TokenPrice::Included,
@@ -210,9 +242,23 @@ impl ModelUsageRecord {
             )
             .and_then(|amount| i128::try_from(amount).ok())
         };
-        Ok(input(ordinary(price.cached), ordinary(price.cache_write))
-            .zip(input(price.cached, price.cache_write))
-            .map(|(ordinary, cached)| (ordinary - cached) / 1_000_000))
+        input(ordinary(price.cached), ordinary(price.cache_write))
+            .zip(selected_input.and_then(|amount| i128::try_from(amount).ok()))
+            .map(|(ordinary, cached)| (ordinary - cached) / 1_000_000)
+    }
+
+    // Both views use the one price admission, without duplicating billing or
+    // allocating an owned call. The counterfactual is evaluated only on demand.
+    #[cfg(feature = "research")]
+    pub(crate) fn estimate_with_cache_savings<'a>(
+        &'a self,
+        price: Option<&'a ModelPriceRecord>,
+    ) -> Result<(ModelUsageProjection<'a>, Option<i128>), ModelPriceError> {
+        let estimate = self.estimate_parts(price)?;
+        Ok((
+            estimate.call,
+            price.and_then(|price| self.cache_savings_validated(price, estimate.input_cost)),
+        ))
     }
 
     /// Projects one original row against one explicitly selected immutable
@@ -222,8 +268,7 @@ impl ModelUsageRecord {
         &'a self,
         price: Option<&'a ModelPriceRecord>,
     ) -> Result<ModelUsageProjection<'a>, ModelPriceError> {
-        self.estimate_with_input(price)
-            .map(|(estimate, _)| estimate)
+        self.estimate_parts(price).map(|estimate| estimate.call)
     }
 
     // Live usage needs the inclusive input count beside the estimate. Validate
@@ -232,6 +277,14 @@ impl ModelUsageRecord {
         &'a self,
         price: Option<&'a ModelPriceRecord>,
     ) -> Result<(ModelUsageProjection<'a>, Option<u64>), ModelPriceError> {
+        self.estimate_parts(price)
+            .map(|estimate| (estimate.call, estimate.input_tokens))
+    }
+
+    fn estimate_parts<'a>(
+        &'a self,
+        price: Option<&'a ModelPriceRecord>,
+    ) -> Result<UsageEstimate<'a>, ModelPriceError> {
         let mut estimated_cost = ModelCostEstimate {
             price_revision: None,
             effective_at: None,
@@ -239,6 +292,8 @@ impl ModelUsageRecord {
             token_nano_units: None,
         };
         let mut input_tokens = None;
+        #[cfg(feature = "research")]
+        let mut input_cost = None;
         if let Some(price) = price {
             price.validate_for(self)?;
             estimated_cost.price_revision = Some(Cow::Borrowed(&price.revision));
@@ -247,15 +302,12 @@ impl ModelUsageRecord {
             estimated_cost.token_nano_units = self
                 .completed
                 .then(|| {
-                    let input = family(
-                        self.tokens.input,
-                        price.input_nano_units_per_million,
-                        &[
-                            (self.tokens.cached, price.cached),
-                            (self.tokens.cache_write, price.cache_write),
-                        ],
-                    )?;
+                    let input = self.input_family(price)?;
                     input_tokens = input.tokens;
+                    #[cfg(feature = "research")]
+                    {
+                        input_cost = input.cost;
+                    }
                     let output = family_cost(
                         self.tokens.output,
                         price.output_nano_units_per_million,
@@ -265,14 +317,16 @@ impl ModelUsageRecord {
                 })
                 .flatten();
         }
-        Ok((
-            ModelUsageProjection {
-                version: 2,
+        Ok(UsageEstimate {
+            call: ModelUsageProjection {
+                version: ModelUsageProjection::VERSION,
                 usage: Cow::Borrowed(self),
                 estimated_cost,
             },
             input_tokens,
-        ))
+            #[cfg(feature = "research")]
+            input_cost,
+        })
     }
 }
 
@@ -292,6 +346,19 @@ impl UsageTotal {
     /// use this rather than present the partial `known` subtotal as a total.
     pub fn value(self) -> Option<u64> {
         (self.unknown == 0).then_some(self.known)
+    }
+
+    fn combine(self, other: Self) -> Result<Self, ModelPriceError> {
+        Ok(Self {
+            known: self
+                .known
+                .checked_add(other.known)
+                .ok_or(ModelPriceError::Overflow)?,
+            unknown: self
+                .unknown
+                .checked_add(other.unknown)
+                .ok_or(ModelPriceError::Overflow)?,
+        })
     }
 
     fn update(
@@ -365,6 +432,9 @@ pub struct ModelUsageTotals {
 }
 
 impl ModelUsageTotals {
+    /// The single layout accepted by incremental and range projections.
+    pub const VERSION: u32 = 2;
+
     /// Starts an empty query projection, taking ownership of its currency label.
     pub fn new(currency: String) -> Result<Self, ModelPriceError> {
         if !currency_valid(&currency) {
@@ -381,7 +451,7 @@ impl ModelUsageTotals {
     /// This performs no allocation and never guesses a currency or price.
     pub fn unpriced() -> Self {
         Self {
-            version: 2,
+            version: Self::VERSION,
             currency: None,
             calls: 0,
             completed: 0,
@@ -418,20 +488,94 @@ impl ModelUsageTotals {
         self.update(Some(previous), row)
     }
 
+    /// Combine disjoint original selections at the range aggregate's admitted
+    /// cut. This does not discover descendants, deduplicate inherited calls or
+    /// authorize the selection: those belong to the original indexed query.
+    /// Both selections must use the same explicit currency (or both unpriced).
+    /// Fixed checked arithmetic precedes installation; no allocation, history
+    /// scan, ancestor update, IO or wait occurs, including on refusal.
+    pub fn merge(&mut self, other: &Self) -> Result<(), ModelPriceError> {
+        self.validate()?;
+        other.validate()?;
+        if self.currency != other.currency {
+            return Err(ModelPriceError::CurrencyMismatch);
+        }
+        let calls = self
+            .calls
+            .checked_add(other.calls)
+            .ok_or(ModelPriceError::Overflow)?;
+        let completed = self
+            .completed
+            .checked_add(other.completed)
+            .ok_or(ModelPriceError::Overflow)?;
+        let input = self.input.combine(other.input)?;
+        let cached = self.cached.combine(other.cached)?;
+        let cache_write = self.cache_write.combine(other.cache_write)?;
+        let output = self.output.combine(other.output)?;
+        let reasoning = self.reasoning.combine(other.reasoning)?;
+        let token_nano_units = self.token_nano_units.combine(other.token_nano_units)?;
+        self.calls = calls;
+        self.completed = completed;
+        self.input = input;
+        self.cached = cached;
+        self.cache_write = cache_write;
+        self.output = output;
+        self.reasoning = reasoning;
+        self.token_nano_units = token_nano_units;
+        Ok(())
+    }
+
+    /// Validate one original aggregate at the live/range projection boundary.
+    /// Known subtotals remain partial whenever their unknown count is nonzero.
+    pub fn validate(&self) -> Result<(), ModelPriceError> {
+        self.validate_header()?;
+        if self.completed > self.calls
+            || (self.currency.is_none()
+                && (self.token_nano_units.known != 0
+                    || self.token_nano_units.unknown != self.calls))
+            || [
+                self.input,
+                self.cached,
+                self.cache_write,
+                self.output,
+                self.reasoning,
+                self.token_nano_units,
+            ]
+            .iter()
+            .any(|value| {
+                value.unknown > self.calls
+                    || value.unknown < self.calls - self.completed
+                    || (value.unknown == self.calls && value.known != 0)
+            })
+        {
+            return Err(ModelPriceError::InvalidRecord);
+        }
+        Ok(())
+    }
+
+    fn validate_header(&self) -> Result<(), ModelPriceError> {
+        if self.version != Self::VERSION
+            || self
+                .currency
+                .as_deref()
+                .is_some_and(|currency| !currency_valid(currency))
+        {
+            return Err(ModelPriceError::InvalidRecord);
+        }
+        Ok(())
+    }
+
     fn update(
         &mut self,
         previous: Option<&ModelUsageProjection<'_>>,
         row: &ModelUsageProjection<'_>,
     ) -> Result<(), ModelPriceError> {
-        if self.version != 2
-            || self
-                .currency
-                .as_deref()
-                .is_some_and(|currency| !currency_valid(currency))
-            || row.version != 2
+        self.validate_header()?;
+        if row.version != ModelUsageProjection::VERSION
             || row.usage.version != ModelUsageRecord::VERSION
             || previous.is_some_and(|old| {
-                old.version != 2 || old.usage.version != ModelUsageRecord::VERSION
+                old.version != ModelUsageProjection::VERSION
+                    || old.usage.version != ModelUsageRecord::VERSION
             })
         {
             return Err(ModelPriceError::InvalidRecord);
@@ -561,6 +705,84 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn disjoint_usage_ranges_merge_without_losing_unknowns_or_partial_installation(
+            units in proptest::array::uniform3(0u64..1_000_000),
+            completed in proptest::array::uniform3(any::<bool>()),
+            known in proptest::array::uniform3(any::<bool>()),
+        ) {
+            let rows = std::array::from_fn::<_, 3, _>(|index| {
+                let mut row = record(ModelTokenUsage {
+                    input: known[index].then_some(units[index]),
+                    output: Some(units[index]),
+                    ..Default::default()
+                });
+                row.dispatch.step = index as u64;
+                row.completed = completed[index];
+                row
+            });
+            let mut parts = std::array::from_fn::<_, 3, _>(|_| ModelUsageTotals::unpriced());
+            let mut reference = ModelUsageTotals::unpriced();
+            for (part, row) in parts.iter_mut().zip(&rows) {
+                let projected = row.estimate(None).unwrap();
+                part.push(&projected).unwrap();
+                reference.push(&projected).unwrap();
+            }
+            let mut left = parts[0].clone();
+            left.merge(&parts[1]).unwrap();
+            left.merge(&parts[2]).unwrap();
+            let mut right = parts[1].clone();
+            right.merge(&parts[2]).unwrap();
+            let mut regrouped = parts[0].clone();
+            regrouped.merge(&right).unwrap();
+            prop_assert_eq!(&left, &reference);
+            prop_assert_eq!(&regrouped, &reference);
+            prop_assert_eq!(reference.input.value(), if completed.iter().all(|v| *v) && known.iter().all(|v| *v) {
+                Some(units.iter().sum())
+            } else { None });
+            let unchanged = reference.clone();
+            let mut foreign_version = reference.clone();
+            foreign_version.version ^= 1;
+            let mut foreign_count = reference.clone();
+            foreign_count.completed = foreign_count.calls + 1;
+            let mut foreign_unknown = reference.clone();
+            foreign_unknown.input.unknown = foreign_unknown.calls + 1;
+            for invalid in [foreign_version, foreign_count, foreign_unknown] {
+                // Every refusal preserves the original selected contribution.
+                prop_assert_eq!(reference.merge(&invalid), Err(ModelPriceError::InvalidRecord));
+                prop_assert_eq!(&reference, &unchanged);
+            }
+            let priced = ModelUsageTotals::new("USD".into()).unwrap();
+            prop_assert_eq!(reference.merge(&priced), Err(ModelPriceError::CurrencyMismatch));
+            prop_assert_eq!(&reference, &unchanged);
+            let mut forged = parts[0].clone();
+            forged.token_nano_units.known = 1;
+            prop_assert_eq!(reference.merge(&forged), Err(ModelPriceError::InvalidRecord));
+            prop_assert_eq!(&reference, &unchanged);
+            // A late counter overflow must not install earlier field additions.
+            let mut maximum = ModelUsageTotals::new("USD".into()).unwrap();
+            maximum.calls = 1;
+            maximum.completed = 1;
+            maximum.token_nano_units.known = u64::MAX;
+            let mut one = maximum.clone();
+            one.token_nano_units.known = 1;
+            let snapshot = maximum.clone();
+            prop_assert_eq!(maximum.merge(&one), Err(ModelPriceError::Overflow));
+            prop_assert_eq!(&maximum, &snapshot);
+            for calls in [1, 100, 100_000] {
+                let mut target = ModelUsageTotals::unpriced();
+                target.calls = calls;
+                target.completed = calls;
+                target.token_nano_units.unknown = calls;
+                let allocations = acyclic_test_support::measure(|| target.merge(&parts[0]).unwrap());
+                prop_assert_eq!((allocations.count_total, allocations.bytes_total), (0, 0));
+            }
+            let negative = acyclic_test_support::measure(|| {
+                std::hint::black_box(priced.clone());
+            });
+            prop_assert!(negative.count_total > 0);
+        }
+
         #[test]
         fn selected_prices_preserve_units_unknowns_and_incremental_replacements(
             input in 1u64..1_000_000, cached in 1u64..1_000_000,
