@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
-pub const STATE_RECORD_OVERHEAD: usize = 96 + STATE_FORMAT_V1.len();
+pub const STATE_RECORD_OVERHEAD: usize = 130 + STATE_FORMAT_V1.len();
 // The first byte has forbidden protobuf wire type 7: an older unversioned
 // decoder MUST fail rather than discard metadata and subsequently rewrite it.
 const STATE_FORMAT_V1: &[u8] = b"\xffAST\x01";
@@ -38,6 +38,8 @@ struct Record {
     metadata: BTreeMap<String, bytes::Bytes>,
     #[prost(uint64, tag = "9")]
     journal_tail: u64,
+    #[prost(bytes = "vec", optional, tag = "10")]
+    placement_branch: Option<Vec<u8>>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -92,6 +94,9 @@ impl State {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
             journal_tail: self.journal_tail,
+            placement_branch: self
+                .placement_branch
+                .map(|commit| commit.as_bytes().to_vec()),
         };
         let mut record = Vec::with_capacity(STATE_FORMAT_V1.len() + payload.encoded_len());
         record.extend_from_slice(STATE_FORMAT_V1);
@@ -118,6 +123,15 @@ impl State {
         }
         Ok(Self {
             epoch: record.epoch,
+            placement_branch: record
+                .placement_branch
+                .map(|bytes| {
+                    bytes
+                        .try_into()
+                        .map(acyclic_stream::CommitId::from_bytes)
+                        .map_err(|_| Error::Invalid("invalid placement branch identity"))
+                })
+                .transpose()?,
             checkpoint: record.checkpoint.map(|checkpoint| Checkpoint {
                 codec: CodecIdentity {
                     name: checkpoint.codec,
@@ -160,6 +174,7 @@ mod tests {
         let path = StreamPath::new("harness/agents/a/inbox").expect("path");
         let bytes = bytes::Bytes::from(vec![0xff; 10_000]);
         let state = State {
+            placement_branch: Some(acyclic_stream::CommitId::from_bytes([0x7f; 32])),
             metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))]),
             journal_tail: u64::MAX,
             epoch: u64::MAX,

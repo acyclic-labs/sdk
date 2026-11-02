@@ -471,7 +471,8 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     restarted(target, run).await
 }
 
-/// Create and fork share the same unplaced state, claim and publication fences.
+/// Create and fork share the same claim and publication fences. A fork retains
+/// its inherited epoch until a claim binds the new branch, without resetting it.
 /// The separate activation root lets this check drive the actual Store without
 /// racing an already-running host's placement of the new actors.
 pub async fn fork_uniform<P: StreamProvider + ?Sized>(
@@ -525,9 +526,9 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         }
     };
     require(
-        created_cut.state() == forked_cut.state()
-            && created_cut.state().is_some_and(|state| state.epoch() == 0),
-        "create and fork did not start at the same unplaced state",
+        created_cut.state().is_some_and(|state| state.epoch() == 0)
+            && forked_cut.state() == parent_cut.state(),
+        "fork changed the inherited placement before dispatch",
     )?;
     require(
         created_cut.provenance().is_none()
@@ -537,8 +538,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         "fork provenance did not retain its original parent cut",
     )?;
     for (target, initial) in [(&created, created_cut), (&forked, forked_cut)] {
-        // Negative control: inheriting the parent's epoch would admit this
-        // exact writer, before the child has ever acquired its own placement.
+        // The number alone cannot authorize a copied placement in this branch.
         require(
             matches!(
                 store
@@ -558,8 +558,9 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
             unchanged.state() == initial.state(),
             "refusal changed child state",
         )?;
+        let epoch = initial.state().ok_or(Error::Conflict)?.epoch() + 1;
         store
-            .claim(&initial, 1, key(&format!("{}/claim", target.id()))?)
+            .claim(&initial, epoch, key(&format!("{}/claim", target.id()))?)
             .await?;
         let placed = store.load(target).await?;
         require(
@@ -577,13 +578,18 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
             "a stale parent-epoch writer changed a placed child",
         )?;
         store
-            .set_paused(&placed, 1, true, key(&format!("{}/publish", target.id()))?)
+            .set_paused(
+                &placed,
+                epoch,
+                true,
+                key(&format!("{}/publish", target.id()))?,
+            )
             .await?;
         let accepted = store.load(target).await?;
         require(
             accepted
                 .state()
-                .is_some_and(|state| state.paused() && state.epoch() == 1)
+                .is_some_and(|state| state.paused() && state.epoch() == epoch)
                 && accepted.provenance() == initial.provenance(),
             "the child's original placement did not publish independently",
         )?;
