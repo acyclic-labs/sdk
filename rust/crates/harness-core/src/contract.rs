@@ -189,11 +189,17 @@ crate::core::ownership::owned_tuple!(IdempotencyKey, (value));
 impl IdempotencyKey {
     /// Creates a bounded non-empty caller retry identity.
     pub fn new(value: impl Into<String>) -> Result<Self> {
-        let value = value.into();
-        if value.is_empty() || value.chars().any(char::is_control) {
+        let value = Self(value.into());
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Validates a retry identity received through the public wire representation.
+    pub fn validate(&self) -> Result<()> {
+        if self.0.is_empty() || self.0.chars().any(char::is_control) {
             return Err(Error::Invalid("idempotency key is invalid".into()));
         }
-        Ok(Self(value))
+        Ok(())
     }
 
     /// Returns the validated string representation.
