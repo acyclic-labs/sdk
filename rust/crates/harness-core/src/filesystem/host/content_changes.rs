@@ -408,12 +408,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let mut candidate = parent;
                                 loop {
                                     let prefix = &absolute[..candidate.len() + 1];
-                                    match io.sdk(selected.stat(prefix, io, io.cancellation()).await)
-                                    {
-                                        Ok(_) => break,
-                                        Err(error)
-                                            if error.code() == crate::wire::ErrorCode::NotFound =>
-                                        {
+                                    match io.sdk_if_present(
+                                        selected.stat(prefix, io, io.cancellation()).await,
+                                    )? {
+                                        Some(_) => break,
+                                        None => {
                                             access::require(
                                                 &view.0,
                                                 Action::Create,
@@ -432,7 +431,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                                 check(Action::Create, candidate)?;
                                             }
                                         }
-                                        Err(error) => return Err(error),
                                     }
                                     if let Some((parent, _)) = candidate.rsplit_once('/') {
                                         candidate = parent;
@@ -499,15 +497,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 .await,
                         )?;
                     } else {
-                        match io.sdk(
+                        io.sdk_if_present(
                             transaction
                                 .remove(&metadata_path, io, io.cancellation())
                                 .await,
-                        ) {
-                            Ok(_) => {}
-                            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-                            Err(error) => return Err(error),
-                        }
+                        )?;
                     }
                 }
                 io.sdk(

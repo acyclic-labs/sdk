@@ -88,6 +88,26 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
 }
 
 impl PreparationIo {
+    /// Interpret only the original missing-path result as optional absence.
+    /// Missing authority and every other failure remain refusals, even when
+    /// their public code is also NotFound. Original accounting still settles
+    /// before an absent result can be returned.
+    #[doc(hidden)]
+    pub fn sdk_if_present<T>(
+        &self,
+        (result, recorded): (
+            std::result::Result<T, WorkspaceError>,
+            std::result::Result<(), acyclic_fs::FsError>,
+        ),
+    ) -> Result<Option<T>> {
+        let result = match result {
+            Ok(value) => Ok(Some(value)),
+            Err(WorkspaceError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        };
+        self.sdk((result, recorded))
+    }
+
     #[doc(hidden)]
     pub fn sdk<T, E: Into<Error>>(
         &self,
