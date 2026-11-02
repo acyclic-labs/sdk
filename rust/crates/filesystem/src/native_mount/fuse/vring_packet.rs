@@ -7,7 +7,7 @@
 use super::packet::PacketRequest;
 use super::packet_buffers::PacketBuffers;
 use super::packet_session::PacketSession;
-use super::vring::{PacketVring, RingFeatures};
+use super::vring::{PacketVring, RingFeatures, VringBatch};
 use super::vring_memory::GuestRam;
 use super::*;
 use std::io::IoSlice;
@@ -210,11 +210,9 @@ impl<'a, 'scratch> VringPacket<'a, 'scratch> {
         &self,
         vring: &mut PacketVring,
         memory: &GuestMemoryMmap<()>,
-        output: &[IoSlice<'_>],
-        work: &crate::NativeMaterializationWork,
+        length: u32,
         event_idx: bool,
     ) -> Result<(), NativeMountError> {
-        let length = self.scatter(output, work)?;
         // Use the actual original mapping for the used ring and event index.
         let queue = &mut vring.queue;
         queue
@@ -272,67 +270,57 @@ fn pop_packet<'a, 'scratch>(
     .map(Some)
 }
 
-/// Caller holds this exact vring's lock throughout callback and publication.
-/// Thus SET_VRING_ENABLE/GET_VRING_BASE cannot report a drained queue while its
-/// original request is still executing. The original memory Arc stays live too.
-/// On error the queue is marked failed before that lock can be released. The
-/// control owner must retire the connection and retain this actual error.
+/// The original batch and mapping remain pinned through physical publication.
+/// Only descriptor snapshot and used-ring publication need the queue guard;
+/// filesystem dispatch and guest payload copies run outside that guard.
 pub(super) fn serve_vring_packet(
     session: &PacketSession,
-    vring: &mut PacketVring,
+    batch: &VringBatch<'_>,
     scratch: &mut VringScratch<'_>,
     buffers: &mut PacketBuffers,
     work: &crate::NativeMaterializationWork,
     hiprio: bool,
     features: RingFeatures,
 ) -> Result<QueueProgress, NativeMountError> {
-    let result = (|| {
-        let memory = scratch.memory.memory();
-        let Some(packet) = pop_packet(
-            vring,
+    let memory = scratch.memory.memory();
+    let Some(packet) = ({
+        let mut vring = batch.queue()?;
+        pop_packet(
+            &mut vring,
             memory,
             work,
             features.indirect,
             &mut scratch.segments,
         )?
-        else {
-            return Ok(QueueProgress::Empty);
-        };
-        let maximum = session.packet_capacity();
-        let capacity = maximum.min(packet.writable);
-        let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
-        packet.gather(input, work)?;
-        let request = PacketRequest::parse(input)?;
-        if hiprio != matches!(request.opcode, 2 | 36 | 42) {
-            return Err(libc::EPROTO.into());
-        }
-        // Bound the packet entry before dispatching any filesystem effect.
-        let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
-        let running = session
-            .publish(&request, response, |reply| {
-                let slices = reply.slices();
-                packet.complete(
-                    vring,
-                    memory.as_ref(),
-                    slices.as_ref().map_or(&[], |slices| slices.as_slice()),
-                    work,
-                    features.event_idx,
-                )
-            })
-            .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
-        Ok(if running {
-            QueueProgress::Completed
-        } else {
-            QueueProgress::Stopped
-        })
-    })();
-    if result.is_err() {
-        // Neither a malformed chain nor uncertain used publication authorizes
-        // replay, descriptor substitution, or a manufactured completion.
-        vring.fail();
-        session.close();
+    }) else {
+        return Ok(QueueProgress::Empty);
+    };
+    let maximum = session.packet_capacity();
+    let capacity = maximum.min(packet.writable);
+    let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
+    packet.gather(input, work)?;
+    let request = PacketRequest::parse(input)?;
+    if hiprio != matches!(request.opcode, 2 | 36 | 42) {
+        return Err(libc::EPROTO.into());
     }
-    result
+    // Bound the packet entry before dispatching any filesystem effect.
+    let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
+    let running = session
+        .publish(&request, response, |reply| {
+            let slices = reply.slices();
+            let length = packet.scatter(
+                slices.as_ref().map_or(&[], |slices| slices.as_slice()),
+                work,
+            )?;
+            let mut vring = batch.queue()?;
+            packet.complete(&mut vring, memory.as_ref(), length, features.event_idx)
+        })
+        .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
+    Ok(if running {
+        QueueProgress::Completed
+    } else {
+        QueueProgress::Stopped
+    })
 }
 
 fn transport_error(error: impl std::error::Error + Send + Sync + 'static) -> NativeMountError {

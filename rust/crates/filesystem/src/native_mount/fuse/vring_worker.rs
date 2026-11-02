@@ -33,14 +33,14 @@ pub(super) fn run(
     }
 }
 
-fn batch(
+pub(super) fn batch(
     control: &VringControl,
     session: &PacketSession,
     index: u32,
     buffers: &mut PacketBuffers,
 ) -> Result<(Option<Arc<QueueKick>>, bool), NativeMountError> {
     // This order also belongs to every memory replacement/control path.
-    let memory = control
+    let memory_guard = control
         .memory
         .read()
         .unwrap_or_else(PoisonError::into_inner);
@@ -49,32 +49,46 @@ fn batch(
     let Some(kick) = kick else {
         return Ok((None, false));
     };
-    let result = (|| {
+    let preparation = (|| {
         // Retain and validate the same counter under the original queue lock;
         // a detached polling borrower cannot consume a replacement's event.
         if !queue.accepts_kick(&kick) {
-            return Ok(false);
+            return Ok(None);
         }
         match kick.consume() {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error.into()),
         }
-        let memory = memory.as_ref().ok_or(libc::EPROTO)?;
-        let mut scratch = VringScratch::new(memory, &control.work)?;
+        let memory = memory_guard.as_ref().ok_or(libc::EPROTO)?;
         queue
             .queue
             .disable_notification(memory.memory().as_ref())
             .map_err(io::Error::other)?;
+        Ok(Some((Arc::clone(memory), queue.queue.size())))
+    })();
+    let prepared = match preparation {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return Ok((Some(kick), false)),
+        Err(error) => {
+            queue.fail();
+            return Err(error);
+        }
+    };
+    let (memory, capacity) = prepared;
+    let mut batch = control.queues[index as usize].release_for_io(queue);
+    drop(memory_guard);
+    let result = (|| {
+        let mut scratch = VringScratch::new(&memory, &control.work)?;
         // Release both locks at least once per actual queue capacity. Control
         // can disable/drain even if a frontend continually replenishes work.
-        for _ in 0..queue.queue.size() {
+        for _ in 0..capacity {
             if control.is_stopped() {
                 return Ok(false);
             }
             match serve_vring_packet(
                 session,
-                &mut queue,
+                &batch,
                 &mut scratch,
                 buffers,
                 &control.work,
@@ -89,7 +103,8 @@ fn batch(
                 QueueProgress::Empty => {
                     // Maintained queue code arms then checks avail with the
                     // required fence. Pending work is pumped without a wait.
-                    return queue
+                    return batch
+                        .queue()?
                         .queue
                         .enable_notification(memory.memory().as_ref())
                         .map_err(io::Error::other)
@@ -99,10 +114,12 @@ fn batch(
         }
         Ok(true)
     })();
-    if result.is_err() {
-        // Includes counter/notification failure before or after a callback.
-        // GET_VRING_BASE must observe this before it can report completion.
-        queue.fail();
+    if result.is_ok() {
+        batch.finish();
+    } else {
+        // The affine batch marks this original queue failed and wakes control
+        // before returning. Physical failure also retires the shared protocol.
+        session.close();
     }
     result.map(|pending| (Some(kick), pending))
 }

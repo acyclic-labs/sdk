@@ -17,6 +17,7 @@ pub(super) struct GuestRam {
     // Arc<GuestRegionMmap> and outer Arc. No unfunded from_regions collection.
     memory: FuseOwned<Arc<GuestMemoryMmap<()>>>,
     windows: FuseOwned<Vec<Window>>,
+    _allocation: crate::NativeAllocation,
 }
 
 impl GuestRam {
@@ -24,13 +25,14 @@ impl GuestRam {
         offers: &[VhostUserMemoryRegion],
         files: Vec<File>,
         work: &NativeMaterializationWork,
-    ) -> Result<Self, NativeMountError> {
+    ) -> Result<Arc<Self>, NativeMountError> {
         if offers.is_empty()
             || offers.len() > MAX_ATTACHED_FD_ENTRIES
             || offers.len() != files.len()
         {
             return Err(libc::EINVAL.into());
         }
+        let allocation = work.claim(arc_bytes::<Self>()?, 1, crate::WorkCounters::UNCHARGED)?;
         let mut windows = fuse_vec::<Window>(offers.len(), work)?;
         // Validate every range before creating any mapping. The descriptor
         // received by SCM_RIGHTS remains the actual mapping's file owner.
@@ -93,7 +95,11 @@ impl GuestRam {
             .try_map(GuestMemoryMmap::from_arc_regions)
             .map_err(std::io::Error::other)?
             .map(Arc::new);
-        Ok(Self { memory, windows })
+        Ok(Arc::new(Self {
+            memory,
+            windows,
+            _allocation: allocation,
+        }))
     }
 
     pub(super) fn memory(&self) -> &Arc<GuestMemoryMmap<()>> {
