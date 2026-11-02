@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn offloaded_task_keeps_inline_coordinator_available_for_its_release() -> io::Result<()> {
+    initialize_native_io_services()?;
     let runtime = crate::task::coordination_runtime()?;
     let caller = std::thread::current().id();
     let _inline = InlineBlocking::enter();

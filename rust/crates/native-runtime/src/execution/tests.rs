@@ -509,6 +509,7 @@ fn native_preparation_preserves_original_operation_admission_and_late_failures()
 #[cfg(target_os = "linux")]
 #[test]
 fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
+    crate::initialize_native_io_services().unwrap();
     use std::sync::atomic::Ordering;
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");

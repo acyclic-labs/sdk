@@ -162,6 +162,7 @@ impl ToolPolicy for PhysicalPolicy {
 
 #[tokio::test]
 async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     for (access, deny, supported, invalidate_policy) in [
         (None, false, true, false),
         (Some(ExecutionAccess::ReadOnly), false, true, false),
