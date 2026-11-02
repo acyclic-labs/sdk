@@ -183,7 +183,7 @@ mod tests {
         let encoded = crate::agent::InboxRecord::ForkAdopted(Box::new(adopted.clone()))
             .encode()
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        assert!(encoded.len() < crate::agent::MAX_RECORD_BYTES);
+        assert!(encoded.len() < acyclic_stream::MAX_RECORD_BYTES);
         // A source change cannot widen an existing parent's creation rights.
         assert!(
             templates
@@ -199,7 +199,6 @@ mod tests {
             &authority.scope,
             &home,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = Arc::new(super::super::agent_internal::AgentInternalFiles::new(
@@ -242,7 +241,7 @@ mod tests {
         assert_eq!(original_effects.len(), 1);
         assert!(
             crate::agent::records::seal(&original_effects[0])?.len()
-                < crate::agent::MAX_RECORD_BYTES
+                < acyclic_stream::MAX_RECORD_BYTES
         );
         // Off, malformed, traversal, top-level, capability and authority negatives
         // all end in typed refusal; none silently falls back to the seed.
