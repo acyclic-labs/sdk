@@ -3,6 +3,123 @@ use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, 
 use std::sync::Arc;
 
 #[tokio::test]
+async fn native_configuration_reads_preserve_the_original_refusal_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{config::Tree as _, filesystem::PreparationIo, wire::ErrorCode};
+
+    let fs = Fs::new(
+        StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let workspace = fs
+        .create_workspace("configuration", WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    workspace
+        .write_text("/settings.ts", "export default {model: 'p/m'};")
+        .await?;
+    let generation = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let manifest = Manifest::new([&generation; 6]);
+    let native = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let baseline = native.live_allocation_bytes();
+    let io = PreparationIo::from_native_work(&native)?;
+    let tree = manifest.tree(&io, u64::MAX);
+    let bytes = tree.read("settings.ts").await?.ok_or("missing settings")?;
+    assert_eq!(bytes.as_ref(), b"export default {model: 'p/m'};");
+    drop(bytes);
+    assert!(tree.read("absent.ts").await?.is_none());
+
+    let bounded = manifest.tree(&io, 0);
+    let refused = bounded
+        .read("settings.ts")
+        .await
+        .err()
+        .ok_or("read limit bypassed")?;
+    assert!(matches!(
+        &refused,
+        crate::Error::NativeWorkspace { source, .. }
+            if matches!(source.as_ref(), WorkspaceError::ReadLimitExceeded)
+    ));
+    let measured = acyclic_test_support::measure(|| {
+        assert_eq!(refused.code(), ErrorCode::Invalid);
+    });
+    assert_eq!(
+        measured.count_total, 0,
+        "classification must borrow its cause"
+    );
+    // Losing the retained typed cause reproduces the old classification.
+    assert_eq!(
+        crate::Error::Storage(refused.to_string()).code(),
+        ErrorCode::Storage
+    );
+    drop(refused);
+
+    let mut policy: acyclic_fs::access::Policy =
+        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+    policy.layers[0][0].effect = acyclic_fs::access::Effect::Deny;
+    let policy = serde_json::to_vec(&policy)?;
+    let denied = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "restricted-configuration",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                access_policy: Some(&policy),
+            },
+            acyclic_fs::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
+        .await?
+        .value;
+    let denied = Manifest::new([&denied; 6]);
+    let refused = denied
+        .tree(&io, u64::MAX)
+        .read("settings.ts")
+        .await
+        .err()
+        .ok_or("original policy refusal bypassed")?;
+    assert_eq!(refused.code(), ErrorCode::Unauthorized);
+    drop(refused);
+
+    cancellation.cancel();
+    let original = io
+        .sdk(
+            generation
+                .read("/settings.ts", u64::MAX, &io, &cancellation)
+                .await,
+        )
+        .err()
+        .ok_or("original cancelled read succeeded")?;
+    assert_eq!(original.code(), ErrorCode::Cancelled);
+    drop(original);
+    let cancelled = tree
+        .read("settings.ts")
+        .await
+        .err()
+        .ok_or("cancellation bypassed")?;
+    assert_eq!(cancelled.code(), ErrorCode::Cancelled);
+    assert_ne!(
+        cancelled.code(),
+        ErrorCode::NotFound,
+        "never fall through to a lower layer"
+    );
+    drop(cancelled);
+    drop(io);
+    assert_eq!(native.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_original_layer_fences_the_same_consuming_commit()
 -> Result<(), Box<dyn std::error::Error>> {
     let stream = Arc::new(MemoryStream::default());
