@@ -81,19 +81,15 @@ fn index<'a, T>(
     }
     Ok(result)
 }
-fn asset_bucket(pattern: &ResourcePattern) -> Result<String, ManifestError> {
+// Grant admission has already checked the canonical component spelling.
+fn asset_bucket(pattern: &ResourcePattern) -> Result<&str, ManifestError> {
     let bucket = pattern
         .name
         .strip_prefix("objects:/")
         .and_then(|name| name.split('/').next())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| ManifestError::invalid("assets", "objects-bucket"))?;
-    let bucket = acyclic_auth::decode_component(bucket)
-        .map_err(|_| ManifestError::invalid("assets", "objects-bucket"))?;
-    Ok(format!(
-        "objects:/{}",
-        acyclic_auth::encode_component(&bucket)
-    ))
+    Ok(&pattern.name[.."objects:/".len() + bucket.len()])
 }
 
 /// Admit a complete Rust value using the same rules as JSON and WASM ingress.
@@ -202,7 +198,7 @@ fn validate_environment<'a>(
             .ok_or_else(|| ManifestError::invalid(p, "asset-grant"))?;
         require(
             grant.grant.resource.prefix
-                && scope(&grant.grant.resource, &asset_bucket(&grant.grant.resource)?)
+                && scope(&grant.grant.resource, asset_bucket(&grant.grant.resource)?)
                 && actions
                     .get(grant.name.as_str())
                     .is_some_and(|actions| actions.contains("objects/get")),
