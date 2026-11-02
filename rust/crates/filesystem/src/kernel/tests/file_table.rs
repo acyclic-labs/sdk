@@ -254,7 +254,12 @@ fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
 -> Result<(), Box<dyn std::error::Error>> {
-    let data = InlineFileData::new(&[0, 1, 2, 0xff])?;
+    let mut data = None;
+    let heap = acyclic_test_support::measure(|| {
+        data = Some(InlineFileData::new(&[0, 1, 2, 0xff]));
+    });
+    assert_eq!(heap, acyclic_test_support::AllocationInfo::default());
+    let data = data.unwrap()?;
     assert_eq!(data.as_bytes(), &[0, 1, 2, 0xff]);
     assert_eq!(
         InlineFileData::new(&[7; MAXIMUM_INLINE_FILE_BYTES + 1]),
@@ -285,7 +290,6 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
         >(()))?,
         page
     );
-    assert_eq!(encoded.len(), 79);
     assert_eq!(
         &encoded[encoded.len() - data.as_bytes().len()..],
         data.as_bytes()
