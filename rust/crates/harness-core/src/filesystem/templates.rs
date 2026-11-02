@@ -274,25 +274,37 @@ mod tests {
                 .code(),
             crate::wire::ErrorCode::NotFound
         );
-        put(
-            "templates/worker/AGENT.md",
-            b"---\nversion: 2\ncontext: fork\nmay_spawn: []\n---\n",
-        )?
-        .await?;
-        assert_eq!(
-            tool.executor
-                .reconcile(invocation, None)
-                .await?
-                .unwrap()
-                .value,
-            result.value,
-        );
-        assert!(
-            templates
-                .child(&parent, &path, &volumes, "worker", None)
-                .await
-                .is_err()
-        );
+        for malformed in [
+            b"---\nversion: 2\ncontext: fork\nmay_spawn: []\n---\n".as_slice(),
+            b"---\nversion: 1\ncontext: fork\nmay_spawn: []\n---\nInvalid body: \xff",
+        ] {
+            put("templates/worker/AGENT.md", malformed)?.await?;
+            assert_eq!(
+                tool.executor
+                    .reconcile(invocation.clone(), None)
+                    .await?
+                    .unwrap()
+                    .value,
+                result.value,
+            );
+            assert!(matches!(
+                templates
+                    .child(&parent, &path, &volumes, "worker", None)
+                    .await,
+                Err(crate::Error::Invalid(_))
+            ));
+            let mut fresh = invocation.clone();
+            fresh.operation_id = crate::OperationId::new();
+            assert!(
+                tool.executor
+                    .execute(fresh, None)
+                    .await?
+                    .value
+                    .get("agent")
+                    .is_none()
+            );
+            assert_eq!(effects.recorded().await?, original_effects);
+        }
         assert!(
             templates
                 .child(&parent, &path, &volumes, "../worker", None)

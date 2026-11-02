@@ -23,7 +23,9 @@ struct Creation {
 }
 
 fn parse(bytes: &[u8]) -> Result<Creation> {
-    let creation: Creation = crate::context::parse_frontmatter(bytes)?;
+    let (creation, body): (Creation, _) = crate::context::parse_frontmatter_with_body(bytes)?;
+    std::str::from_utf8(&bytes[body..])
+        .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?;
     if creation.version != 1 {
         return Err(Error::Invalid(
             "unsupported template version; use version 1".into(),
