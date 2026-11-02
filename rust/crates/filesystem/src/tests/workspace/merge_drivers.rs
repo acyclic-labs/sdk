@@ -5,6 +5,8 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
 {
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("directory-main"))?;
+    let longest_conflict = format!("/{}", "%".repeat(255));
+    main.write_text(&longest_conflict, "base\0").await?;
     for (path, content) in [
         ("/text", "base\n"),
         ("/binary", "base\0"),
@@ -28,6 +30,8 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     agent.write_text("/text", "theirs\n").await?;
     main.write_text("/binary", "ours\0").await?;
     agent.write_text("/binary", "theirs\0").await?;
+    main.write_text(&longest_conflict, "ours\0").await?;
+    agent.write_text(&longest_conflict, "theirs\0").await?;
     main.write_text("/deleted", "modified").await?;
     agent.remove("/deleted").await?;
     main.write_text("/replaced", "ours\0").await?;
@@ -54,6 +58,10 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             .write_text(&format!("/clean-{index}"), "clean")
             .await?;
     }
+    // A source component at the accepted limit must remain stageable after
+    // adding the proposal suffix, even when every byte needs escaping.
+    let longest_path = format!("/{}", ".".repeat(255));
+    agent.write_text(&longest_path, "long clean path").await?;
     let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
     let pins = (
         join.common_ancestor(),
@@ -71,6 +79,19 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     )?;
     let staging = unbounded!(fs, create_workspace("directory-staging"))?;
     let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let mut conflict_paths = BTreeMap::new();
+    for name in ["text", "binary", "deleted", "pkg", "replaced"] {
+        let id = unbounded!(main, stat(&format!("/{name}")))?.file_id;
+        let key = if name == "pkg" {
+            ConflictKey::Metadata(id)
+        } else {
+            ConflictKey::File(id)
+        };
+        conflict_paths.insert(name, directory.conflict_file_path(&key)?);
+    }
+    let text_path = &conflict_paths["text"];
+    let longest_key = ConflictKey::File(unbounded!(main, stat(&longest_conflict))?.file_id);
+    let longest_proposal = directory.conflict_file_path(&longest_key)?;
     let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
     let mut pages = 0;
     while !directory.plan().complete {
@@ -108,7 +129,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         pages > 7,
         "negative control: the fixture must require multiple pages"
     );
-    assert_eq!(directory.plan().clean, 7);
+    assert_eq!(directory.plan().clean, 8);
     assert!(directory.plan().conflicts >= 5);
     assert_eq!(
         directory.plan().exposed_conflicts,
@@ -119,14 +140,23 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let document: MergeDirectoryPlan = serde_json::from_slice(&encoded)?;
     assert_eq!(document, *directory.plan());
     assert_eq!((document.base, document.ours, document.theirs), pins);
-    let text = unbounded!(staging, read(&format!("{root}/conflicts/text"), 16384))?;
+    let text = unbounded!(staging, read(text_path, 16384))?;
     assert!(crate::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
     ));
+    let longest_document = unbounded!(
+        staging,
+        read(&format!("{longest_proposal}.conflict.json"), 16384)
+    )?;
+    let longest_document: MergeConflictFile = serde_json::from_slice(&longest_document)?;
+    assert_eq!(
+        longest_document.conflict.path.as_deref(),
+        Some(longest_conflict.as_str())
+    );
     for path in ["binary", "deleted", "pkg", "replaced"] {
         let bytes = unbounded!(
             staging,
-            read(&format!("{root}/conflicts/{path}.conflict.json"), 16384)
+            read(&format!("{}.conflict.json", conflict_paths[path]), 16384)
         )?;
         let document: MergeConflictFile = serde_json::from_slice(&bytes)?;
         assert_eq!(document.version, 1);
@@ -226,6 +256,22 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .join()
         .describe_conflicts(conflicts, truncated)
         .await?;
+    // Feed actual producer conflict views and raw user documents into the same
+    // kept fuzz entry point, including ambiguous and malformed documents.
+    for view in &typed.conflicts {
+        for bytes in [
+            br#"{"take":"theirs"}"#.as_slice(),
+            br#"{"take":"theirs","content":"substituted"}"#,
+            br#"{"remove":true}"#,
+            br#"{"remove":false}"#,
+            br#"{"content":"<<<<<<< ours\nunresolved\n=======\ntheirs\n>>>>>>> theirs"}"#,
+            br#"{"take":"theirs""#,
+        ] {
+            crate::workspace::check_merge_directory_resolution(&serde_json::to_vec(&(
+                view, bytes,
+            ))?);
+        }
+    }
     let text_key = &typed
         .conflicts
         .iter()
@@ -247,7 +293,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .key;
     staging
         .write_text(
-            &format!("{root}/conflicts/binary.resolve.json"),
+            &format!("{}.resolve.json", conflict_paths["binary"]),
             r#"{"take":"theirs","content":"substituted"}"#,
         )
         .await?;
@@ -262,30 +308,34 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
 
     // Read each proposal from one immutable staging head, then use the same
     // domain candidate and atomic publisher as every other workspace join.
-    staging
-        .write_text(&format!("{root}/conflicts/text"), "resolved\n")
-        .await?;
+    staging.write_text(text_path, "resolved\n").await?;
     staging
         .write_text(
-            &format!("{root}/conflicts/binary.resolve.json"),
+            &format!("{}.resolve.json", conflict_paths["binary"]),
             r#"{"take":"theirs"}"#,
         )
         .await?;
     staging
         .write_text(
-            &format!("{root}/conflicts/deleted.resolve.json"),
+            &format!("{}.resolve.json", conflict_paths["deleted"]),
             r#"{"remove":true}"#,
         )
         .await?;
     staging
         .write_text(
-            &format!("{root}/conflicts/pkg.resolve.json"),
+            &format!("{}.resolve.json", conflict_paths["pkg"]),
             r#"{"take":"theirs"}"#,
         )
         .await?;
     staging
         .write_text(
-            &format!("{root}/conflicts/replaced.resolve.json"),
+            &format!("{}.resolve.json", conflict_paths["replaced"]),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{longest_proposal}.resolve.json"),
             r#"{"take":"theirs"}"#,
         )
         .await?;
@@ -332,6 +382,14 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     assert_eq!(
         unbounded!(main, read("/replaced", 1024))?.as_ref(),
         b"replacement\0"
+    );
+    assert_eq!(
+        unbounded!(main, read(&longest_conflict, 1024))?.as_ref(),
+        b"theirs\0"
+    );
+    assert_eq!(
+        unbounded!(main, read(&longest_path, 1024))?.as_ref(),
+        b"long clean path"
     );
     assert!(matches!(
         unbounded!(main, stat("/deleted")),

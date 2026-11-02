@@ -81,7 +81,7 @@ pub enum MergeDirectorySection {
     Conflicts,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum ResolutionFile {
     Take { take: ResolutionSide },
@@ -89,7 +89,7 @@ enum ResolutionFile {
     Content { content: String },
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ResolutionSide {
     Ours,
@@ -113,11 +113,45 @@ impl ResolutionFile {
                 }
                 _ => Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone())),
             },
-            Self::Content { content } if !crate::text_merge::has_conflict_markers(&content) => {
+            Self::Content { content }
+                if conflict.kind == ConflictKind::Text
+                    && !crate::text_merge::has_conflict_markers(&content) =>
+            {
                 Ok(MergeResolution::Text(content))
             }
             _ => Err(WorkspaceError::InvalidMergeResolution.into()),
         }
+    }
+}
+
+fn decode_resolution(
+    bytes: &[u8],
+    conflict: &crate::ConflictView,
+) -> Result<MergeResolution, DrivenJoinError> {
+    serde_json::from_slice::<ResolutionFile>(bytes)
+        .map_err(WorkspaceError::engine)?
+        .resolve(conflict)
+}
+
+/// Exercises the shipped resolution decoder and admission against arbitrary
+/// domain conflicts and raw user documents, including malformed JSON bytes.
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub fn check_merge_directory_resolution(data: &[u8]) {
+    let Ok((conflict, bytes)) = serde_json::from_slice::<(crate::ConflictView, Vec<u8>)>(data)
+    else {
+        return;
+    };
+    let result = decode_resolution(&bytes, &conflict);
+    if let Ok(decoded) = serde_json::from_slice::<ResolutionFile>(&bytes) {
+        let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
+        let restored: ResolutionFile =
+            serde_json::from_slice(&canonical).expect("canonical resolution");
+        assert_eq!(decoded, restored);
+    }
+    if let Ok(MergeResolution::Text(text)) = result {
+        assert_eq!(conflict.kind, ConflictKind::Text);
+        assert!(!crate::text_merge::has_conflict_markers(&text));
     }
 }
 
@@ -203,11 +237,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         if &view.key != key {
             return Err(DrivenJoinError::StaleCandidate);
         }
-        let path = view
-            .path
-            .as_deref()
-            .ok_or_else(|| WorkspaceError::path("merge conflict has no portable path"))?;
-        let path = format!("{}/conflicts/{}", self.path, encode_path(path));
+        let path = self.conflict_file_path(&view.key)?;
         let text = view.kind == ConflictKind::Text;
         let path = if text {
             path
@@ -224,16 +254,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             .await
             .map_err(|failure| failure.error)?
             .value;
-        let resolution = if text {
+        if text {
             ResolutionFile::Content {
                 content: std::str::from_utf8(&bytes)
                     .map_err(WorkspaceError::engine)?
                     .to_owned(),
             }
+            .resolve(&view)
         } else {
-            serde_json::from_slice::<ResolutionFile>(&bytes).map_err(WorkspaceError::engine)?
-        };
-        resolution.resolve(&view)
+            decode_resolution(&bytes, &view)
+        }
     }
 
     /// The original join, for the existing publication coordinator. Directory
@@ -245,6 +275,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// Root containing plan.json and the clean/conflicts directories.
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Base filename for one original conflict key. Text proposals use this
+    /// path; non-text descriptions and resolutions append `.conflict.json`
+    /// and `.resolve.json`. The descriptor retains the original source path.
+    /// Fixed-width names fit every accepted source component and distinguish
+    /// separate record and binding conflicts at the same source path.
+    pub fn conflict_file_path(&self, key: &ConflictKey) -> Result<String, WorkspaceError> {
+        Ok(format!(
+            "{}/conflicts/{}",
+            self.path,
+            entry_name(b"conflict-v1\0", &json(key)?)
+        ))
     }
 
     /// Last successfully published page's counts and original generation pins.
@@ -332,7 +375,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                             before: row.before.map(|record| record.file_id),
                             after: row.after.map(|record| record.file_id),
                         };
-                        let path = format!("{}/clean/{}.json", self.path, encode_path(&file.path));
+                        let path = format!(
+                            "{}/clean/{}.json",
+                            self.path,
+                            entry_name(b"clean-v1\0", file.path.as_bytes())
+                        );
                         write_file(&mut transaction, &path, json(&file)?, cancellation).await?;
                         next.clean = next
                             .clean
@@ -361,11 +408,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .plan()
                 .describe_conflict_file(row.value().clone())
                 .await?;
-            let path = view
-                .path
-                .as_deref()
-                .ok_or_else(|| WorkspaceError::path("merge conflict has no portable path"))?;
-            let path = format!("{}/conflicts/{}", self.path, encode_path(path));
+            let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {
                 use crate::MergeDriver;
                 let resolution = crate::DefaultTextMergeDriver
@@ -456,23 +499,14 @@ fn json(value: &impl Serialize) -> Result<Vec<u8>, WorkspaceError> {
     serde_json::to_vec(value).map_err(WorkspaceError::engine)
 }
 
-// Reserve the suffix namespace without losing legitimate names such as a%2Eb,
-// a.conflict.json, or a.resolve.json. Slash remains the directory separator.
-fn encode_path(path: &str) -> String {
-    let path = path.trim_start_matches('/');
-    let escaped = path
-        .bytes()
-        .filter(|&byte| matches!(byte, b'%' | b'.'))
-        .count();
-    let mut encoded = String::with_capacity(path.len() + 2 * escaped);
-    for character in path.chars() {
-        match character {
-            '%' => encoded.push_str("%25"),
-            '.' => encoded.push_str("%2E"),
-            character => encoded.push(character),
-        }
-    }
-    encoded
+// Source paths are preserved in descriptors, never expanded into staging
+// components. The suffix cannot overflow a valid maximum-length source name.
+fn entry_name(domain: &[u8], identity: &[u8]) -> String {
+    use sha2::Digest;
+    let mut digest = sha2::Sha256::new();
+    digest.update(domain);
+    digest.update(identity);
+    hex::encode(digest.finalize())
 }
 
 async fn write_file<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(

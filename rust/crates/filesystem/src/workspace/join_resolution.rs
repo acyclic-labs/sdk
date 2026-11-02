@@ -283,6 +283,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Ok(None);
         }
         let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
+        let mut text_values: [Option<ConflictValue>; 3] = std::array::from_fn(|_| None);
         let reference = || {
             let mut view = record_conflict_view(self, file_id, path.clone(), ConflictKind::Binary);
             [view.base, view.ours, view.theirs] =
@@ -301,7 +302,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .limits
                 .maximum_read_bytes,
         };
-        for (record, body) in records.into_iter().zip(&mut bodies) {
+        for (index, (record, body)) in records.into_iter().zip(&mut bodies).enumerate() {
             let Some(bytes) = self
                 .target_head
                 .workspace
@@ -312,7 +313,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             else {
                 return Ok(Some(reference()));
             };
+            if contents == ConflictContents::Files {
+                let Ok(text) = crate::text_merge::text_from_bytes(&bytes, limits) else {
+                    return Ok(Some(reference()));
+                };
+                text_values[index] = Some(ConflictValue::Text(text.to_owned()));
+            }
             *body = Some(bytes);
+        }
+        if contents == ConflictContents::Files {
+            let [Some(base), Some(ours), Some(theirs)] = text_values else {
+                return Err(WorkspaceError::InvalidMergeResolution);
+            };
+            return Ok(Some(crate::ConflictView {
+                key: ConflictKey::File(file_id),
+                path,
+                kind: ConflictKind::Text,
+                base,
+                ours,
+                theirs,
+            }));
         }
         let [Some(base), Some(ours), Some(theirs)] = bodies else {
             return Err(WorkspaceError::InvalidMergeResolution);
@@ -326,7 +346,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 ConflictKind::Text,
                 [base, ours, theirs].map(|text| ConflictValue::Text(text.to_owned())),
             ),
-            _ if contents == ConflictContents::Files => return Ok(Some(reference())),
             _ => (
                 ConflictKind::Binary,
                 bodies
