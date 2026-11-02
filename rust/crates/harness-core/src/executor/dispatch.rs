@@ -194,12 +194,8 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let preparation = self.resolve_model_request(
-            journal,
-            input,
-            (step, prior_messages, purpose),
-            request,
-        );
+        let preparation =
+            self.resolve_model_request(journal, input, (step, prior_messages, purpose), request);
         let request = if started {
             preparation.await?
         } else {
