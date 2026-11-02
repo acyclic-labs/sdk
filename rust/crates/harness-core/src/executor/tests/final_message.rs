@@ -8,12 +8,13 @@ use proptest::prelude::*;
 ))]
 #[test]
 fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
-    let stock = uncompacted_executor(
+    let mut stock = uncompacted_executor(
         Model::new("generated".into(), "collection".into(), "1".into())?,
         Arc::new(ScriptedModelProvider::new([])),
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
+    stock.limits.file_bytes = 11;
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -21,7 +22,14 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
         selected_context: None,
     };
     for native in [false, true] {
-        for (authoritative, reject_tool) in [(false, false), (true, false), (false, true)] {
+        for (authoritative, reject_tool, late_rejection, oversized) in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, true, true, false),
+            (true, true, true, false),
+            (false, false, false, true),
+        ] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
                 let execution = StockExecution {
                     io: Some(io),
@@ -30,18 +38,29 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
                 };
                 let sibling = stock_string_copy("retained sibling", Some(io))?;
                 let sibling_bytes = sibling.capacity() as u64;
+                let history = stock_string_copy("existing history", Some(io))?;
+                let history_pointer = history.as_ptr();
+                let mut prior = Vec::new();
+                stock_vec_push(
+                    &mut prior,
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text(history),
+                    },
+                    Some(io),
+                )?;
+                let baseline = io.owned_bytes()?;
                 let mut events = Vec::new();
                 // Generated operands use the original production ledger.
-                if reject_tool {
-                    stock_vec_push(
-                        &mut events,
-                        ModelEvent::ToolCall(crate::model::ToolCall::new(
-                            stock_string_copy("denied call", Some(io))?,
-                            stock_string_copy("denied tool", Some(io))?,
-                            Value::Null,
-                        )),
-                        Some(io),
-                    )?;
+                let denied_call = || -> Result<ModelEvent> {
+                    Ok(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                        stock_string_copy("denied call", Some(io))?,
+                        stock_string_copy("denied tool", Some(io))?,
+                        Value::Null,
+                    )))
+                };
+                if reject_tool && !late_rejection {
+                    stock_vec_push(&mut events, denied_call()?, Some(io))?;
                 }
                 for delta in ["first", "second"] {
                     stock_vec_push(
@@ -59,21 +78,48 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
                         Some(io),
                     )?;
                 }
+                let mut completed_pointer = None;
                 if authoritative {
+                    // Replacing a completion must retire its previous text.
+                    for value in ["previous", "final"] {
+                        let text = stock_string_copy(value, Some(io))?;
+                        completed_pointer = Some(text.as_ptr());
+                        stock_vec_push(
+                            &mut events,
+                            ModelEvent::MessageCompleted { text },
+                            Some(io),
+                        )?;
+                    }
+                }
+                if reject_tool && late_rejection {
+                    stock_vec_push(&mut events, denied_call()?, Some(io))?;
+                }
+                if oversized {
                     stock_vec_push(
                         &mut events,
-                        ModelEvent::MessageCompleted {
-                            text: stock_string_copy("final", Some(io))?,
+                        ModelEvent::Content {
+                            delta: stock_string_copy("oversized delta", Some(io))?,
                         },
                         Some(io),
                     )?;
                 }
-                let mut prior = Vec::new();
+                // The iterator still owns this suffix when collection fails.
+                stock_vec_push(
+                    &mut events,
+                    ModelEvent::Reasoning {
+                        delta: stock_string_copy("unconsumed suffix", Some(io))?,
+                    },
+                    Some(io),
+                )?;
                 let result = execution.collect_step_events(&input, 0, events, &mut prior);
-                if reject_tool {
+                if reject_tool || oversized {
                     assert_eq!(
                         result.err().map(|error| error.code()),
-                        Some(crate::wire::ErrorCode::Unauthorized)
+                        Some(if reject_tool {
+                            crate::wire::ErrorCode::Unauthorized
+                        } else {
+                            crate::wire::ErrorCode::Invalid
+                        })
                     );
                 } else {
                     let result = result?;
@@ -87,13 +133,25 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
                     );
                     assert!(result.calls.is_empty());
                     assert_eq!(result.metadata, Value::Null);
-                    assert_eq!(
-                        io.owned_bytes()?,
-                        sibling_bytes + result.text.capacity() as u64
-                    );
+                    if let Some(pointer) = completed_pointer {
+                        assert_eq!(result.text.as_ptr(), pointer);
+                    }
+                    assert_eq!(io.owned_bytes()?, baseline + result.text.capacity() as u64);
                     stock_retire_text(result.text, Some(io))?;
                 }
-                assert!(prior.is_empty());
+                assert_eq!(prior.len(), 1);
+                let ModelContent::Text(history) = &prior[0].content else {
+                    unreachable!()
+                };
+                assert_eq!(history, "existing history");
+                assert_eq!(history.as_ptr(), history_pointer);
+                assert_eq!(io.owned_bytes()?, baseline);
+                for message in stock_into_iter(prior, Some(io))? {
+                    let ModelContent::Text(history) = message.content else {
+                        unreachable!()
+                    };
+                    stock_retire_text(history, Some(io))?;
+                }
                 assert_eq!(io.owned_bytes()?, sibling_bytes);
                 stock_retire_text(sibling, Some(io))?;
                 Ok::<_, Error>(())
