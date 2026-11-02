@@ -286,10 +286,10 @@ fn initiator_from(code: u32) -> Result<SocketCloseInitiator, GuestError> {
     }
 }
 
-fn close_wire(code: u16, reason: &str, initiator: &SocketCloseInitiator) -> CloseWire {
+fn close_wire(code: u16, reason: String, initiator: &SocketCloseInitiator) -> CloseWire {
     CloseWire {
         code: code.into(),
-        reason: reason.into(),
+        reason,
         initiator: initiator_code(initiator),
     }
 }
@@ -307,25 +307,28 @@ impl SocketFrame {
         text_bytes.checked_add(1 + prost::encoding::encoded_len_varint(text_bytes as u64))
     }
 
-    /// Canonical channel encoding.
-    pub fn encode(&self) -> Bytes {
+    /// Consume this frame into its canonical channel encoding. Payload owners
+    /// move into the wire message; only the output buffer copies their bytes.
+    pub fn encode(self) -> Bytes {
+        self.wire().encode_to_vec().into()
+    }
+
+    fn wire(self) -> FrameWire {
         let kind = match self {
-            Self::Message(SocketPayload::Text { text }) => FrameKind::Text(text.clone()),
-            Self::Message(SocketPayload::Binary { binary }) => FrameKind::Binary(binary.clone()),
+            Self::Message(SocketPayload::Text { text }) => FrameKind::Text(text),
+            Self::Message(SocketPayload::Binary { binary }) => FrameKind::Binary(binary),
             Self::Close {
                 code,
                 reason,
                 initiator,
-            } => FrameKind::Close(close_wire(*code, reason, initiator)),
-            Self::Accepted { subprotocol } => FrameKind::Accepted(AcceptedWire {
-                subprotocol: subprotocol.clone(),
-            }),
+            } => FrameKind::Close(close_wire(code, reason, &initiator)),
+            Self::Accepted { subprotocol } => FrameKind::Accepted(AcceptedWire { subprotocol }),
             Self::Rejected { status, reason } => FrameKind::Rejected(RejectedWire {
-                status: (*status).into(),
-                reason: reason.clone(),
+                status: status.into(),
+                reason,
             }),
         };
-        FrameWire { kind: Some(kind) }.encode_to_vec().into()
+        FrameWire { kind: Some(kind) }
     }
 
     /// Decode only the canonical encoding.
@@ -396,7 +399,7 @@ pub(crate) fn input_record(
             code,
             reason,
             initiator,
-        } => InputKind::Close(close_wire(code, &reason, &initiator)),
+        } => InputKind::Close(close_wire(code, reason, &initiator)),
     };
     let record = AppendRecord {
         value: InputWire {
@@ -589,12 +592,42 @@ mod tests {
                 initiator: SocketCloseInitiator::Runtime,
             },
             SocketFrame::Accepted { subprotocol: None },
+            SocketFrame::Accepted {
+                subprotocol: Some("v1".into()),
+            },
             SocketFrame::Rejected {
                 status: 403,
                 reason: "no".into(),
             },
         ] {
-            assert_eq!(SocketFrame::decode(&frame.encode())?, frame);
+            let original = match &frame {
+                SocketFrame::Message(SocketPayload::Text { text }) => Some(text.as_ptr()),
+                SocketFrame::Message(SocketPayload::Binary { binary }) => Some(binary.as_ptr()),
+                SocketFrame::Close { reason, .. } | SocketFrame::Rejected { reason, .. } => {
+                    Some(reason.as_ptr())
+                }
+                SocketFrame::Accepted { subprotocol } => {
+                    subprotocol.as_ref().map(|value| value.as_ptr())
+                }
+            };
+            let expected = frame.clone();
+            let wire = frame.wire();
+            let retained = match wire.kind.as_ref().ok_or_else(invalid)? {
+                FrameKind::Text(text) => Some(text.as_ptr()),
+                FrameKind::Binary(binary) => Some(binary.as_ptr()),
+                FrameKind::Close(close) => Some(close.reason.as_ptr()),
+                FrameKind::Accepted(accepted) => {
+                    accepted.subprotocol.as_ref().map(|value| value.as_ptr())
+                }
+                FrameKind::Rejected(rejected) => Some(rejected.reason.as_ptr()),
+            };
+            assert_eq!(
+                original, retained,
+                "wire conversion copied the payload owner"
+            );
+            let encoded = wire.encode_to_vec();
+            assert_eq!(expected.clone().encode().as_ref(), encoded.as_slice());
+            assert_eq!(SocketFrame::decode(&encoded)?, expected);
         }
         // Negative controls: an empty frame, an out-of-range close code and
         // trailing bytes all fail instead of decoding to a default.
