@@ -43,6 +43,16 @@ for(const record of records)test(`${record.host} requires its original successfu
  assert.throws(()=>assertNativeCompletion(record.host,missing,record.answer),/native .* terminal missing/);
  assert.throws(()=>assertNativeCompletion(record.host,record,'UNOBSERVED_NATIVE_ANSWER'),/native answer missing/);
  assert.throws(()=>assertNativeCompletion(record.host,{...record,code:1},record.answer));
+ if(record.host==='codex') {
+  const result=sequence=>({...record,stdout:sequence.map(({line})=>line).join('\n')+'\n'});
+  const messages=events.filter(({event})=>event.item?.type==='agent_message');
+  // Reorder/delete/duplicate original records: an answer must be inside the
+  // same native turn, rather than accepted after its successful terminal.
+  for(const sequence of [events.filter(({event})=>event.type!=='turn.started'),
+   [...events.filter(({event})=>event.item?.type!=='agent_message'),...messages],
+   [...events,...events.filter(({event})=>event.type==='turn.completed')]])
+   assert.throws(()=>assertNativeCompletion(record.host,result(sequence),record.answer),{code:'NATIVE_HOST_TERMINAL_ORDER'});
+ }
 });
 
 test('Codex tool failure survives a successful parent answer and process exit',async()=>{
@@ -98,6 +108,14 @@ test('Claude native pair initialization fences model namespace and bare contamin
    const namespace={...record,stdout:record.stdout.replace('plugin:acyclic:acyclic-sessions','acyclic-sessions')};
    assert.throws(()=>assertNativeCompletion(record.host,namespace,record.answer,selection),/MCP connections differ/);
   }
+  const changedResult=change=>({...record,stdout:lines.map(line=>{
+   const event=JSON.parse(line);return event.type==='result'?JSON.stringify({...event,...change}):line;
+  }).join('\n')+'\n'});
+  // Corrupt the original terminal identity, keeping the answer and exit zero.
+  for(const change of [{session_id:'foreign-session'},{parent_tool_use_id:'paired_shell'}])
+   assert.throws(()=>assertNativeCompletion(record.host,changedResult(change),record.answer,selection),{code:'NATIVE_HOST_SESSION_MISMATCH'});
+  const terminal=lines.find(line=>JSON.parse(line).type==='result');
+  assert.throws(()=>assertNativeCompletion(record.host,{...record,stdout:record.stdout+terminal+'\n'},record.answer,selection),{code:'NATIVE_HOST_TERMINAL_ORDER'});
   for(const changed of [{...builtin.plugins[0],path:'installed'},
    {...builtin.plugins[0],source:'agents-md@user'}, {...builtin.plugins[0],name:'unrelated'},
    ...builtin.plugins]) {

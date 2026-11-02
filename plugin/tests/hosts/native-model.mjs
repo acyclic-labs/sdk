@@ -20,15 +20,20 @@ function nativeFailure(host,code,message,cause) {
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer,selection) {
  assert.equal(result.code,0,result.stderr);
- let terminal,text,builtinPlugins,completed=false,initialized=false;
+ let terminal,text,builtinPlugins,session,turn,initialized=false;
  for(const line of result.stdout.split('\n')) {
   if(!line)continue;
   const event=JSON.parse(line);
   if(host==='codex') {
-   if(event.type==='turn.started') {text=undefined;completed=false;}
+   if(event.type==='turn.started') {
+    if(turn==='active')nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex turn restarted before completion',event);
+    turn='active';text=undefined;
+   }
    if(event.type==='turn.failed'||event.type==='error') {
     nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Codex turn failed',event);
    }
+   if((event.type==='turn.completed'||(typeof event.type==='string'&&event.type.startsWith('item.')))&&turn!=='active')
+    nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex item or terminal outside its active turn',event);
    if(event.type==='item.completed') {
     const item=event.item;
     if(item.type==='command_execution'||item.type==='mcp_tool_call') {
@@ -43,10 +48,13 @@ export function assertNativeCompletion(host,result,answer,selection) {
     }
    }
    if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
-   if(event.type==='turn.completed')completed=true;
+   if(event.type==='turn.completed')turn='complete';
   } else if(host==='claude-code') {
    if(selection&&event.type==='system'&&event.subtype==='init') {
     assert.equal(initialized,false,'duplicate native Claude initialization');initialized=true;
+    if(typeof event.session_id!=='string'||!event.session_id)
+     nativeFailure(host,'NATIVE_HOST_SESSION_MISMATCH','native Claude initialization lacks its session',event);
+    session=event.session_id;
     assert.equal(event.model,selection.model,'native Claude model differs from approved selection');
     const count=selection.installed?1:0;
     assert.ok(Array.isArray(event.plugins),'native Claude plugin set differs from paired mode');
@@ -79,9 +87,14 @@ export function assertNativeCompletion(host,result,answer,selection) {
     }
    }
    if(event.type==='result') {
+    if(selection&&!initialized)
+     nativeFailure(host,'NATIVE_HOST_SESSION_MISMATCH','native Claude initialization missing',event);
+    if(selection&&(event.session_id!==session||event.parent_tool_use_id!=null))
+     nativeFailure(host,'NATIVE_HOST_SESSION_MISMATCH','native Claude result differs from the selected root session',event);
     if(event.subtype!=='success'||event.is_error!==false) {
      nativeFailure(host,'NATIVE_HOST_MODEL_FAILED','native Claude turn failed',event);
     }
+    if(terminal)nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','duplicate native Claude terminal',event);
     terminal=event;
    }
   } else if(host==='pi') {
@@ -95,7 +108,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    throw new Error('step=validate native terminal; recovery=select codex, claude-code or pi');
   }
  }
- if(host==='codex')assert.equal(completed,true,'native Codex terminal missing');
+ if(host==='codex')assert.equal(turn,'complete','native Codex terminal missing');
  else if(host==='claude-code') {
   if(selection)assert.equal(initialized,true,'native Claude initialization missing');
   assert.ok(terminal,'native Claude terminal missing');
