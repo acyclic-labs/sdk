@@ -11,6 +11,7 @@ import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
 test("terminal action failure survives original native completion and capture rejection", {
@@ -116,10 +117,11 @@ test("screen assertions observe complete synchronized frames at every fragmentat
   const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
   for (let cut = 0; cut <= bytes.length; cut++) {
     const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-    const frames = new TerminalFrames(screen), seen = [];
+    const seen = [];
     const capture = () => seen.push(screen.buffer.active.getLine(0).translateToString(true));
-    await frames.write(bytes.slice(0, cut), capture);
-    await frames.write(bytes.slice(cut), capture);
+    const frames = new TerminalFrames(screen, capture);
+    await frames.write(bytes.slice(0, cut));
+    await frames.write(bytes.slice(cut));
     assert.ok(seen.includes("final"));
     assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
     frames.dispose(); screen.dispose();
@@ -141,6 +143,10 @@ test("handled failures retain exact task and reason identity across subsequent a
   assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
   const changed = old.replace("cancelled", "unauthorized");
   assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
+});
+
+test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
+  for (const schedule of [[], [0], [63], [255, 0, 7, 1]]) await fuzzTerminalFrames(Buffer.from(schedule));
 });
 
 test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
