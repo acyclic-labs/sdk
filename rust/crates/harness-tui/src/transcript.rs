@@ -1,6 +1,6 @@
 //! Bounded transcript storage and incremental display-width wrapping.
 
-use crate::{Editor, Layout};
+use crate::Layout;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -190,20 +190,19 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
         crate::markdown::render(text, columns)
     };
     let mut style_at = crate::styled_cells::ordered_styles(styles);
-    let layout = Layout::new(&Editor::new(&text), columns);
+    let layout = Layout::from_text(&text, columns);
     let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
     if first > 0 {
         // The marker must itself fit even in a one-column text area.
         rows.push(Line::raw("…"));
     }
-    for (index, row) in layout.rows.iter().enumerate().skip(first) {
-        if row.cells.is_empty()
-            && index
-                .checked_sub(1)
-                .and_then(|previous| layout.rows.get(previous))
-                .is_some_and(|previous| previous.end == row.start)
-        {
+    let mut previous_end = first
+        .checked_sub(1)
+        .map(|previous| layout.rows[previous].end);
+    for (index, row) in layout.rows.into_iter().enumerate().skip(first) {
+        let joins_previous = previous_end.replace(row.end) == Some(row.start);
+        if row.cells.is_empty() && joins_previous {
             continue;
         }
         let marker = if !marked {
@@ -221,8 +220,8 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
         crate::styled_cells::append(
             &mut spans,
             row.cells
-                .iter()
-                .map(|cell| (cell.source.start, cell.symbol.clone())),
+                .into_iter()
+                .map(|cell| (cell.source.start, cell.symbol)),
             &mut style_at,
         );
         rows.push(Line::from(spans));

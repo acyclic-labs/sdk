@@ -63,8 +63,10 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut received = Vec::new();
     let mut rejected = false;
+    let mut handoff_deadline = false;
     loop {
-        let events = match tty.read_events(Instant::now() + Duration::from_millis(20)) {
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let events = match tty.read_events(deadline) {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
             {
@@ -75,6 +77,15 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             }
             events => events?,
         };
+        if mode == "handoff"
+            && !handoff_deadline
+            && !received.is_empty()
+            && events.is_empty()
+            && Instant::now() >= deadline
+        {
+            tty.write_all(b"HANDOFF-DEADLINE\n")?;
+            handoff_deadline = true;
+        }
         for event in events {
             if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
                 received.push(event.clone());
@@ -175,7 +186,12 @@ fn startup_handoff_filters_delayed_partial_and_multiplexer_replies()
     let mut process = Process::start("handoff")?;
     process.send(b"a\x1b]11;rgb:ffff/")?;
     // Cross an input-read deadline with an incomplete reply still in flight.
-    std::thread::sleep(Duration::from_millis(30));
+    process.until(|process| {
+        Ok(process
+            .bytes
+            .windows(b"HANDOFF-DEADLINE\n".len())
+            .any(|bytes| bytes == b"HANDOFF-DEADLINE\n"))
+    })?;
     process.send(b"0000/0000\x07")?;
     process.send(&Multiplexer::Tmux.wrap(b"\x1b]11;rgb:0000/ffff/0000\x07"))?;
     process.send(b"b\x1b[13;6u")?;

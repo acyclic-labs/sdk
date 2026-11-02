@@ -1,6 +1,6 @@
 //! Layout of one admitted live-query page. No I/O, source discovery or runtime
 //! logic lives here: callers supply rows and retain their source-owned cursor.
-use crate::{Editor, Layout};
+use crate::Layout;
 use ratatui::text::Line;
 
 /// Presentation shared by paged file views. Retained work is proportional to
@@ -48,7 +48,7 @@ impl<C> QueryPage<C> {
                 continue;
             }
             let text = line.to_string();
-            let layout = Layout::new(&Editor::new(&text), usize::from(columns));
+            let layout = Layout::from_text(&text, usize::from(columns));
             let mut end = 0;
             let mut style_at = crate::styled_cells::ordered_styles(line.spans.iter().map(|span| {
                 let start = end;
