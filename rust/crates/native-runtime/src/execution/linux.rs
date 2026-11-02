@@ -587,14 +587,22 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
         at += 1;
     }
     code.push(instruction(RETURN, 0, 0, DENY));
-    // prlimit64 can otherwise change another host process's resource limits.
-    code.extend(&[
-        instruction(EQUAL, 0, 4, number(libc::SYS_prlimit64)),
-        instruction(LOAD, 0, 0, 16),
-        instruction(EQUAL, 0, 1, 0),
-        instruction(RETURN, 0, 0, ALLOW),
-        instruction(RETURN, 0, 0, DENY),
-    ]);
+    // Process-selected operations stay local to the caller. Group/session
+    // identity reads are needed by ordinary shells; neither those queries
+    // nor resource limits acquire authority over another named process.
+    const SELF_PROCESS: &[libc::c_long] =
+        &[libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid];
+    let mut at = 0;
+    while at < SELF_PROCESS.len() {
+        code.extend(&[
+            instruction(EQUAL, 0, 4, number(SELF_PROCESS[at])),
+            instruction(LOAD, 0, 0, 16),
+            instruction(EQUAL, 0, 1, 0),
+            instruction(RETURN, 0, 0, ALLOW),
+            instruction(RETURN, 0, 0, DENY),
+        ]);
+        at += 1;
+    }
 }
 
 const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetwork) {
@@ -895,6 +903,8 @@ const fn allowed_syscalls() -> &'static [libc::c_long] {
         libc::SYS_setitimer,
         libc::SYS_getpid,
         libc::SYS_getppid,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_getpgrp,
         libc::SYS_gettid,
         libc::SYS_getuid,
         libc::SYS_geteuid,
