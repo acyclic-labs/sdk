@@ -7,12 +7,14 @@ fn archive_path(name: &str, bytes: &[u8]) -> String {
 impl LocalHarness {
     async fn authorize_checkout_context(
         &self,
+        physical: &LocalWorkspace,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
         io: &crate::filesystem::PreparationIo,
         authority: (&AuthorityVerifier, &Scope),
     ) -> Result<()> {
         crate::filesystem::require_unrestricted_workspace_read(
             workspace,
+            &physical.mounts.named(None)?.1.view.volume,
             authority.0,
             authority.1,
             io,
@@ -81,7 +83,7 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io, authority)
+        self.authorize_checkout_context(workspace, view.workspace(), &io, authority)
             .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut source = CheckoutInstructions {
@@ -102,7 +104,7 @@ impl LocalHarness {
             Some(&cut),
         )
         .await?;
-        self.authorize_checkout_context(view.workspace(), &io, authority)
+        self.authorize_checkout_context(workspace, view.workspace(), &io, authority)
             .await?;
         let discovery = DiscoveredContext {
             instructions,
@@ -137,8 +139,13 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
-            .await?;
+        self.authorize_checkout_context(
+            workspace,
+            view.workspace(),
+            &io,
+            (&self.verifier, &self.signed),
+        )
+        .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut found = Vec::new();
         for (index, path) in paths.iter().enumerate() {
@@ -152,8 +159,13 @@ impl LocalHarness {
             }
         }
         // The bytes disclose only what the authority still admits.
-        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
-            .await?;
+        self.authorize_checkout_context(
+            workspace,
+            view.workspace(),
+            &io,
+            (&self.verifier, &self.signed),
+        )
+        .await?;
         Ok(found)
     }
 }
@@ -188,8 +200,13 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
-            .await?;
+        self.authorize_checkout_context(
+            workspace,
+            view.workspace(),
+            &io,
+            (&self.verifier, &self.signed),
+        )
+        .await?;
         let cut = view.snapshot(&mut accounting).await?;
         let mut remaining = self.limits.file_bytes;
         let mut copies = std::collections::BTreeMap::new();
@@ -207,8 +224,13 @@ impl LocalHarness {
         }
         let directory = self.publish_mention_copies(base, copies).await?;
         // The copies disclose only what the authority still admits.
-        self.authorize_checkout_context(view.workspace(), &io, (&self.verifier, &self.signed))
-            .await?;
+        self.authorize_checkout_context(
+            workspace,
+            view.workspace(),
+            &io,
+            (&self.verifier, &self.signed),
+        )
+        .await?;
         Ok(directory)
     }
 }
@@ -326,6 +348,59 @@ mod tests {
             )
             .await?;
         assert_eq!(found.instructions.len(), 1);
+        let issuer = AuthorityRoot::new(
+            "context-test",
+            [19; 32],
+            harness.verifier.audience().clone(),
+        );
+        let verifier = issuer.verifier(&mut None)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let volume = &workspace.mounts.named(None)?.1.view.volume;
+        let read = volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let write = volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+        let other = crate::conversation::VolumeRef::new(
+            volume.provider().clone(),
+            format!("{}-other", volume.id()),
+            volume.class(),
+            volume.owner().clone(),
+            &mut None,
+        )?
+        .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        for (grants, admitted) in [
+            (Capabilities::new([read.as_str()]), true),
+            (Capabilities::new(["model:generate"]), false),
+            (Capabilities::new([write.as_str()]), false),
+            (Capabilities::new([other.as_str()]), false),
+        ] {
+            let scope = issuer.bootstrap_scope(
+                "context-test",
+                &grants,
+                harness.signed.agent(),
+                &mut None,
+            )?;
+            let result = harness
+                .authorize_checkout_context(
+                    &workspace,
+                    workspace.view().workspace(),
+                    &io,
+                    (&verifier, &scope),
+                )
+                .await;
+            if admitted {
+                result?;
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(Error::FilesystemAccessConfiguration("checkout context"))
+                ));
+            }
+        }
         let label = Capability {
             layers: vec![vec![Grant {
                 actions: Action::ALL.into_iter().collect(),
@@ -340,18 +415,13 @@ mod tests {
         }
         .to_scope_label()
         .map_err(storage)?;
-        let issuer = AuthorityRoot::new(
-            "context-test",
-            [19; 32],
-            harness.verifier.audience().clone(),
-        );
         harness.signed = issuer.bootstrap_scope(
             "context-test",
             &Capabilities::new(harness.signed.capabilities().iter().chain([label.as_str()])),
             harness.signed.agent(),
             &mut None,
         )?;
-        harness.verifier = issuer.verifier(&mut None)?;
+        harness.verifier = verifier;
         assert!(matches!(
             harness
                 .checkout_instructions(

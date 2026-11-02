@@ -77,12 +77,13 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
     let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
     for grants in [ceiling, signed.capabilities()] {
         if crate::core::filesystem_scope_label(grants, &mut None)?.is_none() {
-            let volume = volume.ok_or(Error::FilesystemAccessConfiguration(surface))?;
-            if !grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-                || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?)
-            {
-                return Err(Error::FilesystemAccessConfiguration(surface));
-            }
+            require_volume_operations(
+                grants,
+                volume,
+                &[VolumeOperation::Read, VolumeOperation::Write],
+                &io,
+                surface,
+            )?;
         }
     }
     let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
@@ -98,12 +99,43 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
     access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
 }
 
+fn require_volume_operations(
+    grants: &crate::Capabilities,
+    volume: Option<&VolumeRef>,
+    operations: &[VolumeOperation],
+    io: &PreparationIo,
+    surface: &'static str,
+) -> Result<()> {
+    use crate::store::history::HistoryIo as _;
+    let volume = volume.ok_or(Error::FilesystemAccessConfiguration(surface))?;
+    let mut history = io.history_io();
+    let digest = volume.identity_digest(
+        crate::store::default_projection_read_limits().maximum_bytes,
+        &mut Some(&mut history),
+    )?;
+    for operation in operations {
+        let prefix = operation.capability_prefix();
+        history.codec_charge(
+            crate::executor::json::JsonCodecCharge::Inspect { items: 1 },
+            true,
+        )?;
+        history.copy_bytes((prefix.len() + 64) as u64)?;
+        if !crate::conversation::contains_content_label(grants, prefix, digest) {
+            return Err(Error::FilesystemAccessConfiguration(surface));
+        }
+    }
+    Ok(())
+}
+
 /// Verify a scope before exposing read-only raw checkout context.
+/// The caller supplies the original selected volume. Without a structured
+/// filesystem capability, the signed scope must grant that volume's reads.
 pub async fn require_unrestricted_workspace_read<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
     workspace: &acyclic_fs::Workspace<A, O>,
+    volume: &VolumeRef,
     verifier: &AuthorityVerifier,
     scope: &Scope,
     io: &PreparationIo,
@@ -113,6 +145,15 @@ pub async fn require_unrestricted_workspace_read<
     verifier.verify(scope, &mut Some(&mut io.history_io()))?;
     let label =
         crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
+    if label.is_none() {
+        require_volume_operations(
+            scope.capabilities(),
+            Some(volume),
+            &[VolumeOperation::Read],
+            io,
+            surface,
+        )?;
+    }
     let view = access::access_view(
         workspace,
         scope,

@@ -31,6 +31,13 @@ does not construct a read-only reviewer preset or derive authority from a role.
 Hooks that precede tool policy retain their executor's static host grant;
 per-call shell admission does not retrospectively confine those hooks.
 
+Raw checkout context reads authenticate the original scope and selected volume
+before discovering or reading files. A scope without a structured filesystem
+capability must carry that volume's read grant; an unrelated or write-only grant
+cannot select the unrestricted read policy. Structured grants retain their
+current-policy, path, generation and expiry checks. This read admission does not
+grant shell execution, publication or physical write authority.
+
 An embedded native host can supply the same grant when binding
 `LocalWorkspace::executor`. That binding retains the grant for its shell and
 lifecycle hook launches, including the original selected workspace and capture
