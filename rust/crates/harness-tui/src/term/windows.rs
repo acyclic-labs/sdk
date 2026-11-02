@@ -523,12 +523,8 @@ mod tests {
         }
         std::fs::write(path.with_extension("ready"), b"ready")?;
         if blocked {
-            // Windows routes GenerateConsoleCtrlEvent through the same server
-            // whose output is blocked. Drain only after the timeout assertion;
-            // the real-lock loom model covers close racing the pending wait.
-            while !path.with_extension("draining").exists() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            // The host starts draining after observing ready. These original
+            // workers finish only after that output can make progress.
             if let Some(setup) = setup_wait {
                 setup
                     .join()
