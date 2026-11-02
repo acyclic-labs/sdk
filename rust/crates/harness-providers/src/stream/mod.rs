@@ -51,7 +51,7 @@ pub(crate) struct State<'work> {
     calls: BTreeMap<u64, Call>,
     texts: BTreeMap<u64, Text>,
     metadata: serde_json::Map<String, Value>,
-    pub(crate) terminal: bool,
+    terminal: bool,
     completed_message: Option<(u64, String)>,
     thinking: BTreeMap<u64, reasoning::Thinking>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
@@ -88,14 +88,33 @@ pub(crate) fn events_named<'a>(
         }
         while let Some(data) = input.next().await {
             let data = data?;
-            let deltas = parse(&mut state, adapter, &data)?;
+            let (deltas, control) = advance(&mut state, adapter, &data)?;
             for event in deltas { yield event; }
-            if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
+            if control.is_break() { break; }
         }
         if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
         let events = finish(state, adapter, dispatch)?;
         for event in events { yield event; }
     }
+}
+
+/// Parse one frame and decide whether another transport frame is required.
+/// Candidate completion is not transport completion: Chat still needs its
+/// usage trailer and terminator, and Gemini may report usage through EOF.
+pub(crate) fn advance(
+    state: &mut State,
+    adapter: Adapter,
+    data: &str,
+) -> Result<(Vec<ModelEvent>, std::ops::ControlFlow<()>)> {
+    let events = parse(state, adapter, data)?;
+    let control = if state.terminal
+        && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses))
+    {
+        std::ops::ControlFlow::Break(())
+    } else {
+        std::ops::ControlFlow::Continue(())
+    };
+    Ok((events, control))
 }
 
 pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<Vec<ModelEvent>> {

@@ -135,6 +135,8 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
         provider.transport =
             crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
+        let ordinary: Vec<_> = provider.generate(&request, dispatch).try_collect().await?;
+        let mut expected = ordinary.iter();
         let work = work(&CancellationToken::new())?;
         let before = work.live_allocation_bytes();
         {
@@ -160,6 +162,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             let mut completed = 0;
             while let Some(event) = stream.next().await {
                 let (event, custody) = event?;
+                assert_eq!(expected.next(), Some(&event), "{adapter:?}");
                 assert!(custody.work().shares_allocation_context(&work));
                 assert_eq!(custody.bytes(), event.logical_owned_bytes()?);
                 match &event {
@@ -178,6 +181,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 drop((event, custody));
             }
             assert_eq!((calls, completed), (1, 1));
+            assert!(expected.next().is_none(), "{adapter:?}");
             assert_eq!(
                 work.receipt().source_bytes_read - source_before,
                 response.len() as u64
@@ -188,7 +192,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             assert!(stream.next().await.is_none());
             assert!(stream.next().await.is_none());
         }
-        assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.sent.load(Ordering::SeqCst), 2);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
     }
     Ok(())

@@ -272,8 +272,7 @@ fn parse_response<'a>(
                 let (bytes, nodes) = shape(frame.data().as_bytes());
                 let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                 parser.allocation.absorb(&mut admission)?;
-                let events = model_diagnostic(stream::parse(&mut parser.state, adapter, frame.data()), &mut parser.allocation)?;
-                let terminal = parser.state.terminal && (frame.data() == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
+                let (events, control) = model_diagnostic(stream::advance(&mut parser.state, adapter, frame.data()), &mut parser.allocation)?;
                 drop(frame);
                 let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                 let retained = events.iter().try_fold(parser.state.logical_owned_bytes()?.checked_add(slots).ok_or_else(|| invalid("provider retained capacity overflow"))?, |bytes, event| {
@@ -285,7 +284,7 @@ fn parse_response<'a>(
                     yield (event, custody);
                 }
                 parser.allocation.release(slots)?;
-                if terminal { break; }
+                if control.is_break() { break; }
             }
             let (bytes, nodes) = parser.state.arguments().map(|args| shape(args.as_bytes())).try_fold((0u64, 0u64), |(bytes, nodes), (b, n)| {
                 Ok::<_, Error>((bytes.checked_add(b).ok_or_else(|| invalid("tool batch size overflow"))?, nodes.checked_add(n).ok_or_else(|| invalid("tool batch size overflow"))?))
