@@ -80,7 +80,7 @@ pub use http::BrowserTransport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
-pub use model_spec::{ModelFeatures, ModelSpec};
+pub use model_spec::{CatalogModel, ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_native, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;

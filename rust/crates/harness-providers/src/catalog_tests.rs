@@ -1,6 +1,72 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn public_catalogue_preserves_model_facts_without_credential_resolution_or_disclosure() -> Result<()>
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (_, transport) = provider(Adapter::Responses, 200);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let observed = reads.clone();
+    let mut credentials = Credentials::explicit(BTreeMap::new());
+    credentials.source = Some(Arc::new(move |_, _| {
+        observed.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }));
+    let mut registry = Registry::with_transport(credentials, transport.clone());
+    let original = registry
+        .model_catalog_entry("openai", "gpt-5")
+        .expect("stock member");
+    let visible = serde_json::to_value(original).expect("public model");
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    // The original resolver refuses missing credentials; discovery must remain
+    // independently available without calling that producer.
+    assert!(registry.resolve("openai/gpt-5").is_err());
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+    let mut endpoint = registry.catalog()["openai"].as_ref().clone();
+    endpoint.base_url = "https://private-endpoint.invalid/v1".into();
+    endpoint
+        .headers
+        .insert("x-owner-only".into(), "private-header".into());
+    endpoint.authentication = Authentication::ApiKey;
+    registry.register("openai".into(), endpoint)?;
+    let member = registry
+        .model_catalog_entry("openai", "gpt-5")
+        .expect("same member");
+    assert_eq!(serde_json::to_value(member).expect("public model"), visible);
+    assert!(std::ptr::eq(
+        member.specification,
+        &registry.catalog()["openai"].models["gpt-5"],
+    ));
+    let protected = serde_json::to_value(registry.catalog()).expect("owner catalogue");
+    assert!(protected["openai"].get("headers").is_some());
+    for member in registry.model_catalog() {
+        let value = serde_json::to_value(member).expect("public model");
+        assert_eq!(value["provider"], member.provider);
+        assert_eq!(value["model"], member.model);
+        assert_eq!(
+            value["capacity"],
+            serde_json::to_value(member.specification.capacity).unwrap()
+        );
+        for private in [
+            "authentication",
+            "base_url",
+            "headers",
+            "token_counter",
+            "timeouts",
+            "retry",
+        ] {
+            assert!(value.get(private).is_none(), "private field {private}");
+        }
+    }
+    assert!(registry.model_catalog_entry("openai", "absent").is_none());
+    assert!(registry.model_catalog_entry("absent", "gpt-5").is_none());
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+    assert!(transport.sent.lock().expect("fixture").is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);

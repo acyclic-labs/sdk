@@ -86,9 +86,38 @@ impl Registry {
             .unwrap_or(crate::catalog::DEFAULT_MODEL)
     }
 
-    /// Borrows declarative endpoint, authentication and capacity specifications.
+    /// Borrows protected endpoint configuration. Guest-visible discovery uses
+    /// [`Self::model_catalog`] instead; authentication and headers stay here.
     pub fn catalog(&self) -> &BTreeMap<String, Arc<ProviderSpec>> {
         &self.providers
+    }
+
+    /// Lazily borrows public model facts in provider/name order. Advancing the
+    /// cursor visits only its next member; it neither resolves credentials nor
+    /// builds a whole-catalogue collection. The consumer supplies page credit.
+    pub fn model_catalog(&self) -> impl Iterator<Item = crate::CatalogModel<'_>> {
+        self.providers.iter().flat_map(|(provider, endpoint)| {
+            endpoint.models.iter().map(move |(model, specification)| {
+                crate::CatalogModel::new(provider, model, endpoint, specification)
+            })
+        })
+    }
+
+    /// Looks up one public member without credential admission or I/O. Both
+    /// ordered lookups borrow the original entries; no catalogue scan or copy.
+    pub fn model_catalog_entry(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Option<crate::CatalogModel<'_>> {
+        let (provider, endpoint) = self.providers.get_key_value(provider)?;
+        let (model, specification) = endpoint.models.get_key_value(model)?;
+        Some(crate::CatalogModel::new(
+            provider,
+            model,
+            endpoint,
+            specification,
+        ))
     }
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.

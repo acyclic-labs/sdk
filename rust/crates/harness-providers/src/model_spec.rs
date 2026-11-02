@@ -45,3 +45,35 @@ pub struct ModelSpec {
     #[serde(default)]
     pub features: ModelFeatures,
 }
+
+/// Public facts for one catalogue member. This borrows the original model
+/// specification without exposing its endpoint, headers or authentication.
+/// Presence is discovery only; the caller's signed grant authorizes selection.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct CatalogModel<'a> {
+    /// Exact provider ID.
+    pub provider: &'a str,
+    /// Exact provider-owned name.
+    pub model: &'a str,
+    /// Protocol dialect, independent of the native tool family.
+    pub wire_family: crate::Adapter,
+    /// The same declared model facts used by the original resolver.
+    #[serde(flatten)]
+    pub specification: &'a ModelSpec,
+}
+
+impl<'a> CatalogModel<'a> {
+    pub(crate) fn new(
+        provider: &'a str,
+        model: &'a str,
+        endpoint: &crate::ProviderSpec,
+        specification: &'a ModelSpec,
+    ) -> Self {
+        Self {
+            provider,
+            model,
+            wire_family: endpoint.adapter,
+            specification,
+        }
+    }
+}
