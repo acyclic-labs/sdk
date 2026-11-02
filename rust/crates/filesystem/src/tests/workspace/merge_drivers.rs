@@ -49,7 +49,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
     let mut pages = 0;
     while !directory.plan().complete {
-        let before = directory.plan().clean + directory.plan().exposed_conflicts;
+        let before = directory.plan().examined_clean + directory.plan().exposed_conflicts;
         let section = if directory.plan().conflicts_complete {
             MergeDirectorySection::Clean
         } else {
@@ -72,7 +72,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             assert_eq!(directory.plan().exposed_conflicts, 1);
             assert!(!directory.plan().clean_complete);
         }
-        let after = directory.plan().clean + directory.plan().exposed_conflicts;
+        let after = directory.plan().examined_clean + directory.plan().exposed_conflicts;
         assert!(
             after - before <= 1,
             "a one-row page expanded the whole merge"
@@ -168,24 +168,6 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ));
     }
 
-    // Read each proposal from one immutable staging head, then use the same
-    // domain candidate and atomic publisher as every other workspace join.
-    staging
-        .write_text(&format!("{root}/conflicts/text"), "resolved\n")
-        .await?;
-    staging
-        .write_text(
-            &format!("{root}/conflicts/binary.resolve.json"),
-            r#"{"take":"theirs"}"#,
-        )
-        .await?;
-    staging
-        .write_text(
-            &format!("{root}/conflicts/deleted.resolve.json"),
-            r#"{"remove":true}"#,
-        )
-        .await?;
-    let staged = unbounded!(staging, head())?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -204,6 +186,58 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .join()
         .describe_conflicts(conflicts, truncated)
         .await?;
+    let text_key = &typed
+        .conflicts
+        .iter()
+        .find(|view| view.path.as_deref() == Some("/text"))
+        .ok_or("text conflict missing")?
+        .key;
+    let staged = unbounded!(staging, head())?;
+    assert!(matches!(
+        directory.resolution(&staged, text_key, &cancellation).await,
+        Err(DrivenJoinError::Workspace(
+            WorkspaceError::InvalidMergeResolution
+        ))
+    ));
+    let binary_key = &typed
+        .conflicts
+        .iter()
+        .find(|view| view.path.as_deref() == Some("/binary"))
+        .ok_or("binary conflict missing")?
+        .key;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/binary.resolve.json"),
+            r#"{"take":"theirs","content":"substituted"}"#,
+        )
+        .await?;
+    let staged = unbounded!(staging, head())?;
+    assert!(
+        directory
+            .resolution(&staged, binary_key, &cancellation)
+            .await
+            .is_err()
+    );
+    assert_eq!(unbounded!(main, head())?.id(), pins.1);
+
+    // Read each proposal from one immutable staging head, then use the same
+    // domain candidate and atomic publisher as every other workspace join.
+    staging
+        .write_text(&format!("{root}/conflicts/text"), "resolved\n")
+        .await?;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/binary.resolve.json"),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/deleted.resolve.json"),
+            r#"{"remove":true}"#,
+        )
+        .await?;
+    let staged = unbounded!(staging, head())?;
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
         resolutions.insert(

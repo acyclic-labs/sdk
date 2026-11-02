@@ -18,6 +18,8 @@ pub struct MergeDirectoryPlan {
     pub theirs: GenerationId,
     /// Clean paths exposed so far.
     pub clean: u64,
+    /// Original changed-path rows consumed, including excluded conflicts.
+    pub examined_clean: u64,
     /// Exact conflict total from the original merge producer.
     pub conflicts: u64,
     /// Conflict files exposed so far.
@@ -160,6 +162,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
                 ours,
                 theirs,
                 clean: 0,
+                examined_clean: 0,
                 conflicts,
                 exposed_conflicts: 0,
                 clean_complete: false,
@@ -309,13 +312,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         }
         for _ in 0..steps.get() {
             if section == MergeDirectorySection::Clean {
-                match self
+                let row = self
                     .preview
                     .clean_step()
                     .await
                     .map_err(|failure| failure.error)?
-                    .value
-                {
+                    .value;
+                if !matches!(row, JoinCleanStep::Done) {
+                    next.examined_clean = next
+                        .examined_clean
+                        .checked_add(1)
+                        .ok_or(WorkspaceError::ContentLengthOverflow)?;
+                }
+                match row {
                     JoinCleanStep::Entry(entry) => {
                         let row = entry.value();
                         let file = MergeCleanFile {
