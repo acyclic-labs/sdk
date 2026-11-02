@@ -81,6 +81,7 @@ pub(super) mod linux {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use std::io::{BufRead, Read};
     use std::os::fd::AsFd;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::process::{Child, Stdio};
 
@@ -192,7 +193,10 @@ pub(super) mod linux {
         Ok(())
     }
     pub(crate) fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let root = dir.path();
         let dump = root.join("screen.txt");
         let config = root.join("tmux.conf");
