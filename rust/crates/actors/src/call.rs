@@ -195,9 +195,7 @@ impl CallPath {
                 path: self.log.clone(),
                 expected: u64::from(requested),
             })
-            .chain(accepted.fence.iter().map(|fence| CommitCondition::Absent {
-                path: fence.clone(),
-            }))
+            .chain(self.open(accepted.fence.as_ref()))
             .collect(),
             mutations: vec![append(
                 &self.log,
@@ -216,7 +214,7 @@ impl CallPath {
     /// When the record cannot be built.
     pub fn chunk(&self, fence: Option<&StreamPath>, body: OwnedBytes) -> Result<Commit, Error> {
         Ok(Commit {
-            conditions: self.open(fence),
+            conditions: self.open(fence).collect(),
             mutations: vec![append(&self.log, record(b"chunk", body, fence)?)],
         })
     }
@@ -228,7 +226,7 @@ impl CallPath {
     /// When the record cannot be built.
     pub fn settle(&self, fence: Option<&StreamPath>, outcome: &Outcome) -> Result<Commit, Error> {
         Ok(Commit {
-            conditions: self.open(fence),
+            conditions: self.open(fence).collect(),
             mutations: vec![
                 append(&self.log, record(outcome.kind(), outcome.body(), fence)?),
                 append(
@@ -248,11 +246,10 @@ impl CallPath {
         self.settle(None, &Outcome::Cancelled(reason.to_owned()))
     }
 
-    fn open(&self, fence: Option<&StreamPath>) -> Vec<CommitCondition> {
+    fn open(&self, fence: Option<&StreamPath>) -> impl Iterator<Item = CommitCondition> {
         std::iter::once(&self.settled)
             .chain(fence)
             .map(|path| CommitCondition::Absent { path: path.clone() })
-            .collect()
     }
 }
 

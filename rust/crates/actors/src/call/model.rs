@@ -1,7 +1,8 @@
 //! Bounded exhaustive model check of the call protocol over a real
 //! `MemoryStream`.
 //!
-//! The caller's request opens the journal. Four hops then race on the call:
+//! The request is either in the journal or on the executor's queue. Four hops
+//! then race on the call, including a stale request-location flag:
 //! the executor (accept, chunk, `ok`), a second executor (accept), a
 //! canceller and the executor's session end (its fence).
 //! Every interleaving is run through the real commit builders. After every
@@ -30,19 +31,23 @@ struct Model {
     call: CallPath,
     fence: StreamPath,
     guarded: bool,
+    request: bool,
+    requested: bool,
     executor: usize,
     stopped: bool,
     observed: Option<Outcome>,
 }
 
 impl Model {
-    fn new(guarded: bool) -> Self {
+    fn new(guarded: bool, request: bool, requested: bool) -> Self {
         let root = StreamPath::new("caller").expect("root");
         Self {
             provider: MemoryStream::default(),
             call: CallPath::new(&root, "c1").expect("call"),
             fence: StreamPath::new("executor/sessions/1/ended").expect("fence"),
             guarded,
+            request,
+            requested,
             executor: 0,
             stopped: false,
             observed: None,
@@ -78,7 +83,9 @@ impl Model {
             Hop::Executor => {
                 let fence = Some(&self.fence);
                 let commit = match self.executor {
-                    0 => self.call.accept(&accepted(b"e1", &self.fence), true),
+                    0 => self
+                        .call
+                        .accept(&accepted(b"e1", &self.fence), self.requested),
                     1 => self.call.chunk(fence, OwnedBytes::from(&b"part"[..])),
                     _ => self
                         .call
@@ -98,7 +105,7 @@ impl Model {
             Hop::Rival => {
                 let commit = self
                     .call
-                    .accept(&accepted(b"e2", &self.fence), true)
+                    .accept(&accepted(b"e2", &self.fence), self.requested)
                     .map_err(|error| error.to_string())?;
                 self.publish(commit).await?;
             }
@@ -163,7 +170,9 @@ impl Model {
         if let Some(receipt) = journal.receipt(self.call.log()) {
             // The receipt is the committed request plus the one terminal
             // record, or the fence that settled the accepted call.
-            if receipt.request.is_none() || receipt.terminal.is_none() == receipt.fence.is_none() {
+            if receipt.request.is_some() != self.request
+                || receipt.terminal.is_none() == receipt.fence.is_none()
+            {
                 return Err(format!("incomplete receipt {receipt:?}"));
             }
         }
@@ -226,22 +235,30 @@ async fn explore(guarded: bool) -> Result<usize, String> {
     );
     assert_eq!(all.len(), 120);
     let mut violations = 0;
-    for schedule in all {
-        let mut model = Model::new(guarded);
-        let request = model
-            .call
-            .request(OwnedBytes::from(&b"run"[..]))
-            .map_err(|error| error.to_string())?;
-        if !model.publish(request).await? {
-            return Err("the caller's request was refused".into());
-        }
-        for hop in &schedule {
-            if let Err(violation) = model.step(*hop).await {
-                if guarded {
-                    return Err(format!("{schedule:?}: {violation}"));
+    for request in [false, true] {
+        for requested in [false, true] {
+            for schedule in &all {
+                let mut model = Model::new(guarded, request, requested);
+                if request {
+                    let request = model
+                        .call
+                        .request(OwnedBytes::from(&b"run"[..]))
+                        .map_err(|error| error.to_string())?;
+                    if !model.publish(request).await? {
+                        return Err("the caller's request was refused".into());
+                    }
                 }
-                violations += 1;
-                break;
+                for hop in schedule {
+                    if let Err(violation) = model.step(*hop).await {
+                        if guarded {
+                            return Err(format!(
+                                "request={request} requested={requested} {schedule:?}: {violation}"
+                            ));
+                        }
+                        violations += 1;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -251,6 +268,25 @@ async fn explore(guarded: bool) -> Result<usize, String> {
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(true).await?, 0);
+    // Remove only acceptance's settled guard from the original cancelled,
+    // requestless call. The stale flag then permits a post-terminal append.
+    let mut model = Model::new(true, false, true);
+    model.step(Hop::Cancel).await?;
+    let mut acceptance = model
+        .call
+        .accept(
+            &Accepted {
+                executor: OwnedBytes::from(&b"e1"[..]),
+                fence: Some(model.fence.clone()),
+            },
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+    acceptance.conditions.retain(|condition| {
+        !matches!(condition, CommitCondition::Absent { path } if path == model.call.settled())
+    });
+    assert!(model.publish(acceptance).await?);
+    assert!(model.check(Hop::Rival).await.is_err());
     // Negative control: without the settled and fence guards, a late
     // executor terminal or chunk lands after a cancel or a fence.
     assert!(explore(false).await? > 0);
