@@ -501,6 +501,38 @@ async fn terminal_sessions() -> Result<(), String> {
 #[cfg(test)]
 async fn terminal_reasons() -> Result<(), String> {
     let root = StreamPath::new("caller").map_err(|error| error.to_string())?;
+    let call = CallPath::new(&root, "cancel-reason").map_err(|error| error.to_string())?;
+    let mut nonempty_allocations = None;
+    for reason in [String::new(), "stop".into(), "\u{03bb}".repeat(50_000)] {
+        let mut cancellation = None;
+        let work = acyclic_test_support::measure(|| {
+            cancellation = Some(call.cancel(&reason).expect("cancellation"));
+        });
+        // The former construction copies into a temporary String, then into
+        // the original terminal. Both paths must build the identical commit.
+        let mut copied = None;
+        let duplicate = acyclic_test_support::measure(|| {
+            copied = Some(
+                call.settle(None, &Outcome::Cancelled(reason.clone()))
+                    .expect("owned cancellation"),
+            );
+        });
+        assert_eq!(cancellation, copied);
+        assert_eq!(
+            duplicate.count_total,
+            work.count_total + u64::from(!reason.is_empty())
+        );
+        assert_eq!(
+            duplicate.bytes_total,
+            work.bytes_total + reason.len() as u64
+        );
+        if !reason.is_empty() {
+            assert_eq!(
+                *nonempty_allocations.get_or_insert(work.count_total),
+                work.count_total
+            );
+        }
+    }
     let mut long = vec![b'a'; 16_384];
     long.push(0xff);
     for bytes in [vec![0xff], vec![0xc0, 0x80], vec![0xe2, 0x82], long] {

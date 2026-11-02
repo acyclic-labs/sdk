@@ -239,17 +239,24 @@ impl CallPath {
         outcome: &Outcome,
         attributes: impl IntoIterator<Item = Attribute>,
     ) -> Result<Commit, Error> {
+        self.settle_body(fence, outcome.kind(), outcome.body(), attributes)
+    }
+
+    fn settle_body(
+        &self,
+        fence: Option<&StreamPath>,
+        kind: &'static [u8],
+        body: OwnedBytes,
+        attributes: impl IntoIterator<Item = Attribute>,
+    ) -> Result<Commit, Error> {
         Ok(Commit {
             conditions: self.open(fence).collect(),
             mutations: vec![
                 append(
                     &self.log,
-                    record_with_attributes(outcome.kind(), outcome.body(), fence, attributes)?,
+                    record_with_attributes(kind, body, fence, attributes)?,
                 ),
-                append(
-                    &self.settled,
-                    AppendRecord::from(OwnedBytes::from(outcome.kind())),
-                ),
+                append(&self.settled, AppendRecord::from(OwnedBytes::from(kind))),
             ],
         })
     }
@@ -260,7 +267,12 @@ impl CallPath {
     /// # Errors
     /// When the record cannot be built.
     pub fn cancel(&self, reason: &str) -> Result<Commit, Error> {
-        self.settle(None, &Outcome::Cancelled(reason.to_owned()))
+        self.settle_body(
+            None,
+            b"cancelled",
+            OwnedBytes::from(reason),
+            std::iter::empty(),
+        )
     }
 
     fn open(&self, fence: Option<&StreamPath>) -> impl Iterator<Item = CommitCondition> {
