@@ -131,6 +131,44 @@ pub struct Error {
     #[source]
     pub stopped: Option<acyclic_auth::operation::Stopped>,
 }
+
+impl Error {
+    /// Classifies a canonical gRPC status when no typed service detail exists.
+    /// Unknown statuses remain unavailable; this does not decide a write's outcome.
+    #[must_use]
+    pub fn from_grpc_status(status: i32) -> Self {
+        match status {
+            3 => wire::ErrorCode::InvalidArgument,
+            5 => wire::ErrorCode::NotFound,
+            7 | 16 => wire::ErrorCode::AccessDenied,
+            8 => wire::ErrorCode::QuotaExceeded,
+            11 => wire::ErrorCode::RangeNotSatisfiable,
+            12 => wire::ErrorCode::Unsupported,
+            15 => wire::ErrorCode::Corrupt,
+            4 => wire::ErrorCode::DeadlineElapsed,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
+    }
+
+    /// Classifies an HTTP status when no typed service detail exists.
+    /// Unknown statuses remain unavailable; this does not decide a write's outcome.
+    #[must_use]
+    pub fn from_http_status(status: u16) -> Self {
+        match status {
+            400 => wire::ErrorCode::InvalidArgument,
+            401 | 403 => wire::ErrorCode::AccessDenied,
+            404 => wire::ErrorCode::NotFound,
+            409 => wire::ErrorCode::Conflict,
+            413 | 429 => wire::ErrorCode::QuotaExceeded,
+            416 => wire::ErrorCode::RangeNotSatisfiable,
+            501 => wire::ErrorCode::Unsupported,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
+    }
+}
+
 impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
         Self {

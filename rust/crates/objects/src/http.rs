@@ -325,17 +325,7 @@ impl HttpObjects {
         {
             return code.into();
         }
-        match status {
-            400 => wire::ErrorCode::InvalidArgument,
-            401 | 403 => wire::ErrorCode::AccessDenied,
-            404 => wire::ErrorCode::NotFound,
-            409 => wire::ErrorCode::Conflict,
-            413 | 429 => wire::ErrorCode::QuotaExceeded,
-            416 => wire::ErrorCode::RangeNotSatisfiable,
-            501 => wire::ErrorCode::Unsupported,
-            _ => wire::ErrorCode::Unavailable,
-        }
-        .into()
+        Error::from_http_status(status)
     }
 }
 

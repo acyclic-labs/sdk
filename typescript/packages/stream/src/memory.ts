@@ -1,5 +1,5 @@
 import { wireWhenAbsent } from "./contract.js";
-import { streamError } from "./wasm-error.js";
+import { streamError } from "./error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
@@ -15,7 +15,7 @@ import type {
   CommitId, CommitOptions, CommitResult,
   FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
   IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
-  StreamProvider, ChildrenPage, ChildrenPageRequest, StreamFailureCode,
+  StreamProvider, ChildrenPage, ChildrenPageRequest,
 } from "./types.js";
 import { StreamError, idempotencyKey } from "./types.js";
 

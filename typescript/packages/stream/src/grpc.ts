@@ -3,6 +3,7 @@ import type { Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
+import { streamFailure } from "./error.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
@@ -14,7 +15,7 @@ import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
@@ -229,26 +230,12 @@ export class GrpcStreamProvider implements StreamProvider {
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
-/** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
+/** Both transport classification and public projection use the Rust contract. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const reason = error.rawMessage;
-  let code: StreamFailureCode = "unavailable";
-  switch (error.code) {
-    case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
-    case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
-    case Code.AlreadyExists: code = "destination_exists"; break;
-    case Code.OutOfRange: code = "out_of_range"; break;
-    case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
-    case Code.ResourceExhausted: code = "capacity_exhausted"; break;
-    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
-    case Code.FailedPrecondition:
-      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed" || reason === "revision_foreign") code = reason;
-      break;
-  }
-  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason);
+  return streamFailure(grpcErrorCode(error.code, error.rawMessage), error.rawMessage, operation)
+    ?? new StreamError("unavailable", error.rawMessage);
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
