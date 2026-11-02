@@ -7,7 +7,7 @@ use super::records::{
 };
 use crate::{
     Error, OperationId, Result,
-    agent::TargetRecord,
+    agent::{AgentPath, TargetRecord},
     approvals::{ApprovalPolicy, ApprovalRule, Approver, RuleVerdict},
     core::AuthorityVerifier,
     interaction::ApprovalTarget,
@@ -223,8 +223,9 @@ impl DeviceRunner {
                                 handed = Some(sequence);
                                 let reports = reports.clone();
                                 running.push(async move {
+                                    let agent = run.command.agent.clone();
                                     if let Some(report) = self.handle(attachment.session(), run, &reports).await? {
-                                        reports.send(report).await.map_err(|_| Error::Storage("device report consumer ended".into()))?;
+                                        reports.send((agent, report)).await.map_err(|_| Error::Storage("device report consumer ended".into()))?;
                                     }
                                     Ok::<_, Error>(())
                                 });
@@ -238,9 +239,10 @@ impl DeviceRunner {
                     result?;
                     sending = None;
                 }
-                Some(message) = reported.recv(), if sending.is_none() => {
+                Some((agent, message)) = reported.recv(), if sending.is_none() => {
                         let text = String::from_utf8(encode(&MessageRecord {
                             v: RECORD_VERSION,
+                            agent,
                             message,
                         })?)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -258,7 +260,7 @@ impl DeviceRunner {
         &self,
         session: &str,
         run: Run,
-        reports: &tokio::sync::mpsc::Sender<DeviceMessage>,
+        reports: &tokio::sync::mpsc::Sender<(AgentPath, DeviceMessage)>,
     ) -> Result<Option<DeviceMessage>> {
         let started = AtomicBool::new(false);
         let (input, expiry) = match self.admit(session, &run) {
@@ -345,7 +347,7 @@ impl DeviceRunner {
         run: &Run,
         input: ShellInput,
         started: &AtomicBool,
-        reports: &tokio::sync::mpsc::Sender<DeviceMessage>,
+        reports: &tokio::sync::mpsc::Sender<(AgentPath, DeviceMessage)>,
         deadline: u64,
     ) -> Result<Option<DeviceMessage>> {
         let op = run.command.op;
@@ -353,7 +355,7 @@ impl DeviceRunner {
             Ok(()) => {}
             Err(reason) => return Ok(Some(DeviceMessage::Refused { op, reason })),
         }
-        // The original actor composition sent this only after Started committed.
+        // The original actor composition sent this only after its acceptance committed.
         // Approval can wait: recheck the owner immediately before dispatch.
         if let Err(error) = self.authority.verifier.verify(&run.grant, &mut None) {
             return Ok(Some(DeviceMessage::Refused {
@@ -375,10 +377,10 @@ impl DeviceRunner {
             use acyclic_machines::ExecOutput;
             match output {
                 Ok(ExecOutput::Data(data)) => {
-                    report_output(reports, op, false, &data).await?;
+                    report_output(reports, &run.command.agent, op, false, &data).await?;
                 }
                 Ok(ExecOutput::Stderr(data)) => {
-                    report_output(reports, op, true, &data).await?;
+                    report_output(reports, &run.command.agent, op, true, &data).await?;
                 }
                 Ok(ExecOutput::ExitCode(code)) => {
                     return Ok(Some(DeviceMessage::Exit {
@@ -495,18 +497,22 @@ impl DeviceRunner {
 }
 
 async fn report_output(
-    reports: &tokio::sync::mpsc::Sender<DeviceMessage>,
+    reports: &tokio::sync::mpsc::Sender<(AgentPath, DeviceMessage)>,
+    agent: &AgentPath,
     op: OperationId,
     stderr: bool,
     data: &[u8],
 ) -> Result<()> {
     for chunk in data.chunks(super::records::OUTPUT_CHUNK_BYTES) {
         reports
-            .send(DeviceMessage::Output {
-                op,
-                stderr,
-                data: chunk.to_vec(),
-            })
+            .send((
+                agent.clone(),
+                DeviceMessage::Output {
+                    op,
+                    stderr,
+                    data: chunk.to_vec(),
+                },
+            ))
             .await
             .map_err(|_| Error::Storage("device report consumer ended".into()))?;
     }

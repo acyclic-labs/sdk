@@ -1,7 +1,7 @@
 //! The agent's side: the roster of attached devices and the executor that
 //! queues a `shell` call on one and waits for its outcome.
 use super::records::{
-    RECORD_VERSION, Run, RunCommand, RunEvent, RunRecord, TargetPaths, TargetStatus, decode, encode,
+    Executor, RECORD_VERSION, Run, RunCommand, TargetPaths, TargetStatus, decode, encode,
 };
 use crate::{
     Capabilities, Error, Result,
@@ -11,6 +11,7 @@ use crate::{
     tool::{Dispatch, ToolExecutor, ToolInvocation, ToolResult},
     tools::ShellInput,
 };
+use acyclic_actors::call::{CallPath, Entry, Journal, Outcome};
 use acyclic_stream::{
     BoxProviderFuture, FollowRequest, FollowUpdate, StreamProvider, StreamProviderExt as _,
     WhenAbsent,
@@ -366,8 +367,11 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         let input: ShellInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}")))?;
         input.validate()?;
-        let mut request =
-            FollowRequest::new(self.paths.run(&self.name, invocation.operation_id)?, 0);
+        let (agent, _) = context.agent().ok_or_else(|| {
+            Error::Unauthorized("device call has no original agent binding".into())
+        })?;
+        let call = super::records::call(agent, invocation.operation_id)?;
+        let mut request = FollowRequest::new(call.log().clone(), 0);
         if !reconcile {
             request.when_absent = WhenAbsent::Wait;
         }
@@ -393,7 +397,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             })?,
             _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
                 socket_end = None;
-                let tail = self.accepted_tail(invocation.operation_id).await?;
+                let tail = self.accepted_tail(&call, invocation.operation_id).await?;
                 if tail == 0 { return Err(Error::Indeterminate(invocation.operation_id)); }
                 closed_at = Some(tail);
                 opening.await?
@@ -401,39 +405,36 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         };
         let mut ended: Option<acyclic_stream::FollowStream> = None;
         let mut output = super::output::Output::new(context);
-        let mut next = 0;
+        let mut journal = Journal::default();
         loop {
-            if closed_at.is_some_and(|tail| next >= tail) {
+            if closed_at.is_some_and(|tail| journal.next() >= tail) {
                 return Err(Error::Indeterminate(invocation.operation_id));
             }
             let update = tokio::select! {
                 biased;
                 _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
                     // The same socket's physical publication producer ended.
-                    // Inspect one accepted cut, drain its output/Exit, and never
-                    // wait for a marker a refused Close could not publish.
+                    // Inspect one accepted cut, drain its output and terminal,
+                    // and never wait for a fence a refused Close could not publish.
                     socket_end = None;
                     ended = None;
-                    closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
+                    closed_at = Some(self.accepted_tail(&call, invocation.operation_id).await?);
                     continue;
                 }
 
                 end = futures::future::OptionFuture::from(ended.as_mut().map(futures::StreamExt::next)), if ended.is_some() => {
                     let end = end.flatten().ok_or_else(|| Error::Storage("device session producer ended".into()))??;
-                    if let FollowUpdate::Record(record) = end {
-                        let RunRecord { event: RunEvent::Lost { .. }, .. } = decode(&record.value)? else {
-                            return Err(Error::Invalid("device session has no terminal marker".into()));
-                        };
-                        // Drain only the accepted prefix observed at session end,
-                        // including output preceding Lost or an absent terminal.
-                        // An Exit within that cut still wins; exhaustion remains
-                        // uncertainty and never waits for another incarnation.
-                        closed_at = Some(self.provider.head(self.paths.run(&self.name, invocation.operation_id)?).await?.tail);
+                    if let FollowUpdate::Record(_) = end {
+                        // The fence exists: drain only the journal prefix
+                        // committed before it. A terminal within that cut
+                        // still wins; exhaustion is `indeterminate` and never
+                        // waits for another incarnation.
+                        closed_at = Some(self.provider.head(call.log().clone()).await?.tail);
                         ended = None;
                     }
                     continue;
                 }
-                update = events.next() => update.ok_or_else(|| Error::Storage("device run follow ended".into()))?,
+                update = events.next() => update.ok_or_else(|| Error::Storage("device call follow ended".into()))?,
             };
             let FollowUpdate::Record(record) = update? else {
                 continue;
@@ -441,84 +442,96 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             if closed_at.is_some_and(|tail| record.sequence >= tail) {
                 return Err(Error::Indeterminate(invocation.operation_id));
             }
-            next = record
-                .sequence
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("device run sequence overflows".into()))?;
-            let RunRecord { event, .. } = decode(&record.value)?;
-            if let RunEvent::Started {
-                socket, generation, ..
-            } = event
-            {
-                if closed_at.is_some() {
-                    continue;
-                }
-                if reconcile {
-                    let actor = self.paths.actor(&self.name)?;
-                    let pin = self
-                        .terminal
-                        .as_ref()
-                        .filter(|_| {
-                            self.socket.as_deref() == Some(socket.as_str())
-                                && self.generation == generation
-                        })
-                        .cloned()
-                        .or_else(|| {
-                            self.sockets
-                                .web_socket_terminal(
-                                    &actor,
-                                    &acyclic_actors::guest::WebSocketId(socket),
-                                )
-                                .ok()
-                        });
-                    match pin {
-                        Some(pin) => socket_end = Some(pin.completion()),
-                        None => {
-                            closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
-                            continue;
+            match journal.apply(&record).map_err(protocol)? {
+                Entry::Accepted(accepted) => {
+                    if closed_at.is_some() {
+                        continue;
+                    }
+                    let Executor {
+                        socket, generation, ..
+                    } = decode(&accepted.executor)?;
+                    if reconcile {
+                        let actor = self.paths.actor(&self.name)?;
+                        let pin = self
+                            .terminal
+                            .as_ref()
+                            .filter(|_| {
+                                self.socket.as_deref() == Some(socket.as_str())
+                                    && self.generation == generation
+                            })
+                            .cloned()
+                            .or_else(|| {
+                                self.sockets
+                                    .web_socket_terminal(
+                                        &actor,
+                                        &acyclic_actors::guest::WebSocketId(socket),
+                                    )
+                                    .ok()
+                            });
+                        match pin {
+                            Some(pin) => socket_end = Some(pin.completion()),
+                            None => {
+                                closed_at =
+                                    Some(self.accepted_tail(&call, invocation.operation_id).await?);
+                                continue;
+                            }
+                        }
+                    }
+                    let fence = accepted
+                        .fence
+                        .ok_or_else(|| Error::Invalid("device call has no session fence".into()))?;
+                    let mut request = FollowRequest::new(fence, 0);
+                    request.when_absent = WhenAbsent::Wait;
+                    tokio::select! {
+                        result = self.provider.follow(request) => ended = Some(result?),
+                        _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
+                            socket_end = None;
+                            closed_at = Some(self.accepted_tail(&call, invocation.operation_id).await?);
                         }
                     }
                 }
-                let mut request =
-                    FollowRequest::new(self.paths.session_end(&self.name, generation)?, 0);
-                request.when_absent = WhenAbsent::Wait;
-                tokio::select! {
-                    result = self.provider.follow(request) => ended = Some(result?),
-                    _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
-                        socket_end = None;
-                        closed_at = Some(self.accepted_tail(invocation.operation_id).await?);
-                    }
+                Entry::Chunk(chunk) => {
+                    let (stderr, data) = super::records::chunk_output(&chunk)?;
+                    output
+                        .append(context, record.sequence, stderr, data)
+                        .await?;
                 }
-            } else if let RunEvent::Output { stderr, data, .. } = event {
-                output
-                    .append(context, record.sequence, stderr, &data)
-                    .await?;
-            } else if let Some(result) = self.terminal(event, invocation) {
-                return output.finish(result?);
+                Entry::Terminal(outcome) => {
+                    return output.finish(self.terminal(outcome, invocation)?);
+                }
+                // A device call's request is the Run on the device's queue.
+                Entry::Request(_) => {
+                    return Err(Error::Invalid("device call journal has a request".into()));
+                }
             }
         }
     }
 
-    async fn accepted_tail(&self, operation: crate::OperationId) -> Result<u64> {
-        match self
-            .provider
-            .head(self.paths.run(&self.name, operation)?)
-            .await
-        {
+    async fn accepted_tail(&self, call: &CallPath, operation: crate::OperationId) -> Result<u64> {
+        match self.provider.head(call.log().clone()).await {
             Ok(head) => Ok(head.tail),
             Err(acyclic_stream::StreamError::NotFound) => Ok(0),
             Err(_) => Err(Error::Indeterminate(operation)),
         }
     }
 
-    fn terminal(&self, event: RunEvent, invocation: &ToolInvocation) -> Option<Result<ToolResult>> {
-        match event {
-            RunEvent::Started { .. } | RunEvent::Output { .. } => None,
-            RunEvent::Exit { result } => Some(Ok(ToolResult { value: result })),
-            RunEvent::Lost { .. } => Some(Err(Error::Indeterminate(invocation.operation_id))),
-            RunEvent::Refused { reason } => Some(Err(self.refusal(Refused::Declined(reason)))),
+    fn terminal(&self, outcome: Outcome, invocation: &ToolInvocation) -> Result<ToolResult> {
+        match outcome {
+            Outcome::Ok(result) => Ok(ToolResult {
+                value: serde_json::from_slice(&result)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            }),
+            Outcome::Error(reason) => Err(self.refusal(Refused::Declined(reason))),
+            Outcome::Cancelled(_) => Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            )),
+            Outcome::Indeterminate(_) => Err(Error::Indeterminate(invocation.operation_id)),
         }
     }
+}
+
+fn protocol(error: acyclic_actors::call::Error) -> Error {
+    Error::Invalid(error.to_string())
 }
 
 impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
