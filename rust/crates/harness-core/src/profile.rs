@@ -30,6 +30,20 @@ pub struct ToolRevision {
     pub variant: String,
     /// Immutable schema/behavior revision.
     pub revision: String,
+    /// The canonical capability's arguments as a template over the native
+    /// call's (see [`crate::tools::native`]). A declaration without one is
+    /// pinned but not offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+    /// Native arguments the capability cannot honour; a call that sets one is
+    /// refused before anything runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refuse: Vec<String>,
+    /// The canonical variant that runs the declaration when it is not the
+    /// capability's own tool (see [`crate::tools::variants`]). Grants, policy
+    /// and approval stay the capability's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation: Option<String>,
 }
 
 pub use acyclic_model_render::{Cache, Effort, Reasoning};

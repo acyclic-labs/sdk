@@ -3,9 +3,18 @@
 //! The family profile layer (`profile/native/*.md`) pins each declaration's
 //! capability, variant name and revision; these files pin the exact public
 //! names, descriptions and input schemas a model of that family was trained on.
-use crate::{Error, Result, model::NativeToolProfile, tool::ToolDefinition};
+use crate::{
+    Error, Result,
+    model::NativeToolProfile,
+    tool::{Tool, ToolDefinition, ToolRegistry},
+};
 use serde_json::Value;
+use std::sync::Arc;
 
+mod adapter;
+mod arguments;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod arguments_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
@@ -54,6 +63,114 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
             })
         })
         .collect()
+}
+
+/// One mapped declaration: its capability, the variant that runs it when
+/// not the capability's own tool, its definition and its template.
+type Mapped = (
+    String,
+    Option<Arc<Tool>>,
+    ToolDefinition,
+    Arc<arguments::Arguments>,
+);
+
+/// One profile's mapped declarations, decoded and checked once.
+pub struct NativeTools(Vec<Mapped>);
+
+impl NativeTools {
+    /// The declarations `profile`'s layer maps, in the layer's order.
+    /// Unmapped declarations are left out.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] when the layer, its declarations or a template is malformed.
+    pub fn new(profile: NativeToolProfile) -> Result<Self> {
+        profile
+            .tools()?
+            .into_iter()
+            .zip(definitions(profile)?)
+            .filter_map(|(revision, definition)| {
+                let template = revision.arguments?;
+                Some((|| {
+                    let implementation = revision
+                        .implementation
+                        .as_deref()
+                        .map(crate::tools::variants::tool)
+                        .transpose()?
+                        .map(Arc::new);
+                    let arguments = arguments::Arguments::new(template, revision.refuse)?;
+                    Ok((
+                        revision.capability,
+                        implementation,
+                        definition,
+                        Arc::new(arguments),
+                    ))
+                })())
+            })
+            .collect::<Result<_>>()
+            .map(Self)
+    }
+
+    /// Offers each capability `tools` selects as these declarations. Each runs
+    /// the capability's selected revision through its template; its grant,
+    /// policy and approval are the capability's. A manifest pins `tools`
+    /// first, so the declarations run the revisions it pins.
+    ///
+    /// # Errors
+    /// A registry refusal of a declaration.
+    pub fn bind(&self, tools: &mut ToolRegistry) -> Result<()> {
+        let mut presented: Vec<(&str, Vec<(String, String)>)> = Vec::new();
+        for (name, implementation, definition, arguments) in &self.0 {
+            let Some(capability) = tools.get(name, None, None)? else {
+                continue;
+            };
+            let capability = Arc::new(capability.clone());
+            let original = implementation
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&capability));
+            let mut definition = definition.clone();
+            // Results are the capability's, so their contracts are too.
+            definition
+                .output_schema
+                .clone_from(&original.definition.output_schema);
+            definition
+                .projection_schema
+                .clone_from(&original.definition.projection_schema);
+            let native = (definition.name.clone(), definition.revision.clone());
+            let adapter = Arc::new(adapter::Adapter {
+                arguments: Arc::clone(arguments),
+                capability,
+                original,
+            });
+            tools.register(
+                (
+                    Tool {
+                        hook_names: adapter.original.hook_names,
+                        definition,
+                        executor: adapter.clone(),
+                        projection: adapter,
+                    },
+                    None,
+                ),
+                &mut None,
+                None,
+            )?;
+            match presented.iter_mut().find(|(offered, _)| offered == name) {
+                Some((_, natives)) => natives.push(native),
+                None => presented.push((name, vec![native])),
+            }
+        }
+        presented
+            .into_iter()
+            .try_for_each(|(capability, natives)| tools.present_natively(capability, natives))
+    }
+}
+
+/// Binds `profile`'s mapped declarations into `tools`; see [`NativeTools::bind`].
+///
+/// # Errors
+/// As [`NativeTools::new`] and [`NativeTools::bind`].
+pub fn bind(tools: &mut ToolRegistry, profile: NativeToolProfile) -> Result<()> {
+    NativeTools::new(profile)?.bind(tools)
 }
 
 fn take_string(value: &mut Value, key: &str) -> Result<String> {

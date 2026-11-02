@@ -463,6 +463,14 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
     ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+        // A native call runs where its capability's call would, and its start
+        // records that target. A call its declaration refuses runs nowhere;
+        // admission settles the refusal.
+        let canonical = match self.stock.tools.get(&invocation.name, None, None)? {
+            Some(tool) => tool.executor.canonical(invocation).ok().flatten(),
+            None => None,
+        };
+        let invocation = canonical.as_ref().unwrap_or(invocation);
         if let Some(original) = original {
             if let Some(identity) = original.filesystem {
                 return if original.target.is_none()
@@ -550,8 +558,10 @@ impl<'io> StockExecution<'io> {
         target: Option<Arc<crate::runtime::Target>>,
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
+        // A native declaration is granted by the capability it stands for.
+        let granted = tool.executor.capability().unwrap_or(tool);
         let capability = with_history_io(self.io, |work| {
-            preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
+            preparation_format(format_args!("tool:call:{}", granted.definition.name), work)
         })?;
         if !self.stock.tool_scope.grants().contains(&capability) {
             return Ok(Err(ToolCallRejection::Unavailable));
@@ -618,7 +628,11 @@ impl<'io> StockExecution<'io> {
         }
         // Evaluation, the prompt and the approval request are charged to the
         // call's original ledger; the prompt's custody is held while it settles.
-        let (decision, custody) = policy.evaluate(invocation, scope, self.io)?.await?;
+        // Policy and approval judge the canonical call, whatever its spelling.
+        let canonical = tool.executor.canonical(invocation)?;
+        let judged = canonical.as_ref().unwrap_or(invocation);
+        let judged_tool = tool.executor.capability().unwrap_or(tool);
+        let (decision, custody) = policy.evaluate(judged, scope, self.io)?.await?;
         if !identity_matches()? {
             return Err(Error::Conflict(
                 "stock policy changed during evaluation".into(),
@@ -651,8 +665,8 @@ impl<'io> StockExecution<'io> {
                     self.stock.policy_identity.as_ref().ok_or_else(|| {
                         Error::Conflict("stock policy identity is missing".into())
                     })?,
-                    &tool.definition,
-                    invocation,
+                    &judged_tool.definition,
+                    judged,
                     (prompt, custody),
                     self.native_work(),
                     (crate::interaction::ApprovalRoute::Policy, target),
