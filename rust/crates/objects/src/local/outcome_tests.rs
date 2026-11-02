@@ -9,13 +9,11 @@ fn bytes(value: &[u8]) -> OwnedBytes {
 #[tokio::test]
 async fn empty_ranges_preserve_native_presence_without_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
-    async fn read(
-        medium: &LocalMedium,
-        key: &str,
-        range: Range<u64>,
-    ) -> (Result<Option<OwnedBytes>, MediumError>, usize) {
+    use crate::Blobs as _;
+
+    async fn counted<T>(operation: impl Future<Output = T>) -> (T, usize) {
         let (schedule, mut events) = Schedule::new();
-        let mut operation = Box::pin(schedule.scope(medium.read(key, Some(range))));
+        let mut operation = Box::pin(schedule.scope(operation));
         let mut jobs = 0;
         let result = loop {
             tokio::select! {
@@ -45,11 +43,11 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
         ("empty", 0, true),
         ("absent", 0, false),
     ] {
-        let (result, jobs) = read(&medium, key, offset..offset).await;
+        let (result, jobs) = counted(medium.read(key, Some(offset..offset))).await;
         assert_eq!(result?.as_deref(), present.then_some(&b""[..]));
         assert_eq!(jobs, 0, "empty range dispatched a physical job for {key}");
     }
-    let (result, jobs) = read(&medium, "key", 9..9).await;
+    let (result, jobs) = counted(medium.read("key", Some(9..9))).await;
     assert!(
         matches!(result, Err(MediumError::Failed(error)) if error.kind() == std::io::ErrorKind::InvalidInput)
     );
@@ -60,7 +58,7 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
 
     // Cost negative: actual requested bytes still go through the original
     // native owner and return the selected bytes from the reopened log.
-    let (result, jobs) = read(&medium, "key", 1..5).await;
+    let (result, jobs) = counted(medium.read("key", Some(1..5))).await;
     assert_eq!(result?.as_deref(), Some(&b"rigi"[..]));
     assert_eq!(jobs, 1);
 
@@ -76,10 +74,30 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     assert_eq!(contended.await?.as_deref(), Some(&b""[..]));
 
     assert!(medium.remove("key").await?);
-    let (result, jobs) = read(&medium, "key", 8..8).await;
+    let (result, jobs) = counted(medium.read("key", Some(8..8))).await;
     assert!(result?.is_none());
     assert_eq!(jobs, 0, "removed payload was treated as present");
     assert_eq!(medium.close().await?, LocalClose::Released);
+
+    // The public account path still reads the original envelope, but uses
+    // the same reopened index for its full-length completeness probe.
+    let root = tempfile::tempdir()?;
+    let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    let digest = account
+        .put(bytes(b"original"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original put outcome unknown")?
+        .digest;
+    assert_eq!(account.close().await?, LocalClose::Released);
+    let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    let (head, jobs) = counted(account.head(digest)).await;
+    assert_eq!(head?.length, 8);
+    assert_eq!(jobs, 1, "HEAD dispatched beyond its original envelope read");
+    let (head, jobs) = counted(account.head(crate::Digest::of(b"absent"))).await;
+    assert_eq!(head.unwrap_err().code, crate::wire::ErrorCode::NotFound);
+    assert_eq!(jobs, 1, "missing envelope changed the native read path");
+    assert_eq!(account.close().await?, LocalClose::Released);
     Ok(())
 }
 
