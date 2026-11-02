@@ -1,8 +1,11 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{Editor, buffer::slice};
+use crate::{
+    DEFAULT_SETTINGS, Editor,
+    buffer::{normalize, slice},
+};
 
 /// One displayed grapheme, expanded tab cell, or collapsed paste marker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,10 +53,34 @@ impl Layout {
     /// Wrap without splitting a grapheme. Oversized glyphs become a one-cell
     /// replacement glyph; the original text and hit-test range are preserved.
     pub fn new(editor: &Editor, width: usize) -> Self {
-        Self::build(editor, width, &mut || {})
+        Self::build(
+            editor.text(),
+            editor.collapsed_pastes(),
+            editor.settings().tab_width,
+            width,
+            &mut || {},
+        )
     }
 
-    fn build(editor: &Editor, width: usize, visit_fold: &mut impl FnMut()) -> Self {
+    /// Wrap read-only text with the default tab width and no collapsed pastes.
+    /// Carriage returns normalize as in an editor; source offsets refer to that
+    /// normalized text. Other input is borrowed without building editor state.
+    pub fn from_text(text: &str, width: usize) -> Self {
+        let text = if text.contains('\r') {
+            Cow::Owned(normalize(text))
+        } else {
+            Cow::Borrowed(text)
+        };
+        Self::build(&text, &[], DEFAULT_SETTINGS.tab_width, width, &mut || {})
+    }
+
+    fn build(
+        text: &str,
+        folds: &[Range<usize>],
+        tab_width: usize,
+        width: usize,
+        visit_fold: &mut impl FnMut(),
+    ) -> Self {
         let width = width.max(1);
         let mut rows = vec![];
         let mut row = Row::default();
@@ -61,8 +88,8 @@ impl Layout {
         let mut offset = 0;
         // Buffer keeps disjoint folds in source order. Layout walks that same
         // order, so only the next fold can match the current source boundary.
-        let mut folds = editor.collapsed_pastes().iter().peekable();
-        while offset < editor.text().len() {
+        let mut folds = folds.iter().peekable();
+        while offset < text.len() {
             let fold = folds.next_if(|range| {
                 visit_fold();
                 range.start == offset
@@ -72,10 +99,10 @@ impl Layout {
                     range.end,
                     format!(
                         "[Pasted {} lines]",
-                        slice(editor.text(), range.clone()).split('\n').count()
+                        slice(text, range.clone()).split('\n').count()
                     ),
                 )
-            } else if let Some(grapheme) = slice(editor.text(), offset..).graphemes(true).next() {
+            } else if let Some(grapheme) = slice(text, offset..).graphemes(true).next() {
                 (offset + grapheme.len(), grapheme.to_owned())
             } else {
                 break;
@@ -98,10 +125,7 @@ impl Layout {
                 column = 0;
             } else {
                 let symbol = if symbol == "\t" {
-                    " ".repeat(
-                        (editor.settings().tab_width - column % editor.settings().tab_width)
-                            .min(width),
-                    )
+                    " ".repeat((tab_width - column % tab_width).min(width))
                 } else if symbol.chars().any(char::is_control) {
                     "�".to_owned()
                 } else {
@@ -201,6 +225,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn read_only_layout_preserves_editor_projection_without_editor_allocations() {
+        for text in [
+            "",
+            "plain text",
+            "界e\u{301}👩‍💻\ttext\nlast",
+            "a\r\nb\rc",
+            "\u{301}\x07\n",
+        ] {
+            for width in [0, 1, 7, 32] {
+                let (_, [before, after]) = acyclic_test_support::differential(
+                    || Layout::new(&Editor::new(text), width),
+                    || Layout::from_text(text, width),
+                );
+                // Restoring the temporary editor fails this same cost witness.
+                assert!(
+                    after.count_total < before.count_total,
+                    "{text:?}, width {width}: {before:?} -> {after:?}"
+                );
+                assert!(
+                    after.bytes_total < before.bytes_total,
+                    "{text:?}, width {width}: {before:?} -> {after:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn folded_layout_visits_only_the_next_paste_and_preserves_source_hits() {
         for count in [1, 8, 64] {
             let mut editor = Editor::default();
@@ -222,7 +273,13 @@ mod tests {
 
             for width in [1, 7, 32] {
                 let mut checks = 0;
-                let layout = Layout::build(&editor, width, &mut || checks += 1);
+                let layout = Layout::build(
+                    editor.text(),
+                    editor.collapsed_pastes(),
+                    editor.settings().tab_width,
+                    width,
+                    &mut || checks += 1,
+                );
                 let cells = layout.rows.iter().flat_map(|row| &row.cells);
                 let mut folded = 0;
                 for cell in cells {
