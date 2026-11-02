@@ -174,7 +174,7 @@ where
                 context,
             )
             .with_agent_tools(&selected)
-            .with_profiles(crate::profile::Profiles::builtin());
+            .with_templates();
             let Placement {
                 filesystem,
                 provider,

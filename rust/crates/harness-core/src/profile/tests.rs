@@ -14,10 +14,10 @@ Model family instruction.
 ";
 const MODEL: &str = "---\nversion: 1\nkey: test/model\n---\nModel instruction.\n";
 const EMPTY: &str = "---\nversion: 1\n---\n";
-const WORKER: &str = include_str!("roles/worker.md");
-const ORCHESTRATOR: &str = include_str!("roles/orchestrator.md");
-const REVIEWER: &str = include_str!("roles/reviewer.md");
-const ADVISOR: &str = include_str!("roles/advisor.md");
+const WORKER: &str = "---\nversion: 1\nname: worker\nmodel: openai/gpt-6-luna\ncontext: fork\nmay_spawn: [worker, advisor, reviewer]\n---\nOwn the assigned work in your fork. Preserve concurrent edits and verify the resulting behavior. At a consequential decision, you may send a self-contained versioned plan file to an advisor; keep working while its reply is independent of your next step. Apply accepted changes yourself. Your final message reports the result, checks and anything unfinished to your parent, which chooses what to merge.\n";
+const ORCHESTRATOR: &str = "---\nversion: 1\nname: orchestrator\nmodel: openai/gpt-6.1-sol\ncontext: top_level\nmay_spawn: [worker, advisor, reviewer]\nallowed_tools: [spawn, send, wait, archive, web_search]\neffort: adaptive\n---\nUnderstand the user's intent and coordinate the work. Delegate execution to workers with clear ownership. Give fresh children self-contained briefs with what was tried and learned. Keep independent work moving; wait when the next step depends on a result. Inspect reports and arrange a fresh cross-family review before reporting completion. Your available tools support communication, delegation and web search; workers execute commands and edits.\n";
+const REVIEWER: &str = "---\nversion: 1\nname: reviewer\nmodel: anthropic/claude-sonnet-5-5\ncontext: fresh\nmay_spawn: [worker, advisor, reviewer]\n---\nReview the self-contained task, diff and test output in your brief. You do not see the parent's conversation. Investigate correctness, regressions and missing evidence independently, using forks when useful. Report PASS or FAIL with concrete evidence and actionable findings. Leave the parent's files and merge decision to their owner.\n";
+const ADVISOR: &str = "---\nversion: 1\nname: advisor\nmodel: alloy/advisor\ncontext: fresh\nmay_spawn: [worker, advisor]\n---\nYou see the consultation brief and the sent plan snapshot, not the worker's conversation or live volume. Investigate decisions and prototype alternatives in forks. Deliver a revised plan and evidence that name the exact base version. Leave implementation to the worker; do not edit or merge into its tree. Consult at real decision points. An independent final review needs a fresh reviewer that did not shape the plan.\n";
 
 #[test]
 fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Result<()> {
@@ -279,48 +279,5 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
         .is_err(),
         "one model-visible name cannot be declared twice"
     );
-    Ok(())
-}
-
-#[test]
-fn builtin_roles_pin_context_and_spawn_permissions() -> Result<()> {
-    use crate::agent::SpawnProfiles;
-    let profiles = Profiles::builtin();
-    let root = profiles.root()?;
-    assert_eq!(
-        (root.role.as_str(), root.context),
-        (ROOT_ROLE, SpawnContext::TopLevel)
-    );
-    let pin = |parent: &crate::agent::AgentProfilePin, role| profiles.child(parent, role);
-    for (role, context) in [
-        ("worker", SpawnContext::Fork),
-        ("advisor", SpawnContext::Fresh),
-        ("reviewer", SpawnContext::Fresh),
-    ] {
-        assert_eq!(pin(&root, role)?.context, context);
-    }
-    let advisor = pin(&root, "advisor")?;
-    let worker = pin(&root, "worker")?;
-    let reviewer = pin(&root, "reviewer")?;
-    for allowed in ["worker", "advisor"] {
-        pin(&advisor, allowed)?;
-    }
-    for allowed in ["worker", "advisor", "reviewer"] {
-        pin(&worker, allowed)?;
-        pin(&reviewer, allowed)?;
-    }
-    // Negative controls: role policy, the top-level role and unknown roles.
-    assert!(pin(&advisor, "reviewer").is_err());
-    assert!(pin(&worker, ROOT_ROLE).is_err());
-    assert!(pin(&worker, "planner").is_err());
-    // A pin from another revision of its role file is refused, not reinterpreted.
-    let stale = crate::agent::AgentProfilePin {
-        digest: [0; 32],
-        ..worker.clone()
-    };
-    assert!(pin(&stale, "worker").is_err());
-    assert!(profiles.pinned(&stale).is_err());
-    assert_eq!(profiles.pinned(&worker)?.name(), "worker");
-    assert!(!profiles.directive(&worker)?.messages.is_empty());
     Ok(())
 }

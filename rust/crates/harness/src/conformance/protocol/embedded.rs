@@ -133,7 +133,7 @@ pub async fn open<B: Backend + ?Sized>(
         (Limits::default(), CompactionPolicy::Disabled),
         Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
     )
-    .with_profiles(crate::profile::Profiles::builtin());
+    .with_templates();
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },

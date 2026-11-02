@@ -351,7 +351,6 @@ where
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
-        let profiles = turns.executors.profiles();
         let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -363,6 +362,7 @@ where
         )
         .with_filesystem_tools();
         let turner = Arc::new(configure(turner));
+        let templates = turner.templates();
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.
@@ -383,9 +383,9 @@ where
             turns.clock.clone(),
             Some(spawns.clone()),
         )?;
-        // The host pins roots to the same profiles these turns run under.
-        let agents = Arc::new(match profiles {
-            Some(profiles) => agents.with_profiles(profiles)?,
+        // The host pins roots to the same creation reader these turns use.
+        let agents = Arc::new(match templates {
+            Some(templates) => agents.with_templates(templates),
             None => agents,
         });
         Ok(Self {
@@ -410,7 +410,7 @@ where
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
         // The guest composes the same spawns as this binding's own handler,
-        // and roots keep the role profiles its turns run under.
+        // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
             handler.clone(),
             self.clock.clone(),
@@ -816,7 +816,7 @@ where
         &self,
         parent: &AgentPath,
         role: &str,
-    ) -> Result<crate::agent::AgentProfilePin, Error> {
+    ) -> Result<crate::agent::CreationConfig, Error> {
         self.agents.child_profile(parent, role).await
     }
 
@@ -1086,6 +1086,9 @@ where
         request: RootRequest,
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
+        if self.turns.templates().is_some() {
+            self.volumes.seed_layer().await.map_err(turn)?;
+        }
         let RootRequest {
             agent,
             fresh,

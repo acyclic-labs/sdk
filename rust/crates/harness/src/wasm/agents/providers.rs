@@ -359,9 +359,10 @@ impl Providers {
         let executors =
             StockExecutors::new((model, provider), tools, (limits, compaction), context)
                 .with_agent_tools(&selected);
-        Ok(match options.profiles() {
-            Some(profiles) => executors.with_profiles(profiles),
-            None => executors,
+        Ok(if options.children {
+            executors.with_templates()
+        } else {
+            executors
         })
     }
 

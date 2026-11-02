@@ -150,14 +150,6 @@ struct WasmBrowserAgentOptions {
     children: bool,
 }
 
-impl WasmBrowserAgentOptions {
-    /// The role profiles of a host that places and wakes children, the one
-    /// choice both its turns and its root creation take; `None` otherwise.
-    fn profiles(&self) -> Option<Arc<crate::profile::Profiles>> {
-        self.children.then(crate::profile::Profiles::builtin)
-    }
-}
-
 /// Outcome of one control commit.
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -535,9 +527,14 @@ impl WasmAgents {
         )
         .map_err(agent_error)?;
         // Roots are pinned to the same profiles the turns run under.
-        let agents = Arc::new(match options.profiles() {
-            Some(profiles) => agents.with_profiles(profiles).map_err(agent_error)?,
-            None => agents,
+        let agents = Arc::new(if options.children {
+            agents.with_templates(Arc::new(crate::filesystem::Templates::new(
+                Arc::clone(&filesystem),
+                owner.issuer.clone(),
+                owner.admission()?,
+            )))
+        } else {
+            agents
         });
         let run = if background {
             let runner = Arc::clone(&agents);
@@ -599,6 +596,7 @@ impl WasmAgents {
         let path = AgentPath::try_from(self.validate_create(&intent, brief.clone())?)
             .map_err(agent_error)?;
         let id = path.id();
+        self.filesystem.seed_layer().await.map_err(js_error)?;
         let volume = private_volume(self.provider.clone(), &id).map_err(js_error)?;
         self.filesystem
             .create_volume(&volume)
