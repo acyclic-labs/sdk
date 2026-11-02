@@ -257,7 +257,15 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
                 Ok(frame) => frame,
                 Err(error) => {
                     assert!(lose_owner);
-                    assert_eq!(error, ProviderError::CommandIndeterminate(machine));
+                    assert_eq!(
+                        error.classification(),
+                        &ProviderError::CommandIndeterminate(machine)
+                    );
+                    let original = std::error::Error::source(&error)
+                        .and_then(|cause| cause.downcast_ref::<io::Error>())
+                        .expect("native capture completion erased its original task error");
+                    assert_eq!(original.kind(), io::ErrorKind::Other);
+                    assert!(original.get_ref().is_some());
                     assert!(!terminal);
                     terminal = true;
                     continue;
