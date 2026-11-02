@@ -82,7 +82,10 @@ struct Probe {
     delay: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
     failure: Option<Arc<SubscriberFailure>>,
 }
-impl<S: tracing::Subscriber> Layer<S> for Probe {
+impl<S> Layer<S> for Probe
+where
+    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+{
     fn on_record(&self, _: &tracing::Id, record: &Record<'_>, _: LayerContext<'_, S>) {
         let mut fields = Fields {
             fail_at: self.failure.as_ref().map(|failure| failure.field),
