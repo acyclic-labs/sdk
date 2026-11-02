@@ -8,7 +8,7 @@ use super::{
     tool_output::{OutputTail, read_newest},
 };
 use crate::{
-    Result,
+    Error, Result,
     agent::{AgentPath, ConversationEntry, StatusRecord},
 };
 use acyclic_harness_client::{
@@ -37,7 +37,7 @@ pub struct Observer {
     status: StreamPath,
     /// The `fs:/` resource of the agent's `tools/`.
     resource: String,
-    /// Next conversation sequence, where a refused conversation reopens.
+    /// Next conversation sequence not yet returned to the caller.
     next_turn: u64,
     tail: OutputTail,
 }
@@ -140,28 +140,12 @@ impl Observer {
     ) -> Result<(Result<Option<Event>>, acyclic_harness_client::AgentDelivery)> {
         let delivery = futures::future::poll_fn(|cx| self.client.poll_delivery(cx))
             .await
-            .map_err(|error| {
-                if matches!(
-                    &error,
-                    AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable))
-                ) {
-                    self.connection.stream_failure(error)
-                } else {
-                    storage(error)
-                }
-            })?;
-        let event = match self.client.decode_delivery(&delivery) {
-            Ok(event) => self.apply(event),
-            Err(error) if self.conversation_missing(&error) => {
-                let announced = self
-                    .client
-                    .current_status()
-                    .map_err(storage)?
-                    .map_or(0, |status| status.conversation);
-                self.follow_announced(announced).map(|()| None)
-            }
-            Err(error) => Err(storage(error)),
-        };
+            .map_err(|error| self.follow_error(error))?;
+        let event = self
+            .client
+            .decode_delivery(&delivery)
+            .map_err(|error| self.follow_error(error))
+            .and_then(|event| self.apply(event));
         Ok((event, delivery))
     }
 
@@ -177,7 +161,6 @@ impl Observer {
     fn apply(&mut self, event: AgentEvent) -> Result<Option<Event>> {
         Ok(match event {
             AgentEvent::Status { status, .. } => {
-                self.follow_announced(status.conversation)?;
                 if matches!(
                     status.phase,
                     crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
@@ -204,53 +187,29 @@ impl Observer {
     /// Fails when a follow is refused or ends, including on revocation.
     pub async fn next(&mut self) -> Result<Event> {
         loop {
-            match self.client.next().await {
-                Ok(event) => {
-                    if let Some(event) = self.apply(event)? {
-                        return Ok(event);
-                    }
-                }
-                Err(error) if self.conversation_missing(&error) => {
-                    // Refused before its first entry: the status committed
-                    // with that entry reopens it, and one read before this
-                    // refusal already did.
-                    let announced = self
-                        .client
-                        .current_status()
-                        .map_err(storage)?
-                        .map_or(0, |status| status.conversation);
-                    self.follow_announced(announced)?;
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "observer follow failed");
-                    if matches!(
-                        &error,
-                        AgentClientError::Session(WireSessionError::Stream(
-                            StreamError::Unavailable
-                        ))
-                    ) {
-                        return Err(self.connection.stream_failure(error));
-                    }
-                    return Err(storage(error));
-                }
+            let event = self
+                .client
+                .next()
+                .await
+                .map_err(|error| self.follow_error(error))?;
+            if let Some(event) = self.apply(event)? {
+                return Ok(event);
             }
         }
     }
 
-    /// Follows the conversation again from the next unseen turn when a
-    /// committed status announced entries past it and it is not followed.
-    fn follow_announced(&mut self, conversation: u64) -> Result<()> {
-        if conversation <= self.next_turn || self.client.session().is_following(&self.conversation)
-        {
-            return Ok(());
+    /// Creation wakes the original follow. Terminal errors retain their source
+    /// classification rather than being treated as another creation wait.
+    fn follow_error(&self, error: AgentClientError) -> Error {
+        tracing::debug!(%error, "observer follow failed");
+        if matches!(
+            &error,
+            AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable))
+        ) {
+            self.connection.stream_failure(error)
+        } else {
+            storage(error)
         }
-        tracing::debug!(from = self.next_turn, "conversation reopen");
-        self.client
-            .set_view(
-                AgentSelection::new(self.agent.clone(), self.next_turn, 0),
-                std::iter::empty(),
-            )
-            .map_err(storage)
     }
 
     /// Ends the displayed output: records announced so far are never shown.
@@ -262,20 +221,6 @@ impl Observer {
             .next_sequence();
         self.tail.reset(end);
         Ok(())
-    }
-
-    /// Whether `error` only reports that the conversation stream does not
-    /// exist yet, while the status follow lives on to announce it.
-    fn conversation_missing(&self, error: &AgentClientError) -> bool {
-        let session = self.client.session();
-        let conversation = match error {
-            AgentClientError::Closed(path) => *path == self.conversation,
-            AgentClientError::Session(WireSessionError::Stream(StreamError::NotFound)) => true,
-            _ => false,
-        };
-        conversation
-            && !session.is_following(&self.conversation)
-            && session.is_following(&self.status)
     }
 
     /// Reads the output chunks announced since the last call. Only the newest
