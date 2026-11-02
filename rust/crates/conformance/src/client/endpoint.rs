@@ -106,7 +106,7 @@ pub async fn verify_with_reply_wait(
         ));
     }
     let discovery = AgentControls::new(session.clone(), 0, AgentBinding::discovery());
-    let published = execute(&discovery, &AgentCommand::Bind {})
+    let published = execute(&discovery, &AgentCommand::Bind { agent: None })
         .await
         .map_err(|error| exchange_failure("bind", error))?;
     let (binding, _) =
