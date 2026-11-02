@@ -166,7 +166,14 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                 write()?
                     .executor
                     .reconcile_with_native_context(&context, &invocation, &work)?
-                    .await?
+                    .await
+                    .map_err(|error| {
+                        eprintln!(
+                            "missing-receipt observation failed: {error:?}; work={:?}",
+                            work.receipt()
+                        );
+                        error
+                    })?
                     .0
                     .is_none()
             );
@@ -174,7 +181,14 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                 let (result, _custody) = write()?
                     .executor
                     .execute_with_native_context(&context, &invocation, &work)?
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        eprintln!(
+                            "original publication failed: {error:?}; work={:?}",
+                            work.receipt()
+                        );
+                        error
+                    })?;
                 result
             };
             // Lose the caller's completion, and let an unrelated publication win.
@@ -204,7 +218,14 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
             let (recovered, _custody) = write()?
                 .executor
                 .reconcile_with_native_context(&restarted, &invocation, &work)?
-                .await?;
+                .await
+                .map_err(|error| {
+                    eprintln!(
+                        "original-receipt observation failed: {error:?}; work={:?}",
+                        work.receipt()
+                    );
+                    error
+                })?;
             assert_eq!(recovered, Some(expected), "{path}");
             assert_eq!(
                 storage.list_private_directory("", None, None, 1).await?.0,
