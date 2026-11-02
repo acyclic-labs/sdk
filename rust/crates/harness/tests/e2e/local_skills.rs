@@ -63,13 +63,6 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
     loop {
         match events.next().await {
             Ok(Event::Status(status)) => match status.phase {
-                Phase::Idle if status.cursor > inbox => {
-                    return if settles {
-                        Ok(())
-                    } else {
-                        Err("a refused turn settled".into())
-                    };
-                }
                 Phase::Done {
                     outcome: AgentOutcome::Failed { .. },
                 } if !settles => return Ok(()),
@@ -78,6 +71,13 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
                 }
                 _ => {}
             },
+            Ok(Event::Turn(entry)) if entry.inbox == inbox => {
+                return if settles {
+                    Ok(())
+                } else {
+                    Err("a refused turn settled".into())
+                };
+            }
             Ok(Event::Turn(_) | Event::Output) => {}
             // The in-process Session holds the hosting Runtime's lifetime:
             // failed delivery or producer loss closes this event source.

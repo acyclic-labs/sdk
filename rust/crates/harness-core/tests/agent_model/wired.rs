@@ -217,7 +217,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             .open(
                 &state,
                 OperationId::from_bytes([220; 16]),
-                &ModelContent::text("test".into()),
+                &ModelContent::Text("test".into()),
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;

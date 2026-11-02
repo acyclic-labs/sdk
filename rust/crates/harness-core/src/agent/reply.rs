@@ -34,6 +34,12 @@ pub enum Reply {
     },
     /// Unread, queued or in the running turn.
     Pending,
+    /// Its first turn committed, and the selected goal run still continues.
+    /// Replays retain this identity even after its original conversation event.
+    Continuing {
+        /// Goal identity from the original committed request.
+        run: crate::OperationId,
+    },
     /// Consumed without a turn: a cancel or archive cleared it.
     Dropped,
 }
@@ -133,7 +139,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         {
             Reply::Dropped
         } else {
-            Reply::Pending
+            Reply::Continuing { run }
         }
     };
     let mut records = match provider
@@ -155,7 +161,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     };
     let completed = super::goal::Completed::decode(&record.value)?;
     if completed.sequence >= state.conversation_tail {
-        return Ok(Reply::Pending);
+        return Ok(Reply::Continuing { run });
     }
     let entry = entry(provider, &state.path.conversation()?, completed.sequence).await?;
     if completed.sequence < sequence || !entry.continues_goal(&state.path, run) {

@@ -531,7 +531,7 @@ pub(super) async fn prompt(
     let mut answers = None;
     let mut diagnostics = None;
     // Subscribed first, so a committed reply cannot lose its original event.
-    let mut status = None;
+    let mut status: Option<acyclic_harness::agent::StatusRecord> = None;
     loop {
         match conversation.reply(operation, inbox).await? {
             Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
@@ -545,7 +545,7 @@ pub(super) async fn prompt(
                 .await?;
                 return Ok(1);
             }
-            Reply::Pending => {}
+            Reply::Pending | Reply::Continuing { .. } => {}
         }
         if let Some(status) = status.take() {
             if let Some(reason) = ended(&status) {
@@ -669,7 +669,7 @@ async fn settled(
         Reply::Dropped => {
             Some(json!({"id": id, "inbox": inbox, "error": conversation.dropped().await?}))
         }
-        Reply::Pending => None,
+        Reply::Pending | Reply::Continuing { .. } => None,
     })
 }
 
@@ -798,8 +798,19 @@ impl Outstanding {
         ended: Option<&str>,
     ) -> Result<bool, Failure> {
         let reply = conversation.reply(&message, inbox).await?;
+        if let Reply::Continuing { run } = &reply {
+            self.goals.insert(*run, inbox);
+        }
+        if let Reply::Answered {
+            origin: Some(origin),
+            ..
+        } = &reply
+            && let Some(run) = origin.goal
+        {
+            self.goals.remove(&run);
+        }
         let line = match (ended, reply) {
-            (Some(reason), Reply::Pending | Reply::Dropped) => {
+            (Some(reason), Reply::Pending | Reply::Continuing { .. } | Reply::Dropped) => {
                 Some(json!({"id": id, "inbox": inbox, "error": reason}))
             }
             (_, reply) => settled(conversation, &id, inbox, reply).await?,
@@ -853,31 +864,11 @@ impl Outstanding {
                 .checked_add(1)
                 .ok_or("accepted input continuation overflows")?,
         );
-        // An exact replay of a settled prompt is answered at once, whether
-        // or not the agent has since ended.
-        let reply = conversation.reply(&message, inbox).await?;
-        match (
-            settled(conversation, &id, inbox, reply).await?,
-            &self.finished,
-        ) {
-            (Some(line), _) => {
-                self.failed |= line.get("error").is_some();
-                let line = final_value(line, self.schema.as_ref(), self.final_output.as_deref())?;
-                emit(output, &line, self.events_operation.as_deref()).await?;
-            }
-            (None, Some(reason)) => {
-                self.failed = true;
-                emit(
-                    output,
-                    &json!({"id": id, "inbox": inbox, "error": reason}),
-                    self.events_operation.as_deref(),
-                )
-                .await?;
-            }
-            (None, None) => {
-                self.pending.insert(inbox, (message, id));
-            }
-        }
+        // A replay observes the same canonical reply, including an active goal
+        // whose first conversation event may precede this subscription.
+        let ended = self.finished.clone();
+        self.settle(conversation, output, inbox, (message, id), ended.as_deref())
+            .await?;
         Ok(())
     }
 

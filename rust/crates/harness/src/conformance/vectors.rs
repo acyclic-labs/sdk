@@ -102,9 +102,10 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     };
     host.drain(&root).await?;
     let statuses = values(&*provider, root.status()?).await?;
-    let status = StatusRecord::decode(statuses.last().ok_or("settled turn omitted its status")?)?;
-    if status.phase != Phase::Idle || status.cursor <= inbox {
-        return Err("settled turn status does not cover its consumed input".into());
+    if statuses.len() != 1 || !host.input_progress(&root, inbox).await?.0 {
+        return Err(
+            "unchanged phase appended status or failed to settle the original input".into(),
+        );
     }
     let mut changed = adopted();
     changed.brief = Some(prompt()?);

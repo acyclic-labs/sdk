@@ -52,8 +52,8 @@ pub enum PromptOutcome {
     Failed(String),
 }
 
-/// Prompts `harness`'s root agent as message `id`, then follows its status
-/// stream until that message's turn settles or fails. The one prompt path of
+/// Prompts `harness`'s root agent as message `id`, then follows its conversation
+/// and phase until that message's turn settles or fails. The one prompt path of
 /// every local scenario, DST replay and provider test.
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub async fn prompt_settled(
@@ -61,61 +61,45 @@ pub async fn prompt_settled(
     id: &str,
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
-    use crate::agent::{AgentOutcome, AgentRecord as _, IntentId, Phase, Reply, StatusRecord};
-    use acyclic_stream::StreamProvider as _;
-    use futures::TryStreamExt as _;
-    let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
-    let stream = |error: acyclic_stream::StreamError| crate::Error::Storage(error.to_string());
-    let inbox = crate::local::agent_conversation::Conversation::open(harness.connect().await?)?
-        .send(id, prompt)
-        .await?;
-    let id = IntentId::try_from(id).map_err(agent)?;
-    let (agents, root) = harness.agents().await?;
-    let provider = agents.provider();
-    let mut statuses = acyclic_stream::records_only(
-        provider
-            .follow(acyclic_stream::FollowRequest::new(
-                root.status().map_err(agent)?,
-                0,
-            ))
-            .await
-            .map_err(stream)?,
-    );
-    loop {
-        let record = statuses
-            .try_next()
-            .await
-            .map_err(stream)?
-            .ok_or_else(|| crate::Error::Storage("agent status follow ended".into()))?;
-        let status = StatusRecord::decode(&record.value).map_err(agent)?;
-        match status.phase {
-            Phase::Done {
-                outcome: AgentOutcome::Failed { message },
-            } => return Ok(PromptOutcome::Failed(message)),
-            Phase::Done { outcome } => {
-                return Err(crate::Error::Conflict(format!(
-                    "root agent ended before its prompt settled: {outcome:?}"
-                )));
+    use crate::agent::{AgentOutcome, Phase, Reply};
+    use crate::local::Event;
+    let conversation =
+        crate::local::agent_conversation::Conversation::open(harness.connect().await?)?;
+    let mut events = conversation.observe(conversation.settled().await?).await?;
+    let inbox = conversation.send(id, prompt).await?;
+    let entry = loop {
+        match conversation.reply(id, inbox).await? {
+            Reply::Answered { entry, .. } => break entry,
+            Reply::Dropped => {
+                return Err(crate::Error::Conflict(format!("prompt {id} was cancelled")));
             }
-            Phase::Idle if status.cursor > inbox => break,
-            _ => {}
+            Reply::Pending | Reply::Continuing { .. } => {}
         }
-    }
-    match agents.reply(root, &id, inbox).await.map_err(agent)? {
-        Reply::Answered { entry, .. } => {
-            let bytes = harness
-                .client_reader()?
-                .read(&entry.output, 1 << 20, None, None)?
-                .await?;
-            let output = serde_json::from_slice(&bytes)
-                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            Ok(PromptOutcome::Settled(entry, output))
+        loop {
+            match events.next().await? {
+                Event::Status(status) => match status.phase {
+                    Phase::Done {
+                        outcome: AgentOutcome::Failed { message },
+                    } => return Ok(PromptOutcome::Failed(message)),
+                    Phase::Done { outcome } => {
+                        return Err(crate::Error::Conflict(format!(
+                            "root agent ended before its prompt settled: {outcome:?}"
+                        )));
+                    }
+                    _ => break,
+                },
+                Event::Turn(_) => break,
+                Event::Output => {}
+            }
         }
-        reply => Err(crate::Error::NotFound(format!(
-            "settled turn of prompt {}: {reply:?}",
-            id.as_str()
-        ))),
-    }
+    };
+    let bytes = harness
+        .client_reader()?
+        .read(&entry.output, 1 << 20, None, None)?
+        .await?;
+    let output =
+        serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    Ok(PromptOutcome::Settled(entry, output))
 }
 
 #[cfg(all(

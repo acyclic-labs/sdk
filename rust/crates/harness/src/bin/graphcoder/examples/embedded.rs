@@ -28,7 +28,7 @@ async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str)
         match conversation.reply(operation, inbox).await? {
             Reply::Answered { entry, .. } => return conversation.output_text(&entry).await,
             Reply::Dropped => return Err(Error::Conflict(conversation.dropped().await?)),
-            Reply::Pending => {}
+            Reply::Pending | Reply::Continuing { .. } => {}
         }
         if let Some(status) = status.take() {
             if matches!(status.phase, Phase::WaitingApproval { .. }) {
