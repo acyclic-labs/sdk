@@ -24,11 +24,14 @@ pub(super) struct RawSamples<'a, T = serde_json::Value> {
 }
 
 #[derive(Serialize)]
-struct WorkReceipts<'a> {
+struct OperationEvidence<'a> {
     #[serde(flatten)]
     fields: serde_json::Value,
     #[serde(serialize_with = "serialize_work_receipts")]
     original_work_receipts: &'a [(serde_json::Value, Work)],
+    coordinator_allocations_count_and_bytes: &'a [Option<[u64; 2]>],
+    provider_request_counts: &'a [Option<[u64; 7]>],
+    native_attempt_counts: &'a [Option<[u64; 3]>],
 }
 
 fn serialize_work_receipts<S: serde::Serializer>(
@@ -120,7 +123,7 @@ pub(super) fn check_observations() -> Result {
         "use samples with identical floor terms",
         &[Operation::ObjectGet],
     );
-    let mut record = |bytes| {
+    let mut record = |bytes, observation| {
         cohort.record(
             Operation::ObjectGet,
             Terms {
@@ -128,15 +131,26 @@ pub(super) fn check_observations() -> Result {
                 ..Terms::default()
             },
             Duration::ZERO,
-            Observation::default(),
-            serde_json::Value::Null,
+            observation,
+            serde_json::json!({
+                "request": {"operation": "object.get", "requested_copy_bytes": bytes},
+                "resource": {"path": "original/requested/object"},
+            }),
         )
     };
-    record(1024)?;
-    if record(2048).is_ok() {
+    record(
+        1024,
+        Observation {
+            coordinator_allocations: Some([2, 1024]),
+            provider_requests: Some([1, 0, 0, 0, 0, 0, 0]),
+            native_attempts: Some([1, 0, 0]),
+            ..Observation::default()
+        },
+    )?;
+    if record(2048, Observation::default()).is_ok() {
         return Err("different required work was admitted into one latency cohort".into());
     }
-    record(1024)?;
+    record(1024, Observation::default())?;
     if cohort.rows[&Operation::ObjectGet].raw_ns.len() != 2 {
         return Err("refused floor terms changed the original latency cohort".into());
     }
@@ -173,13 +187,23 @@ pub(super) fn check_observations() -> Result {
     {
         return Err("refused observation changed the retained evidence".into());
     }
-    check_borrowed_serialization(
-        WorkReceipts {
-            fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
-            original_work_receipts: &row.original_work,
-        },
-        "work receipts",
-    )?;
+    let evidence = OperationEvidence {
+        fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
+        original_work_receipts: &row.original_work,
+        coordinator_allocations_count_and_bytes: &row.coordinator_allocations,
+        provider_request_counts: &row.provider_requests,
+        native_attempt_counts: &row.native_attempts,
+    };
+    check_borrowed_serialization(&evidence, "operation evidence")?;
+    let encoded = serde_json::to_value(&evidence)?;
+    if encoded["coordinator_allocations_count_and_bytes"] != serde_json::json!([[2, 1024], null])
+        || encoded["provider_request_counts"] != serde_json::json!([[1, 0, 0, 0, 0, 0, 0], null])
+        || encoded["native_attempt_counts"] != serde_json::json!([[1, 0, 0], null])
+        || encoded["original_work_receipts"][0]["identity"] != row.original_work[0].0
+        || encoded["original_work_receipts"][1]["identity"] != row.original_work[1].0
+    {
+        return Err("operation encoding changed original diagnostic evidence".into());
+    }
     check_borrowed_serialization(
         RawSamples {
             fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
@@ -549,7 +573,7 @@ impl Measurements {
             let floor_ns = floors.compose(terms);
             let timer = floors.timer();
             emit(RawSamples {
-                fields: WorkReceipts {
+                fields: OperationEvidence {
                     fields: serde_json::json!({
                     "schema": 1, "kind": "operation", "operation": operation.name(),
                     "measurement_label": match operation {
@@ -576,15 +600,15 @@ impl Measurements {
                         (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))
                     }).collect::<BTreeMap<_, _>>(),
                     "coordinator_allocations_scope": "current thread only; excluded from qualification",
-                    "coordinator_allocations_count_and_bytes": coordinator_allocations,
                     "provider_request_columns": ["data", "metadata", "list", "head", "lease", "token", "requested_query_dispatches"],
-                    "provider_request_counts": provider_requests,
                     "control_request_scope": "public metadata/list/head/lease/token calls excluding exactly the original requested query; additional probes remain controls",
                     "native_attempt_columns": ["ok", "err", "incomplete"],
-                    "native_attempt_counts": native_attempts,
                     "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
                     }),
                     original_work_receipts: &original_work,
+                    coordinator_allocations_count_and_bytes: &coordinator_allocations,
+                    provider_request_counts: &provider_requests,
+                    native_attempt_counts: &native_attempts,
                 },
                 raw_ns: &raw_ns,
             })?;
