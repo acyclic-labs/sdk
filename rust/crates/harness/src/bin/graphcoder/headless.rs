@@ -556,21 +556,18 @@ pub(super) async fn prompt(
                 .await?;
                 return Ok(1);
             }
-            if let Phase::WaitingApproval { id, .. } = status.phase {
-                diagnostic(
-                    &mut diagnostics,
-                    acyclic_native_runtime::InheritedOutput::stderr,
-                    conversation.task(),
-                    format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
-                )
-                .await?;
+            if let Phase::WaitingApproval { id, binding } = status.phase {
+                let (id, binding) =
+                    prompt_approval(conversation, &mut diagnostics, id, binding).await?;
                 let answers = match &mut answers {
                     Some(answers) => answers,
                     None => answers.insert(stdin_lines()?),
                 };
                 let answer = answers.next_line().await?.unwrap_or_default();
                 let approved = matches!(answer.trim(), "y" | "Y" | "yes");
-                conversation.decide(&id, approved).await?;
+                conversation
+                    .decide_with_binding(&id, binding, approved)
+                    .await?;
             }
         }
         status = loop {
