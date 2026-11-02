@@ -266,7 +266,7 @@ mod tests {
             false,
         );
         let mut transcript = crate::TranscriptRows::default();
-        transcript.push(false, "**bold** gap **again** end");
+        transcript.push(false, "**bold** gap **again** end")?;
         let expected = [
             ("bold", true),
             ("gap", false),
@@ -278,7 +278,12 @@ mod tests {
         .collect::<Vec<_>>();
         for width in [1, 2, 3, 7, 13, 20] {
             query.wrap(width);
-            for rows in [query.lines.as_slice(), transcript.rows(width)] {
+            transcript.set_width(width)?;
+            let transcript_len = transcript.len();
+            for rows in [
+                query.lines.as_slice(),
+                transcript.window(0..transcript_len)?,
+            ] {
                 let actual = rows
                     .iter()
                     .flat_map(|line| &line.spans)
