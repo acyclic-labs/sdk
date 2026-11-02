@@ -45,17 +45,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> GitCapture
             .await
             .map_err(|failure| GitCaptureError::from(failure.error))?
             .value;
-        if initial
+        let (parents, _allocation) = initial
             .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| GitCaptureError::from(failure.error))?
-            .value
-            .as_slice()
-            != [parent.id()]
-        {
+            .value;
+        if parents.as_slice() != [parent.id()] {
             return Err(GitCaptureError::Conflict.into());
         }
-        let parents = self
+        let (parents, _allocation) = self
             .generation
             .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await

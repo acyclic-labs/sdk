@@ -142,42 +142,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(FsError::Authority);
         work.receipt(result)
     }
-    pub(crate) async fn generation_parents<W: FsWork>(
-        &self,
-        volume: &Volume<A, O>,
-        generation: GenerationId,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<
-        (
-            Vec<GenerationId>,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        crate::workspace::WorkspaceError,
-    > {
-        let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
-                &self.inner.objects,
-                generation.object_id(),
-                volume.config,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-            .map_err(crate::workspace::WorkspaceError::Filesystem)?;
-            let bytes = crate::foundation::usize_to_u64(
-                root.parents.capacity() * size_of::<GenerationId>(),
-            );
-            let root = crate::kernel::Owned::new(root, allocation, bytes);
-            if root.value.volume_id != volume.id {
-                return Err(crate::workspace::WorkspaceError::ForeignGeneration);
-            }
-            Ok((root.value.parents, root.allocation))
-        }
-        .await;
-        work.finish(result, &accounting)
-    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {

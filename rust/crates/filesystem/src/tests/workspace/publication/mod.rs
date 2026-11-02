@@ -244,7 +244,7 @@ async fn assert_fork_inheritance(
     inherits_base: bool,
 ) -> Result<(), Box<dyn Error>> {
     let generation = unbounded!(child, head())?;
-    assert_eq!(unbounded!(generation, parents())?, vec![source.id()]);
+    assert_eq!(unbounded!(generation, parents())?.0, vec![source.id()]);
     let grandchild = fork_workspace(
         child,
         "grandchild",
@@ -252,7 +252,7 @@ async fn assert_fork_inheritance(
     )
     .await?;
     let descendant = unbounded!(grandchild, head())?;
-    assert_eq!(unbounded!(descendant, parents())?, vec![generation.id()]);
+    assert_eq!(unbounded!(descendant, parents())?.0, vec![generation.id()]);
     let content = unbounded!(grandchild, read("/base.txt", 16));
     if inherits_base {
         assert_eq!(content?, OwnedBytes::from_static(b"base"));

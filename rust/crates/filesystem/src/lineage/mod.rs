@@ -321,14 +321,12 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
-        if initial
+        let (parents, _allocation) = initial
             .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| failure.error)?
-            .value
-            .as_slice()
-            != [fork_generation]
-        {
+            .value;
+        if parents.as_slice() != [fork_generation] {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         self.register(WorkspaceLineageRecord {

@@ -303,7 +303,7 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
         let mut generation = after;
         let mut count = 0;
         while generation.id() != before.id() {
-            let parents = generation
+            let (parents, _allocation) = generation
                 .parents(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?

@@ -42,7 +42,7 @@ pub(super) async fn apply_git_capture<
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     let (generation, initial_generation) = if let Some(generation) = replay {
-        let parents = generation
+        let (parents, _allocation) = generation
             .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value)
@@ -71,7 +71,7 @@ pub(super) async fn apply_git_capture<
             crate::WorkspacePathApply::Applied(generation)
             | crate::WorkspacePathApply::NoChanges(generation) => (generation, head.id()),
             crate::WorkspacePathApply::AlreadyApplied(generation) => {
-                let parents = generation
+                let (parents, _allocation) = generation
                     .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map(|receipt| receipt.value)
