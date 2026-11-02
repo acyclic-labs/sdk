@@ -7,9 +7,11 @@ use crate::NamedAttributeWriteMode;
 use crate::kernel::{AttributeClass, FileKind};
 
 mod metadata;
+mod work;
 pub use metadata::{metadata_from_proto, metadata_to_proto};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use metadata::{output_u32, output_u64};
+pub use work::work_counters_json;
 
 /// Parses the public named-attribute class without widening its accepted set.
 pub fn attribute_class(value: &str) -> Result<AttributeClass, &'static str> {

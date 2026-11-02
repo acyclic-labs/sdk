@@ -59,17 +59,7 @@ mod napi_u32_codec {
 
 /// Work counters as decimal strings: JSON numbers lose u64 precision.
 pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
-    let mut value = serde_json::to_value(work).map_err(napi_error)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| napi_error("work counters must serialize as an object"))?;
-    for (field, value) in object {
-        let number = value
-            .as_u64()
-            .ok_or_else(|| napi_error(format!("work counter {field} must serialize as u64")))?;
-        *value = serde_json::Value::String(number.to_string());
-    }
-    serde_json::to_string(&value).map_err(napi_error)
+    acyclic_fs::binding_contract::work_counters_json(work).map_err(napi_error)
 }
 
 /// Exact hard limits for the process-local immutable-object accelerator.
