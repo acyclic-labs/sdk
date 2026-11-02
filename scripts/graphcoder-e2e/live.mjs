@@ -10,7 +10,7 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
-import { executionSucceeded, requireReportCapability, fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
+import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "file-tools", "child-result", "resume", "fork-merge"];
@@ -139,10 +139,8 @@ export async function runCase(binary, login, root, name, signal, { model = "open
         const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "result.txt"), `AFTER_${marker}`);
         requireTools(recorded, ["write", "edit", "read"]);
-        assert.ok(recorded.some(hook => hook.tool_name === "read"
-          && hook.tool_response?.text === `AFTER_${marker}`
-          && hook.tool_response?.file?.path === "result.txt"),
-        "original read did not return the edited file and its identity");
+        const read = recorded.findLast(hook => hook.tool_name === "read");
+        fileRead(read.tool_response, "result.txt", `AFTER_${marker}`);
       } else if (name === "child-result") {
         await collaborate(`Spawn a child named worker, asking it to reply with exactly ${marker}. End this turn with exactly SPAWNED so the spawn commits. Retain the exact canonical agent path returned by spawn for the next turn.`,
           "Use wait with the exact canonical agent path from the preceding spawn result. Read that child's settled idle answer, then reply with exactly that answer, without additional text.");

@@ -1,0 +1,163 @@
+{
+  "cases": [
+    {
+      "status": "fail",
+      "model": "gpt-6-luna",
+      "event": {
+        "tool_name": "read",
+        "tool_input": {
+          "path": "result.txt"
+        },
+        "tool_use_id": "43d61133-daed-53f9-d2ca-64c06635e7a7:00000002:0000000000000000",
+        "session_id": null,
+        "tool_response": {
+          "file": {
+            "authored": {
+              "byte_length": 43,
+              "generation": {
+                "key": [
+                  6,
+                  226,
+                  186,
+                  193,
+                  198,
+                  130,
+                  228,
+                  211,
+                  208,
+                  58,
+                  60,
+                  28,
+                  85,
+                  244,
+                  193,
+                  230,
+                  25,
+                  207,
+                  162,
+                  161,
+                  67,
+                  17,
+                  34,
+                  0,
+                  53,
+                  254,
+                  149,
+                  218,
+                  166,
+                  117,
+                  182,
+                  50,
+                  58
+                ],
+                "kind": "generation",
+                "provider": {
+                  "family": "filesystem",
+                  "namespace": "local",
+                  "version": "2"
+                },
+                "version": null
+              },
+              "path": "result.txt",
+              "volume": {
+                "class": "project",
+                "id": "09dcf13f-0880-465b-8e6a-0277decb6ab9",
+                "owner": {
+                  "id": "53dd3c48-41c7-4f1c-9657-2d63db523ec1",
+                  "kind": "project"
+                },
+                "provider": {
+                  "family": "filesystem",
+                  "namespace": "local",
+                  "version": "2"
+                }
+              }
+            }
+          },
+          "text": "AFTER_LIVE_4d258c1456764c5dba5fe39c1783e545"
+        },
+        "hook_event_name": "PostToolUse",
+        "cwd": "/home/var/live-current-main-f2a8-files/openai/file-tools/workspace"
+      }
+    },
+    {
+      "status": "fail",
+      "model": "claude-haiku-5-5",
+      "event": {
+        "tool_name": "read",
+        "tool_input": {
+          "path": "result.txt",
+          "version": "{\"volume\":{\"provider\":{\"namespace\":\"local\",\"family\":\"filesystem\",\"version\":\"2\"},\"id\":\"c0e57cd6-3c63-42cd-93f6-0685dee38a1b\",\"class\":\"project\",\"owner\":{\"kind\":\"project\",\"id\":\"6d7fc681-8d23-474a-b2a8-1d26f4782042\"}},\"path\":\"result.txt\",\"version\":\"06f56abf3fd4fdc499f8975dd0c84ae646c1d4f8fcd8895070fd173c4004918376\",\"descriptor\":{\"sha256\":[53,134,127,145,115,16,191,125,217,247,119,234,203,105,7,169,183,56,231,186,251,185,61,154,32,26,13,99,23,151,7,137],\"byte_length\":43,\"media_type\":\"text/plain\"},\"display_name\":\"result.txt\"}"
+        },
+        "tool_use_id": "4ae29e88-f5c0-4eac-b5ec-96454f375f70:00000002:0000000000000000",
+        "session_id": null,
+        "tool_response": {
+          "file": {
+            "content": {
+              "descriptor": {
+                "byte_length": 43,
+                "media_type": "text/plain",
+                "sha256": [
+                  53,
+                  134,
+                  127,
+                  145,
+                  115,
+                  16,
+                  191,
+                  125,
+                  217,
+                  247,
+                  119,
+                  234,
+                  203,
+                  105,
+                  7,
+                  169,
+                  183,
+                  56,
+                  231,
+                  186,
+                  251,
+                  185,
+                  61,
+                  154,
+                  32,
+                  26,
+                  13,
+                  99,
+                  23,
+                  151,
+                  7,
+                  137
+                ]
+              },
+              "display_name": "result.txt",
+              "path": "result.txt",
+              "version": "06f56abf3fd4fdc499f8975dd0c84ae646c1d4f8fcd8895070fd173c4004918376",
+              "volume": {
+                "class": "project",
+                "id": "c0e57cd6-3c63-42cd-93f6-0685dee38a1b",
+                "owner": {
+                  "id": "6d7fc681-8d23-474a-b2a8-1d26f4782042",
+                  "kind": "project"
+                },
+                "provider": {
+                  "family": "filesystem",
+                  "namespace": "local",
+                  "version": "2"
+                }
+              }
+            }
+          },
+          "text": "AFTER_LIVE_9f050ed4faf34d119a55f068445d0658"
+        },
+        "hook_event_name": "PostToolUse",
+        "cwd": "/home/var/live-current-main-f2a8-files/anthropic/file-tools/workspace"
+      }
+    }
+  ],
+  "attribution": "Captured from original real provider write/edit/read journeys; failed original oracle retained separately.",
+  "platform": "linux",
+  "source": "f2a8def7d7411353485c847bc1f8a85b4a0a6162"
+}
