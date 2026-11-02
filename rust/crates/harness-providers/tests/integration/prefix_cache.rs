@@ -420,24 +420,6 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     let agents = bound.agents();
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
-    let state = agents.state(&root).await?;
-    let authority = acyclic_harness::filesystem::agent_authority(
-        bound.issuer(),
-        bound.admission(),
-        &root,
-        &state.volumes,
-        &[],
-    )
-    .await?;
-    let host = acyclic_harness::filesystem::FilesystemHost::new(filesystem, &provider, None)?;
-    let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
-        host,
-        &authority.private.volume,
-        &authority.verifier,
-        &authority.scope,
-        acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
-        None,
-    )?;
     let root_template = acyclic_harness::seed::TREE
         .iter()
         .find(|(path, _)| *path == "templates/orchestrator/AGENT.md")
@@ -445,17 +427,46 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         .1;
     let child_template =
         std::str::from_utf8(root_template)?.replace("context: top_level", "context: fork");
-    use acyclic_harness::conversation::ContentPublisher;
-    writer
-        .stage(
-            acyclic_harness::OperationId::new(),
-            "templates/worker/AGENT.md",
-            child_template.as_bytes(),
-            "text/markdown",
-            "AGENT.md",
-            acyclic_harness::conversation::ContentAccess::default(),
-        )?
-        .await?;
+    let set_template = |agent: AgentPath| {
+        let filesystem = filesystem.clone();
+        let provider = &provider;
+        let bound = &bound;
+        let child_template = &child_template;
+        async move {
+            let state = bound.agents().state(&agent).await?;
+            let authority = acyclic_harness::filesystem::agent_authority(
+                bound.issuer(),
+                bound.admission(),
+                &agent,
+                &state.volumes,
+                &[],
+            )
+            .await?;
+            let host =
+                acyclic_harness::filesystem::FilesystemHost::new(filesystem, provider, None)?;
+            let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                host,
+                &authority.private.volume,
+                &authority.verifier,
+                &authority.scope,
+                acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
+                None,
+            )?;
+            use acyclic_harness::conversation::ContentPublisher;
+            writer
+                .stage(
+                    acyclic_harness::OperationId::new(),
+                    "templates/worker/AGENT.md",
+                    child_template.as_bytes(),
+                    "text/markdown",
+                    "AGENT.md",
+                    acyclic_harness::conversation::ContentAccess::default(),
+                )?
+                .await?;
+            TestResult::Ok(())
+        }
+    };
+    set_template(root.clone()).await?;
     agents.drain(&root).await?;
     let message = |to: &AgentPath, name: &'static str, prompt: &'static str| {
         let bound = &bound;
@@ -502,6 +513,9 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         .await?;
     agents.drain(&root).await?;
     let child: AgentPath = acyclic_harness::tools::spawned_child(&root, "kid")?;
+    // Child homes are fresh. A matching grandchild directive requires an
+    // explicit override in its own parent's home as well.
+    set_template(child.clone()).await?;
     transport.label("child");
     agents.drain(&child).await?;
     agents
