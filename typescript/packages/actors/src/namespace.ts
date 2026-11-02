@@ -6,7 +6,6 @@ import type * as Semantic from "./generated/semantic/actors/readonly.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const noDeploymentEnvelope = new Uint8Array(0);
 const randomId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 export type LocationHint = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me";
 export interface ActorGetOptions { readonly locationHint?: LocationHint; }
@@ -35,18 +34,21 @@ export class NamespaceActorId {
 }
 /** Host-authorized namespace binding. get performs no network access or creation. */
 export class ActorNamespaceBinding {
-  readonly #scope: ActorReference;
+  readonly #account: Uint8Array;
+  readonly #namespace: Uint8Array;
   readonly #transport: ActorInvocationTransport;
   readonly #binding: string;
   constructor(account: Uint8Array, namespace: string, transport: ActorInvocationTransport, bindingName: string) {
     if (typeof namespace !== "string") throw new TypeError("namespace must be text");
-    this.#scope = new ActorReference(account, encoder.encode(namespace), encoder.encode("_"));
+    const scope = new ActorReference(account, encoder.encode(namespace), encoder.encode("_"));
+    this.#account = scope.account;
+    this.#namespace = scope.namespace;
     if (typeof bindingName !== "string" || bindingName.length === 0) throw new TypeError("binding name is required");
     this.#transport = transport; this.#binding = bindingName;
   }
   #id(id: string, named: boolean): NamespaceActorId {
     if (typeof id !== "string") throw new TypeError("actor id must be text");
-    return new NamespaceActorId(new ActorReference(this.#scope.account, this.#scope.namespace, encoder.encode(id)), named ? id : undefined);
+    return new NamespaceActorId(new ActorReference(this.#account, this.#namespace, encoder.encode(id)), named ? id : undefined);
   }
   idFromName(name: string): NamespaceActorId { return this.#id(name, true); }
   idFromString(id: string): NamespaceActorId { return this.#id(id, false); }
@@ -54,7 +56,7 @@ export class ActorNamespaceBinding {
     return this.#id(randomId(), false);
   }
   #assertScope(reference: ActorReference): void {
-    const expected = new ActorReference(this.#scope.account, this.#scope.namespace, reference.id);
+    const expected = new ActorReference(this.#account, this.#namespace, reference.id);
     if (!reference.equals(expected)) throw new TypeError("actor reference is outside namespace binding");
   }
   idFromReference(reference: ActorReference): NamespaceActorId {
@@ -63,7 +65,6 @@ export class ActorNamespaceBinding {
   }
   get(id: NamespaceActorId, options: ActorGetOptions = {}): ActorStub {
     this.#assertScope(id.reference);
-    if (options.locationHint !== undefined) actorLocationHint(options.locationHint);
     return new ActorStub(id, this.#transport, this.#binding, options.locationHint);
   }
   getByName(name: string, options: ActorGetOptions = {}): ActorStub { return this.get(this.idFromName(name), options); }
@@ -176,7 +177,7 @@ export class ActorStub {
   }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeActorRequest {
     return { actorId: this.#actor, namespace: this.#namespace,
-      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
+      accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: new Uint8Array(0),
       ...(this.#hint === undefined ? {} : {locationHint:this.#hint}),
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
   }

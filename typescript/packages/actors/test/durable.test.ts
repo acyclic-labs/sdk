@@ -8,21 +8,45 @@ const reference = () => new ActorReference(bytes("account"), bytes("ClassOne"), 
 test("namespace get is local, references are scoped, and stub calls stay ordered and terminal on failure", async () => {
   const calls: string[] = [];
   let fail = false;
-  const namespace = new ActorNamespaceBinding(bytes("account"), "ClassOne", { async invokeActor(request) {
+  const account = bytes("account");
+  const namespace = new ActorNamespaceBinding(account, "ClassOne", { async invokeActor(request) {
     expect(request.accountId).toEqual(bytes("account")); expect(request.namespace).toBe("ClassOne");
     expect(request.actorId).toBe("same");
+    if (request.rpcMethod === "first" || request.rpcMethod === "second") expect(request.locationHint).toBe("weur");
     // A transport may mutate its owned request bytes, never the retained scope.
     if (request.accountId instanceof Uint8Array) request.accountId.fill(120);
     expect(request.bindingName).toBe("OBJECTS"); calls.push(request.rpcMethod!);
     if (fail) throw new Error("rejected");
     return { status: 200, body: request.body, headers: [] };
   } }, "OBJECTS");
+  account.fill(120);
   const named = namespace.idFromName("same"), parsed = namespace.idFromString("same");
   expect(named.equals(parsed)).toBe(true); expect(named.name).toBe("same"); expect(parsed.name).toBeUndefined();
   expect(namespace.newUniqueId().toString()).toMatch(/^[a-f0-9]{32}$/);
   expect(() => namespace.idFromReference(new ActorReference(bytes("account"), bytes("ClassTwo"), bytes("same")))).toThrow();
   expect(() => namespace.idFromReference(new ActorReference(bytes("other"), bytes("ClassOne"), bytes("same")))).toThrow();
-  const stub = namespace.get(named, { locationHint: "weur" }); expect(calls).toEqual([]);
+  const fields = ["account", "namespace"] as const;
+  const descriptors = fields.map(field => Object.getOwnPropertyDescriptor(ActorReference.prototype,field)!);
+  const projections = {account:0,namespace:0};
+  let hintReads = 0, stub!: ReturnType<ActorNamespaceBinding["get"]>;
+  try {
+    for (const [index,field] of fields.entries()) {
+      const descriptor = descriptors[index]!;
+      Object.defineProperty(ActorReference.prototype,field,{...descriptor,get() {
+        projections[field]++;
+        return descriptor.get!.call(this);
+      }});
+    }
+    stub = namespace.get(named, {get locationHint() {
+      return hintReads++ === 0 ? "weur" : "wrong" as "weur";
+    }});
+    expect(hintReads).toBe(1);
+    // Only the stub projects its new reference; the namespace retains its scope.
+    expect(projections).toEqual({account:1,namespace:1});
+  } finally {
+    for (const [index,field] of fields.entries()) Object.defineProperty(ActorReference.prototype,field,descriptors[index]!);
+  }
+  expect(calls).toEqual([]);
   expect(() => namespace.get(named, { locationHint: "wrong" as "weur" })).toThrow();
   const encode = ActorReference.prototype.encode;
   let encodes = 0;
