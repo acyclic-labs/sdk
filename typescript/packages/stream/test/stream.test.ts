@@ -859,11 +859,11 @@ describe("website Stream contract", () => {
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true })) });
-    await expect(malformed.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(malformed.append("events", [new Uint8Array([1])], { idempotencyKey: key("malformed-append") })).rejects.toMatchObject({ code: "invalid_response" });
     const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId })) });
-    await expect(impossible.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(impossible.append("events", [new Uint8Array([1])], { idempotencyKey: key("impossible-append") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId })) });
-    await expect(invalidPath.fork("events", "copy")).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(invalidPath.fork("events", "copy", { idempotencyKey: key("invalid-path-fork") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
