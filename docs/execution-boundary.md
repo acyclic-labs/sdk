@@ -125,8 +125,12 @@ identity and standard-stream setup. Custodied enforcement runs only after the
 warden has forked and admitted the final guest; the warden retains its original
 custody authority. The child borrows filter bytes from the original request
 mapping, with no extra policy allocation or copy.
-The immutable grant owns its compiled seccomp filter. Reusing that grant for
-another launch rebuilds no filter and allocates no filter storage. The direct
+The three seccomp program forms (network off, on and TCP ports) are compiled
+into exact-sized immutable arrays at build time by one shared generator.
+Grant construction selects a borrowed program without allocation, instruction
+copying or runtime compilation. An empty TCP port set selects network off;
+individual permitted ports remain in the grant's original Landlock rules.
+Selection costs constant time regardless of roots, ports or agents. The direct
 child hook retains the same grant owner until launch completes; the custodied
 child continues to borrow its bytes from the original launch request.
 Enforcement is inherited by descendants. A preparation or launch refusal is
