@@ -14,6 +14,22 @@ explicitly unrun; the recipes introduce no execution mechanism.
 
 ## Pair and cluster identity
 
+`plan::AssignmentPlan::new(arms, replicates)` admits a positive arm count and a
+representable total once. It plans one source population, assigning every arm
+once per replicate. Arm numbers index the caller's declared arm/configuration
+table. Its lazy iterator rotates execution order by one arm each replicate;
+over a complete block of `arms` replicates, every arm occupies every position
+once. Partial blocks remain unbalanced. Zero replicates is an empty plan.
+
+Direct `assignment(index)` access takes constant work even near the end of a
+large plan. Two integer fields retain the declaration; no array, outcomes or
+history are stored. Out-of-range selection finishes with `None`. Outcomes never
+change assignments: failed work stays in the declared denominator. This helper
+neither selects a saved cut nor dispatches work, admits grants, enforces a model
+or replaces the ordinary fork/replay entrance. Configuration remains in operator
+files. Execution order differs from analysis row order: emit each matched pair
+baseline first even when treatment executed first.
+
 An observation binds a 32-byte population identity, replicate number, numeric
 arm, optional finite score and optional complete measured cost. The population
 identity names the admitted comparison and common source cut; keep its arm-name
@@ -228,4 +244,5 @@ cargo kani -p acyclic-harness-core --harness objective_success_and_injection_ado
 cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_even_without_scores
 cargo kani -p acyclic-harness-core --harness ordered_pair_admission_rejects_reuse_without_changing_the_last_key
 cargo kani -p acyclic-harness-core --harness incomplete_cost_coverage_never_claims_a_full_total_or_mean
+cargo kani -p acyclic-harness-core --harness assignment_indices_are_bijective_within_the_declared_population
 ```
