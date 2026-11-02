@@ -10,6 +10,7 @@ use acyclic_harness::{
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
+    interaction::ApprovalBinding,
     tui::{
         Action, AppAction, Editor, InputEffect, PromptInput, QueryController, QueryPage, Screen,
         TranscriptRows, Viewport,
@@ -130,6 +131,31 @@ impl View {
             Some(Phase::WaitingApproval { id, .. }) => Some(id),
             _ => None,
         }
+    }
+
+    /// Prepare an answer from the displayed status, before any dispatch can
+    /// await. Commands stay available; an absent binding never falls back to
+    /// querying a different pending action.
+    fn approval_answer(
+        &self,
+        text: &str,
+    ) -> Result<Option<(IntentId, ApprovalBinding, bool)>, &'static str> {
+        let Some(Phase::WaitingApproval { id, binding }) = &self.phase else {
+            return Ok(None);
+        };
+        let answer = text.trim();
+        if answer.starts_with('/') {
+            return Ok(None);
+        }
+        let approved = if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+            true
+        } else if answer.eq_ignore_ascii_case("n") || answer.eq_ignore_ascii_case("no") {
+            false
+        } else {
+            return Err("approval requires yes or no");
+        };
+        let binding = binding.as_ref().ok_or("approval action is unavailable")?;
+        Ok(Some((id.clone(), binding.clone(), approved)))
     }
 
     /// Applies `event`; `seen` is the next conversation sequence the
@@ -656,18 +682,17 @@ pub async fn run(
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
-                                if let Some(id) = view.approval().cloned()
-                                    && !text.trim_start().starts_with('/')
-                                {
-                                    match text.trim().to_ascii_lowercase().as_str() {
-                                        "y" | "yes" => conversation.decide(&id, true).await?,
-                                        "n" | "no" => conversation.decide(&id, false).await?,
-                                        _ => {
-                                            view.notice = Some("approval requires yes or no".into());
-                                            input.editor = Editor::new(&text);
-                                        }
+                                match view.approval_answer(&text) {
+                                    Ok(Some((id, binding, approved))) => {
+                                        conversation.decide_with_binding(&id, binding, approved).await?;
+                                        continue;
                                     }
-                                    continue;
+                                    Err(reason) => {
+                                        view.notice = Some(reason.into());
+                                        input.editor = Editor::new(&text);
+                                        continue;
+                                    }
+                                    Ok(None) => {}
                                 }
                                 match catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
@@ -808,6 +833,50 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_answers_retain_the_observed_action_across_status_changes() -> Result<(), Failure> {
+        let mut view = View::default();
+        assert!(view.approval_answer("yes")?.is_none());
+        let id = IntentId::try_from("approval")?;
+        let binding = ApprovalBinding {
+            operation_id: acyclic_harness::OperationId::from_bytes([3; 16]),
+            action_digest: [4; 32],
+        };
+        view.phase = Some(Phase::WaitingApproval {
+            id: id.clone(),
+            binding: Some(binding.clone()),
+        });
+        for (text, approved) in [("y", true), (" YES ", true), ("n", false), (" No ", false)] {
+            assert_eq!(
+                view.approval_answer(text)?,
+                Some((id.clone(), binding.clone(), approved))
+            );
+        }
+        assert!(view.approval_answer(" /feedback")?.is_none());
+        assert!(view.approval_answer("approve something else").is_err());
+        let prepared = view.approval_answer("yes")?.unwrap();
+        let mut replacement = binding.clone();
+        replacement.action_digest[0] ^= 1;
+        view.phase = Some(Phase::WaitingApproval {
+            id: id.clone(),
+            binding: Some(replacement.clone()),
+        });
+        assert_eq!(prepared, (id.clone(), binding.clone(), true));
+        assert_ne!(prepared.1, replacement);
+        assert_eq!(
+            view.approval_answer("yes")?,
+            Some((id.clone(), replacement, true))
+        );
+        view.phase = Some(Phase::WaitingApproval { id, binding: None });
+        assert!(view.approval_answer("yes").is_err());
+        assert!(view.approval_answer("no").is_err());
+        assert!(view.approval_answer("/help")?.is_none());
+        view.phase = Some(Phase::Idle);
+        assert!(view.approval_answer("yes")?.is_none());
+        assert_eq!(prepared.1, binding);
+        Ok(())
+    }
 
     #[test]
     fn a_reopened_view_is_busy_while_its_restored_turn_waits() -> Result<(), Failure> {
