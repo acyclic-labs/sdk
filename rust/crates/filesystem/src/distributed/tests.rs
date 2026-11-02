@@ -1156,9 +1156,9 @@ impl StreamProvider for ReleaseSpy {
                 }
                 _ => return Err(StreamError::InvalidArgument),
             }
-            return Ok(opened.map_cursor(|_| {
-                Box::pin(futures::stream::iter(records.into_iter().map(Ok)))
-            }));
+            return Ok(
+                opened.map_cursor(|_| Box::pin(futures::stream::iter(records.into_iter().map(Ok))))
+            );
         }
         let records = self.inner.read(request).await?;
         if self.corrupt_observation == 11 {
