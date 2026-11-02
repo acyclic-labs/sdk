@@ -92,10 +92,15 @@ impl EgressRule {
             && !value.ends_with(".local")
     }
 
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        if !Self::valid_host(&self.host) || !(1..=u32::from(u16::MAX)).contains(&self.port) {
+    /// Validate a retained authority without constructing or copying a rule.
+    pub fn validate_authority(host: &str, port: u32) -> Result<(), DomainError> {
+        if !Self::valid_host(host) || !(1..=u32::from(u16::MAX)).contains(&port) {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
         Ok(())
+    }
+
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        Self::validate_authority(&self.host, self.port)
     }
 }

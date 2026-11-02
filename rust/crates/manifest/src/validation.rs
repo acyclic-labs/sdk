@@ -398,8 +398,8 @@ fn validate_entries<'a>(
                 &ep,
                 "host-fetch-name",
             )?;
-            acyclic_actors::domain::EgressRule::new(
-                host.origin.host.clone(),
+            acyclic_actors::domain::EgressRule::validate_authority(
+                &host.origin.host,
                 u32::from(host.origin.port),
             )
             .map_err(|_| ManifestError::invalid(&ep, "https-authority"))?;
