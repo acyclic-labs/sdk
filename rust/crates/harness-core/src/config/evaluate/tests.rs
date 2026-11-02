@@ -197,7 +197,7 @@ async fn nested_functions_fold_over_the_base_at_their_path() -> Result<()> {
 #[test]
 fn json_module_exports_preserve_json_property_semantics() -> Result<()> {
     let source = br#"{"__proto__":{"x":1},"escaped":"\\\""}"#;
-    let module = strip("data.json", source).map_err(Error::Invalid)?;
+    let module = compile_module("data.json", source).map_err(Error::Invalid)?;
     let modules = vec![("data.json".to_owned(), module)];
     let (value, _) = run(&modules, b"{}", Surface::Data).map_err(Error::Invalid)?;
     assert_eq!(value["__proto__"]["x"], 1);
