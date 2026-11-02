@@ -46,8 +46,10 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
   const kinds: ReturnType<typeof kind>[] = [];
   const producers: Partial<BindingAuthority<A, H, M, S>> = Object.create(null);
   function retain<K extends keyof BindingAuthority<A, H, M, S>>(key: K): void {
-    if (!Object.hasOwn(producers, key)) producers[key] = authority[key];
-    if (producers[key] === undefined) throw new TypeError(`binding materialization: missing ${key} producer; recovery: supply the original admitted host producer before guest entry`);
+    if (Object.hasOwn(producers, key)) return;
+    const producer = authority[key];
+    if (producer === undefined) throw new TypeError(`binding materialization: missing ${key} producer; recovery: supply the original admitted host producer before guest entry`);
+    producers[key] = producer;
   }
   for (const binding of selected) {
     if (names.has(binding.name)) throw new TypeError("duplicate binding name");
