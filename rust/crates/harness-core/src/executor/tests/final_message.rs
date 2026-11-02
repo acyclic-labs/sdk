@@ -21,16 +21,28 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
         selected_context: None,
     };
     for native in [false, true] {
-        for authoritative in [false, true] {
+        for (authoritative, reject_tool) in [(false, false), (true, false), (false, true)] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
                 let execution = StockExecution {
                     io: Some(io),
+                    single_request: reject_tool,
                     ..StockExecution::ordinary(&stock)
                 };
                 let sibling = stock_string_copy("retained sibling", Some(io))?;
                 let sibling_bytes = sibling.capacity() as u64;
                 let mut events = Vec::new();
                 // Generated operands use the original production ledger.
+                if reject_tool {
+                    stock_vec_push(
+                        &mut events,
+                        ModelEvent::ToolCall(crate::model::ToolCall::new(
+                            stock_string_copy("denied call", Some(io))?,
+                            stock_string_copy("denied tool", Some(io))?,
+                            Value::Null,
+                        )),
+                        Some(io),
+                    )?;
+                }
                 for delta in ["first", "second"] {
                     stock_vec_push(
                         &mut events,
@@ -57,23 +69,28 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
                     )?;
                 }
                 let mut prior = Vec::new();
-                let result = execution.collect_step_events(&input, 0, events, &mut prior)?;
-                assert_eq!(
-                    result.text,
-                    if authoritative {
-                        "final"
-                    } else {
-                        "firstsecond"
-                    }
-                );
+                let result = execution.collect_step_events(&input, 0, events, &mut prior);
+                if reject_tool {
+                    assert!(matches!(result, Err(Error::Unauthorized(_))));
+                } else {
+                    let result = result?;
+                    assert_eq!(
+                        result.text,
+                        if authoritative {
+                            "final"
+                        } else {
+                            "firstsecond"
+                        }
+                    );
+                    assert!(result.calls.is_empty());
+                    assert_eq!(result.metadata, Value::Null);
+                    assert_eq!(
+                        io.owned_bytes()?,
+                        sibling_bytes + result.text.capacity() as u64
+                    );
+                    stock_retire_text(result.text, Some(io))?;
+                }
                 assert!(prior.is_empty());
-                assert!(result.calls.is_empty());
-                assert_eq!(result.metadata, Value::Null);
-                assert_eq!(
-                    io.owned_bytes()?,
-                    sibling_bytes + result.text.capacity() as u64
-                );
-                stock_retire_text(result.text, Some(io))?;
                 assert_eq!(io.owned_bytes()?, sibling_bytes);
                 stock_retire_text(sibling, Some(io))?;
                 Ok::<_, Error>(())
