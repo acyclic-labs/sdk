@@ -289,10 +289,10 @@ fn run() -> Result {
                     "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
                 }))?;
             }
-            Ok(())
+            Result::Ok(())
         },
         &recovery,
-    )?;
+    )??;
     let findings = counts.qualification_findings(&options.operations, &recovery);
     let counts_complete = findings.is_empty();
     for finding in findings {

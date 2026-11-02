@@ -58,9 +58,7 @@ macro_rules! timed {
             let start = Instant::now();
             let result = future.await;
             let elapsed = start.elapsed();
-            let observed = $rows.stop(before)?;
-            $rows.record($name, $floor, elapsed, observed, identity)?;
-            result
+            $rows.record_terminal($name, $floor, (elapsed, before), identity, result)?
         } else {
             future.await
         }
@@ -105,40 +103,51 @@ pub(super) async fn run(
             .iter()
             .any(|operation| family.contains(operation))
     };
-    if any(&[
-        Operation::ObjectPut,
-        Operation::ObjectGet,
-        Operation::ObjectHead,
-        Operation::ObjectList,
-    ]) {
-        objects(fixture, samples, &mut rows).await?;
+    let result: Result = async {
+        if any(&[
+            Operation::ObjectPut,
+            Operation::ObjectGet,
+            Operation::ObjectHead,
+            Operation::ObjectList,
+        ]) {
+            objects(fixture, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::StreamAppend,
+            Operation::StreamRead,
+            Operation::StreamFollow,
+        ]) {
+            streams(fixture, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::ActorCreate,
+            Operation::ActorDurableWrite,
+            Operation::ActorWarmRead,
+        ]) {
+            actors(fixture, samples, &mut rows).await?;
+        }
+        if rows.includes(Operation::ActorWake) {
+            actor_delivery(fixture, agents, samples, &mut rows).await?;
+        }
+        if any(&[
+            Operation::PinnedRead,
+            Operation::StagedWrite,
+            Operation::Fsync,
+        ]) {
+            filesystem(fixture, samples, &mut rows).await?;
+        }
+        if rows.includes(Operation::SessionStart) {
+            sessions(fixture, agents, samples, &mut rows).await?;
+        }
+        Ok(())
     }
-    if any(&[
-        Operation::StreamAppend,
-        Operation::StreamRead,
-        Operation::StreamFollow,
-    ]) {
-        streams(fixture, samples, &mut rows).await?;
-    }
-    if any(&[
-        Operation::ActorCreate,
-        Operation::ActorDurableWrite,
-        Operation::ActorWarmRead,
-    ]) {
-        actors(fixture, samples, &mut rows).await?;
-    }
-    if rows.includes(Operation::ActorWake) {
-        actor_delivery(fixture, agents, samples, &mut rows).await?;
-    }
-    if any(&[
-        Operation::PinnedRead,
-        Operation::StagedWrite,
-        Operation::Fsync,
-    ]) {
-        filesystem(fixture, samples, &mut rows).await?;
-    }
-    if rows.includes(Operation::SessionStart) {
-        sessions(fixture, agents, samples, &mut rows).await?;
+    .await;
+    if let Err(error) = result {
+        return super::durability::retain_diagnostics(
+            Err(error),
+            || rows.publish_partial(&mut std::io::stdout().lock()),
+            recovery,
+        )?;
     }
     rows.finish(floors)
 }

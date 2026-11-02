@@ -89,7 +89,7 @@ fn serialize_work_receipts<S: serde::Serializer>(
             identity: &retained.identity,
             work: &retained.observation.work.0,
             physical_admission_binding: None,
-            progress: "original operation returned; operation-specific result oracle checked before the report",
+            progress: "original operation returned successfully; result oracles are complete only when cohort_completed is true",
         }
     }))
 }
@@ -373,6 +373,75 @@ pub(super) fn check_observations() -> Result {
         },
         "raw samples",
     )?;
+    // Capture a real operation failure. Neither a failed terminal nor a
+    // sampler refusal may enter the successful cohort or replace its cause.
+    let directory = tempfile::tempdir()?;
+    let missing_path = directory.path().join("missing");
+    let failed_identity = serde_json::json!({"path": missing_path});
+    let missing = std::fs::read(&missing_path).unwrap_err();
+    let original_code = missing.raw_os_error();
+    let before = cohort.start(None);
+    let returned = cohort
+        .record_terminal(
+            Operation::ObjectGet,
+            Terms::default(),
+            (Duration::ZERO, before),
+            failed_identity.clone(),
+            Err::<(), _>(missing),
+        )?
+        .unwrap_err();
+    if returned.raw_os_error() != original_code {
+        return Err("failed observation replaced the original OS cause".into());
+    }
+    let before = cohort.start(Some(RequestClass::Head));
+    let returned = cohort
+        .record_terminal(
+            Operation::ObjectGet,
+            Terms::default(),
+            (Duration::ZERO, before),
+            failed_identity.clone(),
+            Err::<(), _>(returned),
+        )?
+        .unwrap_err();
+    if returned.raw_os_error() != original_code {
+        return Err("sampler refusal replaced the original operation cause".into());
+    }
+    let before = cohort.start(Some(RequestClass::Head));
+    if cohort
+        .record_terminal(
+            Operation::ObjectGet,
+            Terms::default(),
+            (Duration::ZERO, before),
+            failed_identity,
+            Ok::<_, std::io::Error>(()),
+        )
+        .is_ok()
+    {
+        return Err("successful operation hid its sampler refusal".into());
+    }
+    let row = &cohort.rows[&Operation::ObjectGet];
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
+        return Err("failed terminal changed the successful observation inventory".into());
+    }
+    let mut partial = Vec::new();
+    let original = super::durability::retain_diagnostics(
+        Err::<(), _>(returned),
+        || cohort.publish_partial(&mut partial),
+        &cohort.recovery,
+    )?
+    .unwrap_err();
+    let partial: serde_json::Value = serde_json::from_slice(&partial)?;
+    if original.raw_os_error() != original_code
+        || partial["kind"] != "partial_operation"
+        || partial["cohort_completed"] != false
+        || partial["ratio_qualified"] != false
+        || partial.get("quantiles").is_some()
+        || partial.get("floor_ns").is_some()
+        || partial["raw_ns"].as_array().map(Vec::len) != Some(2)
+        || partial["original_work_receipts"] != encoded["original_work_receipts"]
+    {
+        return Err("family failure lost or qualified its original partial receipts".into());
+    }
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
         "control": "invalid quantile observations and mismatched floor terms", "result": "rejected",
@@ -408,7 +477,11 @@ pub(super) fn ns(duration: Duration) -> f64 {
 
 pub(super) fn emit(value: impl Serialize) -> Result {
     let mut output = std::io::stdout().lock();
-    serde_json::to_writer(&mut output, &value)?;
+    emit_to(&mut output, value)
+}
+
+fn emit_to(output: &mut impl Write, value: impl Serialize) -> Result {
+    serde_json::to_writer(&mut *output, &value)?;
     writeln!(output)?;
     output.flush()?;
     Ok(())
@@ -711,6 +784,57 @@ impl Measurements {
         Ok(())
     }
 
+    /// Keep failed terminals outside successful latency cohorts while retaining
+    /// their original identity, observed work and error. Sampler failure must
+    /// not replace a different error type returned by the operation.
+    pub(super) fn record_terminal<T, E: std::fmt::Display>(
+        &mut self,
+        operation: Operation,
+        floor: Terms,
+        interval: (Duration, Before),
+        identity: serde_json::Value,
+        result: std::result::Result<T, E>,
+    ) -> Result<std::result::Result<T, E>> {
+        let (elapsed, before) = interval;
+        let observed = self.stop(before);
+        let diagnostic = if let Err(error) = &result {
+            let observation = observed.as_ref().ok();
+            emit(serde_json::json!({
+                "schema": 1, "kind": "failed_operation", "operation": operation.name(),
+                "agents": self.agents, "identity": identity, "raw_ns": ns(elapsed),
+                "error": error.to_string(),
+                "observation_error": observed.as_ref().err().map(ToString::to_string),
+                "work_columns": METRICS, "work": observation.map(|sample| sample.work.0),
+                "coordinator_allocations_count_and_bytes": observation.and_then(|sample| sample.coordinator_allocations),
+                "provider_request_counts": observation.and_then(|sample| sample.provider_requests),
+                "native_attempt_counts": observation.and_then(|sample| sample.native_attempts),
+                "physical_admission_binding": null, "ratio_qualified": false,
+                "recovery": self.recovery,
+            }))
+        } else {
+            observed.and_then(|observation| {
+                self.record(operation, floor, elapsed, observation, identity)
+            })
+        };
+        super::durability::retain_diagnostics(result, || diagnostic, &self.recovery)
+    }
+
+    pub(super) fn publish_partial(&self, output: &mut impl Write) -> Result {
+        for (operation, row) in &self.rows {
+            emit_to(output, RawSamples {
+                fields: row.evidence(serde_json::json!({
+                    "schema": 1, "kind": "partial_operation", "operation": operation.name(),
+                    "agents": self.agents, "cohort_completed": false, "ratio_qualified": false,
+                    "work_columns": METRICS, "work_observations": row.work.observations,
+                    "reason": "operation family or result oracle failed; retained successful returns are not a qualified cohort",
+                    "recovery": self.recovery,
+                })),
+                raw_ns: &row.raw_ns,
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(mut self, floors: &super::calibrate::Floors) -> Result<(bool, Point)> {
         let mut complete = true;
         let mut point = Point {
@@ -748,6 +872,7 @@ impl Measurements {
                         _ => operation.name(),
                     },
                     "agents": self.agents, "active": 1, "quantiles": quantiles,
+                    "cohort_completed": true,
                     "floor": terms, "floor_ns": floor_ns,
                     "guarantee": guarantee(operation),
                     "floor_units": floor_units(terms),
