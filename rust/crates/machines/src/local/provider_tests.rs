@@ -1,6 +1,7 @@
 //! Actual process/file primitives composed with the production Streams owner.
 use super::*;
-use acyclic_stream::{MemoryStream, StreamPath};
+use acyclic_stream::{MemoryStream, StreamPath, StreamProvider as _, StreamProviderExt as _};
+use futures::TryStreamExt as _;
 use std::process::Command;
 
 pub(super) fn enrollment(machine: MachineId) -> MachineObservation {
@@ -143,7 +144,15 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
 -> Result<(), Box<dyn std::error::Error>> {
     let machine = MachineId::new();
     let observation = enrollment(machine);
-    let streams = Arc::new(MemoryStream::default());
+    let directory = Arc::new(tempfile::tempdir()?);
+    let streams = Arc::new(
+        acyclic_stream::LocalStream::open_with_ownership_anchor(
+            directory.path(),
+            Default::default(),
+            acyclic_native_runtime::OwnershipAnchor::new(Arc::clone(&directory)),
+        )
+        .await?,
+    );
     let root = StreamPath::new(format!("machine-tests/{machine}"))?;
     let factory = || {
         provider(
@@ -310,6 +319,67 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
             .any(|event| event.fact == EventFact::State(MachineState::Destroyed))
     );
     assert_eq!(next.next_sequence, None);
+
+    // Inherited records keep their original call identity through every fork.
+    // Exercise the public recovery entrance, not a separate snapshot decoder.
+    let original = acyclic_actors::call::CallPath::new(&root, &create_key.to_string())?;
+    let original_head = streams.head(original.log().clone()).await?;
+    let mut source = original.clone();
+    for branch in ["child", "grandchild"] {
+        let branch_root = StreamPath::new(format!("{root}-{branch}"))?;
+        let copied = acyclic_actors::call::CallPath::new(&branch_root, &create_key.to_string())?;
+        assert!(matches!(
+            streams
+                .commit(acyclic_stream::CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: Vec::new(),
+                    mutations: vec![acyclic_stream::CommitMutation::Fork {
+                        source: source.log().clone(),
+                        destination: copied.log().clone(),
+                        at_tail: original_head.tail,
+                        exclude: Vec::new(),
+                        records: Vec::new(),
+                    }],
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        branch_root.as_str().as_bytes().to_vec(),
+                    )?,
+                })
+                .await?,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ));
+        let records = streams
+            .read(acyclic_stream::ReadRequest {
+                path: copied.log().clone(),
+                from: 0,
+                limit: 3,
+                at_least: Default::default(),
+                key: None,
+            })
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(records.len() as u64, original_head.tail);
+        // Negative control: choosing the reader identity from the first copied
+        // record exposes the parent's result as this incarnation's own result.
+        let mut unbound = acyclic_actors::call::Journal::new(&records[0].origin);
+        for record in &records {
+            assert_eq!(&record.origin, original.log());
+            unbound.apply(record)?;
+        }
+        assert!(matches!(
+            unbound.outcome(),
+            Some(acyclic_actors::call::Outcome::Ok(_))
+        ));
+        let mut retired = observation.clone();
+        retired.state = MachineState::Destroyed;
+        let inherited = provider(retired, options(), streams.clone(), branch_root).await?;
+        assert!(matches!(
+            inherited.recover(create_key).await,
+            Err(ProviderError::Rejected(_))
+        ));
+        assert_eq!(streams.head(original.log().clone()).await?, original_head);
+        source = copied;
+    }
     Ok(())
 }
 
