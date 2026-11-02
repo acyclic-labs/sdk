@@ -25,6 +25,10 @@ mod prefix;
 mod preparation;
 mod profile;
 mod provider;
+mod recorded;
+pub use recorded::{
+    Divergence, DivergenceSink, RecordedCall, RecordedModel, Recording, replay_key,
+};
 mod reasoning;
 mod request;
 mod sampling;

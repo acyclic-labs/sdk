@@ -137,6 +137,25 @@ where
         let reference = field.select(&record.event).ok_or(Error::Record(
             "payload field is absent from this observation",
         ))?;
+        if field == crate::executor::ExecutionPayloadField::AdmittedRequest {
+            // Reconstructed and verified against its digest on each read;
+            // paging re-reads the request's segments per page.
+            let request = crate::executor::load_model_request(
+                &journal,
+                reference,
+                crate::conversation::Limits::default(),
+                None,
+            )
+            .await
+            .map_err(turn)?;
+            let bytes = request.bytes();
+            let page = usize::try_from(offset)
+                .ok()
+                .and_then(|start| bytes.get(start..))
+                .ok_or(Error::Record("payload offset is past the request's end"))?;
+            let take = usize::try_from(maximum).map_or(page.len(), |maximum| maximum.min(page.len()));
+            return Ok((page.get(..take).unwrap_or(page).into(), bytes.len() as u64));
+        }
         let length = reference.descriptor().byte_length();
         let remaining = length.checked_sub(offset).ok_or(Error::Record(
             "payload offset is past the immutable file's end",

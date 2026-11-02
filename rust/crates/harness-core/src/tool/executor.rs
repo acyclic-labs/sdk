@@ -17,6 +17,14 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn is_code_mode(&self) -> bool {
         false
     }
+    /// Whether a replayed recording's result may stand in for this call
+    /// ([`crate::model::ModelProvider::recorded_tool_result`]). An executor
+    /// whose call is itself a harness effect that the replay must reproduce
+    /// (spawn, send, archive, wait) runs instead. A composition never
+    /// stands in for its calls: each is admitted, and replayed, on its own.
+    fn replays_recorded(&self) -> bool {
+        !self.is_code_mode()
+    }
     /// The canonical capability a native declaration stands for. Grants,
     /// policy and approval match it, never the model's spelling.
     fn capability(&self) -> Option<&Tool> {
