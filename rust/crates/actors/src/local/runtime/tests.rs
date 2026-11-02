@@ -370,6 +370,8 @@ struct CapturesCuts {
 /// there was no alarm or the replacement deadline is earlier than its timer.
 #[tokio::test]
 async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResult {
+    use futures::task::LocalSpawnExt as _;
+
     for original in [None, Some(1000)] {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(Arc::clone(&provider), root()?);
@@ -383,10 +385,13 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             create.join(effect)?;
         }
         store.submit(create).await?;
-        let runtime = Runtime::new(
-            Store::new(Arc::clone(&provider), root()?),
-            Arc::new(Package::new()?),
-            Arc::new(Manual(AtomicU64::new(100))),
+        let runtime = Arc::new(
+            Runtime::new(
+                Store::new(Arc::clone(&provider), root()?),
+                Arc::new(Package::new()?),
+                Arc::new(Manual(AtomicU64::new(100))),
+            )
+            .with_limits(RuntimeLimits::new(1, 1)?),
         );
         runtime.track(address.clone())?;
         assert!(runtime.drain().await.is_empty());
@@ -402,23 +407,47 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             binding.transaction(|state| state.alarm(Some(deadline)))?;
             binding.flush(key("idle/original")?).await?;
         }
-        let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
-        // Pending may be a cooperative yield, so it does not establish that
-        // the dispatcher has finished observing the original alarm.
-        assert!(futures::poll!(host.as_mut()).is_pending());
+        let mut executor = futures::executor::LocalPool::new();
+        let serving = Arc::clone(&runtime);
+        executor.spawner().spawn_local(async move {
+            match serving.run(|_, error| panic!("host failed: {error}")).await {
+                Ok(never) => match never {},
+                Err(error) => panic!("host stopped: {error}"),
+            }
+        })?;
+        // Drive the original host through every executor wake, including its
+        // one-step cooperative yields, until no runnable task remains.
+        executor.run_until_stalled();
+        assert_eq!(
+            runtime.counts(),
+            (1, 0),
+            "the resident must finish its turn"
+        );
+        assert_eq!(runtime.ready.next_deadline(), original);
+        let slot = runtime.slot(&address).ok_or("missing resident")?;
+        let inner = slot.inner.try_lock()?;
+        let observed = inner
+            .observed
+            .as_ref()
+            .ok_or("resident has no cached cut")?;
+        let state = observed.state().ok_or("resident has no cached state")?;
+        assert_eq!(state.epoch(), 1, "startup must observe the original claim");
+        assert_eq!(
+            state.alarm().pending(),
+            original,
+            "the resident must cache the original alarm before replacement"
+        );
+        assert!(!slot.refresh.load(Ordering::Acquire));
+        drop(inner);
         let snapshot = store.load(&address).await?;
         let epoch = snapshot.state().ok_or("missing state")?.epoch();
         let mut binding = store.bind_state(snapshot, epoch)?;
         binding.transaction(|state| state.alarm(Some(50)))?;
         binding.flush(key("idle/replacement")?).await?;
         let generation = if original.is_some() { 2 } else { 1 };
-        let delivered = observe_while_running(
-            host.as_mut(),
-            state_after(&store, &address, |state| {
-                state.alarm().delivered_generation == Some(generation)
-            }),
-        )
-        .await?;
+        let delivered = executor.run_until(state_after(&store, &address, |state| {
+            state.alarm().delivered_generation == Some(generation)
+        }))?;
         assert_eq!(
             records(&*provider, "out/changed-alarm").await?,
             vec![Bytes::from_static(if original.is_some() {
