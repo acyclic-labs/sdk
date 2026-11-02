@@ -160,7 +160,22 @@ proptest! {
         prop_assert!(whole_units(&source, &retained, &units));
         // A fully summarized prefix exercises refill with too few spare slots.
         let maximum = 2 + raw_maximum % (source.messages.len() - 1);
-        let (through, planned_maximum) = policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None).unwrap();
+        let mut planned = None;
+        let measured = acyclic_test_support::measure(|| {
+            planned = Some(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None));
+        });
+        // One pending-call vector, one component vector and one selection vector,
+        // regardless of how many candidate boundaries the budget rejects.
+        prop_assert_eq!(measured.count_total, 3);
+        let (through, planned_maximum) = planned.unwrap().unwrap();
+        prop_assert_eq!(planned_maximum, super::super::compaction::mandatory_messages(&source, through, &mut None).unwrap().len() + 1);
+        // Negative control: rebuilding dependencies for a candidate, as the old
+        // planner did, violates the same scratch-allocation bound.
+        let duplicated = acyclic_test_support::measure(|| {
+            std::hint::black_box(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None).unwrap());
+            std::hint::black_box(super::super::compaction::mandatory_messages(&source, through, &mut None).unwrap());
+        });
+        prop_assert!(duplicated.count_total > 3);
         prop_assert!(units.iter().all(|&(first, last)| through <= first || through > last));
         let (retained, reference) = compact(&source, planned_maximum, through).unwrap();
         prop_assert!(whole_units(&source, &retained, &units));
@@ -185,6 +200,41 @@ fn call_boundaries_keep_signed_protocols_and_tight_budgets_drop_whole_units() ->
         assert!(whole_units(&source, &dropped, &units));
         assert!(!dropped.messages.contains(&source.messages[call]));
     }
+    // All outstanding calls with the same id depend on its closing result.
+    // Interior plain text remains independent of that protocol component.
+    let call = |index| ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+            "reused".into(),
+            "tool".into(),
+            serde_json::json!({"index": index}),
+        ))),
+    };
+    let source = context(
+        vec![
+            super::text(ModelRole::User, "old"),
+            call(0),
+            super::text(ModelRole::User, "interior"),
+            call(1),
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "reused".into(),
+                    name: "tool".into(),
+                    content: ToolResultContent::Json {
+                        value: serde_json::Value::Null,
+                    },
+                }),
+            },
+            super::text(ModelRole::User, "latest"),
+        ],
+        Some(1),
+    );
+    let (retained, proof) = compact(&source, 5, source.messages.len())?;
+    assert!(whole_units(&source, &retained, &[(1, 4)]));
+    assert!(!retained.messages.contains(&source.messages[2]));
+    validate_compaction(&proof, &source, &retained, None)?;
+    assert!(compact(&source, 4, source.messages.len()).is_err());
     Ok(())
 }
 
@@ -267,5 +317,50 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
         );
     }
     assert!(rejected > 0 && admitted > 0);
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn incomplete_exchange_refusal_precedes_output_copy_and_releases_graph_custody() -> Result<()> {
+    for provider in 0..3 {
+        for remove_call in [false, true] {
+            let (mut source, _) =
+                transcript(&[(provider, 2, false, true)], "retained native payload");
+            let removed = source
+                .messages
+                .iter()
+                .position(|message| {
+                    message.content.parts().iter().any(|part| {
+                        if remove_call {
+                            matches!(part, ModelContentPart::ToolCall(_))
+                        } else {
+                            matches!(part, ModelContentPart::ToolResult { .. })
+                        }
+                    })
+                })
+                .unwrap();
+            source.messages.remove(removed);
+            source.current_input_index = Some(source.messages.len() as u32 - 1);
+            let summary = super::summary(&source, source.messages.len())?;
+            let mut budget = owned_context_budget();
+            // The source is already resident. Matching and closure borrow it;
+            // no retained output should be copied before protocol refusal.
+            budget.bytes_copied = 0;
+            let cancel = acyclic_fs::CancellationToken::new();
+            let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
+            let result = crate::executor::with_history_io(Some(&io), |work| {
+                super::super::compaction::compact_context(
+                    &source,
+                    source.messages.len(),
+                    &summary,
+                    work,
+                )
+            });
+            assert!(matches!(result, Err(crate::Error::Invalid(reason))
+                if reason == "compaction boundary splits a tool exchange"));
+            assert_eq!(io.owned_bytes()?, 0);
+        }
+    }
     Ok(())
 }

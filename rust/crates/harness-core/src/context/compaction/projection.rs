@@ -17,13 +17,23 @@ pub(crate) fn compact_projection(
     }
     let maximum_messages = u32::try_from(max_messages)
         .map_err(|_| invalid("compaction budget exceeds portable count"))?;
+    if let Some(summary) = &summary
+        && (summary.source_messages == 0
+            || summary.source_messages as usize > context.messages.len()
+            || summary.output.descriptor().media_type() != "text/plain")
+    {
+        return Err(invalid("summary does not bind its source prefix"));
+    }
     let source_digest = crate::executor::preparation_digest(context, io)?;
     if let Some(summary) = &summary {
-        if summary.source_messages == 0
-            || summary.source_digest
-                != prefix_digest(context, summary.source_messages as usize, io)?
-            || summary.output.descriptor().media_type() != "text/plain"
-        {
+        // The full prefix has exactly the source identity already computed for
+        // the proof. Partial prefixes still bind their own current-input cut.
+        let prefix_digest = if summary.source_messages as usize == context.messages.len() {
+            source_digest
+        } else {
+            prefix_digest(context, summary.source_messages as usize, io)?
+        };
+        if summary.source_digest != prefix_digest {
             return Err(invalid("summary does not bind its source prefix"));
         }
     }
