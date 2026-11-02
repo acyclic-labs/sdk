@@ -152,8 +152,8 @@ proptest! {
         #[cfg(feature = "filesystem")]
         {
             let cancel = acyclic_fs::CancellationToken::new();
-            cancel.cancel();
             let io = crate::executor::PreparationIo::from_budget(owned_context_budget(), &cancel).unwrap();
+            cancel.cancel();
             let refused = crate::executor::with_history_io(Some(&io), |work| {
                 super::super::compaction::mandatory_messages(&source, source.messages.len(), work)
             });
