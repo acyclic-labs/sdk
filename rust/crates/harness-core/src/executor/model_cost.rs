@@ -6,6 +6,7 @@ use std::borrow::Cow;
 /// How a provider reports a separately priced token counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields, rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum TokenPrice {
     /// Already charged at the parent input/output rate; no extra charge.
     Included,
@@ -27,6 +28,7 @@ pub enum TokenPrice {
 /// Prices may be absent. No provider/account lookup occurs in this projection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelPriceRecord {
     /// Price record schema, currently one.
     pub version: u32,
@@ -145,11 +147,14 @@ fn family_cost(
 }
 
 impl ModelPriceRecord {
-    fn validate_for(&self, usage: &ModelUsageRecord) -> Result<(), ModelPriceError> {
+    /// Validates the publisher's record against one exact admitted selection.
+    /// Catalogue admission and usage projection share this check; neither
+    /// infers an alias, currency, current time or missing rate.
+    pub fn validate_for(&self, provider: &str, model: &str) -> Result<(), ModelPriceError> {
         if self.version != 1 || self.revision.is_empty() || !currency_valid(&self.currency) {
             return Err(ModelPriceError::InvalidRecord);
         }
-        if self.provider != usage.provider || self.model != usage.model {
+        if self.provider != provider || self.model != model {
             return Err(ModelPriceError::BindingMismatch);
         }
         Ok(())
@@ -163,7 +168,7 @@ impl ModelUsageRecord {
     /// once after subtraction. Unknown counters/rates/overflow remain unknown.
     /// Uses the same price interpretation as `estimate`, without IO or allocation.
     pub fn cache_savings(&self, price: &ModelPriceRecord) -> Result<Option<i128>, ModelPriceError> {
-        price.validate_for(self)?;
+        price.validate_for(&self.provider, &self.model)?;
         if !self.completed {
             return Ok(None);
         }
@@ -206,7 +211,7 @@ impl ModelUsageRecord {
             token_nano_units: None,
         };
         if let Some(price) = price {
-            price.validate_for(self)?;
+            price.validate_for(&self.provider, &self.model)?;
             estimated_cost.price_revision = Some(Cow::Borrowed(&price.revision));
             estimated_cost.effective_at = Some(price.effective_at);
             estimated_cost.currency = Some(Cow::Borrowed(&price.currency));

@@ -280,6 +280,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                         (
                             name.into(),
                             crate::ModelSpec {
+                                price: None,
                                 tool_profile: match id {
                                     "anthropic" => Some(
                                         acyclic_harness_core::model::NativeToolProfile::Anthropic,

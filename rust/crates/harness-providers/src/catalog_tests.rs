@@ -2,6 +2,111 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn configured_prices_pin_selection_and_refuse_invalid_replacements_before_publication() -> Result<()>
+{
+    use acyclic_harness_core::executor::{ModelPriceRecord, TokenPrice};
+
+    let (_, transport) = provider(Adapter::Responses, 200);
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::from([("openai".into(), "fixture".into())])),
+        transport.clone(),
+    );
+    let unpriced = registry.resolve("openai/gpt-5")?;
+    assert!(unpriced.model_price(unpriced.model())?.is_none());
+    let mut endpoint = registry.catalog()["openai"].as_ref().clone();
+    // Generated publisher records exercise binding, not a provider rate fixture.
+    let price = ModelPriceRecord {
+        version: 1,
+        revision: "generated-price-1".into(),
+        provider: "openai".into(),
+        model: "gpt-5".into(),
+        effective_at: 7,
+        currency: "USD".into(),
+        input_nano_units_per_million: None,
+        output_nano_units_per_million: Some(0),
+        cached: TokenPrice::Included,
+        cache_write: TokenPrice::Included,
+        reasoning: TokenPrice::Included,
+    };
+    endpoint.models.get_mut("gpt-5").unwrap().price = Some(price);
+    let file = tempfile::NamedTempFile::new().expect("catalogue file");
+    std::fs::write(
+        file.path(),
+        serde_json::to_vec(&json!({"openai": endpoint})).unwrap(),
+    )
+    .expect("catalogue bytes");
+    registry.load_catalog(file.path())?;
+    let selected = registry.resolve("openai/gpt-5")?;
+    assert_ne!(unpriced.model(), selected.model());
+    assert!(unpriced.model_price(unpriced.model())?.is_none());
+    assert!(selected.model_price(unpriced.model()).is_err());
+    let quote = selected
+        .model_price(selected.model())?
+        .expect("configured price");
+    let member = registry.model_catalog_entry("openai", "gpt-5").unwrap();
+    assert!(std::ptr::eq(
+        quote,
+        member.specification.price.as_ref().unwrap()
+    ));
+    let visible = serde_json::to_value(member).unwrap();
+    assert_eq!(visible["price"]["revision"], "generated-price-1");
+    assert!(visible["price"]["input_nano_units_per_million"].is_null());
+    assert_eq!(visible["price"]["output_nano_units_per_million"], 0);
+    let allocations = acyclic_test_support::measure(|| {
+        std::hint::black_box(selected.model_price(selected.model()).unwrap());
+    });
+    assert_eq!((allocations.count_total, allocations.bytes_total), (0, 0));
+
+    let accepted = Arc::clone(&registry.catalog()["openai"]);
+    for fault in 0..6 {
+        let mut rejected = accepted.as_ref().clone();
+        let price = rejected
+            .models
+            .get_mut("gpt-5")
+            .unwrap()
+            .price
+            .as_mut()
+            .unwrap();
+        match fault {
+            0 => price.provider.push_str("-foreign"),
+            1 => price.model.push_str("-foreign"),
+            2 => price.version += 1,
+            3 => price.revision.clear(),
+            4 => price.currency = "usd".into(),
+            _ => price.currency = "US".into(),
+        }
+        assert!(registry.register("openai".into(), rejected).is_err());
+        assert!(Arc::ptr_eq(&accepted, &registry.catalog()["openai"]));
+        assert_eq!(registry.resolve("openai/gpt-5")?.model(), selected.model());
+    }
+    let mut updated = accepted.as_ref().clone();
+    let price = updated
+        .models
+        .get_mut("gpt-5")
+        .unwrap()
+        .price
+        .as_mut()
+        .unwrap();
+    price.revision = "generated-price-2".into();
+    price.input_nano_units_per_million = Some(19);
+    registry.register("openai".into(), updated)?;
+    let replacement = registry.resolve("openai/gpt-5")?;
+    assert_ne!(replacement.model(), selected.model());
+    assert!(replacement.model_price(selected.model()).is_err());
+    assert_eq!(quote.revision, "generated-price-1");
+    assert_eq!(quote.input_nano_units_per_million, None);
+    assert_eq!(
+        replacement
+            .model_price(replacement.model())?
+            .unwrap()
+            .revision,
+        "generated-price-2"
+    );
+    assert!(transport.sent.lock().expect("fixture").is_empty());
+    Ok(())
+}
+
+#[test]
 fn public_catalogue_preserves_model_facts_without_credential_resolution_or_disclosure() -> Result<()>
 {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -89,6 +194,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         models: BTreeMap::from([(
             "m".into(),
             ModelSpec {
+                price: None,
                 tool_profile: None,
                 thinking_levels: false,
                 max_context_tokens: None,
@@ -142,6 +248,7 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     openai.models.insert(
         "gpt-5".into(),
         ModelSpec {
+            price: None,
             tool_profile: None,
             thinking_levels: false,
             max_context_tokens: None,
@@ -185,7 +292,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
         assert!(serde_json::from_value::<Model>(old).is_err());
         let (provider_id, name) = selection.split_once('/').unwrap();
         let mut config = registry.catalog()[provider_id].as_ref().clone();
-        let selected = config.models[name];
+        let selected = config.models[name].clone();
         config.models.insert("unrelated-model".into(), selected);
         registry.register(provider_id.into(), config.clone())?;
         assert_eq!(registry.resolve(selection)?.model(), provider.model());

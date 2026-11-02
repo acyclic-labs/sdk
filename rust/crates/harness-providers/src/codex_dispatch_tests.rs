@@ -267,6 +267,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
             models: BTreeMap::from([(
                 "gpt-5".into(),
                 ModelSpec {
+                    price: None,
                     tool_profile: None,
                     thinking_levels: false,
                     max_context_tokens: None,

@@ -23,10 +23,14 @@ impl ModelFeatures {
 }
 
 /// One model's exact configured capacity and declared input capabilities.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ModelSpec {
+    /// Publisher-selected immutable price for this exact provider/model.
+    /// Absence means unknown, never zero or a rate inferred from its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<acyclic_harness_core::executor::ModelPriceRecord>,
     /// Lab-native tool contracts for this exact model. Custom entries without
     /// a declared profile do not acquire one from their name or endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]

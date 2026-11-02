@@ -270,6 +270,7 @@ fn resolve(
             models: BTreeMap::from([(
                 "model".into(),
                 ModelSpec {
+                    price: None,
                     tool_profile: None,
                     thinking_levels: false,
                     max_context_tokens: None,

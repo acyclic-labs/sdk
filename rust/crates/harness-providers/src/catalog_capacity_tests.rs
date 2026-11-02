@@ -23,7 +23,7 @@ proptest! {
         let encoded = serde_json::to_vec(&document).unwrap();
         let replay = crate::catalog_document::parse(&encoded).unwrap();
         prop_assert_eq!(document.default_model, replay.default_model);
-        prop_assert_eq!(document.providers["fixture"].models["model"], replay.providers["fixture"].models["model"]);
+        prop_assert_eq!(&document.providers["fixture"].models["model"], &replay.providers["fixture"].models["model"]);
         value["fixture"]["models"]["model"]["capacity"]["context_tokens"] = serde_json::json!("invalid");
         let malformed = format!("{}{}", "\n".repeat(prefix_lines), serde_json::to_string(&value).unwrap());
         crate::catalog_document::assert_diagnostic(malformed.as_bytes(),
@@ -64,7 +64,7 @@ proptest! {
 fn catalog_default_and_provider_overrides_commit_together() -> Result<()> {
     let (_, script) = provider(Adapter::Responses, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
-    let original = registry.catalog()["openai"].models["gpt-5"];
+    let original = registry.catalog()["openai"].models["gpt-5"].clone();
     let mut spec = registry.catalog()["openai"].as_ref().clone();
     spec.models.get_mut("gpt-5").unwrap().capacity = ModelContextCapacity {
         context_tokens: 1234,
@@ -96,10 +96,10 @@ fn alloy_capacity(a: ModelContextCapacity, b: ModelContextCapacity) -> ModelCont
         script,
     );
     let mut spec = registry.catalog()["openai"].as_ref().clone();
-    let mut model = spec.models["gpt-5"];
+    let mut model = spec.models.remove("gpt-5").unwrap();
     model.capacity = a;
     spec.models.clear();
-    spec.models.insert("a".into(), model);
+    spec.models.insert("a".into(), model.clone());
     model.capacity = b;
     spec.models.insert("b".into(), model);
     registry.register("openai".into(), spec).unwrap();

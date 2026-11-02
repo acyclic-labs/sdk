@@ -300,6 +300,9 @@ impl ModelProvider for RecordedModel {
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.live.model_profile(model)
     }
+    fn model_price(&self, model: &Model) -> Result<Option<&crate::executor::ModelPriceRecord>> {
+        self.live.model_price(model)
+    }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
     }

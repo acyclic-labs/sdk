@@ -211,6 +211,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
         Ok(None)
     }
+    /// Borrows the immutable publisher price retained by this exact selection.
+    /// None means unknown. Selection and replay retain its original revision;
+    /// this query performs no lookup of current prices or provider accounts.
+    fn model_price(&self, _: &Model) -> Result<Option<&crate::executor::ModelPriceRecord>> {
+        Ok(None)
+    }
     /// The tool family the exact model selection was trained on. Stock turns
     /// offer the tools it maps under that family's declarations.
     fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {

@@ -30,6 +30,7 @@ fn parity(
             (
                 format!("model-{index}"),
                 ModelSpec {
+                    price: None,
                     tool_profile: None,
                     thinking_levels: false,
                     max_context_tokens: None,

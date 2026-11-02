@@ -301,6 +301,11 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
             Model::validate_identity(provider, name, "provider-v1")?;
         }
         model.capacity.validate()?;
+        if let Some(price) = &model.price {
+            price
+                .validate_for(provider, name)
+                .map_err(|cause| invalid(cause.to_string()))?;
+        }
         if model
             .max_context_tokens
             .is_some_and(|max| max < model.capacity.context_tokens)

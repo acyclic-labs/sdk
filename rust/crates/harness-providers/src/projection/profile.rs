@@ -169,9 +169,9 @@ mod tests {
         );
         let mut catalog = registry.catalog()["gemini"].as_ref().clone();
         // Alias support is a catalog fact, rather than a model-name heuristic.
-        let advertised = catalog.models["gemini-4-argon"];
+        let advertised = catalog.models["gemini-4-argon"].clone();
+        let mut unknown = serde_json::to_value(&advertised).unwrap();
         catalog.models.insert("opaque-alias".into(), advertised);
-        let mut unknown = serde_json::to_value(advertised).unwrap();
         unknown.as_object_mut().unwrap().remove("thinking_levels");
         catalog.models.insert(
             "gemini-future".into(),

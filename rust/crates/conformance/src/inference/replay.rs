@@ -400,6 +400,7 @@ impl Backend for Local {
         spec.models.insert(
             manifest.model.clone(),
             ModelSpec {
+                price: None,
                 tool_profile: None,
                 thinking_levels: false,
                 max_context_tokens: None,

@@ -664,6 +664,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         models: BTreeMap::from([(
             "org/model".into(),
             ModelSpec {
+                price: None,
                 tool_profile: None,
                 thinking_levels: false,
                 max_context_tokens: None,

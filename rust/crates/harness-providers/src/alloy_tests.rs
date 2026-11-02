@@ -75,6 +75,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     models: BTreeMap::from([(
                         "fixture".into(),
                         ModelSpec {
+                            price: None,
                             thinking_levels: false,
                             tool_profile: match *name {
                                 "anthropic" => {

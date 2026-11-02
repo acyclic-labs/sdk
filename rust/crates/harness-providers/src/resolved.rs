@@ -283,6 +283,17 @@ impl ModelProvider for ResolvedModel {
         self.validate(model)?;
         Ok(self.config.adapter)
     }
+    fn model_price(
+        &self,
+        model: &Model,
+    ) -> Result<Option<&acyclic_harness_core::executor::ModelPriceRecord>> {
+        self.validate(model)?;
+        Ok(self
+            .config
+            .models
+            .get(&model.name)
+            .and_then(|entry| entry.price.as_ref()))
+    }
 
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
