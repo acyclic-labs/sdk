@@ -42,6 +42,13 @@ test('PowerShell here-strings retain embedded child waits without consuming late
  assert.doesNotThrow(() => pollingSites('scripts/test-terminal-region-screen.ps1',
   readFileSync(new URL('./test-terminal-region-screen.ps1', import.meta.url), 'utf8')));
  assert.deepEqual(pollingSites(file, 'Write-Output "a`"b"; Write-Output \'it\'\'s here\''), []);
+ for (const comment of ['<# the producer\'s "buffer" #>', '<# Start-Sleep 1\n"ignored"\n#>']) {
+  assert.deepEqual(pollingSites(file, comment), []);
+  const source = comment + ' Start-Sleep -Seconds 1';
+  assert.deepEqual(pollingSites(file, source).filter(site => site.kind === 'timer-or-readiness').map(site => site.start),
+   [source.lastIndexOf('Sleep')]);
+ }
+ assert.throws(() => pollingSites(file, '<# unfinished'), /unterminated block comment/);
 });
 
 test('PowerShell casing preserves wait, loop and alias review', () => {

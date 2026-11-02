@@ -121,6 +121,8 @@ function nativeTokens(source, file) {
  const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
  const escapedIdentifiers = cFamily.test(file);
  const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
+ const blockOpen = powershell ? '<#' : '/*';
+ const blockClose = powershell ? '#>' : '*/';
  const wordPattern = escapedIdentifiers
   ? /^(?:[A-Za-z_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[A-Za-z0-9_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/
   : powershell ? /^`?[A-Za-z_$](?:`?[A-Za-z0-9_$])*/
@@ -140,12 +142,12 @@ function nativeTokens(source, file) {
   if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
   if (hashComments && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
-  if (slashComments && tail.startsWith('/*')) {
+  if ((slashComments || powershell) && tail.startsWith(blockOpen)) {
    let depth = 1;
    let end = at + 2;
    while (end < source.length && depth) {
-    if (rust && source.startsWith('/*', end)) { depth++; end += 2; }
-    else if (source.startsWith('*/', end)) { depth--; end += 2; }
+    if (rust && source.startsWith(blockOpen, end)) { depth++; end += 2; }
+    else if (source.startsWith(blockClose, end)) { depth--; end += 2; }
     else end++;
    }
    if (depth) throw malformed('unterminated block comment');
