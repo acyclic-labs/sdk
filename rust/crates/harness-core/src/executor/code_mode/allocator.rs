@@ -349,20 +349,27 @@ mod tests {
                 // Capture the actual engine encoding, including escaped and
                 // multi-byte text, rather than supplying a second JSON encoder.
                 let json: rquickjs::String = ctx.eval(
-                    r#"JSON.stringify({text:'β\\n'.repeat(1024), values:Array.from({length:32}, (_, i) => ({i}))})"#
+                    r#"JSON.stringify({text:'β\\n'.repeat(64), values:Array.from({length:4}, (_, i) => ({i}))})"#
                 ).unwrap();
                 let json = json.to_cstring().unwrap();
+                // Fund the source read in every case so the negative control
+                // reaches the allocation boundary rather than another budget.
+                assert!((json.len() as u64) < baseline + bytes);
                 let result = allocator.decode_result(json.as_str().as_bytes());
                 if cancelled {
                     assert!(result.is_err());
-                    assert!(matches!(allocator.failure().lock().unwrap().as_ref(),
+                    let failure = allocator.failure();
+                    let failure = failure.lock().unwrap();
+                    assert!(matches!(failure.as_ref(),
                         Some(crate::Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
                         })
-                    ));
+                    ), "{failure:?}");
                 } else if bytes == 1 {
                     assert!(result.is_err());
-                    assert!(matches!(allocator.failure().lock().unwrap().as_ref(),
+                    let failure = allocator.failure();
+                    let failure = failure.lock().unwrap();
+                    assert!(matches!(failure.as_ref(),
                         Some(crate::Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                                 acyclic_fs::WorkError::BudgetExceeded {
@@ -370,11 +377,11 @@ mod tests {
                                 }
                             ), ..
                         })
-                    ));
+                    ), "{failure:?}");
                 } else {
                     let result = result.unwrap();
-                    assert_eq!(result.value["text"].as_str().unwrap(), "β\\n".repeat(1024));
-                    assert_eq!(result.value["values"][31]["i"], 31);
+                    assert_eq!(result.value["text"].as_str().unwrap(), "β\\n".repeat(64));
+                    assert_eq!(result.value["values"][3]["i"], 3);
                     let retained = result.custody.as_ref().unwrap().bytes();
                     assert!(retained > 0);
                     assert_eq!(work.live_allocation_bytes(), baseline + retained);
