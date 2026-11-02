@@ -144,6 +144,8 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     // a structured producer-view seed. Those seeds additionally exercise the
     // original conflict's semantic admission below.
     check_resolution_roundtrip(data);
+    check_merge_file_roundtrip::<MergeDirectoryPlan>(data);
+    check_merge_file_roundtrip::<MergeConflictFile>(data);
     let Ok((conflict, bytes)) = serde_json::from_slice::<(crate::ConflictView, Vec<u8>)>(data)
     else {
         return;
@@ -153,6 +155,27 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     if let Ok(MergeResolution::Text(text)) = result {
         assert_eq!(conflict.kind, ConflictKind::Text);
         assert!(!crate::text_merge::has_conflict_markers(&text));
+    }
+}
+
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) {
+    if let Ok(decoded) = serde_json::from_slice::<T>(bytes) {
+        let canonical = serde_json::to_vec(&decoded).expect("serializable merge file");
+        let restored: T = serde_json::from_slice(&canonical).expect("canonical merge file");
+        assert_eq!(
+            canonical,
+            serde_json::to_vec(&restored).expect("restored merge file")
+        );
+        let mut document = serde_json::to_value(decoded).expect("merge file object");
+        for version in [0, 2, 255] {
+            document["version"] = version.into();
+            let future = serde_json::to_vec(&document).expect("unsupported merge file");
+            assert!(
+                serde_json::from_slice::<T>(&future).is_err(),
+                "unsupported merge file version accepted by the shipped decoder"
+            );
+        }
     }
 }
 

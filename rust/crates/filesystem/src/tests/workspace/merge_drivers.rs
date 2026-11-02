@@ -137,6 +137,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     );
     let root = directory.path().to_owned();
     let encoded = unbounded!(staging, read(&format!("{root}/plan.json"), 16384))?;
+    crate::workspace::check_merge_directory_resolution(&encoded);
     let document: MergeDirectoryPlan = serde_json::from_slice(&encoded)?;
     assert_eq!(document, *directory.plan());
     assert_eq!((document.base, document.ours, document.theirs), pins);
@@ -159,6 +160,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             read(&format!("{}.conflict.json", conflict_paths[path]), 16384)
         )?;
         let document: MergeConflictFile = serde_json::from_slice(&bytes)?;
+        crate::workspace::check_merge_directory_resolution(&bytes);
         assert_eq!(document.version, 1);
         assert_eq!(
             document.conflict.path.as_deref(),

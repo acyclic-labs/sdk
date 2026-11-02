@@ -1,4 +1,4 @@
-//! Raw user resolutions enter the same decoder as staged merge proposals.
+//! Raw resolutions and persisted merge files enter their shipped decoders.
 #![no_main]
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
