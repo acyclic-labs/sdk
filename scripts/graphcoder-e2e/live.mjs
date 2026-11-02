@@ -10,6 +10,7 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { withOwnedCase } from "./suite.mjs";
 import { publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
+import { toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
@@ -34,6 +35,9 @@ export function requireTools(hooks, names, expectedChildResult) {
   let child, consumed = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
+    if (hook.tool_response === undefined || hook.tool_response === null)
+      assert.fail(`step=admit completed ${hook.tool_name} result; recovery=${recovery}`);
+    toolOutcome(hook.tool_response, undefined, recovery);
     remaining.delete(hook.tool_name);
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
