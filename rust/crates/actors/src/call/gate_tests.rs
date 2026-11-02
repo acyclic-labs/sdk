@@ -6,7 +6,7 @@ use crate::{
     guest::{AlarmChange, Checkpoint, CodecIdentity, Effect, Subscription, Transition, Trigger},
     local::{PreparedPublish, Store},
 };
-use acyclic_stream::{CommitOutcome, MemoryStream, StreamProvider, StreamProviderExt as _};
+use acyclic_stream::{CommitOutcome, MemoryStream, StreamProviderExt as _};
 use std::{collections::BTreeMap, sync::Arc};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -137,15 +137,10 @@ async fn gate_decisions_share_the_original_actor_commit_and_caller_terminal() ->
         if winner == 0 {
             let dispatched = provider.head(target.clone()).await?;
             assert_eq!(dispatched.tail, 1);
-            assert_eq!(
-                dispatched
-                    .last
-                    .ok_or("missing final request")?
-                    .value
-                    .as_ref(),
-                b"final request"
-            );
-            assert_eq!(Some(receipt_id(&receipt)?), state.anchor);
+            let dispatched = dispatched.last.ok_or("missing final request")?;
+            assert_eq!(dispatched.value.as_ref(), b"final request");
+            assert_eq!(dispatched.commit_id, receipt_id(&receipt)?);
+            assert_eq!(Some(dispatched.commit_id), state.follow_request().preceding);
             let accepted = call.accept(
                 &Accepted {
                     executor: OwnedBytes::from(&b"target"[..]),
@@ -253,7 +248,10 @@ async fn cancellation_fences_a_prepared_gate_handoff_without_consuming_its_input
             assert_eq!(provider.head(target).await?.tail, 1);
         } else {
             assert!(matches!(outcome, CommitOutcome::Conflict(_)));
-            assert_eq!(store.load(&actor).await?.anchor, original.anchor);
+            assert_eq!(
+                store.load(&actor).await?.follow_request(),
+                original.follow_request()
+            );
             assert!(matches!(
                 provider.head(target).await,
                 Err(StreamError::NotFound)
