@@ -19,8 +19,12 @@ function streamSimple(model,context,options) {
 
 export default async function register(pi) {
  if(process.env.ACYCLIC_NATIVE_PROXY) {
-  const {provider,model,baseUrl,credential}=parseNativeProxy(process.env.ACYCLIC_NATIVE_PROXY);
+  const bootstrap=process.env.ACYCLIC_NATIVE_PROXY;
+  const {provider,model,baseUrl,credential}=parseNativeProxy(bootstrap);
   delete process.env.ACYCLIC_NATIVE_PROXY;
+  // The native event bus stays inside trusted host extensions. Only the
+  // coordination bridge receives this view; ordinary guest commands do not.
+  pi.events.on('acyclic:coordination-environment',env=>{env.ACYCLIC_NATIVE_PROXY=bootstrap;});
   const family={openai:'openai',anthropic:'anthropic',gemini:'google'}[provider];
   const constants={openai:'OPENAI_MODELS',anthropic:'ANTHROPIC_MODELS',google:'GOOGLE_MODELS'};
   const tables=await import('@earendil-works/pi-ai/providers/'+family+'.models');

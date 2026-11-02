@@ -177,7 +177,7 @@ export class McpClient {
 
   #stop(error) {
     if (this.#failure) return;
-    this.#failure = new Error(`step=serve native coordination: ${error instanceof Error ? error.message : String(error)}; recovery=${this.#recovery}`);
+    this.#failure = new Error(`step=serve native coordination: ${error instanceof Error ? error.message : String(error)}; recovery=${this.#recovery}`, {cause: error});
     clearImmediate(this.#scheduled);
     this.#scheduled = undefined;
     for (const entry of this.#pending.values()) {

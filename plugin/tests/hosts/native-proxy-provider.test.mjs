@@ -6,6 +6,7 @@ import {mkdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {createModels} from '@earendil-works/pi-ai/models';
+import {createEventBus} from '@earendil-works/pi-coding-agent';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
@@ -33,8 +34,14 @@ test('pinned Pi protocols authenticate exact models and preserve native HTTP ref
   for(const [provider,model,path,header,credential] of cells) {
    const live={provider,model,proxy};process.env.ACYCLIC_NATIVE_PROXY=JSON.stringify(live);
    let selected;
-   await register({registerProvider(value){assert.equal(selected,undefined);selected=value;}});
+   const events=createEventBus();
+   await register({events,registerProvider(value){assert.equal(selected,undefined);selected=value;}});
    assert.equal(process.env.ACYCLIC_NATIVE_PROXY,undefined,'the native shell must not inherit provider bootstrap credentials');
+   const bridgeEnv={...process.env};
+   events.emit('acyclic:coordination-environment',bridgeEnv);
+   assert.ok(bridgeEnv.ACYCLIC_NATIVE_PROXY===JSON.stringify(live),
+    'the trusted coordination bridge must retain the selected provider for managed children');
+   assert.equal(process.env.ACYCLIC_NATIVE_PROXY,undefined,'private bridge handoff must not restore the native shell credential');
    const models=createModels();models.setProvider(selected);
    const admitted=models.getModel(provider,model);
    assert.ok(admitted,'the model must come from the pinned native catalogue');
