@@ -320,6 +320,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             return Err(Error::Record("agent inbox subscription differs"));
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
+        let requested_spawn = match &wake {
+            Wake::Inbox {
+                sequence,
+                record: InboxRecord::Spawn(_),
+            } => Some(*sequence),
+            _ => None,
+        };
         let mut state = saved;
         if let Some(state) = state.as_mut() {
             // Overflowed input precedes this delivery; read it back first.
@@ -349,6 +356,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         let step = prepared.step();
         let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
         let mut effects = effects(request);
+        if let Some(sequence) = requested_spawn {
+            let intent = super::machine::requested_intent(sequence)?;
+            effects.push(Effect {
+                conditions: Vec::new(),
+                mutation: super::spawn_result::append(
+                    &path,
+                    sequence,
+                    step.state.spawn_outcome(&intent),
+                )?,
+            });
+        }
         let spawned: BTreeSet<_> = step
             .outs
             .iter()

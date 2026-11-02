@@ -16,12 +16,12 @@ use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
     guest::{Composer, Handler},
-    local::{Clock, Runtime, State, Store},
+    local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitRequest, FollowRequest, StreamError, StreamPath, StreamProvider, WhenAbsent,
 };
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -309,7 +309,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// What `parent`'s step did with the spawn named `intent` that its inbox
     /// record `sequence` requested: the outcome that step committed, never a
     /// guess from an earlier state, however many steps later it is asked.
-    /// Waits, on the parent's actor state stream, for that step to commit.
+    /// Follows the immutable outcome appended in that step's commit. Both
+    /// replay and observation use one record, independent of actor history.
     /// An intent not named by `sequence` is a conflict, refused before IO.
     pub async fn spawned(
         &self,
@@ -322,100 +323,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 "spawn intent differs from its inbox sequence",
             ));
         }
-        let actor = self.actor(parent)?;
-        let store = self.runtime.store();
-        let path = store.path(&actor).map_err(actor_error)?;
-        loop {
-            // Follow from the tail read before the load, so a step committing
-            // after the load is never missed.
-            let tail = match self.provider.tail(path.clone()).await {
-                Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
-                Err(error) => return Err(Error::Stream(error)),
-            };
-            let consumed = store
-                .load(&actor)
-                .await
-                .map_err(actor_error)?
-                .state()
-                .and_then(|state| state.cursor(INBOX))
-                .is_some_and(|cursor| cursor > sequence);
-            if consumed {
-                return self.applied(&path, sequence, intent).await;
-            }
-            let mut committed = acyclic_stream::records_only(
-                self.provider
-                    .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
-                    .await
-                    .map_err(Error::Stream)?,
-            );
-            match committed.next().await {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
-            }
-        }
-    }
-
-    /// The outcome of the spawn the step consuming inbox record `sequence`
-    /// applied, from the actor state history at `path`: the first state whose
-    /// inbox cursor passes `sequence` is that step's commit. History is append-only and
-    /// cursors only advance, so this is O(log history) reads.
-    async fn applied(
-        &self,
-        path: &StreamPath,
-        sequence: u64,
-        intent: &IntentId,
-    ) -> Result<SpawnOutcome, Error> {
-        let tail = self
-            .provider
-            .tail(path.clone())
-            .await
-            .map_err(Error::Stream)?;
-        let (mut low, mut high) = (0, tail);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let passed = self
-                .committed(path, middle)
-                .await?
-                .cursor(INBOX)
-                .is_some_and(|cursor| cursor > sequence);
-            if passed {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        if low == tail {
-            return Err(Error::Record("no committed step consumed the spawn"));
-        }
-        let state = self.committed(path, low).await?;
-        let checkpoint = state.checkpoint().ok_or(Error::Record(
-            "the step consuming the spawn has no checkpoint",
-        ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
-    }
-
-    /// Actor state record `sequence` of the state stream at `path`.
-    async fn committed(&self, path: &StreamPath, sequence: u64) -> Result<State, Error> {
-        let mut records = self
-            .provider
-            .read(ReadRequest {
-                key: None,
-                path: path.clone(),
-                from: sequence,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
+        let mut request = FollowRequest::new(super::spawn_result::path(parent, sequence)?, 0);
+        request.when_absent = WhenAbsent::Wait;
+        let mut records = acyclic_stream::records_only(
+            self.provider.follow(request).await.map_err(Error::Stream)?,
+        );
         let record = records
             .try_next()
             .await
             .map_err(Error::Stream)?
-            .filter(|record| record.sequence == sequence)
-            .ok_or(Error::Record("actor state history is incomplete"))?;
-        State::decode(&record.value).map_err(actor_error)
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        if record.sequence != 0 {
+            return Err(Error::Record("spawn outcome is not the first record"));
+        }
+        super::spawn_result::decode(parent, sequence, &record.value)
     }
 
     /// Prepares, without IO, the one commit creating root agent

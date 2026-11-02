@@ -367,6 +367,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         };
         tokio::pin!(waiting);
         assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
+        let spawn = acyclic_harness_client::AgentCommand::Spawn {
+            parent: harness.agents.get().unwrap().root().clone(),
+            id: crate::agent::IntentId::try_from("pending-spawn").map_err(agent)?,
+            brief: crate::model::ModelContent::Text("work".into()),
+            role: "worker".into(),
+        };
+        let spawning = connection.execute(&spawn);
+        tokio::pin!(spawning);
+        assert!(futures::poll!(&mut spawning).is_pending(), "spawn outcome waits for its actor step");
         let usage_result = {
             let advancing = usage.advance();
             tokio::pin!(advancing);
@@ -379,6 +388,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
         let observed = waiting.await;
         assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
+        assert!(matches!(spawning.await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "spawn outcome lost the runtime cause");
         let hosted = harness.agents.get().unwrap();
         assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
         assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");

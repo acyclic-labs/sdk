@@ -42,6 +42,7 @@ mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
 mod slots;
+mod spawn_result;
 mod targets;
 pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,

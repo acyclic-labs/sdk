@@ -437,6 +437,7 @@ struct Evidence {
     unknown_first: std::sync::atomic::AtomicBool,
     presented: std::sync::Mutex<Vec<Attestation>>,
     published: std::sync::atomic::AtomicUsize,
+    observations: [std::sync::atomic::AtomicUsize; 3],
 }
 
 impl AttestedProvider for Evidence {
@@ -472,6 +473,7 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.observations[0].fetch_add(1, Ordering::SeqCst);
         self.inner.heads(request).await
     }
     fn write(
@@ -521,12 +523,14 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        self.observations[1].fetch_add(1, Ordering::SeqCst);
         self.inner.read(request).await
     }
     async fn follow(
         &self,
         request: acyclic_stream::FollowRequest,
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.observations[2].fetch_add(1, Ordering::SeqCst);
         self.inner.follow(request).await
     }
 
@@ -540,6 +544,66 @@ impl StreamProvider for Evidence {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for Evidence {}
+
+#[tokio::test]
+async fn spawn_observation_uses_one_follow_independent_of_actor_history() -> Result {
+    let provider = Arc::new(Evidence::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        super::runtime::Spawner(1.into()),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("root"), super::adopted(id(1))).await?;
+    let request = InboxRecord::Spawn(SpawnRequest {
+        profile: AgentProfilePin {
+            role: "worker".into(),
+            digest: [0; 32],
+            context: SpawnContext::Fork,
+        },
+        history: None,
+        by: super::user(),
+        id: intent("spawn"),
+        brief: Box::new(super::driver::file("task")?),
+    });
+    let Delivered::Committed { inbox } = host.send(&root, &super::user(), &request).await? else {
+        return Err("spawn request was not committed".into());
+    };
+    let (spawn, child) = requested_child(&root, inbox)?;
+    let calls = || {
+        provider
+            .observations
+            .each_ref()
+            .map(|count| count.load(Ordering::SeqCst))
+    };
+    for history in [0, 32] {
+        for n in 0..history {
+            host.send(&root, &super::user(), &super::cancel(&format!("later-{n}")))
+                .await?;
+        }
+        let failures = host.runtime().drain().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let before = calls();
+        assert_eq!(
+            host.spawned(&root, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        let after = calls();
+        assert_eq!(
+            std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
+            [0, 0, 1]
+        );
+        assert!(matches!(
+            host.spawned(&root, inbox, &intent("unrelated")).await,
+            Err(acyclic_harness_core::agent::Error::Conflict(_))
+        ));
+        assert_eq!(calls(), after, "a conflicting intent must perform no IO");
+    }
+    Ok(())
+}
 
 /// Attests each digest with itself, recording every request for evidence.
 #[derive(Default)]
