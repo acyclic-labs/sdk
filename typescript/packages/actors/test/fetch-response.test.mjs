@@ -119,6 +119,36 @@ test("queued body failure preserves the original response cause", async () => {
   }
 });
 
+test("response failure survives a throwing close callback", async () => {
+  for (const boundary of ["body", "consumer", "terminal"]) {
+    const terminal = Promise.withResolvers();
+    const failure = new Error(`${boundary} producer failed`);
+    const cleanupFailure = new Error("host close failed");
+    let controller, cancellation, closes = 0;
+    const body = new ReadableStream({
+      start(source) { controller = source; },
+      cancel(cause) { cancellation = cause; },
+    });
+    const response = openGuestResponse({
+      status:200,headers:new Headers(),body,trailers:terminal.promise,
+      close() { closes++; throw cleanupFailure; },
+    });
+    const frames = response.frames[Symbol.asyncIterator]();
+    const sameCause = cause => cause === failure;
+    const pending = assert.rejects(frames.next(),sameCause);
+    let thrown;
+    if (boundary === "body") controller.error(failure);
+    else if (boundary === "terminal") terminal.reject(failure);
+    else thrown = assert.rejects(frames.throw(failure),sameCause);
+    await Promise.all([pending,thrown]);
+    assert.equal(closes,1);
+    assert.equal(body.locked,false);
+    if (boundary !== "body") assert.equal(cancellation,failure);
+    response.close();
+    assert.equal(closes,1);
+  }
+});
+
 test("terminal rejection before consumption closes the original producer once", async () => {
   const terminal = Promise.withResolvers(), cancelled = Promise.withResolvers();
   const failure = new Error("terminal failed before consumption");
