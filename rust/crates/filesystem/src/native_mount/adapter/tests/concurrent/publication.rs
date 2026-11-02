@@ -33,18 +33,34 @@ impl ViewObserver for ReentrantPublication {
 
 #[test]
 fn publication_rebase_notifies_after_unlocking() -> Result<(), Box<dyn std::error::Error>> {
-    let source = conflicted_source()?;
-    let observer = observe_publication(&source)?;
-    source.sync()?;
-    assert!(observer.completed.load(Ordering::Acquire));
-    assert!(source.lookup(&native_test_path("remote"))?.is_some());
-    assert!(source.lookup(&native_test_path("local"))?.is_some());
+    for concurrency in [
+        crate::model::ConcurrencyMode::Optimistic,
+        crate::model::ConcurrencyMode::SerializedAuthority,
+    ] {
+        let source = conflicted_source(concurrency)?;
+        let observer = observe_publication(&source)?;
+        let result = source.sync();
+        if concurrency == crate::model::ConcurrencyMode::Optimistic {
+            assert!(matches!(result, Err(MountSourceError::Stale)));
+            assert!(!observer.completed.load(Ordering::Acquire));
+        } else {
+            result?;
+            assert!(observer.completed.load(Ordering::Acquire));
+            assert!(source.lookup(&native_test_path("remote"))?.is_some());
+            assert!(source.lookup(&native_test_path("local"))?.is_some());
+        }
+    }
     Ok(())
 }
 
-fn conflicted_source() -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    let (source, writer) = sources(
-        FilesystemProfile::Portable,
+fn conflicted_source(
+    concurrency: crate::model::ConcurrencyMode,
+) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
+    let (source, writer) = configured_sources(
+        VolumeConfig {
+            concurrency,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        },
         ConsistencyMode::TrackingSafe,
         MountPublication::Manual,
     )?;
@@ -79,7 +95,7 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::atomic::AtomicUsize;
     for abandon in [false, true] {
-        let source = conflicted_source()?;
+        let source = conflicted_source(crate::model::ConcurrencyMode::SerializedAuthority)?;
         let observer = observe_publication(&source)?;
         let entered = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&entered);
