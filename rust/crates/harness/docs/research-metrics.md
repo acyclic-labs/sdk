@@ -23,10 +23,18 @@ unreferenced staged file cannot become a completed usage record.
 projection into Arrow IPC streams or uncompressed Parquet. It adds no work to
 execution. `journal_page` replays 32 original records once, loads only referenced
 terminal usage files, and returns independent table batches plus an exclusive
-cursor. It does not load model requests, conversation history or tool payloads.
+cursor. Model rows reconstruct one original admitted request for its replay key;
+the page does not load conversation history or tool payloads.
 `inbox`, `conversation` and `status` project one original agent record each.
 
-Schema v1 has six tables:
+Schema v2 has six tables. `metrics::VERSION`, the row `version` and Arrow
+`acyclic.metrics.version` metadata identify this layout independently of the
+usage JSONL and cache-observation formats. Version 2 includes scope ownership
+and nullable agent ownership. Union shards only when their version and table
+match. Earlier saved layouts must be reprojected from original sources before
+combining them with v2; the library does not migrate shards or fill missing
+ownership fields with null. Arrow, Parquet and PROV writers refuse a foreign
+layout before emitting bytes.
 
 | Table | Original observations |
 | --- | --- |
@@ -37,7 +45,7 @@ Schema v1 has six tables:
 | `edges` | Forks, messages, notices and child completion |
 | `outcomes` | Settled turn outcome and terminal agent status |
 
-Every row retains `version`, `agent_path`, `operation_id`, `source_stream`,
+Every row retains `version`, nullable `agent_path` and `scope_path`, `operation_id`, `source_stream`,
 `sequence` and `kind`. Admissions retain identity with null measurements;
 completion rows retain the original measurements. Calls join on agent,
 operation, step, purpose and request digest; tool calls join on agent, operation,
@@ -236,8 +244,10 @@ requests, publication commits, durability barriers, flushes or waits.
 
 Call outcomes reuse that same original-envelope encoder. Supply the existing
 Actors call reader and `CallPath`, plus its original terminal record, or the
-original observed session-fence record when no terminal exists. The projection
-checks the selected caller/path and terminal sequence/commit binding; it does
+first session-fence record (sequence zero) when no terminal exists. The projection
+checks the selected caller/path, terminal sequence/commit binding, and first
+fence position. A later append to the same fence path cannot supply a new
+settlement commit or timestamp. It does
 not replay the protocol or read its journal again. `Journal::receipt_ref` is the
 shared borrowed assembly boundary, also used by the owned receipt API; projection
 does not copy outcome text or result bytes. The caller remains responsible

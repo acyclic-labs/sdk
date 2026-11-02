@@ -1,4 +1,4 @@
-//! Offline schema-v1 observations over the committed journal and agent records.
+//! Offline versioned observations over the committed journal and agent records.
 //!
 //! Admissions and completions are separate rows, identified by source stream
 //! and sequence. A call joins on agent, operation, step, purpose and request
@@ -8,7 +8,10 @@
 //!
 //! Each page is an independent shard. Keeping a single writer open across an
 //! entire run would retain its growing file index; these functions retain only
-//! one page. Consumers union shards and join the six tables offline. Export is
+//! one page. Consumers union shards of the same schema version and table, then
+//! join the six tables offline. Earlier layouts must be reprojected from their
+//! original sources; positional or null-filled unions cannot certify this
+//! layout's source and nullable ownership contracts. Export is
 //! an explicit library call and adds no work to execution or agent delivery.
 
 use super::{ExecutionEvent, ExecutionJournal, ModelPriceRecord, OperationId};
@@ -16,6 +19,10 @@ use crate::{Error, Result, agent};
 pub use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
+
+/// Arrow/Parquet layout identity, independent of usage/cache producer versions.
+/// Version 2 admits scope-owned observations with nullable agent ownership.
+pub const VERSION: u32 = 2;
 
 /// Streaming W3C PROV-O projection over these same original observations.
 #[cfg(feature = "provenance-export")]
@@ -60,7 +67,7 @@ pub mod placement;
 #[cfg(feature = "research")]
 pub mod calls;
 
-/// The six tables in metrics schema v1.
+/// The six tables in the current metrics schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
     /// Adoption and role provenance.
@@ -221,7 +228,7 @@ impl Table {
         Arc::new(Schema::new_with_metadata(
             fields,
             HashMap::from([
-                ("acyclic.metrics.version".into(), "1".into()),
+                ("acyclic.metrics.version".into(), VERSION.to_string()),
                 ("acyclic.metrics.table".into(), self.name().into()),
             ]),
         ))
@@ -234,6 +241,17 @@ pub struct Batch {
     pub table: Table,
     /// Typed columns. Nullable values are unknown, never imputed zeroes.
     pub data: RecordBatch,
+}
+
+impl Batch {
+    fn validate_schema(&self) -> Result<()> {
+        if self.data.schema() != self.table.schema() {
+            return Err(export_error(format_args!(
+                "batch schema differs from metrics v{VERSION} table; recovery: reproject the original source with the current metrics schema before writing"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// One bounded visit of a turn's original journal.
@@ -341,7 +359,7 @@ impl<'a> Row<'a> {
 
     fn base(operation: Option<OperationId>, sequence: u64, stream: &'a str, kind: &str) -> Self {
         Self {
-            version: 1,
+            version: VERSION,
             operation_id: operation.map(|id| id.to_string()),
             source_stream: stream,
             sequence,
@@ -805,9 +823,7 @@ pub enum Format {
 /// Writes and closes one page. Publication and durability belong to the caller's
 /// volume commit. No fsync, retry, remote call or wait is introduced here.
 pub fn write<W: Write + Send>(batch: &Batch, writer: W, format: Format) -> Result<()> {
-    if batch.data.schema() != batch.table.schema() {
-        return Err(export_error("batch schema differs from metrics v1 table"));
-    }
+    batch.validate_schema()?;
     match format {
         Format::Arrow => {
             let mut writer = arrow_ipc::writer::StreamWriter::try_new(writer, &batch.data.schema())
@@ -914,21 +930,35 @@ mod tests {
                         "generated-column-identity"
                     );
                 }
-                let foreign = Batch {
-                    table,
-                    data: RecordBatch::try_new(
-                        Arc::new(Schema::new(original.data.schema().fields().clone())),
-                        original.data.columns().to_vec(),
-                    )
-                    .map_err(export_error)?,
-                };
-                let mut bytes = Vec::new();
-                assert!(write(&foreign, &mut bytes, format).is_err());
-                assert!(bytes.is_empty(), "schema refusal must precede publication");
-                #[cfg(feature = "provenance-export")]
-                {
-                    assert!(provenance::write(&foreign, &mut bytes).is_err());
-                    assert!(bytes.is_empty());
+                // A saved earlier layout cannot acquire the new ownership
+                // contract by copying its columns or erasing its version.
+                for saved_version in [None, Some("1")] {
+                    let mut metadata = original.data.schema().metadata().clone();
+                    match saved_version {
+                        Some(version) => {
+                            metadata.insert("acyclic.metrics.version".into(), version.into());
+                        }
+                        None => metadata.clear(),
+                    }
+                    let foreign = Batch {
+                        table,
+                        data: RecordBatch::try_new(
+                            Arc::new(Schema::new_with_metadata(
+                                original.data.schema().fields().clone(),
+                                metadata,
+                            )),
+                            original.data.columns().to_vec(),
+                        )
+                        .map_err(export_error)?,
+                    };
+                    let mut bytes = Vec::new();
+                    assert!(write(&foreign, &mut bytes, format).is_err());
+                    assert!(bytes.is_empty(), "schema refusal must precede publication");
+                    #[cfg(feature = "provenance-export")]
+                    {
+                        assert!(provenance::write(&foreign, &mut bytes).is_err());
+                        assert!(bytes.is_empty());
+                    }
                 }
             }
             for format in [Format::Arrow, Format::Parquet] {

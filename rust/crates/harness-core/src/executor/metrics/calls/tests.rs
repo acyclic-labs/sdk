@@ -227,6 +227,16 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
     let original_fence = at(&provider, &fence, 0).await?;
     journal.fenced("original session ended");
     let row = project(source(), &journal, &call, &fence, &original_fence)?;
+    // Existence of the first record closed the session. A later append to
+    // that same path is not another observation of the original settlement.
+    Stream::new(provider.clone(), fence.as_str())
+        .map_err(export_error)?
+        .append("later", IdempotencyKey::unique())
+        .await
+        .map_err(export_error)?;
+    let later_fence = at(&provider, &fence, 1).await?;
+    assert_ne!(later_fence.commit_id, original_fence.commit_id);
+    assert!(project(source(), &journal, &call, &fence, &later_fence).is_err());
     assert_eq!(text(&row, "outcome"), "indeterminate");
     assert_eq!(text(&row, "coverage"), "original_call_fence");
     assert_eq!(text(&row, "fence"), fence.as_str());
