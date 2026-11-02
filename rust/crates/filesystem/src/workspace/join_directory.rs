@@ -280,8 +280,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// Base filename for one original conflict key. Text proposals use this
     /// path; non-text descriptions and resolutions append `.conflict.json`
     /// and `.resolve.json`. The descriptor retains the original source path.
-    /// Fixed-width names fit every accepted source component and distinguish
-    /// separate record and binding conflicts at the same source path.
+    /// Fixed-width names do not grow with the source component and distinguish
+    /// separate record and binding conflicts at the same source path. The
+    /// staging volume must admit these names and their resolution suffixes.
     pub fn conflict_file_path(&self, key: &ConflictKey) -> Result<String, WorkspaceError> {
         Ok(format!(
             "{}/conflicts/{}",
@@ -515,14 +516,6 @@ async fn write_file<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'sta
     bytes: Vec<u8>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkspaceError> {
-    let parent = path
-        .rsplit_once('/')
-        .ok_or_else(|| WorkspaceError::path(path))?
-        .0;
-    transaction
-        .create_dir_all(parent, WorkBudget::UNBOUNDED, cancellation)
-        .await
-        .map_err(|failure| failure.error)?;
     transaction
         .write_if(
             path,
