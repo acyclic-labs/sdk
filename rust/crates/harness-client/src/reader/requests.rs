@@ -1,6 +1,6 @@
 //! One owner for live request identity, operation lookup and prefetch credit.
 
-use super::{InFlight, OpKey, Priority};
+use super::{InFlight, OpKey, Priority, demand::Demands};
 use std::{collections::BTreeMap, ops::RangeBounds};
 
 #[derive(Default)]
@@ -23,16 +23,15 @@ impl Requests {
         self.prefetch
     }
 
-    pub(super) fn contains_key(&self, key: &OpKey) -> bool {
-        self.keys.contains_key(key)
-    }
-
     pub(super) fn first_key_value(&self) -> Option<(&u64, &InFlight)> {
         self.by_id.first_key_value()
     }
 
-    pub(super) fn get_mut(&mut self, id: &u64) -> Option<&mut InFlight> {
-        self.by_id.get_mut(id)
+    pub(super) fn dispatch(&mut self, id: &u64, demand: &mut Demands, next_ticket: &mut u64) {
+        if let Some(flight) = self.by_id.get_mut(id) {
+            flight.paging = demand.dispatch(&flight.key, *next_ticket);
+            *next_ticket += 1;
+        }
     }
 
     pub(super) fn insert(&mut self, id: u64, flight: InFlight) {
@@ -41,7 +40,7 @@ impl Requests {
         self.by_id.insert(id, flight);
     }
 
-    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) {
+    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> bool {
         if let Some(id) = self.keys.get(key) {
             let flight = self
                 .by_id
@@ -52,6 +51,9 @@ impl Requests {
                 flight.priority = priority;
                 self.prefetch += usize::from(priority == Priority::Prefetch);
             }
+            true
+        } else {
+            false
         }
     }
 
