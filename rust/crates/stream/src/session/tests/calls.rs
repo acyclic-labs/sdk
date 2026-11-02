@@ -187,10 +187,10 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         Err(StreamError::AccessDenied)
     );
     futures::pin_mut!(refused);
-    assert!(matches!(
-        refused.next().await,
+    assert_eq!(
+        refused.next().await.map(|reply| reply.map(|_| ())),
         Some(Err(StreamError::AccessDenied))
-    ));
+    );
     assert!(dispatches.try_recv().is_err());
     drop(denied);
 

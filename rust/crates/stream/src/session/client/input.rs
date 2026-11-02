@@ -216,7 +216,9 @@ impl State {
     }
     pub(super) fn cancel(&self) {
         self.close(StreamError::Unavailable);
-        self.pool.cancel_interest(self.id, &self.progress);
+        // Withdraw the upload without erasing an earlier typed reply failure
+        // already queued by the same route. The reply cursor owns its fence.
+        let _ = self.pool.removed.send(self.id);
     }
     pub(super) fn release(&self) {
         let last = {

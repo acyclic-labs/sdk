@@ -915,7 +915,8 @@ impl Drop for Cursor {
         self.receiver.close();
         if let Some(input) = &self.input {
             if !self.progress.ended() {
-                input.cancel();
+                input.close(StreamError::Unavailable);
+                self.client.pool.cancel_interest(self.id, &self.progress);
             }
             input.release();
         } else {
