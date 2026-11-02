@@ -51,7 +51,7 @@ use windows_sys::Win32::System::Threading::{
 mod input;
 mod wait;
 use input::Input;
-use wait::ExitWait;
+use wait::{ExitWait, Producer};
 
 /// The environment variable that makes a process a custodian.
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
@@ -75,6 +75,8 @@ const MEMBER_EXITED: usize = usize::MAX - 1;
 const OPENED: usize = usize::MAX - 3;
 /// The kernel completion key delivered when the original input thread exits.
 const INPUT_EXITED: usize = usize::MAX - 4;
+/// The kernel completion key for the existing admission service's terminal.
+const ADMISSION_EXITED: usize = usize::MAX - 5;
 
 /// The owner's handle on its running custodian.
 pub(super) struct Custodian {
@@ -726,7 +728,13 @@ fn run(response: &mut Response) -> io::Result<()> {
     )?;
     let admission = super::custodian_admission::Server::bind()?;
     let endpoint = admission.endpoint.clone();
-    let requests = admission.start(port)?;
+    let (mut requests, thread) = admission.start(port)?;
+    // SAFETY: the original port lives through this existing producer's dequeue.
+    let mut admission = Producer::new(
+        thread,
+        unsafe { BorrowedHandle::borrow_raw(port) },
+        ADMISSION_EXITED,
+    )?;
     let mut opened = Input::start(input, port)?;
     let mut output = io::stdout();
     // A partial readiness write must never be followed by a failure frame.
@@ -782,7 +790,7 @@ fn run(response: &mut Response) -> io::Result<()> {
                 None
             }
             super::custodian_admission::ADMIT => {
-                let request = requests.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
+                let request = requests.try_recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
                 // Only a holder of the tree's secret may name its members.
                 let admitted = match state.trees.get(&request.tree) {
                     Some(tree) if admission::matches(&tree.secret, &request.secret) => {
@@ -791,6 +799,13 @@ fn run(response: &mut Response) -> io::Result<()> {
                     _ => Ok(false),
                 };
                 request.complete(admitted)
+            }
+            ADMISSION_EXITED => {
+                admission.finish()?;
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "process custodian admission producer exited",
+                ));
             }
             MEMBER_EXITED => state.members.release(message).inspect(|id| {
                 if let Some(tree) = state.trees.get_mut(id) {
@@ -1100,6 +1115,106 @@ mod handoff_tests {
     use windows_sys::Win32::System::Pipes::{
         GetNamedPipeInfo, PIPE_NOWAIT, SetNamedPipeHandleState,
     };
+
+    #[test]
+    fn admission_terminal_survives_failed_post_and_full_credit_loss() -> io::Result<()> {
+        use std::io::Read as _;
+        use std::net::TcpStream;
+
+        for failed_post in [true, false] {
+            // SAFETY: one original completion port, owned through dequeue.
+            let port =
+                unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+            if port.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful creation transferred this owned handle.
+            let port = unsafe { OwnedHandle::from_raw_handle(port) };
+            let server = admission::Server::bind()?;
+            let address = server.endpoint.clone();
+            let (requests, thread) = server.start(if failed_post {
+                std::ptr::null_mut()
+            } else {
+                port.as_raw_handle()
+            })?;
+            let mut producer = wait::Producer::new(thread, port.as_handle(), ADMISSION_EXITED)?;
+            let bytes = [
+                7_u32.to_le_bytes().as_slice(),
+                9_u64.to_le_bytes().as_slice(),
+                &[13; 16],
+            ]
+            .concat();
+            let mut first = TcpStream::connect(&address)?;
+            first.write_all(&bytes)?;
+            let mut requests = Some(requests);
+            let mut second = None;
+            if !failed_post {
+                let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
+                // SAFETY: the original port and writable packet outputs.
+                // The first real post proves its request occupies the sole
+                // credit; no handler or reply has consumed that request.
+                if unsafe {
+                    GetQueuedCompletionStatus(
+                        port.as_raw_handle(),
+                        &mut message,
+                        &mut key,
+                        &mut context,
+                        INFINITE,
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                assert_eq!((key, message), (admission::ADMIT, 0));
+                assert_eq!(requests.as_ref().unwrap().len(), 1);
+                let mut waiting = TcpStream::connect(&address)?;
+                waiting.write_all(&bytes)?;
+                second = Some(waiting);
+                // The same async dispatch must fail on receiver loss even
+                // when its original request credit is occupied.
+                drop(requests.take());
+            }
+            let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
+            // SAFETY: this same original producer's kernel exit packet does
+            // not depend on its own failed PostQueuedCompletionStatus.
+            if unsafe {
+                GetQueuedCompletionStatus(
+                    port.as_raw_handle(),
+                    &mut message,
+                    &mut key,
+                    &mut context,
+                    INFINITE,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            assert_eq!((key, message), (ADMISSION_EXITED, 0));
+            let error = producer.finish().unwrap_err();
+            if failed_post {
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_HANDLE.cast_signed())
+                );
+                let original = requests.as_mut().unwrap().try_recv().unwrap();
+                assert_eq!(
+                    (original.pid, original.tree, original.secret),
+                    (7, 9, [13; 16])
+                );
+            } else {
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                assert_eq!(error.raw_os_error(), None);
+            }
+            // Dropping a queued reply may send a refusal before service exit.
+            // Neither that refusal nor EOF may become an admission ACK.
+            for mut peer in [Some(first), second].into_iter().flatten() {
+                let mut reply = [1];
+                let count = peer.read(&mut reply)?;
+                assert!(count == 0 || reply == [0]);
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn failure_response_does_not_wait_for_diagnostic_pipe_credit() -> io::Result<()> {

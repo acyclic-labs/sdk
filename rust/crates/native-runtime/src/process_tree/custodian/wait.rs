@@ -1,8 +1,8 @@
-//! One physical process exit delivered by the kernel to the original port.
+//! One native lifetime's exit delivered by the kernel to the original port.
 //!
 //! Custody retains each association until its packet is dequeued. Unlike a
 //! cancellable readiness subscription, there is no callback, user buffer or
-//! user-mode completion post between the process exit and that packet. The
+//! user-mode completion post between the process or thread exit and that packet. The
 //! key and message are integer identities, never dereferenced pointers.
 //!
 //! Native contracts: <https://learn.microsoft.com/en-us/windows/win32/devnotes/ntcreatewaitcompletionpacket>
@@ -10,7 +10,9 @@
 
 use std::ffi::c_void;
 use std::io;
-use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{
     GENERIC_READ, GENERIC_WRITE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
@@ -96,7 +98,7 @@ pub(super) struct ExitWait {
 impl ExitWait {
     pub(super) fn new(
         port: BorrowedHandle<'_>,
-        process: BorrowedHandle<'_>,
+        target: BorrowedHandle<'_>,
         key: usize,
         message: u32,
     ) -> io::Result<Self> {
@@ -119,7 +121,7 @@ impl ExitWait {
             (api.associate)(
                 packet.as_raw_handle(),
                 port.as_raw_handle(),
-                process.as_raw_handle(),
+                target.as_raw_handle(),
                 std::ptr::without_provenance_mut(key),
                 std::ptr::null_mut(),
                 0,
@@ -131,10 +133,40 @@ impl ExitWait {
     }
 }
 
+/// An existing custodian producer thread and the kernel packet for its exact
+/// terminal. Its result never depends on that producer posting its own failure.
+pub(super) struct Producer {
+    thread: Option<std::thread::JoinHandle<io::Result<()>>>,
+    _exited: ExitWait,
+}
+
+impl Producer {
+    pub(super) fn new(
+        thread: std::thread::JoinHandle<io::Result<()>>,
+        port: BorrowedHandle<'_>,
+        key: usize,
+    ) -> io::Result<Self> {
+        let exited = ExitWait::new(port, thread.as_handle(), key, 0)?;
+        Ok(Self {
+            thread: Some(thread),
+            _exited: exited,
+        })
+    }
+
+    /// Call only after this producer's kernel exit packet. Its thread has
+    /// already exited, so joining cannot wait on queue credit or client I/O.
+    pub(super) fn finish(&mut self) -> io::Result<()> {
+        self.thread
+            .take()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .join()
+            .map_err(|_| io::Error::other("process custodian producer panicked"))?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::io::AsHandle as _;
     use windows_sys::Win32::Foundation::{
         ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
     };
