@@ -290,6 +290,26 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
         &mut None,
     )?;
     let child = issuer.attenuate(&root, "child", &Capabilities::new(["tool:call:read"]))?;
+    // The same signed chain crosses JSON and bearer/environment boundaries with
+    // one spelling. Neither text decoding nor deserialization admits authority.
+    let mut json = serde_json::to_value(&child).map_err(unauthorized)?;
+    let encoded = acyclic_auth::credential::capability_text(&child.workload);
+    assert_eq!(json["workload"], encoded);
+    let child: Scope = serde_json::from_value(json.clone()).map_err(unauthorized)?;
+    assert_eq!(
+        acyclic_auth::credential::capability_from_text(&encoded).map_err(unauthorized)?,
+        child.workload
+    );
+    for rejected in [
+        format!("{encoded}="),
+        format!("/{encoded}"),
+        format!("{encoded}\n"),
+    ] {
+        json["workload"] = rejected.into();
+        assert!(serde_json::from_value::<Scope>(json.clone()).is_err());
+    }
+    json["workload"] = serde_json::json!([0, 255]);
+    assert!(serde_json::from_value::<Scope>(json.clone()).is_err());
     let verifier = issuer.verifier(&mut None)?;
     let verified = verify(&verifier, &issuer.audience, &child, now(), &mut None)?;
     assert_eq!(verified.block_ids().len(), 2);
@@ -298,6 +318,8 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
     assert!(verifier.verify(&forged, &mut None).is_err());
     let mut damaged = child.clone();
     damaged.workload[20] ^= 1;
+    json["workload"] = acyclic_auth::credential::capability_text(&damaged.workload).into();
+    let damaged: Scope = serde_json::from_value(json).map_err(unauthorized)?;
     assert!(verifier.verify(&damaged, &mut None).is_err());
     assert!(
         verify(
@@ -344,6 +366,8 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
         .map_err(unauthorized)?;
     retain(&mut direct, &chain, &mut None)?;
     verifier.verify(&direct, &mut None)?;
+    issuer.revoke_workload(&child)?;
+    assert!(verifier.verify(&child, &mut None).is_err());
     Ok(())
 }
 

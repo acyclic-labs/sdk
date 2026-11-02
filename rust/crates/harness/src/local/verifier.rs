@@ -11,7 +11,6 @@ use crate::{
     hosting::VerifiedCaller,
 };
 use acyclic_stream::UnixMillisClock;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::future::{self, BoxFuture};
 use std::sync::Arc;
 
@@ -120,7 +119,7 @@ impl Verifier for KeyFileVerifier {
         Box::pin(async move {
             let (envelope, principal) = root.mint().await?;
             Ok(Some(Observation {
-                credential: URL_SAFE_NO_PAD.encode(envelope),
+                credential: acyclic_auth::credential::capability_text(&envelope),
                 principal,
             }))
         })
