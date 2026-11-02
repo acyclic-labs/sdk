@@ -305,7 +305,11 @@ mod tests {
                         &invocation.call_id,
                     )?;
                     let reply = match tool.executor.execute(invocation, Some(context)).await {
-                        Ok(result) => serde_json::json!({"ok":true,"value":result.value}),
+                        Ok(result) => {
+                            let version =
+                                crate::tool::files::result_version(name, &result.value, None)?;
+                            serde_json::json!({"ok":true,"value":result.value,"version":version.map(|v| v.0)})
+                        }
                         Err(error) => serde_json::json!({"ok":false,"value":{
                             "class":crate::executor::ToolErrorClass::of(&error),"message":error.to_string(),
                         }}),

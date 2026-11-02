@@ -20,6 +20,7 @@
                 error.class = reply.value.class;
                 throw error;
             }
+            if (reply.version != null) reply.value.version = reply.version;
             return reply.value;
         } finally {
             if (--pending === 0 && wake) wake();
