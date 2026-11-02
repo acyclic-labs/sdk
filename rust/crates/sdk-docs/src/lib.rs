@@ -23,7 +23,8 @@ mod child;
 pub mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
-mod path_identity;
+#[doc(hidden)]
+pub mod path_identity;
 #[doc(hidden)]
 pub use path_identity::normalize_path;
 mod public_api;

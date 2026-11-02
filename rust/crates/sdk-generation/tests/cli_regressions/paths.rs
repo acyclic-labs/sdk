@@ -1,9 +1,6 @@
-#[path = "../../../sdk-docs/src/path_identity.rs"]
-mod identity;
 #[cfg(test)]
-use identity::components;
-pub(super) use identity::rebase;
-pub(super) use identity::stable_filename;
+use sdk_docs::path_identity::components;
+pub(super) use sdk_docs::path_identity::{rebase, stable_filename};
 
 pub(super) fn fixed_revision<'a>(head: &[u8], revision: &'a [u8]) -> Option<&'a str> {
     if head != b"ref: refs/heads/sdk-fixture\n" {
