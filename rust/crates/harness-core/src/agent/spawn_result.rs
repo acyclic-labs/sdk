@@ -25,7 +25,8 @@ enum Outcome {
 }
 
 pub(super) fn path(parent: &AgentPath, sequence: u64) -> Result<StreamPath, Error> {
-    StreamPath::new(format!("harness/spawns/{}/{sequence}", parent.id())).map_err(Error::Stream)
+    StreamPath::new(format!("harness/spawns/{}/{sequence}", parent.id_text()))
+        .map_err(Error::Stream)
 }
 
 pub(super) fn append(
