@@ -22,6 +22,8 @@ pub mod contract;
 /// One conformance suite for local and hosted Actors runtimes.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+/// Per-agent spend balances staged in the original actor step transaction.
+pub mod escrow;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
 /// Event-owned hosting of an arbitrary Handler over injected storage.

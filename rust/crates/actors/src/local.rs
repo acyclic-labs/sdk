@@ -35,6 +35,9 @@ pub enum Error {
     /// The original scheduling clock could not produce a deadline event.
     #[error(transparent)]
     Clock(#[from] ClockError),
+    /// The original per-agent spend balance refused the candidate.
+    #[error(transparent)]
+    Escrow(#[from] crate::escrow::Error),
     /// Canonical provider failure, including uncertain acknowledgement.
     #[error(transparent)]
     Stream(#[from] StreamError),
@@ -87,6 +90,7 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Clock(_) => "clock",
+            Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
             Self::Unknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
