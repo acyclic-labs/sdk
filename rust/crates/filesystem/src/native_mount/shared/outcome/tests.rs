@@ -38,7 +38,7 @@ fn namespace_causes_keep_their_semantics_through_source_and_workspace() {
         (E::Cancelled, CallbackFailure::Cancelled),
         (E::AllocationFailed, CallbackFailure::OutOfMemory),
         (E::Work(crate::WorkError::Overflow), CallbackFailure::Io),
-        (E::TooDeep, CallbackFailure::Invalid),
+        (E::ComponentLengthOverflow, CallbackFailure::Invalid),
     ] {
         assert_eq!(
             source_failure(&MountSourceError::NamespacePath(error.clone())),

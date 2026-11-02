@@ -113,7 +113,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
         }
         assert!(matches!(
             merge
-                .prepare_merge(seed.generation_id(), 32, 8, budget, &cancel)
+                .prepare_merge(seed.generation_id(), Some(32), Some(8), budget, &cancel)
                 .await
                 .map_err(js_error)?
                 .value,
