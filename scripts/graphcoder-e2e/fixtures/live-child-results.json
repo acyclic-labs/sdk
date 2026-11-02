@@ -1,0 +1,87 @@
+{
+  "cases": [
+    {
+      "sample": 2,
+      "events": [
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "spawn",
+          "tool_input": {
+            "name": "worker",
+            "role": "worker",
+            "task": "Reply with exactly LIVE_edc406820faf413fb871010f632f76fb and do nothing else."
+          },
+          "tool_response": {
+            "agent": "harness/agents/a00d9a924f804da0b1ab448f4a03e403/children/c0ba3abd56740b2064615f149c9a2f12",
+            "name": "worker"
+          }
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "wait",
+          "tool_input": {
+            "agents": [
+              "harness/agents/a00d9a924f804da0b1ab448f4a03e403/children/c0ba3abd56740b2064615f149c9a2f12"
+            ]
+          },
+          "tool_response": {
+            "running": [],
+            "settled": [
+              {
+                "agent": "harness/agents/a00d9a924f804da0b1ab448f4a03e403/children/c0ba3abd56740b2064615f149c9a2f12",
+                "answer": "LIVE_edc406820faf413fb871010f632f76fb",
+                "name": "harness/agents/a00d9a924f804da0b1ab448f4a03e403/children/c0ba3abd56740b2064615f149c9a2f12",
+                "phase": "idle"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "events": [
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "spawn",
+          "tool_input": {
+            "name": "worker",
+            "role": "worker",
+            "task": "Reply with exactly LIVE_e6655dc9b75f41969c4b9519f83a92f0. Do not add anything else."
+          },
+          "tool_response": {
+            "agent": "harness/agents/a0fe0f42d7e64643ad6456457b4eb242/children/8eeafb862877f75f181733b62547c71b",
+            "name": "worker"
+          }
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "wait",
+          "tool_input": {
+            "agents": [
+              "worker"
+            ]
+          },
+          "tool_response": {
+            "running": [],
+            "settled": [
+              {
+                "agent": "harness/agents/a0fe0f42d7e64643ad6456457b4eb242/children/8eeafb862877f75f181733b62547c71b",
+                "answer": "LIVE_e6655dc9b75f41969c4b9519f83a92f0",
+                "branch": "agents/worker",
+                "name": "worker",
+                "phase": "idle"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "compiled_source": "065154f442c1f195813dc8b315e957ace5f32aa6",
+    "consumer_revision": "c90f7519cc8a904a13af9559a9e4e584d3985364",
+    "format": "PostToolUse field projection, original child-result samples 2 and 3; no event values synthesized",
+    "matrix_sha256": "24cf6224c4086c6c0b9fcc5f368378ed080e22beafc8ba9e5810280b22cca444"
+  }
+}

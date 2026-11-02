@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
-import { answer, requireTools } from "./live.mjs";
+const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
+const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
+import { answer, requireTools, runCase } from "./live.mjs";
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
   const result = stdout => ({ code: 0, signal: null, stdout, stderr: "" });
@@ -44,28 +46,68 @@ test("model prose and pre-tool events cannot prove a completed native tool", () 
 });
 
 test("collaboration requires the spawned child's exact settled public result", () => {
-  // Generated SDK hook contract controls, not captured provider output.
-  const child = "agents/project/worker", expected = "child result";
-  const hooks = () => [
-    { hook_event_name: "PostToolUse", tool_name: "spawn", tool_response: { agent: child } },
-    { hook_event_name: "PostToolUse", tool_name: "wait", tool_input: { agents: [child] },
-      tool_response: { settled: [{ agent: child, phase: "idle", answer: expected }], running: [] } },
-  ];
-  requireTools(hooks(), ["spawn", "wait"], expected);
-  for (const mutate of [
-    events => events.pop(),
-    events => { events[1].hook_event_name = "PreToolUse"; },
-    events => { events[1].tool_input.agents = ["agents/project/other"]; },
-    events => { events[1].tool_response.settled[0].agent = "agents/project/other"; },
-    events => { events[1].tool_response.running = [child]; },
-    events => { events[1].tool_response.settled = []; },
-    events => { events[1].tool_response.settled[0].phase = "failed"; },
-    events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
-    events => { events[1].tool_response.error = "wait failed"; },
-  ]) {
-    const events = hooks();
-    mutate(events);
-    assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+  // Original live calls used both supported references: canonical path and
+  // the exact name returned by spawn. Settlement still binds canonical identity.
+  for (const { events: original } of childResults) {
+    const [spawn, wait] = original;
+    const child = spawn.tool_response.agent, expected = wait.tool_response.settled[0].answer;
+    requireTools(original, ["spawn", "wait"], expected);
+    for (const mutate of [
+      events => events.pop(),
+      events => { events[1].hook_event_name = "PreToolUse"; },
+      events => { events[1].tool_input.agents = ["other"]; },
+      events => { events[1].tool_input.agents = ["agents/" + spawn.tool_response.name]; },
+      events => { events[1].tool_input.agents.push(child); },
+      events => { events[1].tool_response.settled[0].agent = "agents/project/other"; },
+      events => { events[1].tool_response.running = [child]; },
+      events => { events[1].tool_response.settled = []; },
+      events => { events[1].tool_response.settled[0].phase = "failed"; },
+      events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
+      events => { events[1].tool_response.error = "wait failed"; },
+      events => { events.push(structuredClone(spawn)); },
+      events => { events.push({ ...structuredClone(spawn), tool_response: {
+        ...spawn.tool_response, agent: "agents/project/other", name: "other" } }); },
+    ]) {
+      const events = structuredClone(original);
+      mutate(events);
+      assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+    }
+  }
+});
+
+test("a child merge needs its committed branch result after settlement", () => {
+  // These are successful native operations from cases that still failed their
+  // whole-case time requirement. No historical case is requalified here.
+  for (const { events: original } of mergeResults) {
+    const expected = original.find(event => event.tool_name === "wait").tool_response.settled[0].answer;
+    const workspace = original[0].cwd;
+    const check = events => requireTools(events, ["spawn", "wait", "fs"], expected, workspace);
+    check(original);
+    for (const mutate of [
+      (events, merge) => { events.splice(events.indexOf(merge), 1); },
+      (_, merge) => { merge.hook_event_name = "PreToolUse"; },
+      (_, merge) => { merge.tool_response.result.Committed = null; },
+      (events, merge) => { merge.tool_response = structuredClone(events.find(event =>
+        event.tool_response?.result?.Filesystem?.Data?.kind === "diff").tool_response); },
+      (_, merge) => { merge.tool_response.result.Committed.message = "merge agents/other"; },
+      (_, merge) => { merge.tool_response.result.Committed.message = "rebase agents/worker"; },
+      (_, merge) => { merge.cwd += "/child"; },
+      (events, merge) => {
+        events.splice(events.indexOf(merge), 1);
+        events.splice(1, 0, merge);
+      },
+      (events, merge) => {
+        // The former unanchored command-text check accepted this inspection.
+        merge.tool_input.command = "diff 'merge agents/worker'";
+        merge.tool_response = structuredClone(events.find(event =>
+          event.tool_response?.result?.Filesystem?.Data?.kind === "diff").tool_response);
+      },
+    ]) {
+      const events = structuredClone(original);
+      const merge = events.find(event => event.tool_response?.result?.Committed);
+      mutate(events, merge);
+      assert.throws(() => check(events));
+    }
   }
 });
 
@@ -86,6 +128,24 @@ test("a real command must publish exact bytes and a successful shell status", as
     for (let index = 0; index < 6; index++)
       await assert.rejects(fileBytes(path + index, "EXPECTED_BYTES"), { code: "ERR_ASSERTION" });
     await assert.rejects(fileBytes(path + "missing", "EXPECTED_BYTES"), { code: "ENOENT" });
+    // A real filesystem refusal must remain a preparation failure, with no
+    // executable admitted and no invented product-latency sample.
+    const refused = await runCase(process.execPath, root, path, "session", new AbortController().signal);
+    assert.equal(refused.status, "fail");
+    assert.ok(["ENOTDIR", "EEXIST"].includes(refused.code), refused.error);
+    assert.equal(refused.phase, "preparation");
+    assert.equal(refused.seconds, undefined);
+    assert.deepEqual(refused.captures, []);
+    assert.equal(refused.phases.at(-1).phase, "retired");
+    assert.equal(refused.phases.at(-1).outcome, "completed");
+    assert.ok(!refused.phases.some(phase => phase.phase === "admitted" || phase.phase === "run"));
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("cancelled before preparation"));
+    const stopped = await runCase(process.execPath, root, root, "session", cancelled.signal);
+    assert.match(stopped.error, /cancelled before preparation/);
+    assert.deepEqual(stopped.phases.map(phase => [phase.phase, phase.outcome]),
+      [["retired", "entered"], ["retired", "completed"]]);
+    assert.deepEqual(stopped.captures, []);
     // Original OS completion supplies these SDK ToolResult fields; the two
     // mutations require each status field to reject failure independently.
     const status = { success: result.code === 0, exit_code: result.code, stop: null };

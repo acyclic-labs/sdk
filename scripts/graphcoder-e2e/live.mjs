@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
-import { withOwnedCase } from "./suite.mjs";
+import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 import { fileBytes, toolOutcome } from "./assertions.mjs";
@@ -30,9 +30,9 @@ export function answer(result, format) {
   return line;
 }
 
-export function requireTools(hooks, names, expectedChildResult) {
+export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
   const remaining = new Set(names);
-  let child, consumed = false;
+  let child, childName, consumed = false, merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
     if (hook.tool_response === undefined || hook.tool_response === null)
@@ -41,9 +41,14 @@ export function requireTools(hooks, names, expectedChildResult) {
     remaining.delete(hook.tool_name);
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
+      assert.equal(child, undefined, "single-child journey spawned another child");
       child = hook.tool_response.agent;
+      childName = hook.tool_response.name;
     } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
-      assert.deepEqual(hook.tool_input?.agents, [child], "wait used a different child reference");
+      const references = hook.tool_input?.agents;
+      assert.ok(Array.isArray(references) && references.length === 1
+        && (references[0] === child || (typeof childName === "string" && references[0] === childName)),
+      "wait used a different child reference");
       assert.deepEqual(hook.tool_response.running, [], "child remains running");
       assert.equal(hook.tool_response.settled.length, 1, "wait settled a different child set");
       const [settled] = hook.tool_response.settled;
@@ -51,30 +56,27 @@ export function requireTools(hooks, names, expectedChildResult) {
       assert.equal(settled.phase, "idle", "child did not settle successfully");
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
       consumed = true;
+    } else if (mergeWorkspace !== undefined && consumed && typeof childName === "string"
+      && hook.tool_name === "fs" && hook.cwd === mergeWorkspace
+      && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
+      // The filesystem generates this message from its completed join operand.
+      merged = true;
     }
   }
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
   if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
+  if (mergeWorkspace !== undefined) assert.ok(merged,
+    `step=admit committed merge of the settled child's branch in its parent workspace; recovery=${recovery}`);
 }
 
-async function runCase(binary, login, root, name) {
+export async function runCase(binary, login, root, name, signal) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
-  await mkdir(workspace, { recursive: true });
   const settings = join(directory, "settings");
-  const env = environment(settings);
-  // Explicitly authorized existing login, after shared fixture isolation and
-  // provider-key stripping. Neither the HOME nor the rest of the profile moves.
-  env.CODEX_HOME = login;
   const hookFile = join(workspace, "hooks.jsonl");
-  const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
-  const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
-  await mkdir(join(settings, ".claude"), { recursive: true });
-  await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: Object.fromEntries(
-    ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].map(event => [event, [{ hooks: [{ type: "command", command }] }]])) }));
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
-  let step = "invoke shipping GraphCoder", childHooks;
+  let step = "prepare workspace and isolated settings", env, childHooks, begin;
   const invoke = async (prompt, format = "text") => {
     const args = ["--workspace", workspace, "--settings-root", settings,
       "--model", "openai/gpt-6-luna", "--operation", operation,
@@ -96,9 +98,23 @@ async function runCase(binary, login, root, name) {
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
   };
-  const begin = performance.now(), phases = [];
+  const phases = [];
+  const prepare = async () => {
+    await mkdir(workspace, { recursive: true });
+    env = environment(settings);
+    // Reuse only the admitted login path after stripping provider keys.
+    env.CODEX_HOME = login;
+    const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
+    const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
+    await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
+      PostToolUse: [{ hooks: [{ type: "command", command }] }],
+    } }));
+  };
   try {
-    const receipt = await withOwnedCase({ processes, onPhase: phase => phases.push(phase), run: async () => {
+    const receipt = await withOwnedCase({ processes, signal, origin: setupBegin, prepare,
+      onPhase: phase => phases.push(phase), run: async () => {
+      begin = performance.now();
+      step = "invoke shipping GraphCoder";
       if (name === "session") {
         const text = await invoke(`Reply with exactly ${marker}. Do not use tools.`);
         step = "assert session answer";
@@ -106,8 +122,9 @@ async function runCase(binary, login, root, name) {
       } else if (name === "shell") {
         await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply DONE.`);
         step = "assert shell effect and completed tool event";
+        const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "shell.txt"), marker);
-        requireTools(await hooks(), ["shell"]);
+        requireTools(recorded, ["shell"]);
       } else if (name === "child-result") {
         await collaborate(`Spawn a child named worker, asking it to reply with exactly ${marker}. End this turn with exactly SPAWNED so the spawn commits. Retain the exact canonical agent path returned by spawn for the next turn.`,
           "Use wait with the exact canonical agent path from the preceding spawn result. Read that child's settled idle answer, then reply with exactly that answer, without additional text.");
@@ -117,36 +134,43 @@ async function runCase(binary, login, root, name) {
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl");
-        const before = await hooks();
+        const before = childHooks = await hooks();
         requireTools(before, ["shell"]);
         step = "reopen settled operation without repeating work";
         const second = await invoke(prompt, "jsonl");
         assert.deepEqual(second, first, "reopen changed the committed result");
         await fileBytes(join(workspace, "once.txt"), marker);
-        assert.equal((await hooks()).filter(hook => hook.hook_event_name === "PostToolUse").length,
+        assert.equal((childHooks = await hooks()).filter(hook => hook.hook_event_name === "PostToolUse").length,
           before.filter(hook => hook.hook_event_name === "PostToolUse").length, "replay repeated a tool call");
       } else if (name === "fork-merge") {
         await collaborate(`Spawn a child named worker to use shell to write child.txt in its project checkout containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply with exactly ${marker}. End your spawn turn with exactly SPAWNED so it commits. Retain the exact canonical agent path returned by spawn for the next turn. The spawn result is a canonical agent path, not a branch alias.`,
-          "Use wait with the exact canonical agent path from the preceding spawn result and read that child's settled idle answer. Then use fs branch to find the actual published agents/ branch, merge that exact branch into your project, and read child.txt. Reply with exactly those file contents, without additional text.");
+          "Use wait with the exact canonical agent path from the preceding spawn result and read that child's settled idle answer. Its changes are on agents/<spawn name>. Use fs diff to inspect that branch, then fs merge to bring it into your project, and read child.txt. Reply with exactly those file contents, without additional text.");
         step = "assert child fork and merged parent bytes";
-        await fileBytes(join(workspace, "child.txt"), marker);
         const recorded = childHooks = await hooks();
-        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker);
-        assert.ok(recorded.some(hook => hook.hook_event_name === "PostToolUse" && hook.tool_name === "fs"
-          && /\bmerge\s+['\"]?agents\//.test(hook.tool_input?.command ?? "")), "missing completed child merge");
+        await fileBytes(join(workspace, "child.txt"), marker);
+        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, workspace);
       } else assert.fail(`unknown case ${name}`);
     } });
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
     return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds,
-      setup_seconds: (begin - setupBegin) / 1000, phases, captures, hooks: childHooks };
+      setup_seconds: receipt.preparation_seconds, total_seconds: receipt.total_seconds, phases, captures, hooks: childHooks };
   } catch (error) {
-    return { case: name, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000,
-      setup_seconds: (begin - setupBegin) / 1000, phases,
+    return { case: name, platform: process.platform, status: "fail", code: error.code,
+      phase: phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run"),
+      ...(begin === undefined ? {} : { seconds: (performance.now() - begin) / 1000 }),
+      setup_seconds: phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
+      total_seconds: (performance.now() - setupBegin) / 1000, phases,
       error: `step=${step}: ${error.message}; recovery=${recovery}`, captures, hooks: childHooks };
   }
 }
 
 async function main() {
+  const cancellation = commandCancellation();
+  try { await campaign(cancellation.signal); }
+  finally { cancellation.dispose(); }
+}
+
+async function campaign(signal) {
   const [binary, output, count, ...selected] = process.argv.slice(2);
   const samples = Number(count);
   assert.ok(/^[1-9][0-9]*$/.test(count ?? "") && Number.isSafeInteger(samples),
@@ -159,8 +183,12 @@ async function main() {
   await mkdir(output); // An existing evidence identity must never be reused.
   const root = scratchDirectory("graphcoder-live-");
   const results = [];
-  for (let sample = 1; sample <= samples; sample++) {
-    for (const name of names) results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name) });
+  sampling: for (let sample = 1; sample <= samples; sample++) {
+    for (const name of names) {
+      if (signal.aborted) break sampling;
+      results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name, signal) });
+      if (signal.aborted) break sampling;
+    }
   }
   const cells = names.map(name => {
     const attempts = results.filter(result => result.case === name);
@@ -172,9 +200,10 @@ async function main() {
   const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
     measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
     cells, results,
-    pass: results.every(result => result.status === "pass") };
-  await publishReport(join(output, "matrix.json"), report);
-  process.exitCode = report.pass ? 0 : 1;
+    ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
+    pass: !signal.aborted && results.every(result => result.status === "pass") };
+  await publishReport(join(output, "matrix.json"), report, undefined, signal);
+  process.exitCode = !signal.aborted && report.pass ? 0 : 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

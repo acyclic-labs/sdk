@@ -1,0 +1,431 @@
+{
+  "cases": [
+    {
+      "sample": 4,
+      "events": [
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "spawn",
+          "tool_input": {
+            "name": "worker",
+            "role": "worker",
+            "task": "Use shell in your project checkout to create child.txt containing exactly the UTF-8 bytes LIVE_e62fb18fd49745fb9c08daa80e947a1a, with no newline or any other bytes. Verify exact bytes. Then reply with exactly LIVE_e62fb18fd49745fb9c08daa80e947a1a. Do not modify other files."
+          },
+          "tool_response": {
+            "agent": "harness/agents/2938e0b38b2340bd94e13a2574f43c25/children/a8c8191f009d81a71d8bed421d7f4284",
+            "name": "worker"
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "wait",
+          "tool_input": {
+            "agents": [
+              "worker"
+            ]
+          },
+          "tool_response": {
+            "running": [],
+            "settled": [
+              {
+                "agent": "harness/agents/2938e0b38b2340bd94e13a2574f43c25/children/a8c8191f009d81a71d8bed421d7f4284",
+                "answer": "LIVE_e62fb18fd49745fb9c08daa80e947a1a",
+                "branch": "agents/worker",
+                "name": "worker",
+                "phase": "idle"
+              }
+            ]
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "wait",
+          "tool_input": {
+            "agents": [
+              "worker"
+            ],
+            "need": 1
+          },
+          "tool_response": {
+            "running": [],
+            "settled": [
+              {
+                "agent": "harness/agents/2938e0b38b2340bd94e13a2574f43c25/children/a8c8191f009d81a71d8bed421d7f4284",
+                "answer": "LIVE_e62fb18fd49745fb9c08daa80e947a1a",
+                "branch": "agents/worker",
+                "name": "worker",
+                "phase": "idle"
+              }
+            ]
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "fs",
+          "tool_input": {
+            "command": "diff agents/worker"
+          },
+          "tool_response": {
+            "result": {
+              "Filesystem": {
+                "Data": {
+                  "kind": "diff",
+                  "value": {
+                    "bindingChanges": 1,
+                    "fileChanges": 2,
+                    "from": "0632807f402bff66d6dd79a9e558b456fe701d256fa47251ab786879158699f17a",
+                    "to": "06f1c1c3ba8d24e13efb2aee3e2afdec078b8f0fa5b35e04074f466345886353ee"
+                  }
+                }
+              }
+            }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "fs",
+          "tool_input": {
+            "command": "merge agents/worker"
+          },
+          "tool_response": {
+            "result": {
+              "Committed": {
+                "author": "git-compat",
+                "authored_at_seconds": 0,
+                "capture_proof": null,
+                "id": "0a7fae2ecba8e50da0f32160c2b75b4e59a1e90f9061adcede34e5a19c3137d6",
+                "message": "merge agents/worker",
+                "parents": [],
+                "tracked_paths": [
+                  "child.txt"
+                ],
+                "tree": {
+                  "generation": [
+                    6,
+                    162,
+                    166,
+                    229,
+                    82,
+                    31,
+                    225,
+                    144,
+                    81,
+                    68,
+                    177,
+                    254,
+                    174,
+                    173,
+                    1,
+                    10,
+                    213,
+                    249,
+                    183,
+                    56,
+                    243,
+                    118,
+                    146,
+                    110,
+                    211,
+                    34,
+                    161,
+                    226,
+                    54,
+                    98,
+                    189,
+                    220,
+                    228
+                  ],
+                  "kind": "exact",
+                  "workspace_id": [
+                    218,
+                    193,
+                    116,
+                    93,
+                    122,
+                    172,
+                    32,
+                    171,
+                    3,
+                    150,
+                    152,
+                    233,
+                    120,
+                    191,
+                    186,
+                    35
+                  ]
+                },
+                "workspace_tree": {
+                  "generation": [
+                    6,
+                    162,
+                    166,
+                    229,
+                    82,
+                    31,
+                    225,
+                    144,
+                    81,
+                    68,
+                    177,
+                    254,
+                    174,
+                    173,
+                    1,
+                    10,
+                    213,
+                    249,
+                    183,
+                    56,
+                    243,
+                    118,
+                    146,
+                    110,
+                    211,
+                    34,
+                    161,
+                    226,
+                    54,
+                    98,
+                    189,
+                    220,
+                    228
+                  ],
+                  "kind": "exact",
+                  "workspace_id": [
+                    218,
+                    193,
+                    116,
+                    93,
+                    122,
+                    172,
+                    32,
+                    171,
+                    3,
+                    150,
+                    152,
+                    233,
+                    120,
+                    191,
+                    186,
+                    35
+                  ]
+                }
+              }
+            }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "events": [
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "spawn",
+          "tool_input": {
+            "name": "worker",
+            "role": "worker",
+            "task": "Use shell in your project checkout to create child.txt containing exactly the UTF-8 bytes LIVE_eb56de8820654582a36df6e46f8952c8, with no newline or other bytes. Verify the exact bytes. Then reply with exactly LIVE_eb56de8820654582a36df6e46f8952c8."
+          },
+          "tool_response": {
+            "agent": "harness/agents/81a5f3166ff34061a6df6ecb1c8ee2b3/children/6dc146e20f800b8fd7c66e703cdde49e",
+            "name": "worker"
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "wait",
+          "tool_input": {
+            "agents": [
+              "worker"
+            ]
+          },
+          "tool_response": {
+            "running": [],
+            "settled": [
+              {
+                "agent": "harness/agents/81a5f3166ff34061a6df6ecb1c8ee2b3/children/6dc146e20f800b8fd7c66e703cdde49e",
+                "answer": "LIVE_eb56de8820654582a36df6e46f8952c8",
+                "branch": "agents/worker",
+                "name": "worker",
+                "phase": "idle"
+              }
+            ]
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "fs",
+          "tool_input": {
+            "command": "diff agents/worker"
+          },
+          "tool_response": {
+            "result": {
+              "Filesystem": {
+                "Data": {
+                  "kind": "diff",
+                  "value": {
+                    "bindingChanges": 1,
+                    "fileChanges": 2,
+                    "from": "06a31cba2c7aca400792efebe62fe5c37bbf90a3c45c51df5d908354b6a552d76d",
+                    "to": "0620a868e7de2ae4f177eaf1240f44a4ecb276d00da6fdc3d02a3f9dc717659358"
+                  }
+                }
+              }
+            }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
+        },
+        {
+          "hook_event_name": "PostToolUse",
+          "tool_name": "fs",
+          "tool_input": {
+            "command": "merge agents/worker"
+          },
+          "tool_response": {
+            "result": {
+              "Committed": {
+                "author": "git-compat",
+                "authored_at_seconds": 0,
+                "capture_proof": null,
+                "id": "a507e0b45480245af81f977ca35c4a06227e6ca533c7247485a9934266ed1040",
+                "message": "merge agents/worker",
+                "parents": [],
+                "tracked_paths": [
+                  "child.txt"
+                ],
+                "tree": {
+                  "generation": [
+                    6,
+                    16,
+                    152,
+                    234,
+                    223,
+                    57,
+                    129,
+                    227,
+                    1,
+                    32,
+                    155,
+                    36,
+                    0,
+                    86,
+                    91,
+                    91,
+                    126,
+                    236,
+                    86,
+                    24,
+                    34,
+                    105,
+                    227,
+                    226,
+                    214,
+                    117,
+                    175,
+                    139,
+                    66,
+                    18,
+                    198,
+                    214,
+                    22
+                  ],
+                  "kind": "exact",
+                  "workspace_id": [
+                    252,
+                    241,
+                    13,
+                    162,
+                    230,
+                    134,
+                    35,
+                    5,
+                    44,
+                    227,
+                    7,
+                    224,
+                    135,
+                    94,
+                    79,
+                    31
+                  ]
+                },
+                "workspace_tree": {
+                  "generation": [
+                    6,
+                    16,
+                    152,
+                    234,
+                    223,
+                    57,
+                    129,
+                    227,
+                    1,
+                    32,
+                    155,
+                    36,
+                    0,
+                    86,
+                    91,
+                    91,
+                    126,
+                    236,
+                    86,
+                    24,
+                    34,
+                    105,
+                    227,
+                    226,
+                    214,
+                    117,
+                    175,
+                    139,
+                    66,
+                    18,
+                    198,
+                    214,
+                    22
+                  ],
+                  "kind": "exact",
+                  "workspace_id": [
+                    252,
+                    241,
+                    13,
+                    162,
+                    230,
+                    134,
+                    35,
+                    5,
+                    44,
+                    227,
+                    7,
+                    224,
+                    135,
+                    94,
+                    79,
+                    31
+                  ]
+                }
+              }
+            }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "compiled_source": "065154f442c1f195813dc8b315e957ace5f32aa6",
+    "consumer_revision": "c90f7519cc8a904a13af9559a9e4e584d3985364",
+    "format": "PostToolUse field projection, original fork-merge samples 4 and 5; only spawn/wait/fs events retained, no event values synthesized; original whole cases failed their time requirement; original cwd retained for parent workspace admission",
+    "matrix_sha256": "24cf6224c4086c6c0b9fcc5f368378ed080e22beafc8ba9e5810280b22cca444"
+  }
+}
