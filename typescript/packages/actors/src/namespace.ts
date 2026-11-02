@@ -74,12 +74,14 @@ type PendingCall = {
   release: (() => void) | undefined;
   linked: boolean;
 };
-/** Ordered calls on one stub; a failed call permanently breaks that stub. */
+/** Ordered calls retain the original invocation; a failed call permanently breaks that stub. */
 export class ActorStub {
   readonly #id: NamespaceActorId;
+  readonly #actor: Semantic.ActorId;
   readonly #account: Uint8Array;
   readonly #namespace: Semantic.ActorNamespace;
   readonly #transport: ActorInvocationTransport;
+  readonly #invoke: ActorsClient["invokeActor"];
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
@@ -95,7 +97,9 @@ export class ActorStub {
     if (typeof binding !== "string" || binding.length === 0) throw new TypeError("binding name is required");
     if (hint !== undefined) actorLocationHint(hint);
     this.#id = id; this.#transport = transport; this.#binding = binding; this.#hint = hint;
+    this.#invoke = transport.invokeActor.bind(transport);
     const reference = id.reference;
+    this.#actor = decoder.decode(reference.id) as Semantic.ActorId;
     this.#account = reference.account;
     this.#namespace = decoder.decode(reference.namespace) as Semantic.ActorNamespace;
     this.#failure = new Promise<never>((_resolve, reject) => { this.#reject = reject; });
@@ -103,7 +107,7 @@ export class ActorStub {
   }
   get id(): NamespaceActorId { return this.#id; }
   get name(): string | undefined { return this.#id.name; }
-  get reference(): ActorReference { return this.#id.reference; }
+  get reference(): ActorReference { return new ActorReference(this.#account, encoder.encode(this.#namespace), encoder.encode(this.#actor)); }
   #appendPending(release?: () => void): PendingCall {
     const node: PendingCall = { previous: this.#pendingTail, next: undefined, release, linked: true };
     if (this.#pendingTail) this.#pendingTail.next = node;
@@ -153,7 +157,7 @@ export class ActorStub {
       if (this.#sequence > 0xffff_ffff_ffff_ffffn) throw new RangeError("stub sequence exhausted");
       signal.throwIfAborted();
       // Queue body preparation and sequence assignment, then release admission before the response.
-      const response = this.#transport.invokeActor({...input,invocationOrder:{session:this.#session,sequence:this.#sequence++}}, {signal});
+      const response = this.#invoke({...input,invocationOrder:{session:this.#session,sequence:this.#sequence++}}, {signal});
       return {response};
     });
     this.#tail = admitted.then(() => undefined, error => { this.#break(error); });
@@ -171,7 +175,7 @@ export class ActorStub {
     this.#broken = true; this.#lifetime.abort(error); this.#reject(error);
   }
   #request(method: string, url: string, body: Uint8Array, headers: readonly Semantic.Header[], rpcMethod?: string): Semantic.InvokeActorRequest {
-    return { actorId: this.#id.toString() as Semantic.ActorId, namespace: this.#namespace,
+    return { actorId: this.#actor, namespace: this.#namespace,
       accountId: this.#account.slice(), method, url, body, headers, bindingName: this.#binding, deploymentEnvelope: noDeploymentEnvelope,
       ...(this.#hint === undefined ? {} : {locationHint:this.#hint}),
       ...(rpcMethod === undefined ? {} : {rpcMethod}) };
@@ -202,12 +206,13 @@ export class ActorStub {
     const target = child.reference;
     if (!target.equals(new ActorReference(reference.account, reference.namespace, target.id))) throw new TypeError("fork child is outside this actor's namespace");
     if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
+    const childActorId = decoder.decode(target.id) as Semantic.ActorId;
     const { idempotencyKey = randomId(), ...callOptions } = options;
     const signal = callOptions.signal ? AbortSignal.any([callOptions.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     await this.#waitPending(signal);
     if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
     signal.throwIfAborted();
-    await fork.call(this.#transport, { actorId: this.#id.toString() as Semantic.ActorId, childActorId: child.toString() as Semantic.ActorId,
+    await fork.call(this.#transport, { actorId: this.#actor, childActorId,
       namespace: this.#namespace, accountId: reference.account,
       subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
     return target;
