@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost,nativeProvider} from './native-host.mjs';
+import {nativeHost,nativeProvider,nativeProxy} from './native-host.mjs';
 
 const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
 function nativeFailure(host,code,message,cause) {
@@ -182,8 +182,15 @@ export async function codexInstalled(run,executable,expected) {
 
 export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
  const model=nativeModel(host,live);
+ const proxy=nativeProxy(live);
  if(host==='codex') {
-  const provider=live?['--config','model_provider="openai"','--model',model]
+  if(proxy)env.ACYCLIC_NATIVE_PROXY_TOKEN=proxy.credential;
+  const provider=proxy?['--config','model_provider="acyclic_proxy"','--config','model_providers.acyclic_proxy.name="Authenticated native proxy"',
+   '--config','model_providers.acyclic_proxy.base_url='+JSON.stringify(proxy.baseUrl),
+   '--config','model_providers.acyclic_proxy.wire_api="responses"',
+   '--config','model_providers.acyclic_proxy.requires_openai_auth=false',
+   '--config','model_providers.acyclic_proxy.env_key="ACYCLIC_NATIVE_PROXY_TOKEN"','--model',model]
+   :live?['--config','model_provider="openai"','--model',model]
    :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model',model];
@@ -192,6 +199,11 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
   return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
+  if(proxy) {
+   for(const key of ['CLAUDE_CODE_USE_FOUNDRY','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX'])delete env[key];
+   Object.assign(env,{ANTHROPIC_BASE_URL:proxy.baseUrl,ANTHROPIC_API_KEY:proxy.credential,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
+  }
   // Foundry's Messages endpoint with its documented gateway mode: no key,
   // token or account header reaches the localhost mock.
   if(!live)Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
@@ -204,10 +216,12 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
   return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
- if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
+ if(proxy)env.ACYCLIC_NATIVE_PROXY=JSON.stringify(live);
+ else if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
  const policy=live?['--no-extensions',...(installed?['--extension',extension]:[]),
+  ...(proxy?['--extension',fileURLToPath(new URL('./pi-provider.mjs',import.meta.url))]:[]),
   '--provider',live.provider,'--model',model,'--session-dir',join(root,'native-sessions')]
-  :['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model',model];
+  :['--extension',fileURLToPath(new URL('./pi-provider.mjs',import.meta.url)),'--provider','fixture','--model',model];
  return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,...(input?[]:[prompt])]};
 }
 
@@ -230,7 +244,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
- if(fixture.live) {
+ if(fixture.live&&!fixture.live.proxy) {
   // The caller provisions an exclusive authenticated profile outside guest
   // files. Pass its path to the original host; never read or copy credentials.
   try {
@@ -243,7 +257,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
     '; recovery=provision an existing exclusive native login directory outside the fixture root',{cause}),
    {code:'NATIVE_LOGIN_PROFILE_REFUSED'});
   }
- } else {
+ } else if(!fixture.live) {
   let endpoint;
   try {endpoint=new URL(fixture.url);}
   catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}

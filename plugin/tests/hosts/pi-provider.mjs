@@ -1,10 +1,10 @@
-// The pinned package's Provider.auth supports an empty local-server auth result.
-// Its Responses implementation currently rejects that result before HTTP. Keep
-// the real provider path and its original failure; never substitute credentials
-// or strip an Authorization header after the native client creates it.
+// Both modes retain the pinned provider's serializer and credential interface.
+// The proxy issues a short-lived capability; the keyless fixture retains its
+// original unsupported disposition when the native client requires a credential.
 import assert from 'node:assert/strict';
 import {createProvider} from '@earendil-works/pi-ai/models';
 import * as responses from '@earendil-works/pi-ai/api/openai-responses';
+import {parseNativeProxy} from './native-host.mjs';
 
 function streamSimple(model,context,options) {
  try {return responses.streamSimple(model,context,options);}
@@ -17,7 +17,22 @@ function streamSimple(model,context,options) {
  }
 }
 
-export default function register(pi) {
+export default async function register(pi) {
+ if(process.env.ACYCLIC_NATIVE_PROXY) {
+  const {provider,model,baseUrl,credential}=parseNativeProxy(process.env.ACYCLIC_NATIVE_PROXY);
+  const family={openai:'openai',anthropic:'anthropic',gemini:'google'}[provider];
+  const constants={openai:'OPENAI_MODELS',anthropic:'ANTHROPIC_MODELS',google:'GOOGLE_MODELS'};
+  const tables=await import('@earendil-works/pi-ai/providers/'+family+'.models');
+  const original=tables[constants[family]][model];
+  assert.ok(original,'step=admit native Pi model; recovery=select an exact model in the pinned native provider catalogue');
+  const protocol={openai:'openai-responses',anthropic:'anthropic-messages',google:'google-generative-ai'}[family];
+  const api=await import('@earendil-works/pi-ai/api/'+protocol);
+  pi.registerProvider(createProvider({id:provider,name:'Authenticated native proxy',baseUrl,
+   models:[{...original,provider,baseUrl}],
+   auth:{apiKey:{name:'Ephemeral proxy capability',resolve:async()=>({auth:{apiKey:credential}})}},
+   api:{stream:api.stream,streamSimple:api.streamSimple}}));
+  return;
+ }
  const baseUrl=process.env.ACYCLIC_E2E_MODEL_URL;
  let endpoint;
  try {endpoint=new URL(baseUrl);}
