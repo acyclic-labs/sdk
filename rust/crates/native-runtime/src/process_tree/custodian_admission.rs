@@ -17,7 +17,7 @@
 use super::custodian_admission_transport::{self as transport, Request};
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
-use std::sync::mpsc::{self, Receiver};
+use tokio::sync::mpsc;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
 
@@ -70,33 +70,44 @@ impl Server {
         Ok(Self { listener, endpoint })
     }
 
-    pub fn start(self, port: HANDLE) -> io::Result<Receiver<Request>> {
-        let (send, receive) = mpsc::channel();
+    pub fn start(
+        self,
+        port: HANDLE,
+    ) -> io::Result<(
+        mpsc::Receiver<Request>,
+        std::thread::JoinHandle<io::Result<()>>,
+    )> {
+        let (send, receive) = mpsc::channel(1);
         let port = port.expose_provenance();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .build()?;
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("custodian-admission".into())
             .spawn(move || {
-                let _ = runtime.block_on(transport::serve(self.listener, move |request| {
-                    send.send(request).map_err(|_| io::ErrorKind::BrokenPipe)?;
-                    // SAFETY: the custodian owns this completion port until exit.
-                    if unsafe {
-                        PostQueuedCompletionStatus(
-                            std::ptr::with_exposed_provenance_mut(port),
-                            0,
-                            ADMIT,
-                            std::ptr::null(),
-                        )
-                    } == 0
-                    {
-                        return Err(io::Error::last_os_error());
+                runtime.block_on(transport::serve(self.listener, move |request| {
+                    let send = send.clone();
+                    async move {
+                        send.send(request)
+                            .await
+                            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+                        // SAFETY: the custodian owns this completion port until exit.
+                        if unsafe {
+                            PostQueuedCompletionStatus(
+                                std::ptr::with_exposed_provenance_mut(port),
+                                0,
+                                ADMIT,
+                                std::ptr::null(),
+                            )
+                        } == 0
+                        {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
                     }
-                    Ok(())
-                }));
+                }))
             })?;
-        Ok(receive)
+        Ok((receive, thread))
     }
 }
 

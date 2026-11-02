@@ -10,7 +10,9 @@
 
 use std::ffi::c_void;
 use std::io;
-use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{
     GENERIC_READ, GENERIC_WRITE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
@@ -128,6 +130,37 @@ impl ExitWait {
             )
         })?;
         Ok(Self { _packet: packet })
+    }
+}
+
+/// An existing custodian producer thread and the kernel packet for its exact
+/// terminal. Its result never depends on that producer posting its own failure.
+pub(super) struct Producer {
+    thread: Option<std::thread::JoinHandle<io::Result<()>>>,
+    _exited: ExitWait,
+}
+
+impl Producer {
+    pub(super) fn new(
+        thread: std::thread::JoinHandle<io::Result<()>>,
+        port: BorrowedHandle<'_>,
+        key: usize,
+    ) -> io::Result<Self> {
+        let exited = ExitWait::new(port, thread.as_handle(), key, 0)?;
+        Ok(Self {
+            thread: Some(thread),
+            _exited: exited,
+        })
+    }
+
+    /// Call only after this producer's kernel exit packet. Its thread has
+    /// already exited, so joining cannot wait on queue credit or client I/O.
+    pub(super) fn finish(&mut self) -> io::Result<()> {
+        self.thread
+            .take()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .join()
+            .map_err(|_| io::Error::other("process custodian producer panicked"))?
     }
 }
 

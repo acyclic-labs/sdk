@@ -1,8 +1,8 @@
 //! The original credited input reader and its independent kernel terminal.
 
-use super::{ExitWait, INPUT_EXITED, OPENED, Opened};
+use super::{INPUT_EXITED, OPENED, Opened, wait::Producer};
 use std::io;
-use std::os::windows::io::{AsHandle as _, BorrowedHandle};
+use std::os::windows::io::BorrowedHandle;
 use std::sync::mpsc;
 use windows_sys::Win32::Foundation::{ERROR_INVALID_DATA, HANDLE};
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
@@ -11,8 +11,7 @@ use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
 /// exit independently of the very completion post that may have failed.
 pub(super) struct Input {
     pub(super) receive: mpsc::Receiver<Opened>,
-    thread: Option<std::thread::JoinHandle<io::Result<()>>>,
-    _exited: ExitWait,
+    producer: Producer,
 }
 
 impl Input {
@@ -37,27 +36,18 @@ impl Input {
     ) -> io::Result<Self> {
         // SAFETY: the original port and thread remain owned through dequeue.
         // Already-exited threads still produce this same terminal packet.
-        let exited = ExitWait::new(
+        let producer = Producer::new(
+            thread,
             unsafe { BorrowedHandle::borrow_raw(port) },
-            thread.as_handle(),
             INPUT_EXITED,
-            0,
         )?;
-        Ok(Self {
-            receive,
-            thread: Some(thread),
-            _exited: exited,
-        })
+        Ok(Self { receive, producer })
     }
 
     /// Called only for the original kernel thread-exit packet. Joining cannot
     /// park on stdin, queue credit or a user-mode completion post.
     pub(super) fn finish(&mut self) -> io::Result<()> {
-        self.thread
-            .take()
-            .ok_or(io::ErrorKind::InvalidData)?
-            .join()
-            .map_err(|_| io::Error::other("process custodian input producer panicked"))?
+        self.producer.finish()
     }
 }
 
@@ -205,16 +195,15 @@ mod tests {
         assert_eq!(packet(&port)?, OPENED);
         let Input {
             receive,
-            thread,
-            _exited: exited,
+            mut producer,
         } = input;
         drop(receive);
         assert_eq!(packet(&port)?, INPUT_EXITED);
         assert_eq!(
-            thread.unwrap().join().unwrap().unwrap_err().kind(),
+            producer.finish().unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
-        drop(exited);
+        drop(producer);
 
         // Inject the actual failing post argument at the original reader,
         // retaining the SAME kernel thread-exit observer on its original port.

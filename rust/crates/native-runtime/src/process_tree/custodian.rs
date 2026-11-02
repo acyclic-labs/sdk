@@ -51,7 +51,7 @@ use windows_sys::Win32::System::Threading::{
 mod input;
 mod wait;
 use input::Input;
-use wait::ExitWait;
+use wait::{ExitWait, Producer};
 
 /// The environment variable that makes a process a custodian.
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
@@ -75,6 +75,8 @@ const MEMBER_EXITED: usize = usize::MAX - 1;
 const OPENED: usize = usize::MAX - 3;
 /// The kernel completion key delivered when the original input thread exits.
 const INPUT_EXITED: usize = usize::MAX - 4;
+/// The kernel completion key for the existing admission service's terminal.
+const ADMISSION_EXITED: usize = usize::MAX - 5;
 
 /// The owner's handle on its running custodian.
 pub(super) struct Custodian {
@@ -726,7 +728,13 @@ fn run(response: &mut Response) -> io::Result<()> {
     )?;
     let admission = super::custodian_admission::Server::bind()?;
     let endpoint = admission.endpoint.clone();
-    let requests = admission.start(port)?;
+    let (mut requests, thread) = admission.start(port)?;
+    // SAFETY: the original port lives through this existing producer's dequeue.
+    let mut admission = Producer::new(
+        thread,
+        unsafe { BorrowedHandle::borrow_raw(port) },
+        ADMISSION_EXITED,
+    )?;
     let mut opened = Input::start(input, port)?;
     let mut output = io::stdout();
     // A partial readiness write must never be followed by a failure frame.
@@ -782,7 +790,7 @@ fn run(response: &mut Response) -> io::Result<()> {
                 None
             }
             super::custodian_admission::ADMIT => {
-                let request = requests.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
+                let request = requests.try_recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
                 // Only a holder of the tree's secret may name its members.
                 let admitted = match state.trees.get(&request.tree) {
                     Some(tree) if admission::matches(&tree.secret, &request.secret) => {
@@ -791,6 +799,13 @@ fn run(response: &mut Response) -> io::Result<()> {
                     _ => Ok(false),
                 };
                 request.complete(admitted)
+            }
+            ADMISSION_EXITED => {
+                admission.finish()?;
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "process custodian admission producer exited",
+                ));
             }
             MEMBER_EXITED => state.members.release(message).inspect(|id| {
                 if let Some(tree) = state.trees.get_mut(id) {
