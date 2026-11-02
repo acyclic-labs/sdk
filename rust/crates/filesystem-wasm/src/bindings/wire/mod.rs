@@ -214,9 +214,7 @@ pub(in crate::bindings) fn browser_path(
     path: &str,
     config: VolumeConfig,
 ) -> Result<NamespacePath, JsValue> {
-    let portable = PortablePath::parse(path, config.limits).map_err(js_error)?;
-    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
-        .map_err(js_error)
+    NamespacePath::from_text_in_profile(path, config.profile, config.limits).map_err(js_error)
 }
 
 pub(in crate::bindings) fn browser_name(
