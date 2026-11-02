@@ -565,6 +565,20 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
             }
             Err(error) => panic!("bound-object control failed: {error}"),
         }
+        // Submit the identical held-object proof through the public owned
+        // boundary while the caller would otherwise execute native work inline.
+        // Physical root operations stay exact; task custody is additional,
+        // invocation-funded work, not a second filesystem proof.
+        let owned = Arc::new(crate::tests::ReadBudgetMeter::new(operations, u64::MAX));
+        let proof = ceiling
+            .clone()
+            .check_attenuation_owned(requested.clone(), Some(owned.clone()))
+            .unwrap();
+        let _inline = crate::InlineBlocking::enter();
+        crate::tests::complete(proof.offloaded()).unwrap();
+        owned.wait_for_memory_retirement().unwrap();
+        assert_eq!(owned.used_operations.load(Ordering::Acquire), operations);
+        assert_eq!(owned.read_attempts.load(Ordering::Acquire), operations);
         let admission = (0..=operations).map(|limit| (limit, None));
         let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
         for (limit, failure) in admission.chain(recording) {
@@ -588,6 +602,29 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
                 failure.unwrap_or(limit),
             );
             assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+            let mut owned = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+            owned.fail_recorded_operation = failure;
+            let owned = Arc::new(owned);
+            let result = ceiling
+                .clone()
+                .check_attenuation_owned(requested.clone(), Some(owned.clone()))
+                .and_then(|proof| crate::tests::complete(proof.offloaded()));
+            if limit == operations && failure.is_none() {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            }
+            owned.wait_for_memory_retirement().unwrap();
+            assert_eq!(
+                owned.used_operations.load(Ordering::Acquire),
+                failure.unwrap_or(limit),
+            );
+            assert_eq!(
+                owned.read_attempts.load(Ordering::Acquire),
+                failure.unwrap_or(limit),
+            );
         }
         for already_cancelled in [true, false] {
             let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -609,6 +646,25 @@ fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
             .unwrap_err();
         assert!(error.to_string().contains("exceeds its authority ceiling"));
         assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+        let denied = Arc::new(denied);
+        let error = requested
+            .clone()
+            .check_attenuation_owned(ceiling.clone(), Some(denied.clone()))
+            .err()
+            .expect("authority increase must refuse before allocating a task");
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(denied.used_allocations.load(Ordering::Acquire), 0);
+        assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+        let unfunded = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
+        unfunded.deny_allocations.store(true, Ordering::Release);
+        assert!(
+            ceiling
+                .clone()
+                .check_attenuation_owned(requested.clone(), Some(unfunded.clone()))
+                .is_err()
+        );
+        assert_eq!(unfunded.read_attempts.load(Ordering::Acquire), 0);
+        assert_eq!(unfunded.memory.load(Ordering::Acquire), 0);
         if allocations != 0 {
             let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
             denied.deny_allocations.store(true, Ordering::Release);

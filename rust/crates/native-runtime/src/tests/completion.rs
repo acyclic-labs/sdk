@@ -1,5 +1,59 @@
 use super::*;
 
+#[test]
+fn offloaded_task_keeps_inline_coordinator_available_for_its_release() -> io::Result<()> {
+    let runtime = crate::task::coordination_runtime()?;
+    let caller = std::thread::current().id();
+    let _inline = InlineBlocking::enter();
+    runtime.block_on(async {
+        let temporary = tempfile::NamedTempFile::new()?;
+        std::fs::write(temporary.path(), b"abc")?;
+        let mut file = temporary.reopen()?;
+        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
+        let body_meter = Arc::clone(&meter);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, blocked) = mpsc::channel();
+        let task = run_blocking_io(
+            move || -> io::Result<[u8; 3]> {
+                // Refuse the counterfactual inline path before waiting for
+                // its same-thread producer, so a regression fails, not hangs.
+                if std::thread::current().id() == caller {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "native operation suppressed its coordinator release",
+                    ));
+                }
+                entered.send(()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "coordinator receiver lost")
+                })?;
+                blocked.recv().map_err(io::Error::other)?;
+                let mut bytes = [0; 3];
+                body_meter.admit_read(bytes.len())?;
+                file.read_exact(&mut bytes)?;
+                body_meter.record_read(bytes.len())?;
+                Ok(bytes)
+            },
+            Some((meter.clone(), false)),
+        )?;
+        let (result, released) = tokio::join!(task.offloaded(), async {
+            started.await.map_err(io::Error::other)?;
+            assert!(crate::blocking::inline_blocking_allowed());
+            release.send(()).map_err(io::Error::other)
+        });
+        released?;
+        assert_eq!(result??, *b"abc");
+        meter.wait_for_memory_retirement()?;
+        assert_eq!(meter.read.load(Ordering::Acquire), 3);
+        // The same original task without offloaded still honors this caller's
+        // inline policy; offloading did not mutate the thread's ambient policy.
+        assert_eq!(
+            run_blocking_io(|| std::thread::current().id(), None)?.await?,
+            caller
+        );
+        Ok(())
+    })
+}
+
 fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
     let output = crate::process_output(
         crate::ProcessCommand::new(std::env::current_exe()?)

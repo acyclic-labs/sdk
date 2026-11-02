@@ -338,6 +338,31 @@ impl ExecutionGrant {
         self.check_roots(requested, meter).map_err(failure)
     }
 
+    /// Prepares the same native root proof with owned grants and accounting.
+    /// Authority increases refuse before worker or allocation admission. The
+    /// original worker retains both grants and the meter through physical
+    /// completion even if its observer disappears. Use
+    /// [`crate::NativeCompletion::offloaded`] to keep an inline-capable caller
+    /// runnable while this proof waits on native filesystem operations.
+    pub fn check_attenuation_owned(
+        self,
+        requested: Self,
+        meter: Option<Arc<dyn crate::NativeReadMeter>>,
+    ) -> io::Result<crate::NativeCompletion<()>> {
+        self.check_authority(requested.access, &requested.policy.network)?;
+        let proof_meter = meter.clone();
+        crate::task_completion(
+            move || {
+                self.check_roots(&requested, proof_meter.as_deref())
+                    .map_err(failure)
+            },
+            meter,
+            None,
+            None,
+            &crate::workers::BLOCKING_WORKERS,
+        )
+    }
+
     fn check_authority(
         &self,
         access: ExecutionAccess,

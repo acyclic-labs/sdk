@@ -301,19 +301,24 @@ impl ToolExecutor for CheckoutTools {
         _context: &ToolContext,
         grant: &acyclic_native_runtime::execution::ExecutionGrant,
         work: crate::NativeWork<'_>,
-    ) -> Result<()> {
+    ) -> Result<Option<acyclic_native_runtime::NativeCompletion<()>>> {
         if invocation.name != crate::tools::shell::PLATFORM.name {
             return Err(Error::Unsupported(
                 "checkout physical grants apply to shell execution; recovery: authorize file operations through their filesystem grants".into(),
             ));
         }
-        if let Some(ceiling) = &self.execution_grant {
-            let meter = work.map(acyclic_fs::NativeMaterializationWork::runtime_meter);
-            ceiling
-                .check_attenuation_controlled(grant, meter.as_deref())
-                .map_err(Error::process_io)?;
-        }
-        Ok(())
+        self.execution_grant
+            .as_ref()
+            .map(|ceiling| {
+                ceiling
+                    .clone()
+                    .check_attenuation_owned(
+                        grant.clone(),
+                        work.map(acyclic_fs::NativeMaterializationWork::runtime_meter),
+                    )
+                    .map_err(Error::process_io)
+            })
+            .transpose()
     }
 
     fn read_path<'a>(

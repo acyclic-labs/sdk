@@ -694,18 +694,25 @@ impl<'io> StockExecution<'io> {
                     "stock policy changed during physical admission".into(),
                 ));
             }
-            let admitted = selected.and_then(|grant| {
-                if let Some(grant) = grant {
+            let admitted = async {
+                if let Some(grant) = selected? {
                     let context = context.ok_or_else(|| Error::Unauthorized(
                         "physical admission requires the original task context; recovery: bind the task before dispatch".into(),
                     ))?;
-                    tool.executor.authorize_execution_grant(
+                    if let Some(proof) = tool.executor.authorize_execution_grant(
                         invocation, context, &grant, self.native_work(),
-                    )?;
+                    )? {
+                        proof.offloaded().await.map_err(Error::process_io)?;
+                        if !identity_matches()? {
+                            return Err(Error::Conflict(
+                                "stock policy changed during native grant proof".into(),
+                            ));
+                        }
+                    }
                     context.execution_grant = Some(grant);
                 }
                 Ok(())
-            });
+            }.await;
             if let Err(error) = admitted {
                 return if error.is_tool_failure() {
                     Ok(Some(PolicyStop::Failed(error)))

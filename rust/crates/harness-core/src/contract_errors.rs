@@ -439,20 +439,14 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn process_io(error: std::io::Error) -> Self {
         Self::process_exit(error, None)
     }
 
     /// Classifies a process failure that may have observed an exit status.
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn process_exit(error: std::io::Error, exit_code: Option<i32>) -> Self {
         if let Some(refusal) = error.get_ref().and_then(|cause| {
             cause.downcast_ref::<acyclic_native_runtime::execution::ExecutionRefusal>()

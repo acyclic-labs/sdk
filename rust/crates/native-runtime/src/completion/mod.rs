@@ -53,6 +53,20 @@ impl NativeCompletion<Vec<Bytes>> {
 }
 
 impl<T> NativeCompletion<T> {
+    /// Runs this operation through its shared native workers, including when
+    /// the polling thread admits inline blocking work.
+    ///
+    /// The caller's inline policy is restored before every pending return.
+    /// Operation admission, result ownership and cancellation retain this
+    /// completion's original producer and terminal state.
+    pub async fn offloaded(mut self) -> io::Result<T> {
+        std::future::poll_fn(|context| {
+            let _deferred = crate::InlineBlocking::defer();
+            Pin::new(&mut self).poll(context)
+        })
+        .await
+    }
+
     pub(crate) fn pending(
         job: NativeJob,
         state: Arc<CompletionMutex<CompletionState<T>>>,

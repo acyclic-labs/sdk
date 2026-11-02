@@ -100,6 +100,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// at its original launch boundary and preserve any narrower host ceiling.
     /// Native checks must use the caller's original work, without an ordinary
     /// fallback when its operation, allocation or cancellation checks refuse.
+    /// A pending native proof owns its inputs and accounting through physical
+    /// completion. `None` means admission is already complete. Stock execution
+    /// offloads the returned completion and rechecks policy before dispatch.
     #[cfg(not(target_arch = "wasm32"))]
     fn authorize_execution_grant(
         &self,
@@ -107,7 +110,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         _context: &crate::runtime::ToolContext,
         _grant: &acyclic_native_runtime::execution::ExecutionGrant,
         work: crate::NativeWork<'_>,
-    ) -> Result<()> {
+    ) -> Result<Option<acyclic_native_runtime::NativeCompletion<()>>> {
         #[cfg(feature = "filesystem")]
         if work.is_some() {
             return Err(Error::NativeBoundary {

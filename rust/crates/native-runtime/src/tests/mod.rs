@@ -204,7 +204,7 @@ impl ReadBudgetMeter {
     /// After the original operation ends, await its final allocation release.
     /// The release callback and this registration share one mutex, including
     /// the already-retired case, so neither ordering loses the terminal event.
-    fn wait_for_memory_retirement(&self) -> io::Result<()> {
+    pub(crate) fn wait_for_memory_retirement(&self) -> io::Result<()> {
         let receiver = {
             let mut retired = self
                 .memory_retired

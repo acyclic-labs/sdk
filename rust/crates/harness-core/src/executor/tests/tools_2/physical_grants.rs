@@ -4,11 +4,14 @@ use super::*;
 use crate::runtime::ToolContext;
 use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant, ExecutionNetwork};
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
+use std::sync::atomic::AtomicBool;
 
 struct NativeTool {
     workspace: std::path::PathBuf,
     supported: bool,
     calls: AtomicUsize,
+    invalidate_policy: bool,
+    policy_changed: AtomicBool,
 }
 
 impl ToolExecutor for NativeTool {
@@ -16,11 +19,17 @@ impl ToolExecutor for NativeTool {
         &self,
         _: &ToolInvocation,
         _: &ToolContext,
-        _: &ExecutionGrant,
+        grant: &ExecutionGrant,
         _: crate::NativeWork<'_>,
-    ) -> Result<()> {
+    ) -> Result<Option<acyclic_native_runtime::NativeCompletion<()>>> {
         if self.supported {
-            Ok(())
+            let proof = grant
+                .clone()
+                .check_attenuation_owned(grant.clone(), None)
+                .map_err(Error::process_io)?;
+            self.policy_changed
+                .store(self.invalidate_policy, Ordering::SeqCst);
+            Ok(Some(proof))
         } else {
             Err(Error::Unsupported(
                 "executor cannot enforce this grant".into(),
@@ -98,7 +107,11 @@ impl ToolPolicy for PhysicalPolicy {
         ComponentIdentity {
             name: "test.physical".into(),
             version: "1".into(),
-            digest: [1; 32],
+            digest: [if self.executor.policy_changed.load(Ordering::SeqCst) {
+                2
+            } else {
+                1
+            }; 32],
         }
     }
 
@@ -149,12 +162,13 @@ impl ToolPolicy for PhysicalPolicy {
 
 #[tokio::test]
 async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Result<()> {
-    for (access, deny, supported) in [
-        (None, false, true),
-        (Some(ExecutionAccess::ReadOnly), false, true),
-        (Some(ExecutionAccess::WorkspaceWrite), false, true),
-        (Some(ExecutionAccess::WorkspaceWrite), true, true),
-        (Some(ExecutionAccess::WorkspaceWrite), false, false),
+    for (access, deny, supported, invalidate_policy) in [
+        (None, false, true, false),
+        (Some(ExecutionAccess::ReadOnly), false, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), true, true, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, false, false),
+        (Some(ExecutionAccess::WorkspaceWrite), false, true, true),
     ] {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
@@ -164,6 +178,8 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
             workspace: workspace.clone(),
             supported,
             calls: AtomicUsize::new(0),
+            invalidate_policy,
+            policy_changed: AtomicBool::new(false),
         });
         let grant = access.map(|access| {
             ExecutionGrant::new(
@@ -211,7 +227,18 @@ async fn policy_grants_reach_native_dispatch_and_refusals_never_launch() -> Resu
             selected_context: None,
         };
         let journal = Journal::default();
-        let output = executor.execute(input.clone(), &journal).await?;
+        let result = executor.execute(input.clone(), &journal).await;
+        if invalidate_policy {
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            assert_eq!(native.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("outside")).unwrap(),
+                "original"
+            );
+            assert!(!workspace.join("inside").exists());
+            continue;
+        }
+        let output = result?;
         let dispatched = !deny && supported;
         let requests = provider.requests();
         let refusal = super::super::tools_1::tool_error_text(&requests[1].messages, "call-1");

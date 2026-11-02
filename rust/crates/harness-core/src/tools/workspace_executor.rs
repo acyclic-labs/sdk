@@ -101,7 +101,7 @@ impl ToolExecutor for WorkspaceExecutor {
         context: &ToolContext,
         grant: &acyclic_native_runtime::execution::ExecutionGrant,
         work: crate::NativeWork<'_>,
-    ) -> Result<()> {
+    ) -> Result<Option<acyclic_native_runtime::NativeCompletion<()>>> {
         target(context, invocation, work)?
             .executor()
             .authorize_execution_grant(invocation, context, grant, work)
