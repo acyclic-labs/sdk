@@ -396,27 +396,60 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
 async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
-    for args in [
-        vec!["exec"],
-        vec!["--output-format", "jsonl"],
-        vec!["--output-format", "jsonl", "sessions"],
-        vec!["--output-schema", "missing.json", "exec", "hello"],
-        vec!["--output-format", "jsonl", "--output", "-", "exec", "hello"],
-        vec![
-            "--output-format",
-            "jsonl",
-            "--output",
-            "shared.json",
-            "--event-cursor",
-            "shared.json",
-            "exec",
-            "hello",
-        ],
+    for (args, diagnostic) in [
+        (vec!["exec"], "recovery: graphcoder"),
+        (vec!["--output-format", "jsonl"], "no task or JSONL input"),
+        (
+            vec!["--event-cursor", "cursor.json", "exec", "hello"],
+            "--operation",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "sessions",
+            ],
+            "requires an execution",
+        ),
+        (
+            vec!["--output-schema", "missing.json", "exec", "hello"],
+            "requires JSONL output",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "--output",
+                "-",
+                "exec",
+                "hello",
+            ],
+            "stdout is reserved for events",
+        ),
+        (
+            vec![
+                "--operation",
+                "invalid-options",
+                "--output-format",
+                "jsonl",
+                "--output",
+                "shared.json",
+                "--event-cursor",
+                "shared.json",
+                "exec",
+                "hello",
+            ],
+            "must name distinct files",
+        ),
     ] {
         let refused = graphcoder(&fixture, &model.catalog, args, "").await;
         assert!(!refused.status.success());
         assert!(
-            String::from_utf8_lossy(&refused.stderr).contains("recovery: graphcoder"),
+            String::from_utf8_lossy(&refused.stderr).contains(diagnostic),
             "{}",
             String::from_utf8_lossy(&refused.stderr)
         );
