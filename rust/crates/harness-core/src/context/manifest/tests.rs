@@ -103,6 +103,14 @@ proptest! {
         selected.dedup();
         let manifest = ContextManifest { discovery: discovery.clone(), selected_skills: selected, ..Default::default() };
         prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        if unique {
+            let selection = manifest.select_observed(Limits::default(), None)?;
+            prop_assert_eq!(selection.positions.len(), manifest.selected_skills.len());
+            for (ordinal, [selected, position]) in selection.positions.into_iter().enumerate() {
+                prop_assert_eq!(selected, ordinal);
+                prop_assert_eq!(&manifest.discovery.skills[position].name, &manifest.selected_skills[ordinal]);
+            }
+        }
         if let Some(first) = discovery.skills.first() {
             let mut other = first.clone();
             other.source.path = "skills/other/SKILL.md".into();
@@ -124,6 +132,13 @@ proptest! {
         discovery.skills.dedup_by(|a, b| a.name == b.name);
         let manifest = ContextManifest { discovery, selected_skills: names, ..Default::default() };
         prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        if unique {
+            let selection = manifest.select_observed(Limits::default(), None)?;
+            for (ordinal, [selected, position]) in selection.positions.into_iter().enumerate() {
+                prop_assert_eq!(selected, ordinal);
+                prop_assert_eq!(&manifest.discovery.skills[position].name, &manifest.selected_skills[ordinal]);
+            }
+        }
     }
 
     // Property: the manifest round-trips its immutable sources, and
@@ -221,6 +236,104 @@ proptest! {
         }
         prop_assert!(tools.get(name, Some(revision), None)?.is_some());
     }
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn selected_catalog_positions_keep_only_their_original_funding() -> Result<()> {
+    use crate::executor::{stock_retire_text, stock_string_copy};
+
+    fn live(io: &PreparationIo) -> u64 {
+        match io {
+            PreparationIo::Owned { work, .. } => {
+                work.lock().unwrap().1.as_ref().unwrap().live_bytes()
+            }
+            PreparationIo::Native { work, .. } => work.live_allocation_bytes(),
+        }
+    }
+
+    for native in [false, true] {
+        for count in [1, 64, 1024] {
+            let mut skills = Vec::new();
+            for position in 0..count {
+                let mut entry = skill(format!("skills/x{position}/SKILL.md"))?;
+                entry.name = format!("skill{position}");
+                skills.push(entry);
+            }
+            let mut manifest = ContextManifest {
+                selected_skills: skills
+                    .iter()
+                    .rev()
+                    .map(|skill| skill.name.clone())
+                    .collect(),
+                discovery: DiscoveredContext {
+                    instructions: Vec::new(),
+                    skills,
+                },
+                ..Default::default()
+            };
+            let limits = Limits {
+                render_bytes: 1_048_576,
+                context_messages: count + 1,
+                ..Default::default()
+            };
+            let observed = crate::test_support::accounted::accounted(
+                native,
+                4_194_304,
+                false,
+                |io| -> Result<()> {
+                    let sibling = stock_string_copy("unrelated selection", Some(io))?;
+                    let sibling_bytes = sibling.capacity() as u64;
+                    let before = live(io);
+                    let selection = manifest.select_observed(limits, Some(io))?;
+                    let storage =
+                        (selection.positions.capacity() * std::mem::size_of::<[usize; 2]>()) as u64;
+                    assert_eq!(
+                        live(io),
+                        before + storage,
+                        "selection scratch lost its original custody"
+                    );
+                    assert_eq!(io.owned_bytes()?, sibling_bytes);
+                    for (ordinal, [selected, position]) in selection.positions.iter().enumerate() {
+                        assert_eq!(*selected, ordinal);
+                        assert_eq!(*position, count - ordinal - 1);
+                    }
+                    drop(selection);
+                    assert_eq!(
+                        live(io),
+                        before,
+                        "selection retirement retained scratch or released its sibling"
+                    );
+
+                    manifest.selected_skills.push("missing-selection".into());
+                    assert!(manifest.select_observed(limits, Some(io)).is_err());
+                    assert_eq!(live(io), before, "refused selection retained scratch");
+                    manifest.selected_skills.pop();
+
+                    let selection = manifest.select_observed(limits, Some(io))?;
+                    io.cancellation().cancel();
+                    drop(selection);
+                    assert_eq!(
+                        live(io),
+                        before,
+                        "cancellation prevented original selection retirement"
+                    );
+                    stock_retire_text(sibling, Some(io))?;
+                    Ok(())
+                },
+            )
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+            observed.0?;
+            assert_eq!(observed.2, 0);
+            if native {
+                assert_eq!(
+                    observed.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]

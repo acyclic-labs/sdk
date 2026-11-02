@@ -41,13 +41,11 @@ impl ContextManifest {
                 &bytes,
                 ErrorCode::Invalid,
             )?)?,
-            None => Self::decode(&bytes, limits)?,
+            None => Self::decode_value(&bytes, limits)?,
         };
         #[cfg(not(feature = "filesystem"))]
-        let manifest = Self::decode(&bytes, limits)?;
-        if io.is_some() {
-            manifest.validate_observed(limits, io)?;
-        }
+        let manifest = Self::decode_value(&bytes, limits)?;
+        let selection = manifest.select_observed(limits, io)?;
         drop(bytes);
         tools.pin_model_definitions(&manifest.tools, io)?;
         let mut messages = Vec::new();
@@ -82,19 +80,8 @@ impl ContextManifest {
                 )
             })?;
         crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
-        for name in manifest.selected_skills {
-            let skill = manifest
-                .discovery
-                .skills
-                .iter()
-                .find(|skill| skill.name == name)
-                .ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        ErrorCode::NotFound,
-                        "manifest selected skill disappeared",
-                    )
-                })?;
+        for [_, position] in &selection.positions {
+            let skill = &manifest.discovery.skills[*position];
             let message = skill
                 .invoke_observed(reader, limits.file_bytes.min(remaining), io)
                 .await?;
@@ -110,6 +97,7 @@ impl ContextManifest {
             })?;
             messages.push(message);
         }
+        drop(selection);
         let key = crate::executor::stock_string_copy("context.manifest", io)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {

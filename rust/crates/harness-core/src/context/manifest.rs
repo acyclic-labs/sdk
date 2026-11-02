@@ -9,6 +9,14 @@ use crate::{
 
 mod binding;
 
+/// Original catalog positions in invocation order, with their admission custody.
+/// Storage dies before the claim that funded it.
+struct ManifestSelection {
+    positions: Vec<[usize; 2]>,
+    #[cfg(feature = "filesystem")]
+    _custody: Option<crate::filesystem::PreparationCustody>,
+}
+
 /// Pinned instructions, available skills, selected invocations and exact tool schemas.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -61,8 +69,16 @@ impl ContextManifest {
     }
 
     fn validate_observed(&self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        self.select_observed(limits, io).map(drop)
+    }
+
+    fn select_observed(
+        &self,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<ManifestSelection> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
-        crate::executor::with_history_io(io, |work| -> Result<()> {
+        crate::executor::with_history_io(io, |work| -> Result<ManifestSelection> {
             limits.validate(work)?;
             crate::executor::json::json_byte_length(self, limits.render_bytes, work)?;
             self.discovery.validate(work)?;
@@ -79,17 +95,28 @@ impl ContextManifest {
                 tool.validate(work)?;
             }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let mut selected = crate::core::reserve_copy_vector::<(&str, bool)>(
+            let mut names = crate::core::reserve_copy_vector::<&str>(self.tools.len(), &mut quota)?;
+            names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
+            names.sort_unstable();
+            if names.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Conflict,
+                    "manifest repeats a tool name",
+                ));
+            }
+            drop(names);
+            quota.replace(0)?;
+            let mut selected = crate::core::reserve_copy_vector::<[usize; 2]>(
                 self.selected_skills.len(),
                 &mut quota,
             )?;
-            selected.extend(
-                self.selected_skills
-                    .iter()
-                    .map(|name| (name.as_str(), false)),
-            );
-            selected.sort_unstable_by_key(|(name, _)| *name);
-            if selected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            selected.extend((0..self.selected_skills.len()).map(|index| [index, usize::MAX]));
+            selected.sort_unstable_by_key(|entry| &self.selected_skills[entry[0]]);
+            if selected
+                .windows(2)
+                .any(|pair| self.selected_skills[pair[0][0]] == self.selected_skills[pair[1][0]])
+            {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Conflict,
@@ -97,7 +124,7 @@ impl ContextManifest {
                 ));
             }
             let mut matched = 0;
-            for skill in &self.discovery.skills {
+            for (position, skill) in self.discovery.skills.iter().enumerate() {
                 if skill.source.path.len() > limits.path_bytes {
                     return Err(stock_boundary(
                         io,
@@ -105,11 +132,10 @@ impl ContextManifest {
                         "manifest skill path exceeds path bound",
                     ));
                 }
-                if let Ok(index) =
-                    selected.binary_search_by_key(&skill.name.as_str(), |(name, _)| *name)
-                {
-                    let (_, seen) = &mut selected[index];
-                    if std::mem::replace(seen, true) {
+                if let Ok(index) = selected.binary_search_by_key(&skill.name.as_str(), |entry| {
+                    self.selected_skills[entry[0]].as_str()
+                }) {
+                    if std::mem::replace(&mut selected[index][1], position) != usize::MAX {
                         return Err(stock_boundary(
                             io,
                             ErrorCode::Conflict,
@@ -124,18 +150,6 @@ impl ContextManifest {
                     io,
                     ErrorCode::NotFound,
                     "manifest selected skill is not in its catalog",
-                ));
-            }
-            drop(selected);
-            quota.replace(0)?;
-            let mut names = crate::core::reserve_copy_vector::<&str>(self.tools.len(), &mut quota)?;
-            names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
-            names.sort_unstable();
-            if names.windows(2).any(|pair| pair[0] == pair[1]) {
-                return Err(stock_boundary(
-                    io,
-                    ErrorCode::Conflict,
-                    "manifest repeats a tool name",
                 ));
             }
             let count = self
@@ -155,7 +169,14 @@ impl ContextManifest {
                     "manifest exceeds context message bound",
                 ));
             }
-            Ok(())
+            selected.sort_unstable_by_key(|entry| entry[0]);
+            #[cfg(feature = "filesystem")]
+            let custody = quota.take_owned_custody()?;
+            Ok(ManifestSelection {
+                positions: selected,
+                #[cfg(feature = "filesystem")]
+                _custody: custody,
+            })
         })
     }
 
@@ -167,6 +188,12 @@ impl ContextManifest {
 
     /// Decodes bounded, untrusted JSON through the existing lexical admission boundary.
     pub fn decode(bytes: &[u8], limits: Limits) -> Result<Self> {
+        let manifest = Self::decode_value(bytes, limits)?;
+        manifest.validate(limits)?;
+        Ok(manifest)
+    }
+
+    fn decode_value(bytes: &[u8], limits: Limits) -> Result<Self> {
         use crate::executor::json::{JsonBounds, json_from_slice_bounded};
         limits.validate(&mut None)?;
         let manifest: Self = json_from_slice_bounded(
@@ -181,7 +208,6 @@ impl ContextManifest {
             None,
             &mut |_| Ok(()),
         )?;
-        manifest.validate(limits)?;
         Ok(manifest)
     }
 
