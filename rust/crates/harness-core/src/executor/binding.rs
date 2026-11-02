@@ -32,9 +32,9 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    /// Compaction inside a task context publishes through the task's private
-    /// summary writer. A context without one rejects the turn at entry, before
-    /// any model work, instead of failing when the first summary is due.
+    /// Compaction inside a task context requires its private summary authority.
+    /// A context without it rejects the turn before any model work. The summary
+    /// object itself uses the journal's shared immutable publication path.
     fn verify_summary_destination(&self) -> Result<()> {
         self.compaction()?;
         Ok(())

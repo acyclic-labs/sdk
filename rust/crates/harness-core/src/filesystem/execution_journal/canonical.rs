@@ -71,13 +71,35 @@ mod tests {
         context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
         executor::{Executor, StockExecutor, TurnInput},
         model::{Model, ModelContent, ModelMessage, ModelRole},
+        runtime::RuntimeScope,
         test_support::{ScriptedModelProvider, ScriptedTurn},
         tool::ToolRegistry,
     };
 
     #[tokio::test]
-    async fn selected_compaction_publishes_only_the_signed_working_cut() -> Result<()> {
+    async fn task_inline_compaction_publishes_summary_and_completes_response() -> Result<()> {
         let (journal, _issuer) = super::super::test_support::journal().await?;
+        let private = crate::runtime::test_context::private_volume(7)?;
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new([
+                "model:generate".to_owned(),
+                private.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Limits::default(),
+        )?;
+        let context = crate::runtime::test_context::agent_context(
+            scope.clone(),
+            Some(crate::runtime::ContentBindings {
+                volume: private.clone(),
+                reader: Arc::new(crate::runtime::test_context::NoReads),
+                // The private writer admits the task, but summary storage must
+                // use the original journal rather than this separate publisher.
+                writer: Some(Arc::new(crate::runtime::test_context::PrivateVolume(
+                    private,
+                ))),
+            }),
+        )?;
+        let operation_id = OperationId::new();
         let selected = crate::projection::SelectedModelContext {
             selection: crate::conversation::ModelContextSelection {
                 conversation_revision: 3,
@@ -139,9 +161,16 @@ mod tests {
                 recent_tokens: 1,
                 ..Default::default()
             },
-        ));
+        ))
+        .with_tool_authority(
+            scope,
+            Arc::new(crate::test_support::FixedToolPolicy::new(
+                crate::runtime::ToolPolicyDecision::Allow,
+            )?),
+        )?
+        .with_task_context(&context, operation_id)?;
         let input = TurnInput {
-            operation_id: OperationId::new(),
+            operation_id,
             input: selected.messages.last().unwrap().content.clone(),
             selected_context: Some(selected),
             max_steps: 3,
@@ -164,9 +193,38 @@ mod tests {
                 _ => None,
             })
             .expect("selected history was compacted");
-        let ExecutionEvent::ContextCompacted { projection, .. } = event else {
+        let ExecutionEvent::ContextCompacted {
+            projection,
+            compaction,
+            ..
+        } = event
+        else {
             unreachable!()
         };
+        let proof = crate::executor::load_json::<crate::context::CompactionReference>(
+            &journal, compaction, None,
+        )
+        .await?
+        .0;
+        let summary = proof.summary.expect("inline summary publication");
+        assert_eq!(summary.output.volume(), &journal.volume);
+        assert!(
+            journal
+                .authenticate_compaction_summary(&summary, None)?
+                .await?
+        );
+        assert_eq!(
+            journal.load(&summary.output, None)?.await?.as_ref(),
+            b"bounded summary"
+        );
+        let mut changed = summary.clone();
+        changed.source_digest[0] ^= 1;
+        assert!(
+            !journal
+                .authenticate_compaction_summary(&changed, None)?
+                .await?,
+            "changed source inherited the original publication"
+        );
         let (mut projected, _) = crate::executor::load_response_projection(
             &journal,
             projection,
