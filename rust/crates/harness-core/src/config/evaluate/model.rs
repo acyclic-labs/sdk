@@ -138,7 +138,13 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     [
                         "Number.isFinite = () => true; export default NaN;",
                         "Object.getPrototypeOf = () => Object.prototype; export default new Map();",
-                    ][bytes.get(1).copied().unwrap_or_default() as usize % 2]
+                        "Object.keys = () => []; export default {bad: NaN};",
+                        "Array.prototype.map = () => []; export default [NaN];",
+                        "export default () => { Number.isFinite = () => true; return NaN; };",
+                        "export default {nested: () => { Number.isFinite = () => true; return NaN; }};",
+                        "export default () => { Object.getPrototypeOf = () => Object.prototype; return new Map(); };",
+                        "export default {nested: () => { Object.getPrototypeOf = () => Object.prototype; return new Map(); }};",
+                    ][bytes.get(1).copied().unwrap_or_default() as usize % 8]
                         .to_owned(),
                     Value::Null,
                     Form::Value,
@@ -242,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
         for mode in 0..12 {
-            let variants = if mode == 4 { 8 } else { 4 };
+            let variants = if matches!(mode, 4 | 10) { 8 } else { 4 };
             for variant in 0..variants {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
             }
