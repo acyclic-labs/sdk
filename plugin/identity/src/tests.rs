@@ -665,6 +665,20 @@ fn credentials_are_exclusive_origin_bound_and_private() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("identity.json");
     let store = Store::open(&path).expect("store");
+    assert!(
+        store
+            .login_agent("https://example.test")
+            .expect("missing agent")
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .read("https://example.test")
+            .err()
+            .expect("missing credentials")
+            .code,
+        "login_required"
+    );
     assert_eq!(
         Store::open(&path).err().expect("busy").code,
         "credentials_busy"
@@ -690,6 +704,39 @@ fn credentials_are_exclusive_origin_bound_and_private() {
                 &private_file::open(private_path, false).expect("private credential entry")
             )
             .expect("credential permissions")
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let original = fs::read(&path).expect("original credentials");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("public replacement");
+        // Unchecked reads still accept these bytes after the store opened.
+        assert_eq!(fs::read(&path).expect("unchecked read"), original);
+        assert!(store.read("https://example.test").is_err());
+        assert!(store.login_agent("https://example.test").is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("restore private file");
+
+        let held = directory.path().join("original.json");
+        fs::rename(&path, &held).expect("move original");
+        symlink(&held, &path).expect("replace name with alias");
+        assert_eq!(fs::read(&path).expect("unchecked alias read"), original);
+        assert!(store.read("https://example.test").is_err());
+        assert!(store.login_agent("https://example.test").is_err());
+        fs::remove_file(&path).expect("remove alias");
+        symlink(directory.path().join("missing.json"), &path).expect("dangling alias");
+        // An existence probe hides a dangling alias as an absent credential.
+        assert!(!path.exists());
+        assert!(store.login_agent("https://example.test").is_err());
+        fs::remove_file(&path).expect("remove dangling alias");
+        fs::rename(&held, &path).expect("restore original");
+        assert_eq!(
+            store
+                .read("https://example.test")
+                .expect("private credentials")
+                .refresh_token,
+            "refresh"
         );
     }
     drop(store);

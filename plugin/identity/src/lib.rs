@@ -228,7 +228,6 @@ impl Store {
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
-        private_file::validate_destination(&self.path)?;
         let bytes = private_file::read(&self.path, u64::MAX - 1).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 Error::new("login_required", "run acyclic-plugin login first")
@@ -252,11 +251,11 @@ impl Store {
     }
 
     fn login_agent(&self, endpoint: &str) -> Result<Option<agent::Agent>, Error> {
-        if !self.path.exists() {
-            return Ok(None);
-        }
-        private_file::validate_destination(&self.path)?;
-        let bytes = private_file::read(&self.path, u64::MAX - 1)?;
+        let bytes = match private_file::read(&self.path, u64::MAX - 1) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         let value: Value = serde_json::from_slice(&bytes.0).map_err(|_| {
             Error::new(
                 "credential_error",
