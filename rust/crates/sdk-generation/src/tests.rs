@@ -617,13 +617,32 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
         .run(&bytes, |bytes| check(&bytes))
         .unwrap();
     for length in [
-        0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 65535, 65536, 65537,
+        0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 16383, 16384, 16385, 65535, 65536,
+        65537,
     ] {
         let bytes = (0..length)
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
         check(&bytes).unwrap();
     }
+    let copied = root.join("copied.bin");
+    let mut input = fs::File::open(&path).unwrap();
+    let mut output = fs::File::create(&copied).unwrap();
+    let (digest, length) = copy_and_hash(&mut input, &mut output, 65537, "member-byte").unwrap();
+    assert_eq!(length, 65537);
+    assert_eq!(digest, sha256_file(&path).unwrap());
+    assert_eq!(fs::read(&copied).unwrap(), fs::read(&path).unwrap());
+    drop((input, output));
+    let mut input = fs::File::open(&path).unwrap();
+    let mut output = fs::File::create(&copied).unwrap();
+    let error = copy_and_hash(&mut input, &mut output, 16384, "member-byte").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "registry archive member-byte limit exceeded"
+    );
+    assert_eq!(output.metadata().unwrap().len(), 16384);
+    drop((input, output));
     root_directory.close().unwrap();
 }
 

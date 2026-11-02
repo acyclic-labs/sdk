@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Read;
 
 pub(super) fn rustdoc_files(dir: &Path) -> Result<Vec<PathBuf>, CliError> {
     let mut result = fs::read_dir(dir)
@@ -154,10 +155,42 @@ pub(super) fn format_digest(prefixes: &[&str], digest: &[u8], suffix: &str) -> S
     result
 }
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    let bytes = fs::read(path).map_err(io_error)?;
+    let mut file = fs::File::open(path).map_err(io_error)?;
+    let (digest, _bytes) =
+        copy_and_hash(&mut file, &mut std::io::sink(), u64::MAX, "file-byte").map_err(io_error)?;
     #[cfg(test)]
-    HASH_BYTES.set(HASH_BYTES.get() + bytes.len() as u64);
-    Ok(sha256_bytes(&bytes))
+    HASH_BYTES.set(HASH_BYTES.get() + _bytes);
+    Ok(digest)
+}
+
+pub(super) fn copy_and_hash<R: Read + ?Sized, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    limit: u64,
+    label: &str,
+) -> std::io::Result<(String, u64)> {
+    let mut buffer = [0; 16 * 1024];
+    let mut remaining = limit;
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        if read as u64 > remaining {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("registry archive {label} limit exceeded"),
+            ));
+        }
+        remaining -= read as u64;
+        digest.update(&buffer[..read]);
+        writer.write_all(&buffer[..read])?;
+    }
+    Ok((
+        format_digest(&["sha256:"], digest.finish().as_ref(), ""),
+        limit - remaining,
+    ))
 }
 
 #[cfg(test)]
