@@ -350,6 +350,10 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
 }
 
 impl Snapshot {
+    fn outcome_counts(&self) -> Option<[u64; 3]> {
+        (!self.overflowed).then_some([self.ok, self.err, self.incomplete])
+    }
+
     fn sample(&mut self, outcome: Outcome, nanos: u128) {
         let count = match outcome {
             Outcome::Ok => &mut self.ok,
@@ -569,6 +573,7 @@ mod tests {
                 }
                 snapshot.sample(outcome, 0);
                 assert!(snapshot.overflowed);
+                assert_eq!(snapshot.outcome_counts(), None);
                 assert_eq!(slo.evaluate(&snapshot).unwrap().success, None);
                 // The former silent saturation invents a decisive verdict.
                 snapshot.overflowed = false;
@@ -711,6 +716,13 @@ impl fmt::Display for QueryError {
 impl std::error::Error for QueryError {}
 
 impl Query {
+    /// Copy successful, failed and incomplete totals, in that order, without
+    /// cloning the operation name or histogram or consuming a completion event.
+    /// Returns `None` when this cohort's fixed counters lost precision.
+    pub fn outcome_counts(&self) -> Option<[u64; 3]> {
+        self.receiver.borrow().outcome_counts()
+    }
+
     /// The current bounded projection, without consuming a completion event.
     pub fn snapshot(&self) -> Snapshot {
         self.receiver.borrow().clone()

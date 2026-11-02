@@ -191,7 +191,6 @@ fn main() {
 }
 
 fn run() -> Result {
-    use sha2::{Digest as _, Sha256};
     let options = Options::parse()?;
     let recovery = options.recovery();
     if options.proofs {
@@ -202,10 +201,9 @@ fn run() -> Result {
     }
     report::check_observations()?;
     std::fs::create_dir(&options.root)?;
-    let executable = std::fs::read(std::env::current_exe()?)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "identity", "source": options.source,
-        "executable_sha256": hex::encode(Sha256::digest(&executable)),
+        "executable_sha256": report::executable_sha256()?,
         "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "root": options.root, "samples": options.samples,
         "runtime_threads": 1, "payload_bytes": 1024, "actor_payload_bytes": 128,
