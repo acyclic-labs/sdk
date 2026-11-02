@@ -208,7 +208,7 @@ impl NativeDemandInner {
                     if let Some(native) = &mut native {
                         native
                             .absorb(&mut guard)
-                            .map_err(crate::native_name::original_name_error)?;
+                            .map_err(crate::demand::DemandError::from)?;
                     } else {
                         native = Some(guard);
                     }
@@ -275,7 +275,7 @@ impl NativeChanges {
                     if let Some(native) = &mut native {
                         native
                             .absorb(&mut incoming)
-                            .map_err(crate::native_name::original_name_error)?;
+                            .map_err(crate::demand::DemandError::from)?;
                     } else {
                         native = Some(incoming);
                     }

@@ -176,7 +176,7 @@ impl NativeDemandFile {
         let original = context.native_source_work();
         let (mut data, mut allocation, mut native_allocation) = if let Some(original) = &original {
             let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, &mut &*original)
-                .map_err(crate::native_name::original_name_error)?;
+                .map_err(crate::demand::DemandError::from)?;
             (data, 0, Some(allocation))
         } else {
             let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, context)?;
@@ -199,7 +199,7 @@ impl NativeDemandFile {
                 )
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        crate::native_name::original_name_error(original.runtime_error(error))
+                        crate::demand::DemandError::from(original.runtime_error(error))
                     }
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
                         DemandError::InvalidRequest
@@ -313,7 +313,7 @@ impl DemandFile for NativeDemandFile {
             let cancelled = owner
                 .work
                 .cancellation_wait()
-                .map_err(crate::native_name::original_name_error)?;
+                .map_err(crate::demand::DemandError::from)?;
             let mut context = CallbackWork::Original(owner.work.clone());
             let file = self.clone();
             let task = acyclic_native_runtime::run_blocking_io(
@@ -328,9 +328,7 @@ impl DemandFile for NativeDemandFile {
                 },
                 Some((owner.work.runtime_meter(), true)),
             )
-            .map_err(|error| {
-                crate::native_name::original_name_error(owner.work.runtime_error(error))
-            })?;
+            .map_err(|error| crate::demand::DemandError::from(owner.work.runtime_error(error)))?;
             Ok::<_, DemandError>((task, cancelled))
         })();
         let (mut task, cancelled) = match prepared {
@@ -350,7 +348,7 @@ impl DemandFile for NativeDemandFile {
                 result
             }
             Ok(None) => Err(DemandError::Cancelled),
-            Err(error) => Err(crate::native_name::original_name_error(
+            Err(error) => Err(crate::demand::DemandError::from(
                 owner.work.runtime_error(error),
             )),
         }

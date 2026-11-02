@@ -51,12 +51,12 @@ impl NativeSourceWatch {
                 .native_source_work()
                 .map(|original| original.allocation_work().reserve_work(io_work(2, 6)))
                 .transpose()
-                .map_err(crate::native_name::original_name_error)?;
+                .map_err(crate::demand::DemandError::from)?;
             let terminal = active
                 .as_mut()
                 .map(|credit| credit.partition_work(io_work(1, 3), None))
                 .transpose()
-                .map_err(crate::native_name::original_name_error)?;
+                .map_err(crate::demand::DemandError::from)?;
             if !native {
                 reserve_cleanup(work, io_work(1, 2))?;
             }

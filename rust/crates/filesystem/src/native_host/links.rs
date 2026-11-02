@@ -208,7 +208,7 @@ impl HostRoot {
             acyclic_stream::PreparedOwnedBytes::new(bytes, ownership, &original.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        crate::native_name::original_name_error(original.runtime_error(error))
+                        crate::demand::DemandError::from(original.runtime_error(error))
                     }
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
                         DemandError::InvalidRequest

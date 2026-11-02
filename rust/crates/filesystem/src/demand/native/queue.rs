@@ -112,7 +112,7 @@ impl NativeDemandSource {
                 };
                 let stop = CancelWorkerOnDrop(match context.value.as_mut() {
                     CallbackWork::Original(original) => {
-                        let (invocation, stop) = original.invocation_view().map_err(crate::native_name::original_name_error)?;
+                        let (invocation, stop) = original.invocation_view().map_err(crate::demand::DemandError::from)?;
                         *original = invocation;
                         stop
                     }
