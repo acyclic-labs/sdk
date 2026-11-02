@@ -30,6 +30,11 @@ const LIMITS: TurnLimits = TurnLimits {
     history_turns: 8,
 };
 
+fn within() -> acyclic_actors::addressing::ActorReference {
+    acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+        .expect("actor binding")
+}
+
 /// A memory filesystem host with agent `path`'s private volume.
 type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
 
@@ -206,7 +211,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let model = Arc::new(ScriptedModelProvider::new([]));
         let host = FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
+            within(),
             filesystem,
             issuer,
             TurnAdmission::LocalRoot,
@@ -222,6 +227,8 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             .open(
                 &state,
                 OperationId::from_bytes([220; 16]),
+                0,
+                0,
                 &ModelContent::Text("test".into()),
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -276,8 +283,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -407,6 +413,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let model = Arc::new(ScriptedModelProvider::new([]));
     let host = FilesystemTurnHost::new(
         stream.clone(),
+        within(),
         filesystem,
         issuer,
         TurnAdmission::LocalRoot,
@@ -809,6 +816,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         };
         let host = FilesystemTurnHost::new(
             stream.clone(),
+            within(),
             filesystem.clone(),
             issuer.clone(),
             admission,
@@ -929,8 +937,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             filesystem.clone(),
             AuthorityRoot::new(
                 "agents",
@@ -1234,8 +1241,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
+        within(),
         host,
         AuthorityRoot::new(
             "agents",
@@ -1360,8 +1366,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
+            within(),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -1492,8 +1497,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     host.create_volume(&own).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
+        within(),
         host,
         AuthorityRoot::new(
             "agents",
@@ -1645,8 +1649,7 @@ async fn admitted_root_after_its_child(
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host.clone(),
                 issuer.clone(),
                 TurnAdmission::Admitted {
@@ -1877,8 +1880,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 Arc::new(MemoryStream::default()),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host,
                 root,
                 TurnAdmission::Admitted { audience, scope },
@@ -2056,8 +2058,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let stream = Arc::new(Refusing::default());
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host,
                 root,
                 TurnAdmission::Admitted {
@@ -2484,8 +2485,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         let driver = ExecutorDriver::new(EditingHost {
             original: FilesystemTurnHost::new(
                 stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
+                within(),
                 host.clone(),
                 issuer,
                 TurnAdmission::LocalRoot,
