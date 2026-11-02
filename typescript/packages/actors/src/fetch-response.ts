@@ -36,30 +36,47 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
   signal?.addEventListener("abort", close, { once: true });
   if (signal?.aborted) close();
   let consumed = false;
+  async function* consume(): AsyncGenerator<GuestResponseFrame> {
+    try {
+      if (closed) await stopped;
+      reader = response.body?.getReader();
+      if (reader) {
+        for (;;) {
+          // reader.cancel settles its pending read. Do not attach one more
+          // reaction to a long-lived cancellation promise on every chunk.
+          const part = await reader.read();
+          if (closed) await stopped;
+          if (part.done) break;
+          yield { data: part.value };
+        }
+      }
+      const trailers = await Promise.race([terminal, stopped]);
+      close();
+      yield { trailers };
+    } finally {
+      close();
+      reader?.releaseLock();
+    }
+  }
   const frames = {
-    async *[Symbol.asyncIterator](): AsyncGenerator<GuestResponseFrame> {
+    [Symbol.asyncIterator](): AsyncIterator<GuestResponseFrame> {
       if (consumed) throw new TypeError("fetch response already consumed");
       consumed = true;
-      try {
-        if (closed) await stopped;
-        reader = response.body?.getReader();
-        if (reader) {
-          for (;;) {
-            // reader.cancel settles its pending read. Do not attach one more
-            // reaction to a long-lived cancellation promise on every chunk.
-            const part = await reader.read();
-            if (closed) await stopped;
-            if (part.done) break;
-            yield { data: part.value };
-          }
-        }
-        const trailers = await Promise.race([terminal, stopped]);
-        close();
-        yield { trailers };
-      } finally {
-        close();
-        reader?.releaseLock();
-      }
+      const iterator = consume();
+      return {
+        next: () => iterator.next(),
+        async return(value?: unknown) {
+          // Generator return queues behind an outstanding next and never enters
+          // finally before the first next. Cancel the original owner first so
+          // either a body read or the terminal wait can settle without EOF.
+          close();
+          return iterator.return(value);
+        },
+        async throw(cause: unknown) {
+          terminate(cause);
+          return iterator.throw(cause);
+        },
+      };
     },
   };
   return { status: response.status, headers: response.headers, frames, close };
