@@ -9,12 +9,42 @@ enum Fault {
     None,
     Wake,
     Accounting,
+    Cause,
 }
 
 struct Woken(AtomicUsize);
 
 const PANIC: &str = "original native task panic control";
 type TaskOutcome = Result<Poll<std::io::Result<i32>>, Box<dyn std::any::Any + Send>>;
+
+#[derive(Clone, Copy, Debug)]
+enum Disposition {
+    Returned,
+    Failed,
+    Panicked,
+}
+
+#[derive(Debug)]
+struct TaskFailure;
+
+impl std::fmt::Display for TaskFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("original worker refusal")
+    }
+}
+
+impl std::error::Error for TaskFailure {}
+
+fn task_result(disposition: Disposition) -> std::io::Result<i32> {
+    match disposition {
+        Disposition::Returned => Ok(17),
+        Disposition::Failed => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            TaskFailure,
+        )),
+        Disposition::Panicked => std::panic::panic_any(PANIC),
+    }
+}
 
 fn poll_task(
     task: &mut crate::NativeCompletion<i32>,
@@ -23,11 +53,24 @@ fn poll_task(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Pin::new(task).poll(cx)))
 }
 
-fn assert_outcome(outcome: TaskOutcome, panicked: bool) {
-    if panicked {
-        assert_eq!(outcome.unwrap_err().downcast_ref::<&str>(), Some(&PANIC));
-    } else {
-        assert!(matches!(outcome, Ok(Poll::Ready(Ok(17)))));
+fn assert_outcome(outcome: TaskOutcome, disposition: Disposition) {
+    match disposition {
+        Disposition::Returned => assert!(matches!(outcome, Ok(Poll::Ready(Ok(17))))),
+        Disposition::Failed => match outcome {
+            Ok(Poll::Ready(Err(error))) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(
+                    error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<TaskFailure>()),
+                    "original worker failure cause replaced"
+                );
+            }
+            _ => panic!("original worker failure missing"),
+        },
+        Disposition::Panicked => {
+            assert_eq!(outcome.unwrap_err().downcast_ref::<&str>(), Some(&PANIC));
+        }
     }
 }
 
@@ -127,7 +170,7 @@ fn capacity(fault: Fault) {
     eprintln!("capacity schedules: {}", schedules.load(Ordering::Relaxed));
 }
 
-fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
+fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let orders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -136,15 +179,15 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
         explored.fetch_add(1, Ordering::Relaxed);
         let effects = Arc::new(AtomicUsize::new(0));
         let executed = effects.clone();
-        let mut task = run_blocking_io(
+        let mut task = crate::blocking::task_completion(
             move || {
                 executed.fetch_add(1, Ordering::SeqCst);
-                if panicked {
-                    std::panic::panic_any(PANIC);
-                }
-                17
+                task_result(disposition)
             },
             None,
+            None,
+            None,
+            &crate::BLOCKING_WORKERS,
         )
         .unwrap();
         let state = task.state.clone().unwrap();
@@ -181,6 +224,13 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
         if pending && !drop_observer {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         }
+        if matches!(fault, Fault::Cause) {
+            // Erase only the original retained cause, keeping its kind and
+            // message. The worker, terminal and observer ownership stay real.
+            let mut state = state.lock().unwrap();
+            let error = state.result.take().unwrap().unwrap_err();
+            state.result = Some(Err(std::io::Error::new(error.kind(), error.to_string())));
+        }
         let outcome = match observer.as_mut() {
             Some(task) => poll_task(task, &mut cx),
             None => {
@@ -197,7 +247,7 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
                 }
             }
         };
-        assert_outcome(outcome, panicked);
+        assert_outcome(outcome, disposition);
     });
     assert_eq!(
         orders.load(Ordering::Relaxed),
@@ -205,7 +255,7 @@ fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
         "a completion order was not explored"
     );
     eprintln!(
-        "terminal schedules (drop={drop_observer}, panic={panicked}): {}",
+        "terminal schedules (drop={drop_observer}, disposition={disposition:?}): {}",
         schedules.load(Ordering::Relaxed)
     );
 }
@@ -217,9 +267,13 @@ fn capacity_release_races_registration_on_the_real_queue() {
 
 #[test]
 fn physical_completion_races_observer_drop_on_the_real_terminal() {
-    for panicked in [false, true] {
-        terminal(false, panicked, Fault::None);
-        terminal(true, panicked, Fault::None);
+    for disposition in [
+        Disposition::Returned,
+        Disposition::Failed,
+        Disposition::Panicked,
+    ] {
+        terminal(false, disposition, Fault::None);
+        terminal(true, disposition, Fault::None);
     }
 }
 
@@ -238,30 +292,48 @@ fn broken_capacity_accounting_is_detected() {
 #[test]
 #[should_panic(expected = "terminal wake lost")]
 fn broken_terminal_wake_is_detected() {
-    terminal(false, false, Fault::Wake);
+    terminal(false, Disposition::Returned, Fault::Wake);
 }
 
 #[test]
 #[should_panic(expected = "terminal wake lost")]
 fn broken_panicked_terminal_wake_is_detected() {
-    terminal(false, true, Fault::Wake);
+    terminal(false, Disposition::Panicked, Fault::Wake);
+}
+
+#[test]
+#[should_panic(expected = "terminal wake lost")]
+fn broken_failed_terminal_wake_is_detected() {
+    terminal(false, Disposition::Failed, Fault::Wake);
 }
 
 #[test]
 #[should_panic(expected = "terminal accounting lost")]
 fn broken_terminal_accounting_is_detected() {
-    terminal(true, false, Fault::Accounting);
+    terminal(true, Disposition::Returned, Fault::Accounting);
 }
 
 #[test]
 #[should_panic(expected = "terminal accounting lost")]
 fn broken_panicked_terminal_accounting_is_detected() {
-    terminal(true, true, Fault::Accounting);
+    terminal(true, Disposition::Panicked, Fault::Accounting);
+}
+
+#[test]
+#[should_panic(expected = "terminal accounting lost")]
+fn broken_failed_terminal_accounting_is_detected() {
+    terminal(true, Disposition::Failed, Fault::Accounting);
+}
+
+#[test]
+#[should_panic(expected = "original worker failure cause replaced")]
+fn replaced_worker_failure_cause_is_detected() {
+    terminal(false, Disposition::Failed, Fault::Cause);
 }
 
 /// Result observation and abandonment race the worker's final shared release.
 /// Every remaining state owner must retain the original physical funding.
-fn charge(drop_observer: bool, panicked: bool, broken: bool) {
+fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -270,14 +342,12 @@ fn charge(drop_observer: bool, panicked: bool, broken: bool) {
         explored.fetch_add(1, Ordering::Relaxed);
         let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
         let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
-        let mut task = run_blocking_io(
-            move || {
-                if panicked {
-                    std::panic::panic_any(PANIC);
-                }
-                17
-            },
-            Some((observed, false)),
+        let mut task = crate::blocking::task_completion(
+            move || task_result(disposition),
+            Some(observed),
+            None,
+            None,
+            &crate::BLOCKING_WORKERS,
         )
         .unwrap();
         let state = task.state.as_ref().unwrap().clone();
@@ -288,7 +358,7 @@ fn charge(drop_observer: bool, panicked: bool, broken: bool) {
         };
         assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
         let job = task.pending.take().unwrap();
-        if panicked && broken {
+        if matches!(disposition, Disposition::Panicked) && broken {
             // Sever only the original shared state's funding. The panic,
             // terminal publication and worker lifetime remain unchanged.
             state.lock().unwrap()._allocation.take();
@@ -332,7 +402,7 @@ fn charge(drop_observer: bool, panicked: bool, broken: bool) {
         // before panicking: its destructor must run inside this Loom model.
         assert!(live_funding >= funded, "live shared state lost its funding");
         assert_eq!(joined_funding, funded);
-        assert_outcome(outcome, panicked);
+        assert_outcome(outcome, disposition);
     });
     if !drop_observer {
         assert_ne!(
@@ -342,35 +412,39 @@ fn charge(drop_observer: bool, panicked: bool, broken: bool) {
         );
     }
     eprintln!(
-        "charge schedules (drop={drop_observer}, panic={panicked}): {}",
+        "charge schedules (drop={drop_observer}, disposition={disposition:?}): {}",
         schedules.load(Ordering::Relaxed)
     );
 }
 
 #[test]
 fn shared_state_funding_survives_observation_and_worker_release() {
-    for panicked in [false, true] {
-        charge(false, panicked, false);
-        charge(true, panicked, false);
+    for disposition in [
+        Disposition::Returned,
+        Disposition::Failed,
+        Disposition::Panicked,
+    ] {
+        charge(false, disposition, false);
+        charge(true, disposition, false);
     }
 }
 
 #[test]
 #[should_panic(expected = "live shared state lost its funding")]
 fn premature_shared_state_refund_is_detected() {
-    charge(false, false, true);
+    charge(false, Disposition::Returned, true);
 }
 
 #[test]
 #[should_panic(expected = "live shared state lost its funding")]
 fn premature_panicked_shared_state_refund_is_detected() {
-    charge(false, true, true);
+    charge(false, Disposition::Panicked, true);
 }
 
 #[test]
 #[should_panic(expected = "abandoned shared state lost its funding")]
 fn premature_abandoned_panicked_state_refund_is_detected() {
-    charge(true, true, true);
+    charge(true, Disposition::Panicked, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
