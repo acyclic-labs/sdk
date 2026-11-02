@@ -284,7 +284,7 @@ pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, St
     })
 }
 
-/// Decodes the exact byte key and exclusive historical search bound.
+/// Decodes an indexed selector: exact key or key range, bound and order.
 pub fn read_key_from_wire(
     value: Option<wire::ReadKeySeek>,
 ) -> Result<Option<crate::ReadKeySeek>, StreamError> {
@@ -292,7 +292,9 @@ pub fn read_key_from_wire(
         .map(|value| {
             let key = crate::ReadKeySeek {
                 key: value.key.into(),
+                end: value.end.map(Into::into),
                 before: value.before,
+                order: crate::ReadOrder::from_wire(value.order)?,
             };
             key.validate()?;
             Ok(key)
@@ -305,6 +307,8 @@ pub fn read_key_to_wire(value: &Option<crate::ReadKeySeek>) -> Option<wire::Read
     value.as_ref().map(|value| wire::ReadKeySeek {
         key: Bytes::copy_from_slice(&value.key),
         before: value.before,
+        end: value.end.as_deref().map(Bytes::copy_from_slice),
+        order: value.order.to_wire(),
     })
 }
 

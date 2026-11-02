@@ -130,6 +130,12 @@ enum Event {
         Option<wire::SessionSelection>,
     ),
     Record(crate::Record),
+    /// One result of a bounded indexed read; `next` counts results from the
+    /// opening cursor, so the cursor stays monotone in every read order.
+    Indexed {
+        record: crate::Record,
+        next: u64,
+    },
     Progress(wire::SessionWatermark),
     /// One fragment of a finite one-shot reply, carried in `item`.
     CallChunk {

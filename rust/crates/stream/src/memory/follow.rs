@@ -11,6 +11,11 @@ fn follow_selection(
     if until.is_some() && snapshot.is_none() {
         return Err(StreamError::NotFound);
     }
+    // A bounded follow is a read, which cannot start beyond the tail. Only a
+    // live follow waits there for record `from`.
+    if until.is_some() && snapshot.is_some_and(|path| from > path.tail) {
+        return Err(StreamError::OutOfRange);
+    }
     let bootstrap = bootstrap_head
         .then(|| snapshot.and_then(last_record))
         .flatten();
@@ -88,9 +93,6 @@ impl MemoryStream {
             } else {
                 StreamError::NotFound
             })?;
-            if cursor.position() > path.tail {
-                return Err(StreamError::OutOfRange);
-            }
             if let Some(anchor) = anchor {
                 cursor.check_anchor(path, *anchor).await?;
             }

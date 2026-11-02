@@ -523,9 +523,8 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark))
-                if mark.durable <= mark.accepted && mark.accepted >= route.received =>
-            {
+            // A cut may precede the cursor: a follow may wait beyond the tail.
+            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
                 if Self::watermark(route, id, input.generation, mark)? {
                     self.flush_watermark(id)
                 } else {

@@ -468,6 +468,7 @@ impl Client {
     ) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
         let path = request.path.clone();
+        let mut read = request.key.clone().map(|key| (key, request.from));
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
             opening_cut: false,
@@ -502,7 +503,13 @@ impl Client {
         if has_bootstrap {
             return Err(StreamError::InvalidResponse);
         }
-        let records = data::Data::new(source).map(move |item| item?.into_record(&path));
+        let records = data::Data::new(source).map(move |item| {
+            let record = item?.into_record(&path)?;
+            if let Some((key, from)) = &mut read {
+                key.advance(from, record.sequence, record.headers.keys())?;
+            }
+            Ok(record)
+        });
         Ok(crate::Opened::new(
             snapshot,
             selection,
@@ -751,14 +758,7 @@ impl Client {
             }
             _ => None,
         };
-        let progress = Progress::from_cursor(&resume, preceding);
-        let progress = Arc::new(
-            if matches!(&kind, Kind::Follow(follow) if follow.key.is_some()) {
-                progress.with_sparse_records()
-            } else {
-                progress
-            },
-        );
+        let progress = Arc::new(Progress::from_cursor(&resume, preceding));
         let id = progress::allocate(&self.pool.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.

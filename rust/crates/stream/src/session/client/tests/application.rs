@@ -180,6 +180,7 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
     follow.key = Some(wire::ReadKeySeek {
         key: Bytes::from_static(b"a"),
         before: 4,
+        ..Default::default()
     });
     follow.read_limit = 3;
     follow.until = Some(4);

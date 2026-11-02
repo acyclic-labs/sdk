@@ -263,7 +263,7 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
     Ok(())
 }
 #[tokio::test]
-async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
+async fn indexed_reads_share_session_credit_and_count_delivered_records() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let client = local(&provider)?;
     crate::conformance::key_seek::verify_with(&*provider, async |request| {
@@ -274,6 +274,7 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
         key: Some(wire::ReadKeySeek {
             key: Bytes::from_static(b"a"),
             before: 4,
+            ..Default::default()
         }),
         read_limit: 1,
         until: Some(4),
@@ -299,13 +300,22 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
         item: Some(Item::Record(record)),
         ..Default::default()
     };
-    wire_codec::session::follow_data_sequence(&follow, 0, &data)?;
-    let Some(Item::Record(record)) = &mut data.item else {
-        unreachable!()
-    };
-    record.keys = vec![Bytes::from_static(b"a\0")];
+    assert_eq!(
+        wire_codec::session::follow_data_sequence(&follow, 0, &data)?,
+        0
+    );
+    // Negative controls: the cursor counts deliveries, so a skipped ordinal is
+    // refused; a record outside the seek fails the shared continuation rule.
+    data.after = Some(wire::SessionCursor {
+        next: 2,
+        opaque: Bytes::new(),
+    });
     assert_eq!(
         wire_codec::session::follow_data_sequence(&follow, 0, &data),
+        Err(StreamError::InvalidResponse)
+    );
+    assert_eq!(
+        crate::ReadKeySeek::exact(&b"a"[..], 4).advance(&mut 0, 0, &[&b"a\0"[..]]),
         Err(StreamError::InvalidResponse)
     );
     Ok(())

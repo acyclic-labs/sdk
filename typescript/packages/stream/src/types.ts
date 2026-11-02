@@ -86,7 +86,10 @@ export type AppendResult =
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });
 export type AppendOptions = PublicWire<WireAppendRequest, { readonly idempotencyKey?: IdempotencyKey }, "path" | "records">;
 export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey; readonly exclude?: readonly string[] }, "source" | "destination">;
-export interface ReadKeySeek { readonly key: Uint8Array; readonly before: Sequence }
+/** Indexed selector. Exact `key`: matches in `[from, before)`, ascending or latest
+ * first. Key range (`end` present): entries `(k, sequence)` with `key <= k < end`,
+ * `sequence < before` and `(k, sequence) >= (key, from)`, ascending only. */
+export interface ReadKeySeek { readonly key: Uint8Array; readonly before: Sequence; readonly end?: Uint8Array; readonly order?: "ascending" | "latest_first" }
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">> & { readonly key?: ReadKeySeek };
 export interface FollowOptions { readonly whenAbsent?: "not_found" | "wait"; readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
 export interface StreamChild {

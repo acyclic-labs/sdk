@@ -118,7 +118,8 @@ message SessionFollow {
   bool bootstrap_head = 7;
   // Bounded indexed read. Requires ALL, no preceding anchor or bootstrap,
   // NOT_FOUND, a Streams resource, until == key.before and a positive limit.
-  // Data retains its original sequence, so gaps are valid and never conflate.
+  // Data retains its original sequence; the cursor counts delivered records,
+  // so latest-first and key-range orders resume through ReadKeySeek order.
   ReadKeySeek key = 8;
   uint32 read_limit = 9;
   // ALL, unbounded only: fixed registration cut as one watermark, even at tail.

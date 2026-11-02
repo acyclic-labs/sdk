@@ -8,12 +8,13 @@ pub(super) struct Position {
 }
 struct State {
     position: Position,
+    /// An indexed read's committed continuation: its selector and `from`.
+    read: Option<(crate::wire::ReadKeySeek, u64)>,
     generation: u64,
     track_records: bool,
     bootstrap: Option<(u64, [u8; 32])>,
 }
 pub(super) struct Progress {
-    sparse_records: bool,
     // Lock order: this is the only cursor lock. Never nest it with another
     // lock or hold it across an await; sequence, opaque cursor and checked
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
@@ -43,13 +44,13 @@ impl Progress {
         preceding: Option<[u8; 32]>,
     ) -> Self {
         Self {
-            sparse_records: false,
             state: Mutex::new(State {
                 position: Position {
                     next: cursor.next,
                     opaque: cursor.opaque.to_vec(),
                     preceding,
                 },
+                read: None,
                 generation: 1,
                 track_records: preceding.is_some(),
                 bootstrap: None,
@@ -57,10 +58,6 @@ impl Progress {
             cancelled: AtomicU64::new(0),
             ended: AtomicU64::new(0),
         }
-    }
-    pub(super) fn with_sparse_records(mut self) -> Self {
-        self.sparse_records = true;
-        self
     }
     pub(super) fn end(&self) {
         self.ended.store(1, Ordering::Release);
@@ -98,13 +95,32 @@ impl Progress {
         let state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
         Ok(state.position.clone())
     }
+    /// The committed continuation of an indexed read, if one advanced.
+    pub(super) fn read(&self) -> Result<Option<(crate::wire::ReadKeySeek, u64)>, StreamError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .read
+            .clone())
+    }
+    pub(super) fn continue_read(
+        &self,
+        read: (crate::wire::ReadKeySeek, u64),
+    ) -> Result<(), StreamError> {
+        self.state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .read = Some(read);
+        Ok(())
+    }
     pub(super) fn consume_record(
         &self,
         generation: u64,
         sequence: u64,
         commit: [u8; 32],
     ) -> Result<bool, StreamError> {
-        self.consume_cut(generation, sequence, &[], Some(commit), self.sparse_records)
+        self.consume_cut(generation, sequence, &[], Some(commit), false)
     }
     /// Admit only the original selected head's jump, without acknowledging its
     /// delivery. An absent/filtered head already proves the selected prefix.

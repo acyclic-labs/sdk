@@ -38,22 +38,45 @@ impl KeyTree {
         Ok(tree)
     }
 
+    /// The nearest selected position at cursor `from`, in the read's order.
     fn seek<E>(
         &self,
-        key: &[u8],
+        read: &crate::ReadKeySeek,
         from: u64,
         before: u64,
         examine: &mut impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Option<u64>, E> {
         let mut work = HistoryReadWork(examine);
-        let key = match acyclic_collections::binary_key::<RECORD_KEY_WIDTH, _>(key, &mut work) {
-            Ok(key) => key,
-            Err(acyclic_collections::BinaryKeyError::Work(error)) => return Err(error),
-            // Public requests and stored headers already validate this width.
-            Err(_) => return Ok(None),
+        let mut encode = |key: &[u8]| {
+            match acyclic_collections::binary_key::<RECORD_KEY_WIDTH, _>(key, &mut work) {
+                Ok(key) => Ok(Some(key)),
+                Err(acyclic_collections::BinaryKeyError::Work(error)) => Err(error),
+                // Public requests and stored headers already validate this width.
+                Err(_) => Ok(None),
+            }
+        };
+        let Some(first) = encode(&read.key)? else {
+            return Ok(None);
+        };
+        let last = match &read.end {
+            None => first,
+            Some(end) => match encode(end)?.and_then(acyclic_collections::KeyedRange::below) {
+                Some(last) => last,
+                None => return Ok(None),
+            },
+        };
+        let range = acyclic_collections::KeyedRange {
+            first,
+            last,
+            from,
+            before,
         };
         self.0
-            .seek(key, from, before, &mut work)
-            .map(|position| position.map(|(sequence, ())| sequence))
+            .entry(
+                &range,
+                read.order == crate::ReadOrder::LatestFirst,
+                &mut work,
+            )
+            .map(|entry| entry.map(|entry| entry.sequence))
     }
 }

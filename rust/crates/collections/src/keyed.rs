@@ -43,6 +43,65 @@ pub fn binary_key<const N: usize, W: IndexReadWork>(
     Ok(key)
 }
 
+/// Entries `(key, sequence)` with `first <= key <= last`, `sequence < before`,
+/// and `sequence >= from` under the key `first`; `(first, from)` is the
+/// inclusive lower cursor of an ascending read in `(key, sequence)` order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyedRange<const N: usize> {
+    /// Least selected key, inclusive.
+    pub first: [u8; N],
+    /// Greatest selected key, inclusive.
+    pub last: [u8; N],
+    /// Least selected sequence under `first`, inclusive.
+    pub from: u64,
+    /// Global exclusive sequence cut.
+    pub before: u64,
+}
+
+impl<const N: usize> KeyedRange<N> {
+    /// The greatest key strictly below an exclusive `end`, if any.
+    pub fn below(end: [u8; N]) -> Option<[u8; N]> {
+        adjacent(end, false)
+    }
+
+    /// Sequences `[from, before)` under one exact key.
+    pub fn exact(key: [u8; N], from: u64, before: u64) -> Self {
+        Self {
+            first: key,
+            last: key,
+            from,
+            before,
+        }
+    }
+}
+
+/// One selected entry, borrowed without a copy.
+#[derive(Debug, Eq, PartialEq)]
+pub struct KeyedEntry<'a, V, const N: usize> {
+    /// The original retained key.
+    pub key: &'a [u8; N],
+    /// The original sequence position.
+    pub sequence: u64,
+    /// The original immutable value.
+    pub value: &'a V,
+}
+
+/// The fixed-width key immediately after (or before) `key`, if any.
+fn adjacent<const N: usize>(mut key: [u8; N], up: bool) -> Option<[u8; N]> {
+    for byte in key.iter_mut().rev() {
+        let (value, carried) = if up {
+            byte.overflowing_add(1)
+        } else {
+            byte.overflowing_sub(1)
+        };
+        *byte = value;
+        if !carried {
+            return Some(key);
+        }
+    }
+    None
+}
+
 /// One shared persistent radix index maps exact complete keys to another shared
 /// radix index of original sequence positions. Forking retains one exclusive
 /// sequence cut in O(1); path copying carries it on unchanged outer edges.
@@ -117,28 +176,74 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         before: u64,
         work: &mut W,
     ) -> Result<Option<(u64, &V)>, W::Error> {
-        if from >= before {
-            work.validate()?;
+        self.entry(&KeyedRange::exact(key, from, before), false, work)
+            .map(|entry| entry.map(|entry| (entry.sequence, entry.value)))
+    }
+
+    /// Borrows the nearest entry of `range` in `(key, sequence)` order: the
+    /// least one, or the greatest when `descending`. Each step is one bounded
+    /// radix descent of the key index and one of that key's sequence index;
+    /// a key with no visible sequence in the range costs one further step.
+    /// The effective inherited cut is always applied inside this operation.
+    pub fn entry<W: IndexReadWork>(
+        &self,
+        range: &KeyedRange<N>,
+        descending: bool,
+        work: &mut W,
+    ) -> Result<Option<KeyedEntry<'_, V, N>>, W::Error> {
+        work.validate()?;
+        if range.first > range.last {
             return Ok(None);
         }
-        let Some(entry) = self.keys.predecessor_position(key, work)? else {
-            return Ok(None);
-        };
-        work.examine(N as u64)?;
-        if entry.key != &key {
-            return Ok(None);
+        let mut key = if descending { range.last } else { range.first };
+        loop {
+            let position = if descending {
+                self.keys.predecessor_position(key, work)?
+            } else {
+                self.keys.successor_position(key, work)?
+            };
+            let Some(position) = position else {
+                return Ok(None);
+            };
+            work.examine(2 * N as u64)?;
+            if *position.key < range.first || *position.key > range.last {
+                return Ok(None);
+            }
+            let before = position
+                .value_before
+                .map_or(range.before, |cut| cut.min(range.before));
+            let from = if *position.key == range.first {
+                range.from
+            } else {
+                0
+            };
+            if from < before {
+                let found = if descending {
+                    position
+                        .value
+                        .predecessor((before - 1).to_be_bytes(), work)?
+                } else {
+                    position.value.successor(from.to_be_bytes(), work)?
+                };
+                if let Some(found) = found {
+                    let sequence = u64::from_be_bytes(*found.key);
+                    if (from..before).contains(&sequence) {
+                        return Ok(Some(KeyedEntry {
+                            key: position.key,
+                            sequence,
+                            value: found.value,
+                        }));
+                    }
+                }
+            }
+            if *position.key == if descending { range.first } else { range.last } {
+                return Ok(None);
+            }
+            match adjacent(*position.key, !descending) {
+                Some(next) => key = next,
+                None => return Ok(None),
+            }
         }
-        let before = entry.value_before.map_or(before, |cut| cut.min(before));
-        if from >= before {
-            return Ok(None);
-        }
-        Ok(entry
-            .value
-            .successor(from.to_be_bytes(), work)?
-            .and_then(|entry| {
-                let sequence = u64::from_be_bytes(*entry.key);
-                (sequence < before).then_some((sequence, entry.value))
-            }))
     }
 
     /// Prepares a new immutable root; all old roots and cuts remain unchanged on

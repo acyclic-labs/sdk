@@ -170,7 +170,9 @@ pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamE
     Ok(follow.until)
 }
 
-/// Checks data on a logical follow, including sparse indexed read sequences.
+/// Checks data on a logical follow. An indexed read's cursor counts results
+/// from its opening cursor, so it is dense in every read order; the reader
+/// checks each record's place in the read with [`crate::ReadKeySeek::advance`].
 pub fn follow_data_sequence(
     follow: &wire::SessionFollow,
     next: u64,
@@ -183,18 +185,15 @@ pub fn follow_data_sequence(
         return Err(StreamError::InvalidResponse);
     };
     let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
-    if record.sequence < next
-        || record.sequence >= key.before
+    if record.sequence >= key.before
         || record.commit_id.len() != 32
-        || !record.keys.iter().any(|value| value == &key.key)
-        || record.sequence.checked_add(1) != Some(after.next)
+        || next.checked_add(1) != Some(after.next)
         || !after.opaque.is_empty()
-        || data.accepted < after.next
         || data.durable > data.accepted
     {
         return Err(StreamError::InvalidResponse);
     }
-    Ok(record.sequence)
+    Ok(next)
 }
 
 /// Decodes the optional atomic history guard of a full-fidelity follow.

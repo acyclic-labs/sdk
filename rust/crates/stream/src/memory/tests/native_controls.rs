@@ -570,10 +570,10 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     }
     let indexed = provider
         .read(ReadRequest {
-            key: Some(crate::ReadKeySeek {
-                key: OwnedBytes::from_static(b"late-header"),
-                before: u64::MAX,
-            }),
+            key: Some(crate::ReadKeySeek::exact(
+                OwnedBytes::from_static(b"late-header"),
+                u64::MAX,
+            )),
             path: path("completion/target")?,
             from: 0,
             limit: 1,

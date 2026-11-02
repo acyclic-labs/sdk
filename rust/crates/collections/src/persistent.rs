@@ -360,7 +360,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
-    fn successor_position<W: IndexReadWork>(
+    pub(crate) fn successor_position<W: IndexReadWork>(
         &self,
         key: [u8; N],
         work: &mut W,

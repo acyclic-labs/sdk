@@ -31,10 +31,7 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
         })
         .await?;
     let read = |value: &'static [u8], from, before, limit| ReadRequest {
-        key: Some(crate::ReadKeySeek {
-            key: Bytes::from_static(value),
-            before,
-        }),
+        key: Some(crate::ReadKeySeek::exact(Bytes::from_static(value), before)),
         path: source.clone(),
         from,
         limit,

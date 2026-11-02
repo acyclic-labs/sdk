@@ -27,10 +27,7 @@ fn request(path: &StreamPath, key: &[u8], from: u64, before: u64, limit: u32) ->
         from,
         limit,
         at_least: Default::default(),
-        key: Some(ReadKeySeek {
-            key: Bytes::copy_from_slice(key),
-            before,
-        }),
+        key: Some(ReadKeySeek::exact(Bytes::copy_from_slice(key), before)),
     }
 }
 
@@ -170,10 +167,15 @@ fn disabling_the_index_exposes_the_historical_scan_slope() {
                 .as_ref()
                 .unwrap()
                 .keys()
-                .seek(b"target", 0, path.tail, &mut |items| {
-                    probes += items as usize;
-                    Ok::<_, StreamError>(())
-                })
+                .seek(
+                    &crate::ReadKeySeek::exact(&b"target"[..], u64::MAX),
+                    0,
+                    path.tail,
+                    &mut |items| {
+                        probes += items as usize;
+                        Ok::<_, StreamError>(())
+                    },
+                )
                 .unwrap()
                 .unwrap();
             let mut scanned = 0;

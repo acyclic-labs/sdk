@@ -153,6 +153,30 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             .await
     }
 
+    /// The latest record carrying `key`, by one indexed lookup.
+    pub async fn latest(&self, key: impl Into<Bytes>) -> Result<Option<Record>, StreamError> {
+        self.provider
+            .latest(self.path.clone(), key.into(), Default::default())
+            .await
+    }
+
+    /// One page of this stream's direct children after `after`.
+    pub async fn children(
+        &self,
+        after: Option<StreamPath>,
+        limit: u32,
+    ) -> Result<ChildrenPage, StreamError> {
+        self.provider
+            .children_page(ChildrenPageRequest {
+                tail_stream: None,
+                parent: Some(self.path.clone()),
+                after,
+                hierarchy_version: None,
+                limit,
+            })
+            .await
+    }
+
     /// Pages every record from `from` to the tail. See [`Replay`].
     #[must_use]
     pub fn replay(&self, from: u64) -> Replay<P> {
