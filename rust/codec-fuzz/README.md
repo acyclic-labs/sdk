@@ -27,6 +27,14 @@ cargo run --locked --example capture
 cargo run --locked --example replay
 ```
 
+Replay one target with `cargo run --locked --example replay -- TARGET`; its
+original provenance, golden bytes and decoder checks still apply. Refresh the
+recorded native host turns with
+`cargo run --locked --example capture -- --only-native-answers`. This copies
+the original fixtures unchanged and runs the same framing oracle. The
+`native_answer` target includes the shipped answer state machine; chunk
+partition invariance does not qualify process lifecycle or remote topology.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh

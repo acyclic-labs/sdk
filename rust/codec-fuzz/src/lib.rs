@@ -110,6 +110,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
             assert!(acyclic_machines::results::codec_fuzz::check(bytes));
         }
         "harness_codecs" => harness_codecs(bytes),
+        "native_answer" => native_answer::check(bytes),
         "inference_http" => inference_http::check(bytes),
         _ => return Err(format!("unknown corpus target {target}")),
     }

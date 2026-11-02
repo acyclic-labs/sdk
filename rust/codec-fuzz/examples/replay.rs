@@ -40,7 +40,19 @@ fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn
 }
 
 fn replay() -> Result<usize, Box<dyn Error>> {
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    let mut arguments = std::env::args().skip(1);
+    let selected_target = arguments.next();
+    if arguments.next().is_some() {
+        return Err("expected at most one corpus target".into());
+    }
     let mut expectations = external_expectations()?;
+    if let Some(selected) = &selected_target {
+        expectations.retain(|name, _| {
+            name.split_once('/')
+                .is_some_and(|(target, _)| target == selected)
+        });
+    }
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
         ("external", std::fs::read_to_string("corpus/EXTERNAL.tsv")?),
@@ -60,6 +72,12 @@ fn replay() -> Result<usize, Box<dyn Error>> {
                 return Err(format!("duplicate captured name: {name}").into());
             }
             let (target, _) = name.split_once('/').ok_or("captured name has no target")?;
+            if selected_target
+                .as_deref()
+                .is_some_and(|selected| selected != target)
+            {
+                continue;
+            }
             let bytes = std::fs::read(Path::new("corpus").join(name))?;
             if bytes.len() != length.parse::<usize>()?
                 || hex::encode(Sha256::digest(&bytes)) != *digest
@@ -107,16 +125,33 @@ fn replay() -> Result<usize, Box<dyn Error>> {
 }
 
 fn main() {
+    let recovery = || {
+        let quote = |value: &str| {
+            let escaped = value.replace('\'', if cfg!(windows) { "''" } else { "'\\''" });
+            format!("'{escaped}'")
+        };
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let arguments = std::env::args()
+            .skip(1)
+            .map(|arg| quote(&arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "cargo run --locked --manifest-path {} --example replay -- {arguments}",
+            quote(&manifest.to_string_lossy())
+        )
+    };
     match std::panic::catch_unwind(replay) {
         Ok(Ok(count)) => println!("replayed {count} captured inputs"),
         Ok(Err(error)) => {
             eprintln!(
-                "corpus replay failed: {error}; recovery after correcting the reported mismatch: cargo run --example replay"
+                "step=corpus-replay failed: {error}; recovery after correcting the reported mismatch: {}",
+                recovery()
             );
             std::process::exit(1);
         }
         Err(_) => {
-            eprintln!("corpus decoder validation panicked; recovery: cargo run --example replay");
+            eprintln!("step=corpus-replay panicked; recovery: {}", recovery());
             std::process::exit(1);
         }
     }

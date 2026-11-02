@@ -170,6 +170,15 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-native-answers") {
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with("native_answer/"))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_native_answers(&mut manifest)?;
+        return finish(&manifest, "native_answer/");
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -341,6 +350,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             manifest.push('\n');
         }
     }
+    capture_native_answers(&mut manifest)?;
     capture_semantic(&mut manifest)?;
     // Preserve historical bytes without reintroducing obsolete writers.
     let current_agents = agent_prefix();
@@ -822,6 +832,43 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
     output.push(b'\n');
     std::fs::write("corpus/resource-identity-v1.json", output)?;
     std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
+    Ok(())
+}
+
+fn capture_native_answers(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in [
+        (
+            "codex-completed.jsonl",
+            include_bytes!(
+                "../../crates/harness/src/local/host_process/fixtures/codex-completed.jsonl"
+            )
+            .as_slice(),
+        ),
+        (
+            "claude-code-completed.jsonl",
+            include_bytes!(
+                "../../crates/harness/src/local/host_process/fixtures/claude-code-completed.jsonl"
+            )
+            .as_slice(),
+        ),
+        (
+            "pi-assistant-error.jsonl",
+            include_bytes!(
+                "../../crates/harness/src/local/host_process/fixtures/pi-assistant-error.jsonl"
+            )
+            .as_slice(),
+        ),
+    ] {
+        save(
+            "native_answer",
+            name,
+            bytes,
+            &format!(
+                "Original recorded native host turn; copied unchanged from rust/crates/harness/src/local/host_process/fixtures/{name}; existing fixture provenance applies"
+            ),
+            manifest,
+        )?;
+    }
     Ok(())
 }
 
