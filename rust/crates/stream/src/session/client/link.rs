@@ -118,12 +118,21 @@ impl Pool {
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
+        // Hello carries the first interest without going through subscribe().
+        // Link its physical root while the original cause is still alive;
+        // follows_from retains no caller span across credential/connection I/O.
+        let mut observation = route.observation.in_scope(|| {
+            let observation = Observation::session(0);
+            observation
+                .operation
+                .follows_from_same_subscriber(&route.observation);
+            observation
+        });
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
                 let mut attempt = 0_u32;
                 let outcome = loop {
-                    let mut observation = Observation::session(attempt);
                     let result = observation
                         .operation
                         .clone()
@@ -156,6 +165,11 @@ impl Pool {
                             }
                             attempt = attempt.saturating_add(1);
                             executor.sleep(10).await;
+                            let retry = Observation::session(attempt);
+                            retry
+                                .operation
+                                .follows_from_same_subscriber(&observation.operation);
+                            observation = retry;
                         }
                     }
                 };
