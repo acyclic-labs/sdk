@@ -218,7 +218,6 @@ async fn verify_observation(
             "unchanged demand reset the fold or cursor",
         ));
     }
-    // Deliberately over-budget input is refused before any demand mutation.
     let composition = client.session().revision();
     for status in [false, true] {
         let mut invalid = selection();
@@ -250,6 +249,7 @@ async fn verify_observation(
             ));
         }
     }
+    // Deliberately over-budget input is refused before any demand mutation.
     match client.set_view(
         selection(),
         std::iter::repeat_with(selection).take(AgentClient::selected_capacity()),
@@ -318,6 +318,7 @@ async fn verify_observation(
             "exact_conversation",
             "exact_status",
             "retain_selection",
+            "complete_cursor_refusal",
             "atomic_capacity_refusal",
             "unknown_authority",
             "reselection_cursor",
