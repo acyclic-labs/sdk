@@ -51,6 +51,9 @@ test("deployment declarations become scoped namespace and private service handle
   const exposed = worker.identity.toFields();
   exposed.account.fill(121); exposed.id.fill(122);
   const actor = objects.get(objects.idFromName("same"));
+  actor.id.toString = () => { throw new Error("substituted actor display method"); };
+  Object.defineProperty(actor.id,"reference", {get() { throw new Error("substituted actor reference"); }});
+  expect(actor.reference.toFields()).toEqual({account,namespace:new TextEncoder().encode("ClassOne"),id:new TextEncoder().encode("same")});
   expect([actorReads,workerReads]).toEqual([1,1]);
   // Existing handles retain the original callable and receiver across a wait.
   for (const [transport, method] of [[actorTransport,"invokeActor"],[workerTransport,"invokeWorker"]] as const) {

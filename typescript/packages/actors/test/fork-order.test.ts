@@ -25,6 +25,7 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
         return { status: 200, headers: [], body: request.body };
       },
       async forkActor(request) {
+        expect(request.childActorId).toBe("child");
         forks.push(request.actorId);
         return { actor: { actorId: request.childActorId } };
       },
@@ -46,6 +47,8 @@ test("fork retains every earlier HTTP2 completion and refuses failure or cancell
     await entered.get("success")!.promise;
     await fast; // The second real HTTP2 response overtakes the first.
     const forked = success.fork(child, [], { idempotencyKey: "success" });
+    // The admitted target is retained before the predecessor completion wait.
+    child.toString = () => "substituted";
     const late = success.rpc("late", new Uint8Array());
     await entered.get("late")!.promise;
     await barrier();
