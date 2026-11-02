@@ -251,19 +251,29 @@ mod tests {
 
     #[test]
     fn recorded_resume_identity_survives_stream_boundaries() {
-        let captured = include_bytes!("../fixtures/claude-code-completed.jsonl");
-        for chunk in [1, 17, 8192] {
-            let mut session = SessionId::default();
-            // A complete final JSON value need not have its newline on disk.
-            for bytes in captured.trim_ascii_end().chunks(chunk) {
-                session.push(bytes);
-                assert!(session.frames.buffered_bytes() <= EVENT_LIMIT + 8192);
+        let captured = include_str!("../fixtures/claude-code-completed.jsonl");
+        // Derived representation control: JSON escapes preserve the original
+        // member and value. This is not another captured provider response.
+        let escaped = captured.replace("\"session_id\"", r#""sess\u0069on\u005fid""#);
+        assert_eq!(
+            serde_json::from_str::<Value>(captured).expect("original terminal"),
+            serde_json::from_str::<Value>(&escaped).expect("equivalent terminal")
+        );
+        for wire in [captured, &escaped] {
+            for chunk in [1, 17, 8192] {
+                let mut session = SessionId::default();
+                // A complete final JSON value need not have its newline on disk.
+                for bytes in wire.as_bytes().trim_ascii_end().chunks(chunk) {
+                    session.push(bytes);
+                    assert!(session.frames.buffered_bytes() <= EVENT_LIMIT + 8192);
+                }
+                session.finish();
+                assert_eq!(
+                    session.id.as_deref(),
+                    Some("a14f2590-4397-48a1-a076-1f2dac2d5349"),
+                    "native resume decoding ignored an equivalent JSON member"
+                );
             }
-            session.finish();
-            assert_eq!(
-                session.id.as_deref(),
-                Some("a14f2590-4397-48a1-a076-1f2dac2d5349")
-            );
         }
     }
 
