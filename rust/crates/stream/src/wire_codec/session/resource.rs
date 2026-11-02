@@ -32,7 +32,7 @@ pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
     envelope(resource)?;
     if let Some(encoded) = resource.strip_prefix("streams:/") {
         if encoded.contains('%') {
-            decode_stream_path(encoded)?;
+            StreamPath::validate(&decode_stream_name(encoded)?)?;
         } else {
             StreamPath::validate(encoded)?;
         }
@@ -56,10 +56,10 @@ pub fn stream_path(resource: &str) -> Result<StreamPath, StreamError> {
     let encoded = resource
         .strip_prefix("streams:/")
         .ok_or(StreamError::Unsupported)?;
-    decode_stream_path(encoded)
+    StreamPath::new(decode_stream_name(encoded)?)
 }
 
-fn decode_stream_path(encoded: &str) -> Result<StreamPath, StreamError> {
+fn decode_stream_name(encoded: &str) -> Result<String, StreamError> {
     let mut path = Vec::new();
     for (index, component) in encoded.split('/').enumerate() {
         if index != 0 {
@@ -74,7 +74,7 @@ fn decode_stream_path(encoded: &str) -> Result<StreamPath, StreamError> {
             path.push(byte);
         }
     }
-    StreamPath::new(String::from_utf8(path).map_err(|_| StreamError::InvalidPath)?)
+    String::from_utf8(path).map_err(|_| StreamError::InvalidPath)
 }
 
 #[cfg(test)]
@@ -144,8 +144,25 @@ mod tests {
                     "path={path} allocations: temporary={} direct={}",
                     temporary.count_total, direct.count_total
                 );
+                if resource.contains('%') {
+                    let (_, [owned, borrowed]) = acyclic_test_support::differential(
+                        || stream_path(std::hint::black_box(&resource)).map(|_| ()),
+                        || validate_resource(std::hint::black_box(&resource)),
+                    );
+                    assert_eq!(borrowed.count_total + 1, owned.count_total);
+                    eprintln!(
+                        "validation={path} allocations: owned={} borrowed={}",
+                        owned.count_total, borrowed.count_total
+                    );
+                } else {
+                    let work = acyclic_test_support::measure(|| {
+                        validate_resource(std::hint::black_box(&resource)).unwrap();
+                    });
+                    assert_eq!(work.count_total, 0);
+                }
             }
             let decoded = stream_path(&resource)?;
+            validate_resource(&resource)?;
             assert_eq!(decoded.as_str(), path);
             assert!(stream_resource_matches(&resource, &decoded));
             assert!(!stream_resource_matches(
@@ -185,6 +202,11 @@ mod tests {
             "fs:/volume",
         ] {
             assert_eq!(stream_path(resource), temporary_stream_path(resource));
+            let validated = match temporary_stream_path(resource) {
+                Err(StreamError::Unsupported) => Ok(()),
+                result => result.map(|_| ()),
+            };
+            assert_eq!(validate_resource(resource), validated);
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
             for path in ["events", "a/b", "a.b", "caf%C3%A9", "fs/volume"] {
                 assert!(!stream_resource_matches(
