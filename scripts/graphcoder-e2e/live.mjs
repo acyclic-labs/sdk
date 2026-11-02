@@ -13,7 +13,7 @@ import { conversation } from "./conversation.mjs";
 import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
-export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
+export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "custom-slash-command", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
   executionSucceeded(result);
@@ -134,6 +134,11 @@ export async function runCase(binary, login, root, name, signal, { model = "open
       await writeFile(join(skill, "SKILL.md"), `---\nname: inventory\ndescription: Report the selected inventory token\n---\nReply with exactly SKILL_${marker} and no additional text. Do not use tools.\n`);
     } else if (name === "file-mention") {
       await writeFile(join(workspace, "mention.txt"), `MENTION_${marker}\n`);
+    } else if (name === "custom-slash-command") {
+      const commands = join(workspace, ".claude/commands");
+      await mkdir(commands, { recursive: true });
+      await writeFile(join(commands, "report-token.md"),
+        `Reply with exactly COMMAND_${marker} $ARGUMENTS and no additional text. Do not use tools.\n`);
     }
     env = environment(settings);
     // Reuse only the admitted login path after stripping provider keys.
@@ -150,13 +155,15 @@ export async function runCase(binary, login, root, name, signal, { model = "open
       step = "invoke shipping GraphCoder";
       if (name === "session") {
         await invoke(`Reply with exactly ${marker}. Do not use tools.`, "text", marker);
-      } else if (name === "instructions" || name === "skill-invocation" || name === "file-mention") {
+      } else if (name === "instructions" || name === "skill-invocation" || name === "file-mention" || name === "custom-slash-command") {
         await invoke(name === "instructions"
           ? "Report agents_token then claude_token from the current project instructions, separated by one space. Do not use tools. Reply with exactly those two values and no additional text."
           : name === "skill-invocation" ? "/inventory Follow the selected skill precisely."
-          : "Report the exact token in @mention.txt with no additional text. Do not use tools.", "text",
+          : name === "file-mention" ? "Report the exact token in @mention.txt with no additional text. Do not use tools."
+          : "/report-token SELECTED_ARGUMENT", "text",
         name === "instructions" ? `AGENT_${marker} CLAUDE_${marker}`
-          : name === "skill-invocation" ? `SKILL_${marker}` : `MENTION_${marker}`);
+          : name === "skill-invocation" ? `SKILL_${marker}`
+          : name === "file-mention" ? `MENTION_${marker}` : `COMMAND_${marker} SELECTED_ARGUMENT`);
         step = "assert selected context reached the model without a file tool";
         const recorded = childHooks = await hooks();
         requireTools(recorded, []);
