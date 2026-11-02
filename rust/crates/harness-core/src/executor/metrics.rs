@@ -549,7 +549,7 @@ async fn admitted_replay_key(
     event: &ExecutionEvent,
 ) -> Result<String> {
     let request = super::ExecutionPayloadField::admitted_request(journal, event).await?;
-    crate::model::replay_key(request.bytes()).map(digest)
+    request.replay_key().map(digest)
 }
 
 // One original indexed admission, never a history search or retained run index.

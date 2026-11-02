@@ -329,6 +329,7 @@ pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
+    replay_key: std::sync::OnceLock<[u8; 32]>,
     projection_nodes: AtomicUsize,
     admitted_limits: Limits,
     instruction_remaining: u64,
@@ -344,6 +345,7 @@ impl Clone for PreparedModelRequest {
             request: self.request.clone(),
             bytes: self.bytes.clone(),
             request_digest: self.request_digest,
+            replay_key: self.replay_key.clone(),
             projection_nodes: AtomicUsize::new(self.projection_nodes.load(Ordering::Relaxed)),
             admitted_limits: self.admitted_limits,
             instruction_remaining: self.instruction_remaining,
@@ -358,6 +360,19 @@ impl Clone for PreparedModelRequest {
 }
 
 impl PreparedModelRequest {
+    /// Semantic replay identity, retained after its first successful use.
+    /// Warm consumers need no decode, hash, payload copy or history walk;
+    /// requests outside replay pay no hash work. Concurrent cold consumers may
+    /// compute independently, so a failed producer cannot leave a waiter behind.
+    pub fn replay_key(&self) -> Result<[u8; 32]> {
+        if let Some(key) = self.replay_key.get() {
+            return Ok(*key);
+        }
+        let key = super::recorded::replay_key_of(&self.request)?;
+        let _ = self.replay_key.set(key);
+        Ok(key)
+    }
+
     pub(crate) fn take_content_admission(
         &mut self,
         executor: crate::executor::ExecutionJournalCacheId,
@@ -474,6 +489,7 @@ impl PreparedModelRequest {
                 request,
                 bytes,
                 request_digest,
+                replay_key: std::sync::OnceLock::new(),
                 projection_nodes: AtomicUsize::new(0),
                 admitted_limits: limits,
                 instruction_remaining,
@@ -543,6 +559,7 @@ impl PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(0),
             admitted_limits: limits,
             instruction_remaining,
