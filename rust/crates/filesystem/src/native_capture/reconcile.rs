@@ -610,7 +610,7 @@ impl CaptureBatch<'_> {
                 }
             }),
             FileKind::CharacterDevice | FileKind::BlockDevice => {
-                let (major, minor) = host_device_identity(metadata)?;
+                let (major, minor) = metadata.device().ok_or(CaptureError::UnsupportedKind)?;
                 if let Some(file_id) = existing_file_id {
                     self.mutations.push(AuthoredMutation::Remove {
                         path: clone_capture_path(&path, self.meter)?,

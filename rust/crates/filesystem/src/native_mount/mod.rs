@@ -69,9 +69,6 @@ pub use fuse::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 #[cfg(target_os = "linux")]
 pub use guest::{GuestMappingAdmission, GuestMappingFence, GuestPosixPolicy, GuestSource};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod device;
-
 pub use crate::{
     CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
     capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,

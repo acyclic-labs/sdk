@@ -17,17 +17,17 @@ pub(crate) fn split_device(device: u64) -> (u32, u32) {
 /// host representation are reinterpreted without loss.
 #[cfg(target_os = "macos")]
 pub(crate) fn split_device(device: u64) -> (u32, u32) {
-    let low = u32::try_from(device & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    let native = i32::from_ne_bytes(low.to_ne_bytes());
+    let native = device as libc::dev_t;
     (
-        u32::try_from(libc::major(native)).unwrap_or(u32::MAX),
-        u32::try_from(libc::minor(native)).unwrap_or(u32::MAX),
+        libc::major(native).cast_unsigned(),
+        libc::minor(native).cast_unsigned(),
     )
 }
 
 /// Joins `(major, minor)` into a host `dev_t`, failing with `EOVERFLOW` when
 /// the pair cannot be represented on this platform.
 #[cfg(target_os = "linux")]
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     let device = libc::makedev(major, minor);
     if libc::major(device) != major || libc::minor(device) != minor {
@@ -42,6 +42,7 @@ pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
 /// Darwin packs the major number into 8 bits and the minor number into 24;
 /// out-of-range components are rejected instead of silently aliasing.
 #[cfg(target_os = "macos")]
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     if major > 0xFF || minor > 0xFF_FFFF {
         return Err(libc::EOVERFLOW);
@@ -62,7 +63,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     fn widen(device: libc::dev_t) -> u64 {
-        u64::from(u32::from_ne_bytes(device.to_ne_bytes()))
+        device as u64
     }
 
     #[test]
@@ -70,6 +71,12 @@ mod tests {
         for (major, minor) in [(0, 0), (1, 3), (0xFF, 0xFF_FFFF)] {
             let device = join_device(major, minor)?;
             assert_eq!(split_device(widen(device)), (major, minor));
+            #[cfg(target_os = "macos")]
+            if device < 0 {
+                // A checked narrowing loses valid device numbers after the
+                // host's signed dev_t was widened by a metadata consumer.
+                assert!(libc::dev_t::try_from(widen(device)).is_err());
+            }
         }
         Ok(())
     }
