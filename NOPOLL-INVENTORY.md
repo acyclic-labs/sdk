@@ -1,5 +1,27 @@
 # Polling and timed-wait inventory
 
+Identity drain observation successor:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1219` | Three-second successful-drain timeout | Await the original serving task after releasing HTTP and unblocking output. Preserve the transport-success and saved-credential assertions. | Source complete; unqualified |
+| `plugin/identity/src/mcp.rs:1282` | Three-second failed-drain timeout | Await the same serving task after releasing HTTP. Preserve the transport-error and rotated-credential assertions. | Source complete; unqualified |
+
+The serving task joins the original output writer and finishes its original
+identity operation before returning. Its existing JoinHandle retains completion
+before observation and reports task failure separately from the transport result.
+The controls retain successful output/EOF and oversized-input/broken-output
+negative cases, plus the original credential assertions. No new negative control
+is added. Their runtime qualification remains open, and the fixture's remaining
+HTTP-entry/output-readiness notifications are not replaced in this slice.
+
+Per drain, task joins stay one and readiness timers change from one to zero.
+Product work, tasks, channels, allocations, payload copies, syscalls, round trips
+and durability barriers are unchanged. Completion observation does not scan
+request history or agents. Physical drain work remains that of the original
+writer and operation; this change makes no new whole-operation complexity or
+producer-loss guarantee for their internal waits.
+
 Identity reply observation successor:
 
 | Source | Kind | Replacement and terminal | Status |
@@ -11,9 +33,12 @@ tool-list, invalid-argument, ping and cancellation reply assertions. Replies
 published before observation remain queued. The same writer's EOF, error or
 unwind drops the sole sender, so a missing reply fails on channel closure without
 waiting for an elapsed-time refusal. Existing broken-output and EOF controls
-remain; no new mock or serving path is added. Suppressing a write and dropping
-its producer is the source-loss negative; unexpected or reordered replies fail
-the original exact reply assertions. These controls remain unexecuted here.
+remain; no new mock or serving path is added. A dedicated `Client::reply`
+negative that suppresses a write and drops its producer is proposed, not
+implemented. Existing broken-output controls await the serving task, and EOF
+controls drain the receiver directly; they do not exercise that helper's closure
+assertion. Unexpected or reordered replies fail the original exact reply
+assertions. The retained controls remain unexecuted here.
 
 Per reply, channel receives stay one and readiness timers change from one to
 zero. Production work, tasks, channels, syscalls, round trips, durability
