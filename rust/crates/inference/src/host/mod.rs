@@ -111,41 +111,30 @@ impl Inference {
         credential: Option<CredentialProvider>,
         ca_pem: &[u8],
     ) -> Result<Self, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.connect",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                let endpoint = Endpoint::new(endpoint.to_owned())?;
-                if endpoint.uri().scheme_str() != Some("https") {
-                    return Err(Error::Invalid("HTTPS is required"));
-                }
-                if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
-                    return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
-                }
-                let authorization = api_key.map(authorization).transpose()?;
-                let channel = endpoint
-                    .tls_config(
-                        ClientTlsConfig::new()
-                            .with_enabled_roots()
-                            .ca_certificate(Certificate::from_pem(ca_pem)),
-                    )?
-                    .connect()
-                    .await?;
-                Ok(Self(Arc::new(Connection {
-                    channel,
-                    authorization,
-                    credential,
-                    client_instance: *uuid::Uuid::now_v7().as_bytes(),
-                })))
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.connect", async {
+            let endpoint = Endpoint::new(endpoint.to_owned())?;
+            if endpoint.uri().scheme_str() != Some("https") {
+                return Err(Error::Invalid("HTTPS is required"));
+            }
+            if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
+                return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
+            }
+            let authorization = api_key.map(authorization).transpose()?;
+            let channel = endpoint
+                .tls_config(
+                    ClientTlsConfig::new()
+                        .with_enabled_roots()
+                        .ca_certificate(Certificate::from_pem(ca_pem)),
+                )?
+                .connect()
+                .await?;
+            Ok(Self(Arc::new(Connection {
+                channel,
+                authorization,
+                credential,
+                client_instance: *uuid::Uuid::now_v7().as_bytes(),
+            })))
+        })
     }
 
     /// Prepares one immutable Context creation with a stable pre-dispatch identity.
@@ -163,60 +152,38 @@ impl Inference {
         &self,
         request: &wire::CreateContextRequest,
     ) -> Result<[u8; 32], Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.context.create",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                let receipt = self
-                    .rpc()
-                    .create(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                if !receipt.retained {
-                    return Err(Error::Invalid("creation did not retain a revision"));
-                }
-                fixed(&receipt.revision)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.context.create", async {
+            bounded(request)?;
+            let receipt = self
+                .rpc()
+                .create(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            validate_receipt(&receipt)?;
+            if !receipt.retained {
+                return Err(Error::Invalid("creation did not retain a revision"));
+            }
+            fixed(&receipt.revision)
+        })
     }
 
     /// Reads one retained Context and validates its exact revision and logical identity.
     pub async fn inspect_context(&self, revision: [u8; 32]) -> Result<wire::ContextView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.context.inspect",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                nonzero(&revision)?;
-                let view = self
-                    .rpc()
-                    .inspect(
-                        self.request(wire::InspectContextRequest {
-                            revision: revision.to_vec(),
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                validate_context_view(&view, revision)?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.context.inspect", async {
+            nonzero(&revision)?;
+            let view = self
+                .rpc()
+                .inspect(
+                    self.request(wire::InspectContextRequest {
+                        revision: revision.to_vec(),
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            validate_context_view(&view, revision)?;
+            Ok(view)
+        })
     }
 
     /// Submits or reconciles the same prepared mutation and validates its receipt.
@@ -224,28 +191,17 @@ impl Inference {
         &self,
         request: &wire::MutateContextRequest,
     ) -> Result<wire::MutationReceipt, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.context.mutate",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                fixed::<32>(&request.source)?;
-                let receipt = self
-                    .rpc()
-                    .mutate(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                Ok(receipt)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.context.mutate", async {
+            bounded(request)?;
+            fixed::<32>(&request.source)?;
+            let receipt = self
+                .rpc()
+                .mutate(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            validate_receipt(&receipt)?;
+            Ok(receipt)
+        })
     }
 
     /// Prepares one recoverable Run against an explicit immutable revision.
@@ -342,39 +298,28 @@ impl Inference {
         &self,
         request: &wire::CreateEvaluationRequest,
     ) -> Result<[u8; 16], Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.evaluation.create",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                let expected = fixed(
-                    &request
-                        .identity
-                        .as_ref()
-                        .ok_or(Error::Invalid("missing evaluation identity"))?
-                        .request_id,
-                )?;
-                let spec = request
-                    .spec
+        obs::operation!("acyclic.inference.evaluation.create", async {
+            bounded(request)?;
+            let expected = fixed(
+                &request
+                    .identity
                     .as_ref()
-                    .ok_or(Error::Invalid("evaluation spec is absent"))?;
-                validate_evaluation_spec(spec)?;
-                let view = self
-                    .evaluations()
-                    .create(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                validate_evaluation_admission(&view, expected, spec)?;
-                Ok(expected)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+                    .ok_or(Error::Invalid("missing evaluation identity"))?
+                    .request_id,
+            )?;
+            let spec = request
+                .spec
+                .as_ref()
+                .ok_or(Error::Invalid("evaluation spec is absent"))?;
+            validate_evaluation_spec(spec)?;
+            let view = self
+                .evaluations()
+                .create(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            validate_evaluation_admission(&view, expected, spec)?;
+            Ok(expected)
+        })
     }
 
     /// Inspects one retained evaluation ID and validates its exact result evidence.
@@ -382,84 +327,62 @@ impl Inference {
         &self,
         evaluation_id: [u8; 16],
     ) -> Result<wire::EvaluationView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.evaluation.inspect",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                nonzero(&evaluation_id)?;
-                let view = self
-                    .evaluations()
-                    .inspect(
-                        self.request(wire::InspectEvaluationRequest {
-                            evaluation_id: evaluation_id.to_vec(),
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                validate_evaluation_view(&view, evaluation_id)?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.evaluation.inspect", async {
+            nonzero(&evaluation_id)?;
+            let view = self
+                .evaluations()
+                .inspect(
+                    self.request(wire::InspectEvaluationRequest {
+                        evaluation_id: evaluation_id.to_vec(),
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            validate_evaluation_view(&view, evaluation_id)?;
+            Ok(view)
+        })
     }
 
     /// Discover exact model revisions and the customer features currently admitted for them.
     pub async fn models(&self) -> Result<Vec<wire::ModelCapability>, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.models",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                let response = self
-                    .discovery()
-                    .list(self.request(wire::ListModelsRequest {}).await?)
-                    .await?
-                    .into_inner();
-                if response.models.is_empty() || response.models.len() > 4_096 {
-                    return Err(Error::Invalid("model capability count is invalid"));
+        obs::operation!("acyclic.inference.models", async {
+            let response = self
+                .discovery()
+                .list(self.request(wire::ListModelsRequest {}).await?)
+                .await?
+                .into_inner();
+            if response.models.is_empty() || response.models.len() > 4_096 {
+                return Err(Error::Invalid("model capability count is invalid"));
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for model in &response.models {
+                let mut retention_profiles = std::collections::BTreeSet::new();
+                if model.model.is_empty()
+                    || model.model.len() > 256
+                    || !names.insert(model.model.as_str())
+                    || fixed::<32>(&model.execution_profile).is_err()
+                    || model.maximum_context == 0
+                    || model.maximum_output == 0
+                    || model.features.is_empty()
+                    || model.features.len() > 64
+                    || model
+                        .features
+                        .iter()
+                        .any(|feature| feature.is_empty() || feature.len() > 64)
+                    || model.retention_profiles.len() > 64
+                    || model.retention_profiles.iter().any(|profile| {
+                        fixed::<32>(&profile.profile).is_err()
+                            || profile.minimum_duration_ms == 0
+                            || profile.maximum_duration_ms < profile.minimum_duration_ms
+                            || !retention_profiles.insert(profile.profile.as_slice())
+                    })
+                {
+                    return Err(Error::Invalid("model capability is invalid"));
                 }
-                let mut names = std::collections::BTreeSet::new();
-                for model in &response.models {
-                    let mut retention_profiles = std::collections::BTreeSet::new();
-                    if model.model.is_empty()
-                        || model.model.len() > 256
-                        || !names.insert(model.model.as_str())
-                        || fixed::<32>(&model.execution_profile).is_err()
-                        || model.maximum_context == 0
-                        || model.maximum_output == 0
-                        || model.features.is_empty()
-                        || model.features.len() > 64
-                        || model
-                            .features
-                            .iter()
-                            .any(|feature| feature.is_empty() || feature.len() > 64)
-                        || model.retention_profiles.len() > 64
-                        || model.retention_profiles.iter().any(|profile| {
-                            fixed::<32>(&profile.profile).is_err()
-                                || profile.minimum_duration_ms == 0
-                                || profile.maximum_duration_ms < profile.minimum_duration_ms
-                                || !retention_profiles.insert(profile.profile.as_slice())
-                        })
-                    {
-                        return Err(Error::Invalid("model capability is invalid"));
-                    }
-                }
-                Ok(response.models)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+            }
+            Ok(response.models)
+        })
     }
 
     /// Admits or reconciles the same prepared Run and validates its identity and input.
@@ -467,69 +390,47 @@ impl Inference {
         &self,
         request: &wire::GenerateRunRequest,
     ) -> Result<[u8; 16], Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.run.generate",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                if request.maximum_output == 0 {
-                    return Err(Error::Invalid("zero output bound"));
-                }
-                let context = fixed::<32>(&request.context)?;
-                let run_id = fixed::<16>(
-                    &request
-                        .identity
-                        .as_ref()
-                        .ok_or(Error::Invalid("missing Run identity"))?
-                        .request_id,
-                )?;
-                let response = self
-                    .runs()
-                    .generate(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-                contract::validate_generated_run_view(&view, run_id, context)
-                    .map_err(contract_error)?;
-                Ok(run_id)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.run.generate", async {
+            bounded(request)?;
+            if request.maximum_output == 0 {
+                return Err(Error::Invalid("zero output bound"));
+            }
+            let context = fixed::<32>(&request.context)?;
+            let run_id = fixed::<16>(
+                &request
+                    .identity
+                    .as_ref()
+                    .ok_or(Error::Invalid("missing Run identity"))?
+                    .request_id,
+            )?;
+            let response = self
+                .runs()
+                .generate(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
+            contract::validate_generated_run_view(&view, run_id, context)
+                .map_err(contract_error)?;
+            Ok(run_id)
+        })
     }
 
     /// Inspects durable Run state and validates its exact identity.
     pub async fn inspect_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.run.inspect",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                let view = self
-                    .runs()
-                    .inspect(
-                        self.request(wire::InspectRunRequest {
-                            run_id: run_id.to_vec(),
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, run_id)?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.run.inspect", async {
+            let view = self
+                .runs()
+                .inspect(
+                    self.request(wire::InspectRunRequest {
+                        run_id: run_id.to_vec(),
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        })
     }
 
     /// Resumes the validated event stream at an inclusive zero-based cursor.
@@ -538,130 +439,85 @@ impl Inference {
         run_id: [u8; 16],
         from_sequence: u64,
     ) -> Result<RunEvents, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.run.watch",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                let view = self.inspect_run(run_id).await?;
-                let state =
-                    contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
-                if state.is_terminal() {
-                    return Ok(RunEvents {
-                        stream: None,
-                        state,
-                    });
-                }
-                let stream = self
-                    .runs()
-                    .watch(
-                        self.request(wire::WatchRunRequest {
-                            run_id: run_id.to_vec(),
-                            from_sequence,
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                Ok(RunEvents {
-                    stream: Some(stream),
+        obs::operation!("acyclic.inference.run.watch", async {
+            let view = self.inspect_run(run_id).await?;
+            let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+            if state.is_terminal() {
+                return Ok(RunEvents {
+                    stream: None,
                     state,
-                })
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+                });
+            }
+            let stream = self
+                .runs()
+                .watch(
+                    self.request(wire::WatchRunRequest {
+                        run_id: run_id.to_vec(),
+                        from_sequence,
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            Ok(RunEvents {
+                stream: Some(stream),
+                state,
+            })
+        })
     }
 
     /// Requests durable cancellation and validates the resulting Run state.
     pub async fn cancel_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.run.cancel",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                let view = self
-                    .runs()
-                    .cancel(
-                        self.request(wire::InspectRunRequest {
-                            run_id: run_id.to_vec(),
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, run_id)?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.run.cancel", async {
+            let view = self
+                .runs()
+                .cancel(
+                    self.request(wire::InspectRunRequest {
+                        run_id: run_id.to_vec(),
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        })
     }
 
     /// Admits or reconciles the same prepared warm-retention request.
     pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<[u8; 32], Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.warm.retain",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                contract::validate_retain_request(request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .warm()
-                    .retain(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                contract::validate_retain_response(&view, request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                fixed(&view.commitment)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.warm.retain", async {
+            bounded(request)?;
+            contract::validate_retain_request(request)
+                .map_err(|error| Error::Invalid(error.message()))?;
+            let view = self
+                .warm()
+                .retain(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            contract::validate_retain_response(&view, request)
+                .map_err(|error| Error::Invalid(error.message()))?;
+            fixed(&view.commitment)
+        })
     }
 
     /// Inspects one warm commitment and validates the returned lifecycle evidence.
     pub async fn inspect_warm(&self, commitment: [u8; 32]) -> Result<wire::WarmView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.warm.inspect",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                nonzero(&commitment)?;
-                let view = self
-                    .warm()
-                    .inspect(
-                        self.request(wire::InspectWarmRequest {
-                            commitment: commitment.to_vec(),
-                        })
-                        .await?,
-                    )
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(commitment))?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.warm.inspect", async {
+            nonzero(&commitment)?;
+            let view = self
+                .warm()
+                .inspect(
+                    self.request(wire::InspectWarmRequest {
+                        commitment: commitment.to_vec(),
+                    })
+                    .await?,
+                )
+                .await?
+                .into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            Ok(view)
+        })
     }
 
     /// Renews the same prepared warm promise without changing its requested policy.
@@ -669,30 +525,19 @@ impl Inference {
         &self,
         request: &wire::RenewWarmRequest,
     ) -> Result<wire::WarmView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.warm.renew",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                contract::validate_renew_request(request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .warm()
-                    .renew(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                contract::validate_renew_response(&view, request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.warm.renew", async {
+            bounded(request)?;
+            contract::validate_renew_request(request)
+                .map_err(|error| Error::Invalid(error.message()))?;
+            let view = self
+                .warm()
+                .renew(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            contract::validate_renew_response(&view, request)
+                .map_err(|error| Error::Invalid(error.message()))?;
+            Ok(view)
+        })
     }
 
     /// Releases the same prepared warm promise and requires factual terminal release.
@@ -700,33 +545,22 @@ impl Inference {
         &self,
         request: &wire::ReleaseWarmRequest,
     ) -> Result<wire::WarmView, Error> {
-        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.inference.warm.release",
-            outcome = tracing::field::Empty,
-            rpc.code = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-        ));
-        span.scope(acyclic_observability::observe_output(
-            &span,
-            async {
-                bounded(request)?;
-                let commitment = fixed::<32>(&request.commitment)?;
-                let view = self
-                    .warm()
-                    .release(self.request(request.clone()).await?)
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(commitment))?;
-                if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified)
-                    != wire::WarmState::Released
-                {
-                    return Err(Error::Invalid("warm release is not terminal"));
-                }
-                Ok(view)
-            },
-            |result| obs::outcome(&span, result),
-        ))
-        .await
+        obs::operation!("acyclic.inference.warm.release", async {
+            bounded(request)?;
+            let commitment = fixed::<32>(&request.commitment)?;
+            let view = self
+                .warm()
+                .release(self.request(request.clone()).await?)
+                .await?
+                .into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified)
+                != wire::WarmState::Released
+            {
+                return Err(Error::Invalid("warm release is not terminal"));
+            }
+            Ok(view)
+        })
     }
 
     async fn request<T>(&self, value: T) -> Result<Request<T>, Error> {

@@ -68,9 +68,14 @@ pub use tracing as __tracing;
 /// Observe an asynchronous primitive using its shared owned operation context.
 /// `context` is the shared context constructor, so polling, cancellation and drop
 /// retain the originating subscriber. No second copy of the producer is retained.
+/// The named-span form accepts a level, output classifier and additional fields;
+/// its work and classifier may borrow that span until the operation completes.
 #[macro_export]
 macro_rules! async_operation {
     ($name:literal, $kind:expr, $context:path, $work:expr) => {{ $crate::operation_future!($name, $kind, $context, $work).await }};
+    (@$level:path, $name:expr, $span:ident, $error:expr, $context:path, $work:expr $(, $($field:ident).+ = $value:expr)* $(,)?) => {
+        $crate::operation_output_future!(@scope [.await] $level, $name, $span, $error, $context, $work $(, $($field).+ = $value)*)
+    };
 }
 
 /// Own and observe a single future without a forwarding async frame or box.
@@ -90,18 +95,26 @@ macro_rules! operation_future {
 /// and observer errors, using the same span and completion owner.
 #[macro_export]
 macro_rules! operation_output_future {
-    ($name:literal, $error:expr, $context:path, $work:expr) => {{
+    ($name:literal, $error:expr, $context:path, $work:expr) => {
+        $crate::operation_output_future!(@scope [] $crate::__tracing::Level::INFO, $name, _operation, $error, $context, $work)
+    };
+    (@scope [$($finish:tt)*] $level:path, $name:expr, $span:ident, $error:expr, $context:path, $work:expr $(, $($field:ident).+ = $value:expr)* $(,)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let operation = $context($crate::__tracing::info_span!(
+            let $span = $context($crate::__tracing::span!(
+                $level,
                 $name,
                 outcome = $crate::__tracing::field::Empty,
+                $($($field).+ = $value,)*
                 error.kind = $crate::__tracing::field::Empty,
             ));
-            operation.scope($crate::observe_output(&operation, $work, $error))
+            $span.scope($crate::observe_output(&$span, $work, $error)) $($finish)*
         }
         #[cfg(target_arch = "wasm32")]
-        ($work)
+        {
+            let $span = ();
+            ($work) $($finish)*
+        }
     }};
 }
 
