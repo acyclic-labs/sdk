@@ -110,7 +110,7 @@ impl ReaderPolicy {
     pub fn validate(&self) -> Result<(), StreamError> {
         let ok = (64 * 1024..=256 << 20).contains(&self.cache_bytes)
             && (16..=65_536).contains(&self.streams)
-            && (2..=64).contains(&self.requests)
+            && self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
@@ -394,6 +394,8 @@ struct Paging {
 struct InFlight {
     key: OpKey,
     priority: Priority,
+    /// Original rotated age, retained even when the want is withdrawn.
+    ticket: u64,
     deadline: u64,
     issued: u64,
     paging: Paging,
@@ -443,7 +445,6 @@ struct Anchors {
 
 const MAX_ANCHORED_PARENTS: usize = 64;
 const MAX_ANCHORS: usize = 256;
-const MAX_REFUSED: usize = 64;
 
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -484,7 +485,7 @@ pub struct Reader {
     next_ticket: u64,
     inflight: Requests,
     cancelled: Vec<u64>,
-    refused: BTreeSet<OpKey>,
+    refused: BTreeMap<OpKey, u64>,
     issues: BTreeMap<StreamPath, ReadIssue>,
     anchors: BTreeMap<StreamPath, Anchors>,
     follows: BTreeMap<StreamPath, FollowIntent>,
@@ -526,7 +527,7 @@ impl Reader {
             next_ticket: 0,
             inflight: Requests::default(),
             cancelled: Vec::new(),
-            refused: BTreeSet::new(),
+            refused: BTreeMap::new(),
             issues: BTreeMap::new(),
             anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
@@ -819,12 +820,17 @@ impl Reader {
             // Reclassify only the original request for this resolved intent.
             // Multiple projections keep their strongest admitted priority.
             let inflight = &mut self.inflight;
+            let refused = &self.refused;
             self.demand.want(
                 key,
                 priority,
                 paging,
                 &mut self.next_ticket,
-                |key, priority| inflight.set_priority(key, priority),
+                |key, priority| {
+                    inflight
+                        .set_priority(key, priority)
+                        .or_else(|| refused.get(key).copied())
+                },
             );
         }
         for key in self.demand.finish_plan() {
@@ -993,9 +999,7 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.refused.contains(key)
-                || self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied)
-            {
+            if self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied) {
                 continue;
             }
             let id = self.next_id;
@@ -1026,6 +1030,7 @@ impl Reader {
                 InFlight {
                     key: key.clone(),
                     priority: *priority,
+                    ticket: 0,
                     deadline: now.saturating_add(self.policy.timeout_ms),
                     issued: now,
                     paging: Paging::default(),
@@ -1087,14 +1092,17 @@ impl Reader {
             }
             (_, Outcome::Failed(failure)) => {
                 if failure != Failure::Denied {
-                    self.demand
-                        .restore_paging(&flight.key, std::mem::take(&mut flight.paging));
+                    self.demand.restore_paging(
+                        &flight.key,
+                        std::mem::take(&mut flight.paging),
+                        failure != Failure::Refused,
+                    );
                 }
                 if failure == Failure::Denied {
                     self.denied(flight.key.path());
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
-                    self.refuse(flight.key.clone());
+                    self.refused.insert(flight.key.clone(), flight.ticket);
                 }
                 self.fail(failure, now);
                 return;
@@ -1158,8 +1166,9 @@ impl Reader {
             self.demand.remove(&flight.key);
             self.recovered();
         } else {
-            self.demand.restore_paging(&flight.key, flight.paging);
-            self.refuse(flight.key);
+            self.demand
+                .restore_paging(&flight.key, flight.paging, false);
+            self.refused.insert(flight.key, flight.ticket);
         }
     }
 
@@ -1356,15 +1365,6 @@ impl Reader {
         }
     }
 
-    fn refuse(&mut self, key: OpKey) {
-        if self.refused.len() >= MAX_REFUSED
-            && let Some(first) = self.refused.iter().next().cloned()
-        {
-            self.refused.remove(&first);
-        }
-        self.refused.insert(key);
-    }
-
     fn fail(&mut self, failure: Failure, now: u64) {
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
@@ -1494,7 +1494,8 @@ impl Reader {
         self.invalidate(stream, true);
     }
 
-    /// Read failures and cursor discontinuities, bounded independently of history.
+    /// Unacknowledged read failures and cursor discontinuities. Source replacement
+    /// retires its issues; unrelated failures cannot acknowledge them.
     pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
         self.issues.iter().map(|(path, issue)| (path, *issue))
     }
@@ -1503,18 +1504,14 @@ impl Reader {
     pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
         self.issues.remove(stream);
         for range in OpKey::path_ranges(stream) {
-            self.refused.extract_if(range, |_| true).for_each(drop);
+            for (key, _) in self.refused.extract_if(range, |_, _| true) {
+                self.demand.set_ready(&key, true);
+            }
         }
         self.generation += 1;
     }
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
-        if self.issues.len() == MAX_REFUSED
-            && !self.issues.contains_key(stream)
-            && let Some(first) = self.issues.keys().next().cloned()
-        {
-            self.issues.remove(&first);
-        }
         self.issues.insert(stream.clone(), issue);
     }
 
@@ -1549,7 +1546,7 @@ impl Reader {
         let Some(flight) = self.inflight.remove(&id) else {
             return false;
         };
-        self.demand.restore_paging(&flight.key, flight.paging);
+        self.demand.restore_paging(&flight.key, flight.paging, true);
         self.cancelled.push(id);
         true
     }
@@ -2119,6 +2116,7 @@ mod reader_tests {
             InFlight {
                 key: key.clone(),
                 priority: Priority::Visible,
+                ticket: 0,
                 deadline: 100,
                 issued: 0,
                 paging: Paging {
@@ -2209,7 +2207,7 @@ mod reader_tests {
                 Priority::Prefetch,
                 Paging::default(),
                 &mut reader.next_ticket,
-                |_, _| false,
+                |_, _| None,
             );
         };
         // Invalidation must leave dormant history and its accumulated age
@@ -2330,18 +2328,23 @@ mod reader_tests {
             OpKey::children(&stream, 0, None),
             OpKey::children(&stream, u32::MAX, None),
         ];
-        reader.refused.extend(refused.iter().cloned());
+        reader
+            .refused
+            .extend(refused.iter().cloned().map(|key| (key, 0)));
         for index in 0..100_000 {
-            reader.refused.insert(OpKey::Head(
-                StreamPath::new(format!("test/source/unrelated-{index}")).unwrap(),
-            ));
+            reader.refused.insert(
+                OpKey::Head(StreamPath::new(format!("test/source/unrelated-{index}")).unwrap()),
+                0,
+            );
         }
         let neighboring = [
             OpKey::Read(child.clone(), u64::MAX),
             OpKey::Head(grandchild.clone()),
             OpKey::children(&parent, u32::MAX, None),
         ];
-        reader.refused.extend(neighboring.iter().cloned());
+        reader
+            .refused
+            .extend(neighboring.iter().cloned().map(|key| (key, 0)));
         OP_PATH_PROJECTIONS.with(|visits| visits.set(0));
         reader.acknowledge_issue(&stream);
         assert_eq!(
@@ -2351,12 +2354,16 @@ mod reader_tests {
         );
         assert!(reader.issues().next().is_none());
         assert!(
-            refused.iter().all(|key| !reader.refused.contains(key)),
+            refused.iter().all(|key| !reader.refused.contains_key(key)),
             "explicit retry retained an operation for the acknowledged stream"
         );
         assert_eq!(reader.refused.len(), 100_003);
-        assert!(neighboring.iter().all(|key| reader.refused.contains(key)));
-        assert!(reader.refused.contains(&unrelated));
+        assert!(
+            neighboring
+                .iter()
+                .all(|key| reader.refused.contains_key(key))
+        );
+        assert!(reader.refused.contains_key(&unrelated));
         reader.plan([(want, Priority::Visible)]);
         assert_eq!(reader.poll(10_000).len(), 1);
     }
@@ -2377,7 +2384,7 @@ mod reader_tests {
             let provider = MemoryStream::default();
             let denied = StreamPath::new("requests/denied").unwrap();
             let mut heads = BTreeMap::new();
-            for path in std::iter::once(denied.clone()).chain((0..32).map(|index| {
+            for path in std::iter::once(denied.clone()).chain((0..128).map(|index| {
                 StreamPath::new(format!("requests/denied/independent-{index}")).unwrap()
             })) {
                 provider
@@ -2533,7 +2540,7 @@ mod reader_tests {
             retry.complete(resumed[0].id(), Outcome::Head(heads[&paths[0]].clone()), at);
             assert!(retry.poll(at).is_empty());
             let policy = ReaderPolicy {
-                requests: 64,
+                requests: heads.len(),
                 prefetch_requests: 0,
                 timeout_ms: 100,
                 ..ReaderPolicy::default()
@@ -2556,6 +2563,123 @@ mod reader_tests {
                     )
                 })
             };
+            // Refusal parks the same logical demand at its original rotated
+            // age. Transport recovery and new aliases cannot acknowledge it.
+            let mut refused = Reader::new(policy).unwrap();
+            refused.begin_frame(0);
+            refused.plan(wants());
+            let refused_ops = refused.poll(0);
+            assert_eq!(refused_ops.len(), heads.len());
+            for op in &refused_ops {
+                refused.complete(op.id(), Outcome::Failed(Failure::Refused), 0);
+            }
+            refused.network_changed(true, 1);
+            refused.demand.take_visits();
+            assert!(
+                refused.poll(1).is_empty(),
+                "refusal retried without acknowledgment"
+            );
+            assert_eq!(
+                refused.demand.take_visits(),
+                0,
+                "refused demand returned to ready order"
+            );
+            refused.plan([]);
+            refused.plan(wants().rev());
+            assert!(
+                refused.poll(1).is_empty(),
+                "withdrawn refusal alias bypassed acknowledgment"
+            );
+            assert_eq!(refused.demand.take_visits(), 0);
+            // Acknowledging the parent does not acknowledge independently
+            // refused descendants. Only its captured provider reply resumes.
+            refused.acknowledge_issue(&denied);
+            let acknowledged = refused.poll(1);
+            assert_eq!(acknowledged.len(), 1, "acknowledgment lost original demand");
+            assert!(matches!(&acknowledged[0], Op::Head { stream, .. } if stream == &denied));
+            refused.complete(
+                acknowledged[0].id(),
+                Outcome::Head(heads[&denied].clone()),
+                1,
+            );
+            assert_eq!(
+                refused.cache.record(&denied, 0).unwrap().as_ref(),
+                b"original committed body"
+            );
+            assert!(refused.poll(1).is_empty());
+            refused.demand.take_visits();
+            // Reversing both re-admission and acknowledgment order retains
+            // the original admitted ages rather than changing fairness.
+            let older = heads.keys().nth(1).unwrap();
+            let newer = heads.keys().nth(2).unwrap();
+            refused.acknowledge_issue(newer);
+            refused.acknowledge_issue(older);
+            let resumed = refused.poll(1);
+            assert_eq!(resumed.len(), 2);
+            assert!(matches!(&resumed[0], Op::Head { stream, .. } if stream == older));
+            assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == newer));
+            assert_eq!(refused.demand.take_visits(), 2);
+
+            // The request itself retains its age if its visible want leaves
+            // before refusal arrives. A later fresh want cannot overtake it.
+            let mut withdrawn = Reader::new(policy).unwrap();
+            withdrawn.begin_frame(0);
+            withdrawn.plan(wants().take(1));
+            let first = withdrawn.poll(0);
+            assert_eq!(first.len(), 1);
+            withdrawn.plan([]);
+            withdrawn.plan(wants().skip(1).take(1));
+            withdrawn.complete(first[0].id(), Outcome::Failed(Failure::Refused), 1);
+            withdrawn.network_changed(true, 1);
+            withdrawn.plan(wants().take(2).rev());
+            withdrawn.acknowledge_issue(&denied);
+            let resumed = withdrawn.poll(1);
+            assert_eq!(resumed.len(), 2);
+            assert!(
+                matches!(&resumed[0], Op::Head { stream, .. } if stream == &denied),
+                "withdrawal lost the original request age"
+            );
+            assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == older));
+
+            // Other callers' failures cannot retire an original denial or
+            // silently authorize a new read with its old credential.
+            let mut denied_reads = Reader::new(policy).unwrap();
+            for path in heads.keys() {
+                denied_reads.denied(path);
+            }
+            assert_eq!(
+                denied_reads.issues().count(),
+                heads.len(),
+                "unrelated denial retired an unacknowledged issue"
+            );
+            denied_reads.plan(wants());
+            assert!(denied_reads.poll(0).is_empty());
+            denied_reads.acknowledge_issue(&denied);
+            assert_eq!(denied_reads.issues().count(), heads.len() - 1);
+            assert!(
+                heads.keys().filter(|path| *path != &denied).all(|path| {
+                    denied_reads.issues.get(path) == Some(&ReadIssue::AccessDenied)
+                })
+            );
+
+            // Mutate only the tail of the actual captured provider fact.
+            // Invalid bytes retain the same explicit acknowledgment boundary.
+            let mut invalid = Reader::new(policy).unwrap();
+            invalid.plan([first_want.clone()]);
+            let original = invalid.poll(0);
+            let mut corrupt = heads[&denied].clone();
+            corrupt.tail = 0;
+            invalid.complete(original[0].id(), Outcome::Head(corrupt), 0);
+            assert!(invalid.cache.record(&denied, 0).is_none());
+            invalid.demand.take_visits();
+            assert!(invalid.poll(0).is_empty());
+            assert_eq!(invalid.demand.take_visits(), 0, "invalid head stayed ready");
+            invalid.acknowledge_issue(&denied);
+            let resumed = invalid.poll(0);
+            assert_eq!(resumed.len(), 1, "invalid head lost explicit retry");
+            invalid.complete(resumed[0].id(), Outcome::Head(heads[&denied].clone()), 0);
+            assert!(invalid.cache.record(&denied, 0).is_some());
+
             let mut deadlines = Reader::new(policy).unwrap();
             deadlines.begin_frame(10);
             deadlines.plan([first_want.clone()]);
@@ -2625,7 +2749,11 @@ mod reader_tests {
                 "stale time reordered admitted request deadlines"
             );
 
-            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                requests: heads.len(),
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
             reader.begin_frame(0);
             // The lexically last path arrives first, repeatedly at lower
             // priority. A later unique intent must survive that entire prefix.

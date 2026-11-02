@@ -30,6 +30,7 @@ impl Requests {
     pub(super) fn dispatch(&mut self, id: &u64, demand: &mut Demands, next_ticket: &mut u64) {
         if let Some(flight) = self.by_id.get_mut(id) {
             flight.paging = demand.dispatch(&flight.key, *next_ticket);
+            flight.ticket = *next_ticket;
             *next_ticket += 1;
         }
     }
@@ -40,7 +41,7 @@ impl Requests {
         self.by_id.insert(id, flight);
     }
 
-    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> bool {
+    pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> Option<u64> {
         if let Some(id) = self.keys.get(key) {
             let flight = self
                 .by_id
@@ -51,9 +52,9 @@ impl Requests {
                 flight.priority = priority;
                 self.prefetch += usize::from(priority == Priority::Prefetch);
             }
-            true
+            Some(flight.ticket)
         } else {
-            false
+            None
         }
     }
 
