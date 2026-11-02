@@ -10,8 +10,8 @@
 //! the module and its static imports from the effective tree and `sys/` run
 //! in QuickJS with no clock, randomness, I/O or tools, under a deterministic
 //! instruction budget, and the result must be plain data. A result or a
-//! failure is cached under the digest of everything it read, so identical
-//! stacks evaluate once per process.
+//! failure is cached under the digest of everything it read. The most recent
+//! evaluation is reused without retaining a history of settings stacks.
 pub mod policy;
 mod types;
 
@@ -94,6 +94,17 @@ pub fn typescript() -> &'static str {
             AdmissionStatus,
             Link,
             Form
+        );
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        declarations!(
+            crate::plugins::Plugins,
+            crate::plugins::PluginEntry,
+            crate::plugins::PluginSource,
+            crate::plugins::PluginManifest,
+            crate::plugins::AfterSource,
+            crate::plugins::Start,
+            crate::plugins::Event,
+            crate::hooks::RequestMatch
         );
         text
     })

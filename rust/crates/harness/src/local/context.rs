@@ -118,7 +118,7 @@ impl LocalHarness {
                     }
                     None => crate::hooks::Hooks::default(),
                 };
-                hooks.add_rules(self.plugin_hooks.iter().cloned())?;
+                hooks.append(self.plugin_hooks.clone());
                 if hooks.is_empty() {
                     None
                 } else {
