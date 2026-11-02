@@ -28,17 +28,25 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let owner = actor("failure-disposition")?;
     place(&store, &owner).await?;
     let source = inbox(&owner)?.remove("inbox").ok_or("missing input")?.path;
+    let mut original = AppendRecord::latest(Bytes::new(), Bytes::from_static(b"key"), true)?;
+    original.value = vec![b'p'; acyclic_stream::MAX_RECORD_BYTES - original.payload_bytes()].into();
+    let mut oversized = original.clone();
+    oversized.value = vec![b'p'; original.value.len() + 1].into();
+    assert!(matches!(
+        provider
+            .append(AppendRequest {
+                path: source.clone(),
+                records: vec![oversized],
+                if_tail: None,
+                idempotency_key: key("failure/protective-frame")?,
+            })
+            .await,
+        Err(StreamError::LimitExceeded)
+    ));
     provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![
-                AppendRecord::latest(
-                    Bytes::from(vec![b'p'; 65_537]),
-                    Bytes::from_static(b"key"),
-                    true,
-                )?,
-                Bytes::from_static(b"later").into(),
-            ],
+            records: vec![original, Bytes::from_static(b"later").into()],
             if_tail: None,
             idempotency_key: key("failure/input")?,
         })
