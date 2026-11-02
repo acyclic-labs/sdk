@@ -124,6 +124,30 @@ impl State {
             .session_end(&self.target.name, self.generation)
     }
 
+    /// The original session's exclusive acceptance, shared with the host's
+    /// physical handover validation.
+    fn acceptance(&self, call: &CallPath) -> Result<Commit> {
+        let (socket, session) = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("device acceptance has no connection".into()))?;
+        call.accept(
+            &Accepted {
+                executor: encode(&Executor {
+                    v: RECORD_VERSION,
+                    session: session.clone(),
+                    socket: socket.clone(),
+                    generation: self.generation,
+                })?
+                .into(),
+                fence: Some(self.fence()?),
+            },
+            // The request is the Run on the original device queue.
+            false,
+        )
+        .map_err(protocol)
+    }
+
     /// One session end covers every unfinished call: it is their fence, so
     /// disconnect never enumerates them.
     fn lose(&self, reason: &str, effects: &mut Vec<Effect>) -> Result<()> {
@@ -144,8 +168,8 @@ impl State {
             return Ok(());
         };
         let call = super::records::call(&run.command.agent, run.command.op)?;
-        // This actor is the call's only writer until its acceptance; a
-        // nonempty journal was already decided by an earlier delivery.
+        // Cancellation or an earlier delivery already decided a nonempty
+        // journal. The acceptance guards also fence cancellation after this read.
         match provider.head(call.log().clone()).await {
             Ok(head) if head.tail != 0 => return Ok(()),
             Ok(_) | Err(StreamError::NotFound) => {}
@@ -158,24 +182,8 @@ impl State {
                 && run.command.target == self.target.name
                 && run.command.generation == self.generation
         });
-        let commit = if let Some((socket, session)) = accepted {
-            let executor = Executor {
-                v: RECORD_VERSION,
-                session: session.clone(),
-                socket: socket.clone(),
-                generation: self.generation,
-            };
-            let commit = call
-                .accept(
-                    &Accepted {
-                        executor: encode(&executor)?.into(),
-                        fence: Some(self.fence()?),
-                    },
-                    // The request is the Run on this device's queue,
-                    // committed with the caller's claim.
-                    false,
-                )
-                .map_err(protocol)?;
+        let commit = if accepted.is_some() {
+            let commit = self.acceptance(&call)?;
             self.handover = Some(record.sequence);
             commit
         } else {
@@ -481,6 +489,9 @@ impl Composer for TargetComposer {
                         && run.command.generation == next.generation
                 })
                 .map(|run| {
+                    let call =
+                        super::records::call(&run.command.agent, run.command.op).map_err(guest)?;
+                    let acceptance = next.acceptance(&call).map_err(guest)?;
                     let text = String::from_utf8(
                         encode(&HandoverRecord {
                             v: RECORD_VERSION,
@@ -490,7 +501,11 @@ impl Composer for TargetComposer {
                         .map_err(guest)?,
                     )
                     .map_err(guest)?;
-                    Ok::<_, GuestError>((WebSocketId(connection.clone()), text))
+                    Ok::<_, GuestError>(AcceptedHandover {
+                        connection: WebSocketId(connection.clone()),
+                        text,
+                        acceptance,
+                    })
                 })
                 .transpose()?,
             _ => None,
@@ -508,12 +523,38 @@ struct Handover {
     host: Arc<dyn SocketHost>,
     actor: ActorReference,
     close: Option<WebSocketId>,
-    send: Option<(WebSocketId, String)>,
+    send: Option<AcceptedHandover>,
+}
+
+struct AcceptedHandover {
+    connection: WebSocketId,
+    text: String,
+    acceptance: Commit,
 }
 
 impl Composition for Handover {
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
-        Box::pin(async move { Ok(request) })
+        Box::pin(async move {
+            if let Some(send) = &self.send {
+                // A participant is an untrusted request. A changed checkpoint
+                // alone cannot authorize a physical send: the same publication
+                // must carry the original session's exact guarded acceptance.
+                if !send
+                    .acceptance
+                    .conditions
+                    .iter()
+                    .all(|condition| request.conditions.contains(condition))
+                    || !send
+                        .acceptance
+                        .mutations
+                        .iter()
+                        .all(|mutation| request.mutations.contains(mutation))
+                {
+                    return Err(guest("device handover omitted its guarded acceptance"));
+                }
+            }
+            Ok(request)
+        })
     }
 
     fn settle<'a>(
@@ -521,8 +562,22 @@ impl Composition for Handover {
         outcome: std::result::Result<&'a CommitOutcome, &'a StreamError>,
     ) -> GuestFuture<'a, ()> {
         Box::pin(async move {
-            if !matches!(outcome, Ok(CommitOutcome::Committed(_))) {
+            let Ok(CommitOutcome::Committed(receipt)) = outcome else {
                 return Ok(());
+            };
+            if let Some(send) = &self.send {
+                let Some(CommitMutation::Append { path, .. }) = send.acceptance.mutations.first()
+                else {
+                    return Err(guest("device acceptance is not an append"));
+                };
+                let accepted = receipt
+                    .appends
+                    .binary_search_by(|append| append.path.cmp(path))
+                    .ok()
+                    .and_then(|index| receipt.appends.get(index));
+                if !accepted.is_some_and(|append| append.start == 0 && append.tail == 1) {
+                    return Err(guest("device handover acceptance did not commit"));
+                }
             }
             if let Some(connection) = self.close {
                 // An already closed socket is the same terminal outcome.
@@ -533,7 +588,10 @@ impl Composition for Handover {
                     "device session superseded",
                 );
             }
-            if let Some((connection, text)) = self.send {
+            if let Some(AcceptedHandover {
+                connection, text, ..
+            }) = self.send
+            {
                 if self
                     .host
                     .web_socket_send(&self.actor, &connection, SocketPayload::Text { text })
