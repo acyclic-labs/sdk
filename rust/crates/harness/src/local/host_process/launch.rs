@@ -3,6 +3,7 @@
 //! those under the policy arguments it was launched with.
 use super::*;
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
+use std::ffi::{OsStr, OsString};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
@@ -172,41 +173,36 @@ pub fn child_arguments(
     args: &[String],
     cwd: &Path,
     session: Option<&str>,
-) -> Result<Vec<std::ffi::OsString>> {
+) -> Result<Vec<OsString>> {
     validate(host, args)?;
     if session.is_some_and(|reference| reference.starts_with('-')) {
         return Err(invalid("native resume reference cannot be an option"));
     }
-    let owned = |values: &[&str]| values.iter().map(Into::into).collect::<Vec<_>>();
     let policy = args.iter().map(Into::into);
-    let mut arguments: Vec<std::ffi::OsString> = Vec::new();
+    let mut arguments: Vec<OsString> = Vec::new();
     match host {
         "codex" => {
             arguments.extend(policy);
-            arguments.extend(owned(&["exec", "--json", "--cd"]));
+            arguments.extend(["exec", "--json", "--cd"].map(OsString::from));
             arguments.push(cwd.into());
             if let Some(id) = session {
-                arguments.extend(owned(&["resume", id]));
+                arguments.extend(["resume", id].map(OsString::from));
             }
             arguments.push("-".into());
         }
         "claude-code" => {
-            arguments.extend(owned(&[
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-            ]));
+            arguments
+                .extend(["-p", "--output-format", "stream-json", "--verbose"].map(OsString::from));
             arguments.extend(policy);
             if let Some(id) = session {
-                arguments.extend(owned(&["--resume", id]));
+                arguments.extend(["--resume", id].map(OsString::from));
             }
         }
         _ => {
-            arguments.extend(owned(&["--mode", "json", "-p"]));
+            arguments.extend(["--mode", "json", "-p"].map(OsString::from));
             arguments.extend(policy);
             if let Some(file) = session {
-                arguments.extend(owned(&["--session", file]));
+                arguments.extend(["--session", file].map(OsString::from));
             }
         }
     }
@@ -220,10 +216,13 @@ pub fn launch(args: &[String]) -> Result<()> {
         .first()
         .ok_or_else(|| invalid("host requires codex, claude-code or pi"))?;
     let flags = args.get(1..).unwrap_or_default();
-    let flags = flags.strip_prefix(&["--".to_owned()]).unwrap_or(flags);
+    let flags = match flags {
+        [separator, rest @ ..] if separator == "--" => rest,
+        _ => flags,
+    };
     let cwd = std::env::current_dir().map_err(storage)?;
     let flags = parent_flags(host, flags, &cwd)?;
-    let status = run_root_session(&cwd, host, std::ffi::OsStr::new(program(host)?), &flags)?;
+    let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags)?;
     if !status.success() {
         return Err(invalid(format!("native {host} exited {status}")));
     }
