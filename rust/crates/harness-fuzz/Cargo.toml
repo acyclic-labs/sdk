@@ -178,6 +178,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "config_module"
+path = "fuzz_targets/config_module.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
 required-features = ["runtime"]

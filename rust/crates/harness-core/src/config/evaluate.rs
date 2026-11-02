@@ -470,7 +470,19 @@ fn run(
         return Err(format!("exceeded its instruction budget ({FUEL} polls)"));
     }
     let (form, json) = outcome?;
-    let value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    let value = crate::executor::json::json_from_slice_bounded(
+        std::marker::PhantomData::<Value>,
+        json.as_bytes(),
+        crate::executor::json::JsonBounds {
+            maximum_bytes: json.len() as u64,
+            maximum_items: u64::MAX,
+            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        },
+        None,
+        Some(crate::executor::json::JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    )
+    .map_err(|error| error.to_string())?;
     let form = if form == "function" {
         Form::Function
     } else {
