@@ -83,6 +83,12 @@ refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
 Explicit read-root matches are verified before overlapping subtree proofs, so
 retaining a granted root does not require subtree support from its ancestor.
+Descendant read proofs search only component ancestors in the original sorted
+root collection, rather than scanning every unrelated root. For a path with
+`D` ancestors and `R` declared roots this takes `O(D log R)` path comparisons,
+with no additional allocation, native operation or per-agent state. Overlapping
+roots retain their original shallowest-ancestor proof order; every selected
+object still undergoes the same native identity and rooted-resolution checks.
 When only workspace writes must be removed, `ExecutionGrant::into_read_only`
 consumes an already authorized grant and shares its original pinned roots,
 network authority and compiled filter. It performs no allocation, path lookup,
