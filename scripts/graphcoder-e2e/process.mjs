@@ -611,22 +611,53 @@ export class Spool {
     if (this.#state.open) this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
-  // Every event so far that `match` accepts, read from the transcript.
-  async history(match = () => true) {
+  // Incrementally read one completed prefix, with at most one chunk ahead of
+  // the current record. Returning closes the original file descriptor.
+  async *records(match = () => true) {
     assert.ok(this.#path, "event history requires a transcript");
     await this.#written;
     if (this.#broken) throw this.#broken;
     // Exactly the completed lines: a later write may already have put part
     // of its line in the file.
-    const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, "r");
+    const completed = this.#completed;
+    if (completed === 0) return;
+    let fd;
     try {
-      for (let at = 0; at < bytes.length;) {
-        const read = readSync(fd, bytes, at, bytes.length - at, at);
-        if (read === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends at byte ${at} of ${bytes.length} written`, { at, completed: bytes.length });
+      fd = openSync(this.#path, "r");
+      const bytes = Buffer.allocUnsafe(Math.min(completed, 64 * 1024));
+      const decoder = new StringDecoder("utf8"), parts = [];
+      for (let at = 0; at < completed;) {
+        if (this.#broken) throw this.#broken;
+        const read = readSync(fd, bytes, 0, Math.min(bytes.length, completed - at), at);
+        if (read === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends at byte ${at} of ${completed} written`, { at, completed });
         at += read;
+        const text = decoder.write(bytes.subarray(0, read));
+        let start = 0;
+        for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+          parts.push(text.slice(start, end));
+          const line = parts.join("");
+          parts.length = 0;
+          if (line) {
+            if (this.#broken) throw this.#broken;
+            const event = JSON.parse(line);
+            if (match(event)) yield event;
+          }
+          start = end + 1;
+        }
+        if (start < text.length) parts.push(text.slice(start));
       }
-    } finally { closeSync(fd); }
-    return bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
+      if (this.#broken) throw this.#broken;
+      if (parts.length || decoder.end()) throw new SpoolEnded("spool", `transcript ${this.#path} lacks a complete final event`, { completed });
+    } catch (error) {
+      if (error instanceof SpoolEnded) throw error;
+      throw new SpoolEnded("spool", `step=read transcript ${this.#path}; recovery=restore the original transcript and rerun ${JSON.stringify(process.argv)}`, error);
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+  // Collect only selected output; scanning and framing share the cursor above.
+  async history(match = () => true) {
+    const result = [];
+    for await (const event of this.records(match)) result.push(event);
+    return result;
   }
 }
 
