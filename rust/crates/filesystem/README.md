@@ -58,7 +58,7 @@ FS hash chain or locator. `From<&GenerationRoot>` is the compatibility
 construction path; legacy root codecs and volume checks still serve callers
 that have not migrated.
 
-V1 framing is `domain || key_length:u16-le || original_key || path_length:u16-le
+V2 framing is `domain || key_length:u16-le || original_key || path_length:u16-le
 || original_destination || kind:u8 || body`. The original destination belongs
 to publication provenance; it does not change when a subtree inherits the record.
 Recovery compares it with the intended destination, so an inherited source record
@@ -142,9 +142,78 @@ retain canonical order independently of hash-table iteration. Index lookup has
 the standard hash table's expected constant cost; no worst-case hash-table or
 runtime performance qualification is claimed.
 
+### Complete retained volume cuts
+
+The following is the required contract for history adoption. The portable
+record contribution exists; complete native dependency retention and its
+history consumers remain unfinished. An authored generation alone cannot
+establish a restorable source-backed workspace.
+
+A retained cut selects one `StateRecord::Volume`: the immutable authored root
+and the existing typed companion encoding from the same publication. Its
+dependency closure includes the exact decode configuration, source identity
+and epoch, overlay and identity-shadow roots, and the original publication
+proof. Selected-publication input evidence remains part of that proof. The
+companion codec must distinguish an authored-only view from missing native
+state; absence cannot silently select the authored root. Persisted companion
+formats are versioned and unsupported formats refuse without migration.
+Pending shell capture must settle through its original producer before the cut
+is admitted; an unreported shell edit cannot become a successful history cut.
+
+`NativePublicationSnapshot` identifies the represented view.
+`LazySnapshotRef` identifies its authored/source/overlay/shadow projection.
+Neither value grants access, retains objects, certifies source coverage, or
+replaces the original publication proof. A current source with a matching
+identity cannot substitute for the retained epoch. If the source provider
+cannot preserve and reopen that epoch, retaining the cut must refuse before
+publication. Replaying a directory tree or reading today's paths cannot repair
+an incomplete historical cut.
+
+Preparation must contribute the complete root and companion through the same
+`FilesystemCommit` as the history descriptor, conversation selection and child
+creation or restore. Use the original observed conditions and publication
+holds; an independently committed companion CAS is insufficient. Immutable
+object staging may precede publication, but creates no visible historical cut.
+The complete dependency closure must remain held until the original outcome
+settles. A conflict publishes none of these changes; an unknown outcome retains
+the original request and custody for reconciliation. Cancellation before
+submission releases only unpublished preparation. It cannot discard custody
+for an earlier uncertain submission.
+After commit, retention of the selected record owns its complete dependency
+closure until authorized retirement. A temporary publication hold alone cannot
+establish that lifetime, including after collection of the original workspace.
+
+History stores the admitted original record reference once per binding. Restore
+and fork consume that cut without resolving it against moving heads or copying
+the descriptor for every volume. An archived source requires authorization for
+the retained cut and destination creation, but no delivery to the source actor's
+inbox. Destination policy and observed heads remain conditions of the original
+creation or restore commit. Complete-cut adoption must precede deleting the
+current authored-generation history representation.
+
+Acceptance requires these controls against the original storage and publication
+path, rather than a second recovery protocol:
+
+| Boundary | Required positive and negative control |
+| --- | --- |
+| Capture | Retain source edits, deletions and identity shadows; omitting any companion component or proof refuses before child publication. |
+| Selection | Advance authored and companion heads after selection; the result uses the admitted cut or refuses, never a mixed view. |
+| Atomicity | Cancel preparation and interrupt each publication edge; reopen exposes either a complete usable child/restore or no successful publication. |
+| Retention | Collect the original source and reopen storage; all retained bytes and proof remain usable, or initial retention refuses when that guarantee is unavailable. |
+| Archived source | Archive the source actor, then create from its authorized retained cut without requiring its inbox to run. |
+| Cost | Fixed changed roots and requested pages perform fixed metadata work as unrelated history and volume populations grow; restoring descriptor scans, repeated decoding or singleton fork preparation fails deterministic counters. |
+
+Cut metadata is fixed per selected binding. Reading or staging required content
+and proof bytes remains proportional to those bytes; selecting all volumes
+requires output-sensitive work. Preparation introduces no polling, timer or
+background scan. Any wait belongs to the original source, storage or conditional
+commit operation and must terminate with its producer's typed failure. These are
+adoption requirements, not execution or constant-time qualification of current
+history consumers.
+
 ### Caller and deletion inventory
 
-| Existing owner paths (relative to src/) | Adoption and deletion release |
+| Existing paths (relative to src/) | Adoption and deletion release |
 | --- | --- |
 | `facade/{fs,volume_creation,workspace_creation,checkout,publication}.rs`; `kernel/publication/**` | M2/M3: portable volume records and shared builder after live creation/open/publication/recovery parity; retain immutable algorithms |
 | `distributed/{lineage,authority,replay,operations,reservations}.rs`; `distributed/append/**`; `streams_record.rs` | M2/M3: caller subtree placement, exact receipts and actor/root fences before removing epoch/hash/locator/reservation families |
@@ -157,12 +226,9 @@ runtime performance qualification is claimed.
 | `distributed/actor/generations.rs`; `kernel/publication/combiner/{mod,volume}.rs` | M4: separate retained active ownership from bounded cached facts; evicted Unknown is never Absent or a second combiner |
 | sibling `filesystem-{napi,wasm}/src/**`, `harness-core/src/filesystem/**`, conformance | G48/G49: migrate consumers and retire authority exports without a compatibility window; share the existing G44 work context |
 
-No path is released for deletion by M1. del-fs-native owns native
-view/frontier/rebase integration; this API is not an implemented shared follow
-frontier. del-fs-model owns G44's actual shared work/custody implementation;
-del-core owns its harness consumers and state-free codecs. Propagation of public
-deadline and cancellation into all coordinators remains G49 work. No second work ledger is
-introduced. Report del-fs-model deletion separately from these additions.
+M1 does not implement a shared native follow frontier or release the paths above
+for deletion. Caller migration must preserve the original work custody, deadline
+and cancellation rather than introducing a second work ledger.
 
 ### Measurement and acceptance plan
 
