@@ -148,6 +148,71 @@ fn descriptor_readiness_keeps_the_original_owner_through_data_and_peer_loss() ->
 
 #[cfg(unix)]
 #[test]
+fn descriptor_readiness_retires_with_its_original_source() -> io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let mut command = crate::ProcessCommand::new("cat");
+    command
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::piped())
+        .stderr(crate::ProcessStdio::null());
+    let mut tree = super::super::ProcessTree::spawn(&mut command)?;
+    let mut original = tree.readiness()?;
+    assert!(
+        Pin::new(&mut original)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+
+    // Transfer the actual descriptor, keeping its exact number occupied.
+    // The original wait must retire before the new owner can arm that source.
+    let mut reader = tree.take_stdout().expect("original piped stdout");
+    let descriptor = reader.as_raw_fd();
+    assert!(matches!(
+        Pin::new(&mut original).poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(ProcessWaitOutcome::Cancelled)
+    ));
+    let successor = arm(&[Source::Readable(reader.as_fd())], None)?;
+    drop(original);
+    assert_eq!(
+        arm(&[Source::Readable(reader.as_fd())], None)
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::AlreadyExists,
+        "an old wait cannot remove its successor's source claim"
+    );
+    let mut writer = tree.take_stdin().expect("original piped stdin");
+    writer.write_all(b"x")?;
+    successor.block().into_result()?;
+    let mut byte = [0];
+    assert_eq!(reader.read(&mut byte)?, 1);
+    assert_eq!(byte, [b'x']);
+
+    // Closing the source also settles and releases it before its number can
+    // be reused. Keeping the old future alive must not keep a dead claim.
+    let reader = OwnedSource::new(reader);
+    let mut original = arm(&[Source::Readable(reader.as_fd())], None)?;
+    drop(reader);
+    assert!(matches!(
+        Pin::new(&mut original).poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(ProcessWaitOutcome::Cancelled)
+    ));
+    assert_ne!(
+        hub()?
+            .registry()
+            .sources
+            .get(&SourceKey::Descriptor(descriptor)),
+        Some(&original.token),
+        "a closed source cannot retain its original claim"
+    );
+    tree.terminate(None)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn descriptor_readiness_rolls_back_only_its_own_partial_native_admission() -> io::Result<()> {
     use std::io::Write as _;
     use std::os::fd::AsFd as _;

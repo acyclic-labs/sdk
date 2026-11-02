@@ -7,15 +7,13 @@
 //! the first of them to fire wakes the waiter. An async waiter costs a waker;
 //! a synchronous caller parks its own thread.
 
-#[cfg(unix)]
-use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
 
@@ -107,7 +105,7 @@ struct Registry {
     armed: Vec<(u64, Armed)>,
     positions: HashMap<u64, usize>,
     #[cfg(unix)]
-    sources: HashSet<SourceKey>,
+    sources: HashMap<SourceKey, u64>,
     timers: BTreeSet<(Instant, u64)>,
     failure: Option<Arc<io::Error>>,
 }
@@ -198,7 +196,9 @@ fn started() -> bool {
     STARTED.load(Ordering::Acquire)
 }
 
-static HUB: LazyLock<io::Result<&'static Hub>> = LazyLock::new(|| {
+static HUB: OnceLock<io::Result<&'static Hub>> = OnceLock::new();
+
+fn start_hub() -> io::Result<&'static Hub> {
     #[cfg(test)]
     STARTED.store(true, Ordering::Release);
     let hub: &'static Hub = Box::leak(Box::new(Hub {
@@ -209,7 +209,7 @@ static HUB: LazyLock<io::Result<&'static Hub>> = LazyLock::new(|| {
         .name("acyclic-process-events".into())
         .spawn(move || hub.run())?;
     Ok(hub)
-});
+}
 
 /// The running hub, held by every process tree from before its child is
 /// created. The hub is therefore part of the first spawn, never of whichever
@@ -232,7 +232,103 @@ impl Events {
 }
 
 fn hub() -> io::Result<&'static Hub> {
-    HUB.as_ref().copied().map_err(copy_error)
+    HUB.get_or_init(start_hub)
+        .as_ref()
+        .copied()
+        .map_err(copy_error)
+}
+
+// Source retirement precedes physical close or ownership transfer. An old
+// wait may outlive that source, but must not reserve a reused descriptor/PID.
+#[cfg(unix)]
+fn retire_source(source: SourceKey) {
+    let Some(Ok(hub)) = HUB.get() else {
+        return;
+    };
+    let signal = {
+        let mut registry = hub.registry();
+        registry
+            .sources
+            .remove(&source)
+            .and_then(|token| registry.remove(token))
+            .map(|armed| armed.signal)
+    };
+    if let Some(signal) = signal {
+        signal.settle(ProcessWaitOutcome::Cancelled);
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn retire_process(pid: libc::pid_t) {
+    retire_source(SourceKey::Process(pid));
+}
+
+/// Retires readiness before the original descriptor closes or transfers.
+/// The source itself is moved, never duplicated or retained past close.
+#[cfg(unix)]
+pub(super) struct OwnedSource<T> {
+    // Field order retires the claim before closing the original descriptor.
+    owner: DescriptorOwner,
+    source: T,
+}
+
+#[cfg(unix)]
+struct DescriptorOwner(std::os::fd::RawFd);
+
+#[cfg(unix)]
+impl Drop for DescriptorOwner {
+    fn drop(&mut self) {
+        retire_source(SourceKey::Descriptor(self.0));
+    }
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsFd> OwnedSource<T> {
+    pub(super) fn new(source: T) -> Self {
+        use std::os::fd::AsRawFd as _;
+        Self {
+            owner: DescriptorOwner(source.as_fd().as_raw_fd()),
+            source,
+        }
+    }
+
+    pub(super) fn into_inner(self) -> T {
+        let Self { owner, source } = self;
+        drop(owner);
+        source
+    }
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsFd> std::os::fd::AsFd for OwnedSource<T> {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.source.as_fd()
+    }
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsFd> std::os::fd::AsRawFd for OwnedSource<T> {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.source.as_fd())
+    }
+}
+
+#[cfg(unix)]
+impl<T: io::Read> io::Read for OwnedSource<T> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.source.read(bytes)
+    }
+}
+
+#[cfg(unix)]
+impl<T: io::Write> io::Write for OwnedSource<T> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.source.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.source.flush()
+    }
 }
 
 impl Hub {
@@ -441,11 +537,16 @@ fn arm_on<'a>(
             #[cfg(unix)]
             let key = source.key();
             #[cfg(unix)]
-            if !registry.sources.insert(key) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "native readiness source already has a live observation; drop it before rearming",
-                ));
+            match registry.sources.entry(key) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "native readiness source already has a live observation; drop it before rearming",
+                    ));
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(wait.token);
+                }
             }
             // Retain the claim before the syscall so every refusal releases
             // exactly the sources already admitted to this original wait.
@@ -519,7 +620,12 @@ impl Drop for Wait<'_> {
         registry.remove(self.token);
         #[cfg(unix)]
         for registration in &self.registrations {
-            registry.sources.remove(&registration.source);
+            if let std::collections::hash_map::Entry::Occupied(entry) =
+                registry.sources.entry(registration.source)
+                && entry.get() == &self.token
+            {
+                entry.remove();
+            }
         }
     }
 }
