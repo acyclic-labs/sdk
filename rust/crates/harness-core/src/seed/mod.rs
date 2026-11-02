@@ -42,6 +42,7 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("context-checkpoint"),
     skill!("debugging"),
     skill!("fresh-context-review"),
+    skill!("swarm-topology"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
     ("sys/kernel.md", include_bytes!("kernel.md")),

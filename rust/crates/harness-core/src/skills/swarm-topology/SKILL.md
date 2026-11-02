@@ -1,3 +1,8 @@
+---
+name: swarm-topology
+description: Choose and adapt a dependency graph when coordinating several agents with shared artifacts or messages.
+---
+
 # Choose the dependency graph
 
 Split independent work when it saves more than the coordination costs. Sequence
@@ -6,14 +11,14 @@ pattern below, then give each participant its inputs, output and ownership.
 
 | Pattern | Use it for |
 | --- | --- |
-| [Pipeline](pipeline.md) | Successive transformations of one artifact |
-| [Mesh](mesh.md) | Independent participants sharing observations |
-| [Debate ring](debate-ring.md) | Ordered challenges to a proposal |
-| [Blackboard](blackboard.md) | Contributions to shared, versioned knowledge |
-| [Market](market.md) | Choosing among competing offers |
-| [Hierarchy](hierarchy.md) | Independent work with local integration |
-| [Service](service.md) | Reacting to a durable request log |
-| [Search-derived graph](search-derived.md) | Discovering dependencies before execution |
+| [Pipeline](../../plugins/spawn/topologies/pipeline.md) | Successive transformations of one artifact |
+| [Mesh](../../plugins/spawn/topologies/mesh.md) | Independent participants sharing observations |
+| [Debate ring](../../plugins/spawn/topologies/debate-ring.md) | Ordered challenges to a proposal |
+| [Blackboard](../../plugins/spawn/topologies/blackboard.md) | Contributions to shared, versioned knowledge |
+| [Market](../../plugins/spawn/topologies/market.md) | Choosing among competing offers |
+| [Hierarchy](../../plugins/spawn/topologies/hierarchy.md) | Independent work with local integration |
+| [Service](../../plugins/spawn/topologies/service.md) | Reacting to a durable request log |
+| [Search-derived graph](../../plugins/spawn/topologies/search-derived.md) | Discovering dependencies before execution |
 
 These are ordinary programs and instructions for the `acyclic` module. They
 describe data flow; permissions come from admitted grants and issuer policy.
