@@ -452,11 +452,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         conflict: MergeConflict,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
-        if state.failed {
-            return Err(FsError::InvalidDiff.into());
-        }
-        state.failed = true;
-        accounting.check()?;
+        state.begin(&mut accounting)?;
         let view = state
             .plan
             .describe_conflict_file(conflict, &mut accounting)
