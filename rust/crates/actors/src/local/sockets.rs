@@ -42,6 +42,7 @@ use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 use prost::Message as _;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::hash::BuildHasher as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -54,6 +55,10 @@ const SLACK: usize = 256;
 /// Longest pause between retries of a request whose outcome is unknown; it
 /// paces transport recovery and bounds no work.
 const BACKOFF_CEILING_MS: u32 = 1_000;
+
+/// Lock partitions, not a socket or actor capacity bound. An actor's sockets
+/// and configuration have one owner; unrelated partitions never share its lock.
+const OWNER_SHARDS: usize = 64;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct EpochWire {
@@ -475,7 +480,7 @@ struct CloseOwner<P: StreamProvider + ?Sized + 'static> {
 impl<P: StreamProvider + ?Sized + 'static> Drop for CloseOwner<P> {
     fn drop(&mut self) {
         if self.retire {
-            self.shared.lock().remove(&self.connection);
+            self.shared.lock(&self.connection).remove(&self.connection);
             // Closing this original producer returns typed loss to every waiter.
         }
     }
@@ -517,6 +522,50 @@ impl Table {
     }
 }
 
+struct Tables {
+    owners: [std::sync::Mutex<Table>; OWNER_SHARDS],
+    hash: std::collections::hash_map::RandomState,
+}
+
+impl Default for Tables {
+    fn default() -> Self {
+        Self {
+            owners: std::array::from_fn(|_| std::sync::Mutex::new(Table::default())),
+            hash: std::collections::hash_map::RandomState::new(),
+        }
+    }
+}
+
+impl Tables {
+    fn actor(&self, actor: &ActorReference) -> usize {
+        (self.hash.hash_one(actor) as usize) % OWNER_SHARDS
+    }
+
+    fn connection(connection: &str) -> usize {
+        connection
+            .rsplit_once('-')
+            .and_then(|(_, owner)| owner.parse::<usize>().ok())
+            .filter(|owner| *owner < OWNER_SHARDS)
+            .unwrap_or(0)
+    }
+
+    fn owner(&self, owner: usize) -> &std::sync::Mutex<Table> {
+        &self.owners[owner]
+    }
+
+    fn lock(&self, owner: usize) -> std::sync::MutexGuard<'_, Table> {
+        self.owner(owner)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Global observations take the fixed partitions in order, preserving one
+    /// cut without holding a socket lock across a callback or asynchronous wait.
+    fn all(&self) -> [std::sync::MutexGuard<'_, Table>; OWNER_SHARDS] {
+        std::array::from_fn(|owner| self.lock(owner))
+    }
+}
+
 struct Shared<P: StreamProvider + ?Sized> {
     store: Store<P>,
     layout: Layout,
@@ -524,7 +573,7 @@ struct Shared<P: StreamProvider + ?Sized> {
     clock: Arc<dyn Clock>,
     incarnation: u64,
     next: AtomicU64,
-    table: std::sync::Mutex<Table>,
+    table: Tables,
     /// Opens and closes hold it shared; compaction holds it exclusively.
     ledger: RwLock<Ledger>,
     live: AtomicUsize,
@@ -664,7 +713,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
                 clock,
                 incarnation,
                 next: AtomicU64::new(0),
-                table: std::sync::Mutex::new(Table::default()),
+                table: Tables::default(),
                 ledger: RwLock::new(Ledger {
                     segment: incarnation,
                     allocated: incarnation,
@@ -684,13 +733,20 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     pub async fn drain(&self) -> Result<(), Arc<Error>> {
         let close = Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime);
         let claims = {
-            let mut table = self.shared.lock();
-            let connections: Vec<String> = table.sockets.keys().cloned().collect();
+            let mut tables = self.shared.table.all();
+            let connections: Vec<String> = tables
+                .iter()
+                .flat_map(|table| table.sockets.keys().cloned())
+                .collect();
             connections
                 .into_iter()
                 .filter_map(|connection| {
                     self.shared
-                        .claim_close(&mut table, &connection, &close)
+                        .claim_close(
+                            &mut tables[Tables::connection(&connection)],
+                            &connection,
+                            &close,
+                        )
                         .map(|claim| (connection, claim))
                 })
                 .collect::<Vec<_>>()
@@ -704,7 +760,12 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
 
     /// Open sockets in this incarnation, including ones still opening.
     pub fn len(&self) -> usize {
-        self.shared.lock().sockets.len()
+        self.shared
+            .table
+            .all()
+            .iter()
+            .map(|table| table.sockets.len())
+            .sum()
     }
 
     /// Whether no socket is open in this incarnation.
@@ -714,10 +775,17 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Table> {
-        self.table
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn connection_id(&self, actor: &ActorReference) -> String {
+        format!(
+            "{}-{}-{}",
+            self.incarnation,
+            self.next.fetch_add(1, Ordering::Relaxed),
+            self.table.actor(actor),
+        )
+    }
+
+    fn lock(&self, connection: &str) -> std::sync::MutexGuard<'_, Table> {
+        self.table.lock(Tables::connection(connection))
     }
 
     /// Pin the original completion while moving toward the one close under
@@ -765,7 +833,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     }
 
     fn begin_close(self: &Arc<Self>, connection: &str, close: Close) -> Option<CloseCompletion> {
-        let claim = self.claim_close(&mut self.lock(), connection, &close)?;
+        let claim = self.claim_close(&mut self.lock(connection), connection, &close)?;
         Some(self.start_close(connection, close, claim))
     }
 
@@ -791,7 +859,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         mut owner: CloseOwner<P>,
     ) {
         let target = {
-            let table = self.lock();
+            let table = self.lock(&connection);
             table.sockets.get(&connection).and_then(|entry| {
                 entry.inbox.clone().map(|inbox| Target {
                     actor: entry.actor.clone(),
@@ -821,7 +889,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             Err(Error::Invalid("closing socket has no input"))
         };
         let final_frame = self
-            .lock()
+            .lock(&connection)
             .remove(&connection)
             .and_then(|mut entry| entry.final_frame.take());
         owner.retire = false;
@@ -962,7 +1030,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         mut owner: CloseOwner<P>,
     ) {
         {
-            let mut table = self.lock();
+            let mut table = self.lock(&connection);
             match table.sockets.get_mut(&connection) {
                 Some(entry) if matches!(entry.phase, Phase::Unborn) => {
                     entry.phase = Phase::Opening {
@@ -979,7 +1047,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             outcome => {
                 // Refused by a condition, or never attempted: nothing
                 // reached the actor.
-                self.lock().remove(&connection);
+                self.lock(&connection).remove(&connection);
                 let (status, reason) = match outcome {
                     Err(Error::Invalid(reason)) => (404, reason),
                     _ => (503, "socket open did not commit"),
@@ -996,7 +1064,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         // open that never committed fails its `Tail{socket, 1}` and does
         // nothing.
         let pending = {
-            let mut table = self.lock();
+            let mut table = self.lock(&connection);
             let Some(entry) = table.sockets.get_mut(&connection) else {
                 return;
             };
@@ -1046,7 +1114,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 attachment,
                 tags,
             }) => {
-                let mut table = self.lock();
+                let mut table = self.lock(&connection);
                 if let Some(entry) = table.sockets.get_mut(&connection)
                     && let Phase::Opening { .. } = entry.phase
                 {
@@ -1157,7 +1225,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         };
         self.live.fetch_add(1, Ordering::AcqRel);
         self.written.fetch_add(1, Ordering::AcqRel);
-        if let Some(entry) = self.lock().sockets.get_mut(connection) {
+        if let Some(entry) = self.lock(connection).sockets.get_mut(connection) {
             entry.inbox = Some(opened.1);
         }
         drop(ledger);
@@ -1172,7 +1240,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         payload: SocketPayload,
     ) -> Result<(), StreamError> {
         let now = self.clock.now_unix_ms();
-        let mut table = self.lock();
+        let mut table = self.lock(connection);
         let Table { sockets, auto, .. } = &mut *table;
         let Some(entry) = sockets.get_mut(connection) else {
             return Ok(());
@@ -1229,7 +1297,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     /// The peer's close follows every message it sent before it.
     fn peer_close(self: &Arc<Self>, connection: &str, mut close: Close) -> Result<(), StreamError> {
         {
-            let mut table = self.lock();
+            let mut table = self.lock(connection);
             if let Some(entry) = table.sockets.get_mut(connection) {
                 if entry.peer_closed {
                     return Ok(());
@@ -1254,7 +1322,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             match self.next_peer_event(&connection) {
                 None => return,
                 Some(Step::Close(close)) => {
-                    let claim = self.claim_close(&mut self.lock(), &connection, &close);
+                    let claim = self.claim_close(&mut self.lock(&connection), &connection, &close);
                     if let Some((Some(owner), _completion)) = claim {
                         self.finish_close(connection, close, owner).await;
                     }
@@ -1293,7 +1361,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     /// Take the next queued peer event, or end the drain: `None` clears the
     /// draining flag, so the next accepted event starts a new drain.
     fn next_peer_event(&self, connection: &str) -> Option<Step> {
-        let mut table = self.lock();
+        let mut table = self.lock(connection);
         let entry = table.sockets.get_mut(connection)?;
         let event = if matches!(entry.phase, Phase::Open) {
             entry.inbound.pop_front()
@@ -1330,7 +1398,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         socket: &WebSocketId,
         apply: impl FnOnce(&mut Entry) -> Result<R, GuestError>,
     ) -> Result<R, GuestError> {
-        let mut table = self.lock();
+        let mut table = self.lock(&socket.0);
         match table.sockets.get_mut(&socket.0) {
             Some(entry) if entry.actor == *actor => apply(entry),
             _ => Err(host_error("unknown WebSocket")),
@@ -1486,16 +1554,12 @@ impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P
             acyclic_auth::authority::PolicyDecision::Allow,
         )?;
         let shared = &host.shared;
-        let connection = format!(
-            "{}-{}",
-            shared.incarnation,
-            shared.next.fetch_add(1, Ordering::Relaxed)
-        );
+        let connection = shared.connection_id(&open.actor);
         let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
         let (final_frame, last) = oneshot::channel();
         let (abandon, abandoned) = oneshot::channel();
         {
-            let mut table = shared.lock();
+            let mut table = shared.lock(&connection);
             table
                 .actors
                 .entry(open.actor.clone())
@@ -1566,7 +1630,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         actor: &ActorReference,
         tag: Option<&str>,
     ) -> Result<Vec<WebSocketId>, GuestError> {
-        let table = self.shared.lock();
+        let table = self.shared.table.lock(self.shared.table.actor(actor));
         Ok(table
             .actors
             .get(actor)
@@ -1588,15 +1652,15 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         socket: &WebSocketId,
         payload: SocketPayload,
     ) -> Result<(), GuestError> {
+        let frame = SocketFrame::Message(payload).encode();
+        if frame.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(host_error(
+                "WebSocket frame exceeds the channel record bound",
+            ));
+        }
         let full = self.shared.with_entry(actor, socket, |entry| {
             if !matches!(entry.phase, Phase::Open) {
                 return Err(host_error("WebSocket is not open"));
-            }
-            let frame = SocketFrame::Message(payload).encode();
-            if frame.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(host_error(
-                    "WebSocket frame exceeds the channel record bound",
-                ));
             }
             match entry.outbound.try_send(frame) {
                 Ok(()) => Ok(false),
@@ -1664,7 +1728,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
                 "WebSocket frame exceeds the channel record bound",
             ));
         }
-        let mut table = self.shared.lock();
+        let mut table = self.shared.table.lock(self.shared.table.actor(actor));
         match value {
             Some(value) => {
                 table.auto.insert(actor.clone(), value);
@@ -1680,7 +1744,13 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         &self,
         actor: &ActorReference,
     ) -> Result<Option<WebSocketAutoResponse>, GuestError> {
-        Ok(self.shared.lock().auto.get(actor).cloned())
+        Ok(self
+            .shared
+            .table
+            .lock(self.shared.table.actor(actor))
+            .auto
+            .get(actor)
+            .cloned())
     }
 
     fn get_web_socket_auto_response_timestamp(

@@ -202,7 +202,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     // installing a connection, starting a producer or publishing an Open.
     drop(prepared);
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
-    assert!(sockets.shared.lock().sockets.is_empty());
+    assert!(sockets.is_empty());
     let mut noncanonical = encoded.to_vec();
     noncanonical.extend_from_slice(&encoded);
     for bytes in [Bytes::from_static(&[0]), Bytes::from(noncanonical)] {
@@ -223,8 +223,15 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     assert_eq!(refused, Some(StreamError::AccessDenied));
     assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
-    assert!(sockets.shared.lock().sockets.is_empty());
-    assert!(sockets.shared.lock().actors.is_empty());
+    assert!(sockets.is_empty());
+    assert!(
+        sockets
+            .shared
+            .table
+            .all()
+            .iter()
+            .all(|table| table.actors.is_empty())
+    );
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
         Err(Error::Stream(StreamError::NotFound))
@@ -587,21 +594,17 @@ async fn close_fixture(
             .commit(publication.into_request()?)
             .await?,
     )?;
-    let connection = format!(
-        "{}-{}",
-        shared.incarnation,
-        shared.next.fetch_add(1, Ordering::Relaxed)
-    );
+    let connection = shared.connection_id(&actor);
     let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
     let (final_frame, last) = oneshot::channel();
     let (abandon, _abandoned) = oneshot::channel();
     shared
-        .lock()
+        .lock(&connection)
         .actors
         .entry(actor.clone())
         .or_default()
         .insert(connection.clone());
-    shared.lock().sockets.insert(
+    shared.lock(&connection).sockets.insert(
         connection.clone(),
         Entry {
             actor: actor.clone(),
@@ -654,7 +657,7 @@ async fn admitted_close_fixture(
         Opened::Committed(_)
     ));
     shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get_mut(&connection)
         .ok_or(Error::Invalid("fixture lost its original open"))?
@@ -675,7 +678,7 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
     let (connection, inbox, last, mut frames) =
         admitted_close_fixture(&sockets, "automatic-reply-bound").await?;
     let actor = shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get(&connection)
         .unwrap()
@@ -720,7 +723,14 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
         assert_eq!(frame.len(), maximum);
         assert_eq!(SocketFrame::decode(&frame)?, expected);
         assert!(executor.tasks.lock().unwrap().is_empty());
-        assert!(!shared.lock().sockets.get(&connection).unwrap().peer_closed);
+        assert!(
+            !shared
+                .lock(&connection)
+                .sockets
+                .get(&connection)
+                .unwrap()
+                .peer_closed
+        );
     }
     // Empty text still carries the present oneof field; it is a valid reply.
     sockets.set_web_socket_auto_response(
@@ -768,13 +778,51 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     )
     .await?;
     let shared = &sockets.shared;
-    let (connection, inbox, last, _frames) = admitted_close_fixture(&sockets, "peer-order").await?;
-    shared.message(
-        &connection,
-        SocketPayload::Text {
-            text: "before".into(),
-        },
-    )?;
+    let (connection, inbox, last, mut frames) =
+        admitted_close_fixture(&sockets, "peer-order").await?;
+    {
+        let selected = Tables::connection(&connection);
+        let unrelated = shared.table.lock((selected + 1) % OWNER_SHARDS);
+        // Probe the same mutex selector without waiting: restoring a global
+        // owner fails here rather than hanging the original control.
+        let table = shared
+            .table
+            .owner(selected)
+            .try_lock()
+            .map_err(|_| "an unrelated owner blocked the original socket")?;
+        let actor = table
+            .sockets
+            .get(&connection)
+            .ok_or("lost original owner")?
+            .actor
+            .clone();
+        assert_eq!(shared.table.actor(&actor), selected);
+        drop(table);
+        let socket = WebSocketId(connection.clone());
+        assert_eq!(sockets.get_web_sockets(&actor, None)?, vec![socket.clone()]);
+        sockets.serialize_attachment(&actor, &socket, Bytes::from_static(b"retained"))?;
+        assert_eq!(
+            sockets.deserialize_attachment(&actor, &socket)?,
+            Some(Bytes::from_static(b"retained"))
+        );
+        sockets.web_socket_send(
+            &actor,
+            &socket,
+            SocketPayload::Text {
+                text: "outbound".into(),
+            },
+        )?;
+        assert!(
+            matches!(SocketFrame::decode(&frames.try_recv()?)?, SocketFrame::Message(SocketPayload::Text { text }) if text == "outbound")
+        );
+        shared.message(
+            &connection,
+            SocketPayload::Text {
+                text: "before".into(),
+            },
+        )?;
+        drop(unrelated);
+    }
     let first = Close::new(1000, "first", SocketCloseInitiator::Peer);
     shared.peer_close(&connection, first)?;
     for _ in 0..100_000 {
@@ -790,7 +838,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         )?;
     }
     {
-        let table = shared.lock();
+        let table = shared.lock(&connection);
         let entry = table
             .sockets
             .get(&connection)
@@ -852,7 +900,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let (connection, inbox, last, _frames) =
         admitted_close_fixture(&sockets, "lost-producer").await?;
     let actor = shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get(&connection)
         .ok_or("missing original socket")?
@@ -896,7 +944,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let (connection, inbox, last, _frames) =
         admitted_close_fixture(&sockets, "refused-close").await?;
     let actor = shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get(&connection)
         .ok_or("missing original socket")?
@@ -910,7 +958,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     );
     assert!(
         shared
-            .lock()
+            .lock(&connection)
             .sockets
             .get(&connection)
             .ok_or("lost original socket")?
@@ -936,7 +984,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     // before observing its result. No later table lookup can recover this cut.
     let (owner, completion) = shared
         .claim_close(
-            &mut shared.lock(),
+            &mut shared.lock(&connection),
             &connection,
             &Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime),
         )
@@ -1070,7 +1118,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     assert!(frame.len() <= maximum);
     assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
     let actor = shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get(&connection)
         .ok_or("lost original actor")?
@@ -1082,7 +1130,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
             .is_err()
     );
     {
-        let table = shared.lock();
+        let table = shared.lock(&connection);
         let entry = table
             .sockets
             .get(&connection)
@@ -1111,7 +1159,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         },
     )?;
     {
-        let table = shared.lock();
+        let table = shared.lock(&connection);
         let entry = table
             .sockets
             .get(&connection)
@@ -1140,7 +1188,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let (connection, inbox, last, mut frames) =
         admitted_close_fixture(&sockets, "outbound-bound").await?;
     let actor = shared
-        .lock()
+        .lock(&connection)
         .sockets
         .get(&connection)
         .ok_or("lost original outbound actor")?
@@ -1162,7 +1210,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
             ))
         );
         assert!(frames.is_empty(), "refused output must not reach the peer");
-        let table = shared.lock();
+        let table = shared.lock(&connection);
         let entry = table
             .sockets
             .get(&connection)
