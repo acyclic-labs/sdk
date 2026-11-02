@@ -40,21 +40,22 @@ map and does not detect submitting the same cluster twice.
 For example:
 
 ```rust
-use acyclic_harness::experiments::{Observation, stats::{Cluster, PairedStats}};
+use acyclic_harness::experiments::{Observation, analysis::Contrast};
 
 # fn example() -> Result<(), acyclic_harness::experiments::Error> {
-let mut report = PairedStats::default();
-for (source, baseline_score, treatment_score) in [(1, 1.0, 2.0), (2, 1.0, 4.0)] {
-    let baseline = Observation::new([source; 32], 0, 0, Some(baseline_score), None)?;
-    let treatment = Observation::new([source; 32], 0, 1, Some(treatment_score), None)?;
-    let mut cluster = Cluster::default();
-    if let Some(difference) = treatment.difference(&baseline)? {
-        cluster.push(difference)?;
-    }
-    report.push(cluster)?;
-}
-let estimate = report.estimate()?;
-assert_eq!(estimate.difference, 2.0);
+let rows = [
+    (1, None, None),
+    (2, Some(1.0), Some(2.0)),
+    (3, Some(1.0), Some(4.0)),
+].into_iter().flat_map(|(source, baseline, treatment)| [
+    Observation::new([source; 32], 0, 0, baseline, None),
+    Observation::new([source; 32], 0, 1, treatment, None),
+]);
+let report = Contrast::new(0, 1)?.analyze(rows, 3)?;
+assert_eq!(report.assigned_pairs, 3);
+assert_eq!(report.assigned_clusters, 3);
+assert_eq!(report.score.pairs, 2);
+assert_eq!(report.score.estimate.map(|estimate| estimate.difference), Some(2.0));
 # Ok(())
 # }
 ```
@@ -116,6 +117,42 @@ the estimate. Unknown costs are never zero, and uncertainty over a measured
 subset does not describe all assigned trials. Score-pair coverage is separate;
 the assigned-trial report retains the primary correctness denominator.
 
+## Analyze an observation file
+
+The `experiment-analysis` contributor program reads version-2 observation objects
+from one file, accepting JSONL without retaining its rows:
+
+```sh
+cargo run --locked -p acyclic-harness-core --example experiment-analysis -- 0 1 20 observations.jsonl > analysis.json
+```
+
+For each assigned `(population, replicate)` write the declared baseline arm first
+and treatment arm second. Pair keys must strictly increase lexicographically;
+this catches duplicate assignments and a closed cut appearing again using one
+retained key. The input producer supplies that order. No sorting or history scan
+is performed. Supply the predeclared assigned-pair count (20 in this example),
+not a count reconstructed from completed rows. All assigned pairs need rows even
+when both values are unknown. A missing whole pair or surplus row is refused.
+Original source independence, fork/provider evidence and numeric-score semantics
+remain the producer's responsibility. A population digest alone proves none of
+those facts. For primary correctness, predeclare unscored outputs as failures;
+conditional score estimates with missing rows do not replace assigned-trial rates.
+
+The version-1 output counts all assigned pairs and cuts, with separate known-pair
+and contributing-cut counts for score and cost. A cut with no known values for a
+metric stays in assigned coverage and does not enter that metric's estimator.
+Fewer than two contributing cuts yields an unknown estimate, even when many
+assigned cuts were empty. Manual consumers must likewise skip empty score and
+cost clusters and retain their assignments in coverage counts.
+
+`analysis::Contrast::new` admits distinct arms before opening input;
+`Contrast::analyze` shares the pipeline with other callers. It checks a pair once
+for both contrasts and reuses `Cluster`/`PairedStats`. It returns no partial report
+on a malformed row, missing partner, changed arm, duplicate or decreasing key,
+declared assignment-count mismatch or numerical refusal. The program buffers
+input and output, writes one report at the end and flushes once. It adds no model
+call, executor, replay or scheduling.
+
 ## Execution and cost boundary
 
 Research execution belongs in an experiments plugin directory containing files
@@ -141,6 +178,16 @@ either returns its value or a typed refusal; no producer event is awaited here.
 Rejected statistics and trial-summary updates leave their accumulators unchanged.
 Trial summaries retain six scalar fields, with no rows, maps or repeated scoring.
 
+The shared file pipeline reduces two identity checks per score/cost pair to one.
+Its numeric state allocates nothing and retains two observations, one ordering
+key and fixed accumulators. The key copies 32 population bytes only when a new
+cut starts; later replicates update one integer. The contributor program opens
+one input file, reads through one buffer and writes through one output buffer,
+with one final flush and zero durability barriers or network round trips. Read
+syscalls depend on input bytes; JSON decoding can reuse scratch space for the
+current token. Neither buffer nor parser retains earlier rows. EOF with a partial
+row or pair is an error, and a complete stream must match the declared count.
+
 Controls cover mismatched pairs even with missing values, unscored but fully
 priced trials, unknown versus zero costs, malformed/ambiguous objects, nonfinite
 inputs, overflow, false independence, unequal cluster sizes and large common offsets.
@@ -154,6 +201,8 @@ cargo check --locked -p acyclic-harness-core --lib
 cargo test --locked -p acyclic-harness-core --lib experiments::stats::tests::clustered_estimate_matches_direct_residuals_with_unequal_clusters
 cargo test --locked -p acyclic-harness-core --lib experiments::reports::tests::unscored_trials_and_unknown_cost_remain_in_assigned_denominators
 cargo test --locked -p acyclic-harness-core --lib experiments::tests::paired_cost_retains_unscored_trials_without_imputing_unknown_values
+cargo test --locked -p acyclic-harness-core --lib experiments::analysis::tests::empty_cuts_and_unscored_paid_trials_keep_separate_coverage
 cargo kani -p acyclic-harness-core --harness objective_success_and_injection_adoption_are_exclusive
 cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_even_without_scores
+cargo kani -p acyclic-harness-core --harness ordered_pair_admission_rejects_reuse_without_changing_the_last_key
 ```
