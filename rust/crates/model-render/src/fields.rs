@@ -6,6 +6,7 @@
 use crate::{Family, RenderError, ToolDeclarations};
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
+use std::borrow::Cow;
 
 macro_rules! fields {
     ($($field:ident => $name:literal),+ $(,)?) => {
@@ -65,20 +66,20 @@ impl Field {
 /// declarations are encoded once, between the header fields and the
 /// conversation, from the profile's borrowed schema views.
 #[derive(Clone, Debug)]
-pub struct Fields {
-    values: [Option<Value>; NAMES.len()],
-    tools: Option<Box<RawValue>>,
+pub struct Fields<'a> {
+    values: [Option<Cow<'a, Value>>; NAMES.len()],
+    tools: Option<Cow<'a, RawValue>>,
     server_tools: bool,
 }
 
-impl PartialEq for Fields {
+impl PartialEq for Fields<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.values == other.values
             && self.tools.as_deref().map(RawValue::get) == other.tools.as_deref().map(RawValue::get)
     }
 }
 
-impl Default for Fields {
+impl Default for Fields<'_> {
     fn default() -> Self {
         Self {
             values: std::array::from_fn(|_| None),
@@ -88,11 +89,23 @@ impl Default for Fields {
     }
 }
 
-impl Fields {
-    /// Stores a canonical copy of `value` in its fixed slot.
+impl Fields<'_> {
+    /// Borrows this admitted table without copying any JSON or declaration bytes.
+    /// The finite slot table is copied; references point directly to values,
+    /// never to another table. Reborrowing cannot create a lookup chain.
+    /// Changes to the returned view leave the admitted table untouched.
+    pub fn borrowed(&self) -> Fields<'_> {
+        Fields {
+            values: std::array::from_fn(|index| self.values[index].as_deref().map(Cow::Borrowed)),
+            tools: self.tools().map(Cow::Borrowed),
+            server_tools: self.server_tools,
+        }
+    }
+
+    /// Moves `value` into its fixed slot and restores canonical object order.
     pub fn insert(&mut self, field: Field, mut value: Value) {
         value.sort_all_objects();
-        self.values[field as usize] = Some(value);
+        self.values[field as usize] = Some(Cow::Owned(value));
     }
 
     /// Clears one slot.
@@ -102,12 +115,13 @@ impl Fields {
 
     /// The stored value of one slot.
     pub fn get(&self, field: Field) -> Option<&Value> {
-        self.values[field as usize].as_ref()
+        self.values[field as usize].as_deref()
     }
 
-    /// Edits one present slot in place and restores its canonical order.
+    /// Edits one present slot and restores its canonical order. A borrowed slot
+    /// is copied once on its first edit; other slots and declarations stay borrowed.
     pub fn update<R>(&mut self, field: Field, edit: impl FnOnce(&mut Value) -> R) -> Option<R> {
-        let value = self.values[field as usize].as_mut()?;
+        let value = self.values[field as usize].as_mut()?.to_mut();
         let result = edit(value);
         value.sort_all_objects();
         Some(result)
@@ -142,7 +156,9 @@ impl Fields {
             ));
         }
         let encoded = serde_json::to_string(tools).map_err(RenderError::Json)?;
-        self.tools = Some(RawValue::from_string(encoded).map_err(RenderError::Json)?);
+        self.tools = Some(Cow::Owned(
+            RawValue::from_string(encoded).map_err(RenderError::Json)?,
+        ));
         self.server_tools = tools.has_server_tools();
         Ok(())
     }

@@ -68,7 +68,7 @@ impl acyclic_model_render::Segment for Message<'_> {
 /// tools, the conversation, then the per-call trailer.
 pub(crate) struct Request<'a> {
     pub(super) target: acyclic_model_render::Provenance,
-    pub(super) fields: Fields,
+    pub(super) fields: Fields<'a>,
     pub(super) messages: Vec<Message<'a>>,
 }
 

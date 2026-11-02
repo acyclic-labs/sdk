@@ -45,7 +45,7 @@ pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Resul
     Ok(())
 }
 
-pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &mut Fields) {
+pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &mut Fields<'_>) {
     match adapter {
         Adapter::Responses => {
             // Roles share this key because their directives and restrictions

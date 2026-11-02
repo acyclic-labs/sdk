@@ -71,7 +71,7 @@ fn target(family: Family, provider: &str) -> Provenance {
 fn header(family: Family) -> Header {
     header_for(family, "producing-provider")
 }
-fn model_fields() -> Fields {
+fn model_fields() -> Fields<'static> {
     let mut fields = Fields::default();
     fields.insert(Field::Model, json!("target-model"));
     fields
@@ -523,7 +523,7 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
     assert_eq!(former.writes, 2);
 }
 
-fn declarations(family: Family, names: &[&'static str]) -> Fields {
+fn declarations(family: Family, names: &[&'static str]) -> Fields<'static> {
     let tools = names
         .iter()
         .map(|name| ToolDeclaration::Function {
@@ -605,7 +605,7 @@ proptest! {
             prop_assert_eq!(actual, expected);
             // Both trailers come from the one encoder: the ordinary trailer
             // with its tool choice replaced is exactly the summary trailer.
-            let mut suppressed = fields.clone();
+            let mut suppressed = fields.borrowed();
             suppressed.remove(Field::ToolChoice);
             let (name, none) = match family {
                 Family::Gemini => (Field::ToolConfig, json!({"functionCallingConfig":{"mode":"NONE"}})),
@@ -656,7 +656,7 @@ proptest! {
             backward.insert(field, value);
         }
         if reverse { std::mem::swap(&mut forward, &mut backward); }
-        let render_with = |fields: &Fields| {
+        let render_with = |fields: &Fields<'_>| {
             let header = Header::new(target(Family::Anthropic, "producing-provider"), RENDERER_VERSION, fields, None).unwrap();
             let mut out = Vec::new();
             render(&header, std::iter::empty::<&WireItem>(), &Tail::new(fields).unwrap(), &mut out).unwrap();
@@ -678,6 +678,123 @@ proptest! {
 }
 
 #[test]
+fn borrowed_settings_preserve_prefixes_and_isolate_call_and_count_controls() {
+    for family in FAMILIES {
+        let mut admitted = declarations(family, &["first", "second"]);
+        let (header_field, output_field) = match family {
+            Family::Responses => (Field::Instructions, Field::MaxOutputTokens),
+            Family::Chat => (Field::Model, Field::MaxCompletionTokens),
+            Family::Anthropic => (Field::System, Field::MaxTokens),
+            Family::Gemini => (Field::SystemInstruction, Field::GenerationConfig),
+        };
+        admitted.insert(
+            header_field,
+            if family == Family::Gemini {
+                json!({"parts":[{"text":"immutable instructions"}]})
+            } else {
+                json!("immutable instructions")
+            },
+        );
+        let reservation = |tokens| {
+            if family == Family::Gemini {
+                json!({"maxOutputTokens":tokens,"thinkingConfig":{"thinkingLevel":"high"}})
+            } else {
+                json!(tokens)
+            }
+        };
+        admitted.insert(output_field, reservation(128));
+        admitted.insert(Field::Temperature, json!(0.5));
+        let frozen = Header::new(
+            target(family, "producing-provider"),
+            RENDERER_VERSION,
+            &admitted,
+            None,
+        )
+        .unwrap();
+        let mut call = admitted.borrowed();
+        let same_storage = |view: &Fields<'_>, owner: &Fields<'_>| {
+            std::ptr::eq(
+                view.get(header_field).unwrap(),
+                owner.get(header_field).unwrap(),
+            ) && std::ptr::eq(view.tools().unwrap(), owner.tools().unwrap())
+        };
+        assert!(same_storage(&call, &admitted));
+        // The former full-table clone copies both the instructions and schemas.
+        assert!(!same_storage(&admitted.clone(), &admitted));
+        {
+            let mut next = call.borrowed();
+            assert!(same_storage(&next, &admitted));
+            next.update(output_field, |value| *value = reservation(256))
+                .unwrap();
+            assert!(same_storage(&next, &admitted));
+            assert_eq!(next.get(output_field).unwrap(), &reservation(256));
+            assert_eq!(call.get(output_field).unwrap(), &reservation(128));
+            assert_eq!(admitted.get(output_field).unwrap(), &reservation(128));
+        }
+        call.insert(Field::Temperature, json!(0.25));
+        let header = Header::new(
+            target(family, "producing-provider"),
+            RENDERER_VERSION,
+            &call,
+            None,
+        )
+        .unwrap();
+        assert_eq!(header.bytes(), frozen.bytes());
+        let mut output = Vec::new();
+        render(
+            &header,
+            std::iter::empty::<&WireItem>(),
+            &Tail::new(&call).unwrap(),
+            &mut output,
+        )
+        .unwrap();
+        let ordinary: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(ordinary["temperature"], 0.25);
+        assert_eq!(admitted.get(Field::Temperature).unwrap(), &json!(0.5));
+        output.clear();
+        render_summary(
+            &header,
+            std::iter::empty::<&WireItem>(),
+            "summarize",
+            &Tail::summary(&call, family).unwrap(),
+            &mut output,
+        )
+        .unwrap();
+        assert!(output.starts_with(header.bytes()));
+        let summary: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(summary["tools"], ordinary["tools"]);
+        assert_eq!(summary["temperature"], ordinary["temperature"]);
+
+        // Count projection removes generation-only fields from its own view.
+        let mut count = call.borrowed();
+        count.retain(|key| key != "temperature" && key != "tools");
+        assert!(count.tools().is_none());
+        assert!(count.get(Field::Temperature).is_none());
+        assert!(call.tools().is_some());
+        assert!(same_storage(&call, &admitted));
+        assert_eq!(call.get(Field::Temperature).unwrap(), &json!(0.25));
+        // Replacing the declaration table affects only the next call.
+        call.set_tools(
+            family,
+            &ToolDeclarations::<Value>::new(family, Vec::new()).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(call.tools().unwrap().get(), admitted.tools().unwrap().get());
+        assert_eq!(
+            Header::new(
+                target(family, "producing-provider"),
+                RENDERER_VERSION,
+                &admitted,
+                None,
+            )
+            .unwrap()
+            .bytes(),
+            frozen.bytes()
+        );
+    }
+}
+
+#[test]
 fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     let mut fields = Fields::default();
     fields
@@ -690,7 +807,7 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
     let server_header = Header::new(
         target(Family::Gemini, "provider"),
         RENDERER_VERSION,
-        &fields,
+        &fields.borrowed(),
         None,
     )
     .unwrap();

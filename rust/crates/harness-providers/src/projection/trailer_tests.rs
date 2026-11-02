@@ -61,7 +61,7 @@ impl<'de> serde::Deserialize<'de> for Object {
     }
 }
 
-fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields) {
+fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields<'_>) {
     let mode = match provider.config.adapter {
         Adapter::Responses | Adapter::Chat => "effort",
         Adapter::Anthropic => "adaptive",

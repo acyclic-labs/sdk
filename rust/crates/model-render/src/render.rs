@@ -53,7 +53,7 @@ impl Header {
     pub fn new(
         target: Provenance,
         version: u32,
-        fields: &Fields,
+        fields: &Fields<'_>,
         summary_artifact: Option<usize>,
     ) -> Result<Self, RenderError> {
         target.validate()?;
@@ -117,7 +117,7 @@ impl Tail {
     ///
     /// # Errors
     /// Model JSON encoding failed.
-    pub fn new(fields: &Fields) -> Result<Self, RenderError> {
+    pub fn new(fields: &Fields<'_>) -> Result<Self, RenderError> {
         Self::encode(fields.call_controls(), None, None)
     }
 
@@ -126,7 +126,7 @@ impl Tail {
     ///
     /// # Errors
     /// Model JSON encoding failed.
-    pub fn summary(fields: &Fields, family: Family) -> Result<Self, RenderError> {
+    pub fn summary(fields: &Fields<'_>, family: Family) -> Result<Self, RenderError> {
         let none = match family {
             Family::Responses | Family::Chat => Value::from("none"),
             Family::Anthropic => serde_json::json!({"type":"none"}),
