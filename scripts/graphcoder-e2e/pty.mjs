@@ -45,59 +45,68 @@ function expectedTaskFailure(visible, condition) {
 export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const frames = new TerminalFrames(screen), failures = new FailureHistory();
-  const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
-    { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
-  screen.onData(data => running.child.stdin.write(data));
-  const raw = new OutputWatch(rawNeedles(input.actions));
-  let index = 0, failure, command;
-  const snapshots = [];
-  function frame() {
-    if (failure || index >= input.actions.length || !frames.ready()) return;
-    try {
-      const visible = screenText(screen);
-      const action = input.actions[index];
-      const unavailable = command && `${command} is not available in this view`;
-      if (unavailable && visible.includes(unavailable)
-          && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
-        const error = new Error(`command_unavailable: ${unavailable}`);
-        error.code = "command_unavailable";
-        throw error;
-      }
-      if (raw.has(OVERFLOW) || failures.unexpected(visible, action.when)) {
-        throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
-      }
-      if (action.after_request && !fixture.requested(action.after_request)) return;
-      if (!matches(screen, raw, action.when)) return;
-      failures.accept(visible, action.when);
-      if (unavailable && visible.includes(unavailable)) command = undefined;
-      snapshots.push({ action: index, visible });
-      index++;
-      if (action.prompt !== undefined) {
-        command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
-        running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
-      }
-      if (action.send !== undefined) running.child.stdin.write(action.send);
-      if (action.kill) running.killExecutable();
-    } catch (error) { failure = error; running.killExecutable(); }
+  let unsubscribe;
+  try {
+    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
+      { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
+    screen.onData(data => running.child.stdin.write(data));
+    const raw = new OutputWatch(rawNeedles(input.actions));
+    let index = 0, failure, command;
+    const snapshots = [];
+    function frame() {
+      if (failure || index >= input.actions.length || !frames.ready()) return;
+      try {
+        const visible = screenText(screen);
+        const action = input.actions[index];
+        const unavailable = command && `${command} is not available in this view`;
+        if (unavailable && visible.includes(unavailable)
+            && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
+          const error = new Error(`command_unavailable: ${unavailable}`);
+          error.code = "command_unavailable";
+          throw error;
+        }
+        if (raw.has(OVERFLOW) || failures.unexpected(visible, action.when)) {
+          throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
+        }
+        if (action.after_request && !fixture.requested(action.after_request)) return;
+        if (!matches(screen, raw, action.when)) return;
+        failures.accept(visible, action.when);
+        if (unavailable && visible.includes(unavailable)) command = undefined;
+        snapshots.push({ action: index, visible });
+        index++;
+        if (action.prompt !== undefined) {
+          command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
+          running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
+        }
+        if (action.send !== undefined) running.child.stdin.write(action.send);
+        if (action.kill) running.killExecutable();
+      } catch (error) { failure = error; running.killExecutable(); }
+    }
+    unsubscribe = fixture.onRequest(frame);
+    running.child.stdout.on("data", bytes => {
+      raw.write(bytes);
+      frames.write(bytes, frame);
+    });
+    let result;
+    try { result = await running.closed; }
+    finally {
+      unsubscribe();
+      unsubscribe = undefined;
+      await new Promise(resolve => screen.write("", resolve));
+    }
+    const visible = screenText(screen);
+    capture({ ...result, snapshots, visible, actions: index });
+    if (failure) throw failure;
+    assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
+    if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
+    else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
+    for (const text of input.settled_contains ?? []) {
+      assert.ok(snapshots.at(-1)?.visible.includes(text), `settled screen missing ${text}`);
+    }
+    return result;
+  } finally {
+    unsubscribe?.();
+    frames.dispose();
+    screen.dispose();
   }
-  const unsubscribe = fixture.onRequest(frame);
-  running.child.stdout.on("data", bytes => {
-    raw.write(bytes);
-    frames.write(bytes, frame);
-  });
-  const result = await running.closed;
-  unsubscribe();
-  await new Promise(resolve => screen.write("", resolve));
-  const visible = screenText(screen);
-  capture({ ...result, snapshots, visible, actions: index });
-  frames.dispose();
-  screen.dispose();
-  if (failure) throw failure;
-  assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
-  if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
-  else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
-  for (const text of input.settled_contains ?? []) {
-    assert.ok(snapshots.at(-1)?.visible.includes(text), `settled screen missing ${text}`);
-  }
-  return result;
 }
