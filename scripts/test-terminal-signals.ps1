@@ -49,17 +49,29 @@ public static class TerminalSignalConPty {
     static void Require(bool ok,string name) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(),name); }
 
     static void DrainOutput(IntPtr output,string path,string recovery) {
-        using var log=new FileStream(path,FileMode.Create,FileAccess.Write,FileShare.ReadWrite);
+        FileStream log=null;
+        Exception failure=null;
+        try { log=new FileStream(path,FileMode.Create,FileAccess.Write,FileShare.ReadWrite); }
+        catch(Exception error) { failure=error; }
         byte[] bytes=new byte[4096];uint count;
-        for(;;) {
-            if(!ReadFile(output,bytes,(uint)bytes.Length,out count,IntPtr.Zero)) {
-                int error=Marshal.GetLastWin32Error();
-                if(error==109) return;
-                throw new Win32Exception(error,"output pipe read failed"+recovery);
+        try {
+            for(;;) {
+                if(!ReadFile(output,bytes,(uint)bytes.Length,out count,IntPtr.Zero)) {
+                    int error=Marshal.GetLastWin32Error();
+                    if(error==109) break;
+                    throw new Win32Exception(error,"output pipe read failed"+recovery);
+                }
+                if(count==0) break;
+                if(failure==null) {
+                    try { log.Write(bytes,0,(int)count); }
+                    catch(Exception error) { failure=error; }
+                }
             }
-            if(count==0) return;
-            log.Write(bytes,0,(int)count);
+        } finally {
+            try { log?.Dispose(); }
+            catch(Exception error) { failure=failure??error; }
         }
+        if(failure!=null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     static string FailureTail(string report) {
@@ -232,6 +244,7 @@ public static class TerminalSignalConPty {
             foreach(IntPtr handle in new[]{ir,iw,orr,ow,process.thread,process.process}) if(handle!=IntPtr.Zero) CloseHandle(handle);
         }
         if(failure!=null) {
+            if(drainFailure!=null) Console.Error.WriteLine("child output capture failed: "+drainFailure.Message+recovery);
             if(drained) {
                 try { Console.Error.WriteLine("ConPTY child output tail:\n"+FailureTail(report)); }
                 catch(Exception error) { Console.Error.WriteLine("child output tail read failed: "+error.Message+recovery); }
