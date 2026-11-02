@@ -2,7 +2,7 @@ use crate::*;
 use acyclic_observability::{
     Export, ExportReceiver, ExportRecord, NativeTaskTerminal, Operations, Outcome,
 };
-use std::sync::{PoisonError, mpsc};
+use std::sync::{PoisonError, atomic::AtomicUsize, mpsc};
 use tracing::{field::Visit, span::Record};
 use tracing_subscriber::{Layer, layer::Context as LayerContext, prelude::*};
 
