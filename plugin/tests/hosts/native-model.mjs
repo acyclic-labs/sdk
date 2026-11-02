@@ -203,7 +203,7 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
   if(proxy) {
    for(const key of ['CLAUDE_CODE_USE_FOUNDRY','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX'])delete env[key];
    Object.assign(env,{ANTHROPIC_BASE_URL:proxy.baseUrl,ANTHROPIC_API_KEY:proxy.credential,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:'1'});
   }
   // Foundry's Messages endpoint with its documented gateway mode: no key,
   // token or account header reaches the localhost mock.
