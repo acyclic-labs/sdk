@@ -118,6 +118,7 @@ impl Pool {
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
+        let progress = Arc::clone(&route.progress);
         // Hello carries the first interest without going through subscribe().
         // Link its physical root while the original cause is still alive;
         // follows_from retains no caller span across credential/connection I/O.
@@ -147,6 +148,7 @@ impl Pool {
                                 identity.clone(),
                                 credentials.clone(),
                                 interest.clone(),
+                                Arc::clone(&progress),
                             )
                             .await
                         })
@@ -450,6 +452,7 @@ async fn handshake(
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
     interest: wire::SessionInterest,
+    progress: Arc<Progress>,
 ) -> Result<Ready, StreamError> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
@@ -468,7 +471,7 @@ async fn handshake(
         .first()
         .and_then(|subscription| subscription.channel);
     let revision = interest.revision;
-    let hello = frame(
+    let mut hello = frame(
         0,
         0,
         Body::Hello(wire::SessionHello {
@@ -485,7 +488,6 @@ async fn handshake(
     if bytes > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
         opening_subscription,
@@ -501,10 +503,22 @@ async fn handshake(
         credit,
         input: Arc::new(input::Window::new()),
     };
-    let input: transport::Requests = Box::pin(stream::unfold(
+    // Credentials can suspend before the transport consumes its first frame.
+    // Admit only a still-owned first interest; later cancellations use the
+    // original channel removal after Welcome. Hello needs no queue staging.
+    let first = stream::once(async move {
+        if progress.cancelled()
+            && let Some(Body::Hello(hello)) = &mut hello.body
+            && let Some(interest) = &mut hello.interest
+        {
+            interest.upsert.clear();
+        }
+        hello
+    });
+    let input: transport::Requests = Box::pin(first.chain(stream::unfold(
         Arc::clone(&link.sender),
         |sender| async move { sender.next().await.ok().map(|frame| (frame, sender)) },
-    ));
+    )));
     let mut response = link.channel.session(input).await?;
     let welcome = response
         .next()
