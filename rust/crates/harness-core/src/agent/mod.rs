@@ -71,8 +71,8 @@ pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
     MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
-    step,
+    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake,
+    requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentProfilePin, AgentRecord, Approval, ApprovalRequested, ChildDone,

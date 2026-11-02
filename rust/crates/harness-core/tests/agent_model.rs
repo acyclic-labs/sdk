@@ -6,7 +6,10 @@ use acyclic_stream::{
     StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt;
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::Mutex,
+};
 
 #[path = "agent_model/awaiting.rs"]
 mod awaiting;
@@ -479,11 +482,11 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         record: InboxRecord::Approval(Approval { id: intent("q1") }),
     };
     let cancel = acyclic_actors::guest::CancellationToken::new;
-    let first = step(&driver, &path, Some(state), 2, wake(1), cancel()).await?;
+    let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
     // The summary is the second append after tail 100.
     assert_eq!(first.state.checkpoint, Some(101));
     assert_eq!(first.state.conversation_tail, 102);
-    let later = step(&driver, &path, Some(first.state), 3, wake(2), cancel()).await?;
+    let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
     // Later turns keep the index, however many there are.
     assert_eq!(later.state.checkpoint, Some(101));
     let spawned = spawning(later.state.clone(), "s1");
@@ -526,7 +529,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
         &driver,
         &path,
         Some(state),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 1,
             record: approval.clone(),
@@ -546,7 +549,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
         &driver,
         &path,
         Some(first.state),
-        3,
+        (3, 0),
         Wake::Inbox {
             sequence: 2,
             record: approval,
@@ -577,7 +580,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
         &driver,
         &path,
         Some(state),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
@@ -641,7 +644,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
         &driver,
         &path,
         Some(state),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
@@ -713,7 +716,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
             &idle,
             &path,
             Some(state),
-            sequence + 1,
+            (sequence + 1, 0),
             wake,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -739,7 +742,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         &resumed,
         &path,
         Some(state),
-        42,
+        (42, 0),
         wake,
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -782,7 +785,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
         &driver,
         &path,
         Some(state),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 1,
             record: archive_record,
@@ -802,7 +805,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
         &driver,
         &path,
         Some(first.state),
-        2,
+        (2, 0),
         Wake::Alarm,
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -818,7 +821,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
         &driver,
         &path,
         Some(second.state),
-        2,
+        (2, 0),
         Wake::Alarm,
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -835,7 +838,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
         &driver,
         &path,
         None,
-        1,
+        (1, 0),
         Wake::Inbox {
             sequence: 0,
             record: InboxRecord::ForkAdopted(Box::new(adopted(id(2)))),
@@ -848,7 +851,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
         &driver,
         &path,
         None,
-        1,
+        (1, 0),
         Wake::Inbox {
             sequence: 0,
             record: cancel("c1"),
@@ -861,7 +864,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
         &driver,
         &path,
         None,
-        1,
+        (1, 0),
         Wake::Inbox {
             sequence: 0,
             record: InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
@@ -1006,7 +1009,7 @@ async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other()
         &driver,
         &root,
         Some(state),
-        2,
+        (2, 0),
         spawn_request(1),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1015,7 +1018,7 @@ async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other()
         &driver,
         &root,
         Some(first.state.clone()),
-        3,
+        (3, 0),
         spawn_request(2),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1082,7 +1085,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
         &driver,
         &root,
         Some(state),
-        2,
+        (2, 0),
         spawn_request(1),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1103,7 +1106,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
         &driver,
         &root,
         Some(requested.state),
-        2,
+        (2, 0),
         Wake::Alarm,
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1160,7 +1163,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         &driver,
         &root,
         Some(state),
-        2,
+        (2, 0),
         spawn_request(1),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1178,7 +1181,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         &driver,
         &root,
         Some(requested.state),
-        3,
+        (3, 0),
         Wake::Inbox {
             sequence: 2,
             record: InboxRecord::Approval(Approval { id: intent("q") }),
@@ -1211,7 +1214,7 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
         &driver,
         &path,
         Some(state),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 1,
             record: InboxRecord::Approval(Approval { id: intent("q1") }),
@@ -1238,5 +1241,147 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
         out,
         Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
     )));
+    Ok(())
+}
+
+/// One wait condition: a quorum of two of three children within a timeout.
+/// Arrivals queue without a turn step; the second settlement resumes the turn
+/// once, and a timeout resumes it however few settled.
+#[tokio::test]
+async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result {
+    let root = AgentPath::root(&id(1));
+    let children: BTreeSet<AgentPath> = (2..5)
+        .map(|byte| root.child(&id(byte)))
+        .collect::<std::result::Result<_, _>>()?;
+    let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
+    state.open_children.clone_from(&children);
+    let wait = || TurnStep {
+        reserved_children: 0,
+        checkpoint: Some(b"waiting".to_vec()),
+        outs: Vec::new(),
+        wait: Wait::Until(Until::quorum(children.clone(), 2).within(Some(1_000))),
+        drops: None,
+    };
+    let done = || TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Input,
+        drops: None,
+    };
+    let cancel = acyclic_actors::guest::CancellationToken::new;
+    let inbox = |sequence, record| Wake::Inbox { sequence, record };
+    let settled = |child: &AgentPath| {
+        InboxRecord::ChildSettled(ChildSettled {
+            child: child.clone(),
+        })
+    };
+    let [first, second, _] = children.iter().collect::<Vec<_>>()[..] else {
+        unreachable!("three children")
+    };
+    let driver = script(vec![wait(), done(), wait(), done()]);
+    let start = InboxRecord::Approval(Approval { id: intent("q1") });
+    let waiting = step(
+        &driver,
+        &root,
+        Some(state),
+        (1, 5_000),
+        inbox(0, start.clone()),
+        cancel(),
+    )
+    .await?;
+    assert_eq!(
+        waiting.state.phase,
+        Phase::Waiting {
+            deadline_unix_ms: Some(6_000)
+        }
+    );
+    assert_eq!(waiting.alarm, Alarm::At(6_000));
+    assert_eq!(
+        waiting
+            .outs
+            .iter()
+            .filter(|out| matches!(
+                out,
+                Out::Send {
+                    record: InboxRecord::Awaited,
+                    ..
+                }
+            ))
+            .count(),
+        3
+    );
+    // One settlement and an unrelated input: both queue, and no step runs.
+    let one = step(
+        &driver,
+        &root,
+        Some(waiting.state.clone()),
+        (2, 5_100),
+        inbox(1, settled(first)),
+        cancel(),
+    )
+    .await?;
+    let queued = step(
+        &driver,
+        &root,
+        Some(one.state),
+        (3, 5_200),
+        inbox(2, start.clone()),
+        cancel(),
+    )
+    .await?;
+    assert!(matches!(queued.state.phase, Phase::Waiting { .. }));
+    assert_eq!(queued.state.need, 1);
+    assert_eq!(queued.alarm, Alarm::At(6_000));
+    // The second settlement satisfies it: the turn resumes and settles.
+    let resumed = step(
+        &driver,
+        &root,
+        Some(queued.state),
+        (4, 5_300),
+        inbox(3, settled(second)),
+        cancel(),
+    )
+    .await?;
+    assert!(resumed.state.awaiting.is_empty());
+    assert_eq!(resumed.state.need, 0);
+    assert!(!matches!(
+        resumed.state.phase,
+        Phase::Waiting { .. } | Phase::Done { .. }
+    ));
+    // The queued input starts the same wait again. Negative control: the
+    // late settlement admitted before it counts toward neither wait.
+    let again = step(
+        &driver,
+        &root,
+        Some(resumed.state),
+        (5, 5_400),
+        inbox(4, settled(first)),
+        cancel(),
+    )
+    .await?;
+    assert_eq!(
+        again.state.phase,
+        Phase::Waiting {
+            deadline_unix_ms: Some(6_400)
+        }
+    );
+    assert_eq!(again.state.need, 2);
+    // Its deadline resumes it however few settled.
+    let expired = step(
+        &driver,
+        &root,
+        Some(again.state),
+        (5, 6_400),
+        Wake::Alarm,
+        cancel(),
+    )
+    .await?;
+    assert!(!matches!(
+        expired.state.phase,
+        Phase::Waiting { .. } | Phase::Done { .. }
+    ));
+    assert!(expired.state.awaiting.is_empty());
+    assert!(driver.0.lock().expect("script lock").is_empty());
     Ok(())
 }

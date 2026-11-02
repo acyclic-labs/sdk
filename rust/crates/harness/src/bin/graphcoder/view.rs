@@ -833,7 +833,9 @@ mod tests {
         // A reopened view sent nothing: only the committed phase says a
         // turn is open, so Esc and Ctrl+C reach it.
         let mut view = View::default();
-        view.phase = Some(Phase::WaitingChildren { any: false });
+        view.phase = Some(Phase::Waiting {
+            deadline_unix_ms: None,
+        });
         assert!(view.busy());
         assert_eq!(view.status(), "working · Esc or Ctrl+C interrupts");
         for phase in [
@@ -845,8 +847,8 @@ mod tests {
             Phase::WaitingHost {
                 host: "host".into(),
             },
-            Phase::WaitingAlarm {
-                deadline_unix_ms: 1,
+            Phase::Waiting {
+                deadline_unix_ms: Some(1),
             },
         ] {
             view.phase = Some(phase);

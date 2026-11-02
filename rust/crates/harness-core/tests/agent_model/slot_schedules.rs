@@ -38,7 +38,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             &driver,
             &root,
             Some(state),
-            1,
+            (1, 0),
             Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -105,7 +105,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         &driver,
         &root,
         Some(state),
-        2,
+        (2, 0),
         done(),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -119,7 +119,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         &driver,
         &root,
         Some(state),
-        3,
+        (3, 0),
         done(),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -133,7 +133,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         &driver,
         &root,
         Some(state),
-        4,
+        (4, 0),
         spawn_request(3),
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -146,7 +146,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         &driver,
         &root,
         Some(client.state),
-        5,
+        (5, 0),
         Wake::Inbox {
             sequence: 4,
             record: InboxRecord::Approval(Approval {
@@ -212,7 +212,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                     &driver,
                     &root,
                     Some(state),
-                    1,
+                    (1, 0),
                     Wake::Alarm,
                     acyclic_actors::guest::CancellationToken::new(),
                 )
@@ -225,7 +225,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             &driver,
                             &root,
                             Some(state),
-                            10 + cut,
+                            (10 + cut, 0),
                             Wake::Inbox {
                                 sequence: 9 + cut,
                                 record: InboxRecord::Approval(Approval {
@@ -246,7 +246,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             &driver,
                             &root,
                             Some(before.clone()),
-                            sequence + 1,
+                            (sequence + 1, 0),
                             spawn_request(sequence),
                             acyclic_actors::guest::CancellationToken::new(),
                         )
@@ -257,7 +257,7 @@ async fn slot_schedules_preserve_all_recorded_spawns() -> Result {
                             &driver,
                             &root,
                             Some(before),
-                            sequence + 1,
+                            (sequence + 1, 0),
                             spawn_request(sequence),
                             acyclic_actors::guest::CancellationToken::new(),
                         )

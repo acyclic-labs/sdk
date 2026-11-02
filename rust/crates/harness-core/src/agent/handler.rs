@@ -332,9 +332,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
-        let mut prepared =
-            super::machine::prepare_step(&self.driver, &path, state, cursor, wake, cancellation)
-                .await?;
+        let mut prepared = super::machine::prepare_step(
+            &self.driver,
+            &path,
+            state,
+            (cursor, delivery.now_unix_ms),
+            wake,
+            cancellation,
+        )
+        .await?;
         let participant = match &self.volumes {
             Some(volumes) => {
                 let (state, outs) = prepared.state_and_outs();

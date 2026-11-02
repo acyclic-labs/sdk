@@ -5,8 +5,9 @@
 //! records. An idle agent still holding input publishes `Running`, and every
 //! idle step publishes its cursor, so the one status record a step commits
 //! decides this alone, with no read of the agent's checkpoint. Nothing here
-//! waits: a turn waiting for a child commits [`super::Phase::WaitingChildren`]
-//! and the child's [`super::ChildSettled`] wakes it (see [`super::Wait::Children`]).
+//! waits: a turn waiting for a child commits [`super::Phase::Waiting`] and the
+//! child's [`super::ChildSettled`] counts toward its condition (see
+//! [`super::Until`]).
 
 use super::{
     AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,

@@ -7,10 +7,11 @@
 //! dispatches, the turn commits what its earlier calls recorded (see
 //! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
 //! reachable by name, from the next call on. `wait` records nothing and holds
-//! nothing: until the named children settle, its call does not dispatch (see
-//! [`awaited`]) and the turn commits [`crate::agent::Wait::Children`], which
-//! each child's settlement wakes; dispatched, it reads each child's status
-//! once (see [`crate::agent::settled`]) and returns each one's last answer.
+//! nothing: until enough of the named children settle, its call does not
+//! dispatch (see [`awaited`]) and the turn commits
+//! [`crate::agent::Wait::Until`], which their settlements or its timeout
+//! resume; dispatched, it reads each child's status once (see
+//! [`crate::agent::settled`]) and returns each one's last answer.
 //!
 //! A child works on its own fork of its parent's project. Neither settling
 //! nor `wait` joins that fork into the parent: the parent merges it
@@ -80,19 +81,11 @@ pub struct ArchiveAgentInput {
 pub struct WaitAgentInput {
     /// Child names or agent paths, as spawn returned them.
     pub agents: Vec<String>,
-    /// `all` (the default) waits for every child, `any` for the first.
-    pub mode: Option<WaitMode>,
-}
-
-/// Which children a wait returns on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitMode {
-    /// Every named child settled.
-    #[default]
-    All,
-    /// The first named child settled.
-    Any,
+    /// How many of them must settle before the wait returns: all of them by
+    /// default, 1 for the first, or any quorum in between.
+    pub need: Option<u32>,
+    /// Return after this many milliseconds even if fewer settled.
+    pub timeout_ms: Option<u64>,
 }
 
 /// What one turn's agent tools act for.
@@ -295,13 +288,14 @@ impl AgentTool {
     }
 
     /// Reads the named children once; see [`WaitAgentInput`]. Its call
-    /// dispatches only once they settled (see [`awaited`]), so a child still
-    /// running here started again since, and is reported running.
+    /// dispatches only once enough settled or its timeout passed (see
+    /// [`awaited`]), so a child still running here has not settled yet or
+    /// started again since, and is reported running.
     async fn wait(&self, arguments: Value) -> Result<ToolResult> {
         let Some(observer) = &self.turn.observer else {
             return Ok(rejected("this host observes no children"));
         };
-        let (children, _) = match waited(&self.turn.agent, arguments) {
+        let (children, ..) = match waited(&self.turn.agent, arguments) {
             Ok(waited) => waited,
             Err(rejected) => return Ok(rejected),
         };
@@ -350,12 +344,13 @@ fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
 }
 
 /// The distinct children a `wait` of `agent` names, each with the reference
-/// naming it, and whether it waits for any rather than all; the model's
-/// error when the input names none or names a non-child.
+/// naming it, how many must settle and its timeout; the model's error when
+/// the input names none, names a non-child, or needs none or more than it
+/// names.
 fn waited(
     agent: &AgentPath,
     arguments: Value,
-) -> std::result::Result<(Vec<(String, AgentPath)>, bool), ToolResult> {
+) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
     let input: WaitAgentInput = decode(arguments)?;
     let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
     for reference in input.agents {
@@ -371,35 +366,46 @@ fn waited(
     if children.is_empty() {
         return Err(rejected("wait names no child"));
     }
-    Ok((children, input.mode.unwrap_or_default() == WaitMode::Any))
+    let named = u32::try_from(children.len()).unwrap_or(u32::MAX);
+    let need = input.need.unwrap_or(named);
+    if need == 0 || need > named {
+        return Err(rejected(format!(
+            "need must be between 1 and the {named} distinct children named"
+        )));
+    }
+    Ok((children, need, input.timeout_ms))
 }
 
 /// What a call of `tool` with `arguments` waits for before it dispatches: for
-/// a `wait` whose children have not settled (every one, or with `any` the
-/// first), those still unsettled and whether any one suffices. Each child's
-/// status is read once; nothing waits here. The turn then commits
-/// [`crate::agent::Wait::Children`], holding no delivery, and its call
-/// dispatches when the children's settlement resumes it.
+/// a `wait` fewer of whose children settled than it needs, the
+/// [`crate::agent::Until`] over those still unsettled, needing the rest. Each
+/// child's status is read once; nothing waits here. The turn then commits
+/// [`crate::agent::Wait::Until`], holding no delivery, and its call
+/// dispatches when their settlements or its timeout resume it.
 ///
 /// # Errors
 /// Stream failures reading a child's status.
+///
+/// `released` is set when a deadline resumed the turn: the first wait the
+/// turn reaches is the one that deadline held, so it takes the release and
+/// dispatches, whether or not its condition now holds.
 pub(crate) async fn awaited(
     children: &dyn TurnChildren,
     tool: &str,
     arguments: &Value,
-) -> Result<Option<(BTreeSet<AgentPath>, bool)>> {
-    if tool != "wait" {
+    released: &std::sync::atomic::AtomicBool,
+) -> Result<Option<crate::agent::Until>> {
+    if tool != "wait" || released.swap(false, std::sync::atomic::Ordering::AcqRel) {
         return Ok(None);
     }
     // A malformed wait dispatches to receive its error.
-    let Ok((named, any)) = waited(children.agent(), arguments.clone()) else {
+    let Ok((named, mut need, timeout_ms)) = waited(children.agent(), arguments.clone()) else {
         return Ok(None);
     };
     let mut unsettled = BTreeSet::new();
     for (_, child) in named {
         match children.settled(&child).await {
-            Ok(Some(_)) if any => return Ok(None),
-            Ok(Some(_)) => {}
+            Ok(Some(_)) => need -= 1,
             // A wait naming no child dispatches to receive its error.
             Err(Error::NotFound(_)) => return Ok(None),
             Ok(None) => {
@@ -407,8 +413,13 @@ pub(crate) async fn awaited(
             }
             Err(error) => return Err(error),
         }
+        if need == 0 {
+            return Ok(None);
+        }
     }
-    Ok((!unsettled.is_empty()).then_some((unsettled, any)))
+    Ok(Some(
+        crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
+    ))
 }
 
 fn agent(error: crate::agent::Error) -> Error {
@@ -534,7 +545,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for children to finish their current work and messages. Returns each child's phase and last answer, plus its branch when addressed by spawn name. mode all (default) waits for every child; any waits for the first. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for children to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as running. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {
@@ -599,18 +610,85 @@ mod tests {
             }
         }
         let wait = &definitions(&["wait".into()])?[0].input_schema;
-        assert_eq!(wait["$defs"]["WaitMode"]["enum"], json!(["all", "any"]));
         let check = |value| {
             crate::executor::check_json_schema_value(wait, &value, "tool", &mut None)
                 .map(|checked| checked.is_ok())
         };
-        assert!(check(json!({"agents": ["a"], "mode": "any"}))?);
+        assert!(check(json!({"agents": ["a"], "need": 1, "timeout_ms": 5}))?);
         assert!(check(json!({"agents": ["a"]}))?);
-        // Negative control: the enum still rejects what the type rejects.
-        assert!(!check(json!({"agents": ["a"], "mode": "some"}))?);
+        // Negative control: the schema still rejects what the type rejects.
+        assert!(!check(json!({"agents": ["a"], "need": -1}))?);
         assert!(
-            serde_json::from_value::<WaitAgentInput>(json!({"agents": [], "mode": "some"}))
-                .is_err()
+            serde_json::from_value::<WaitAgentInput>(json!({"agents": [], "need": -1})).is_err()
+        );
+        Ok(())
+    }
+
+    /// Children of one agent, `settled` of them settled.
+    struct Children {
+        agent: AgentPath,
+        settled: BTreeSet<AgentPath>,
+    }
+
+    impl TurnChildren for Children {
+        fn agent(&self) -> &AgentPath {
+            &self.agent
+        }
+
+        fn settled<'a>(
+            &'a self,
+            child: &'a AgentPath,
+        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Phase>>> {
+            let phase = self
+                .settled
+                .contains(child)
+                .then(|| crate::agent::Phase::Done {
+                    outcome: crate::agent::AgentOutcome::Failed {
+                        message: String::new(),
+                    },
+                });
+            Box::pin(async move { Ok(phase) })
+        }
+
+        fn answer<'a>(&'a self, _: &'a AgentPath) -> BoxProviderFuture<'a, Result<Option<String>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deadline_release_goes_to_the_first_wait_it_reaches() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+        let [a, b] = ["a", "b"].map(|name| spawned_child(&agent, name));
+        let (a, b) = (a?, b?);
+        let children = Children {
+            agent: agent.clone(),
+            settled: BTreeSet::from([a.clone()]),
+        };
+        let both = json!({"agents": [a.as_str(), b.as_str()], "timeout_ms": 5});
+        let first = json!({"agents": [a.as_str()]});
+        // Unreleased, an unmet condition holds the wait until its deadline.
+        let held = awaited(&children, "wait", &both, &AtomicBool::new(false)).await?;
+        assert!(held.is_some_and(|until| until.need == 1 && until.timeout_ms == Some(5)));
+        // The release goes to the first wait even when its condition already
+        // holds, so a later wait in the turn is still held.
+        let released = AtomicBool::new(true);
+        assert!(
+            awaited(&children, "send", &both, &released)
+                .await?
+                .is_none()
+        );
+        assert!(released.load(Ordering::Acquire), "only a wait takes it");
+        assert!(
+            awaited(&children, "wait", &first, &released)
+                .await?
+                .is_none()
+        );
+        assert!(!released.load(Ordering::Acquire));
+        assert!(
+            awaited(&children, "wait", &both, &released)
+                .await?
+                .is_some()
         );
         Ok(())
     }

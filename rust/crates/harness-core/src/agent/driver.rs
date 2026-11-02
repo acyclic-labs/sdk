@@ -922,7 +922,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     });
                 }
                 ExecutionProgress::Pending(_)
-                    if let Some((children, any)) = open
+                    if let Some(until) = open
                         .approvals
                         .as_ref()
                         .and_then(|approvals| approvals.awaited()) =>
@@ -947,7 +947,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         })?),
                         reserved_children,
                         outs: Vec::new(),
-                        wait: Wait::Children { children, any },
+                        wait: Wait::Until(until),
                         drops: None,
                     });
                 }

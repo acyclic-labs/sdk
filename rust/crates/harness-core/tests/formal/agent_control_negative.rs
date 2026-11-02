@@ -16,7 +16,7 @@ fn alarm_from_history(
     pending: usize,
 ) -> Option<u64> {
     match control.mode {
-        Mode::Alarm(_) if !control.closed => None,
+        Mode::Await(Some(_)) if !control.closed => None,
         _ => production::alarm(control, queued, approval, pending),
     }
 }
@@ -48,6 +48,45 @@ fn cascade_reports_early(control: Control, pending: usize) -> Cascade {
         cascade.report = report;
     }
     cascade
+}
+
+/// A condition wait starts a step for each queued arrival.
+fn pick_steps_on_arrival(control: Control, alarm: bool, queued: bool, approval: bool) -> Pick {
+    match control.mode {
+        Mode::Await(_) if control.turn && !control.closed && queued => Pick::Front,
+        _ => production::pick(control, alarm, queued, approval),
+    }
+}
+
+/// A condition wait's deadline sets no actor alarm.
+fn alarm_drops_await_deadline(
+    control: Control,
+    queued: bool,
+    approval: bool,
+    pending: usize,
+) -> Option<u64> {
+    match control.mode {
+        Mode::Await(_) if !control.closed => None,
+        _ => production::alarm(control, queued, approval, pending),
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn arrival_step_during_condition_wait_is_caught() {
+    exactly_once_and_never_loses_a_wake(Kernel {
+        pick: pick_steps_on_arrival,
+        ..PRODUCTION
+    });
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn dropped_condition_deadline_is_caught() {
+    exactly_once_and_never_loses_a_wake(Kernel {
+        alarm: alarm_drops_await_deadline,
+        ..PRODUCTION
+    });
 }
 
 #[kani::proof]

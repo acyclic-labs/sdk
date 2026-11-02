@@ -116,10 +116,14 @@ pub struct AgentState {
     pub phase: Phase,
     /// Children that have not reported `ChildDone`.
     pub open_children: BTreeSet<AgentPath>,
-    /// Open children the turn in progress waits for in
-    /// [`Phase::WaitingChildren`]; empty in every other phase.
+    /// Open children whose settlement the turn in progress still counts in
+    /// [`Phase::Waiting`]; empty in every other phase.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub awaiting: BTreeSet<AgentPath>,
+    /// How many more of `awaiting` must settle before the waiting turn
+    /// resumes; zero in every other phase.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub need: u32,
     /// The parent's turn waits for this agent to settle: the next step that
     /// publishes it idle or done answers with one `ChildSettled`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -150,8 +154,8 @@ pub struct AgentState {
     pub reserved_children: u16,
 }
 
-fn is_zero(count: &u16) -> bool {
-    *count == 0
+fn is_zero<T: Default + PartialEq>(count: &T) -> bool {
+    *count == T::default()
 }
 
 /// The identity a brief's read grant names: the digest of its exact reference.
@@ -204,6 +208,7 @@ impl AgentState {
             phase: Phase::Idle,
             open_children: BTreeSet::new(),
             awaiting: BTreeSet::new(),
+            need: 0,
             awaited: false,
             archive_pending: BTreeSet::new(),
             queued: VecDeque::new(),
@@ -403,22 +408,75 @@ pub enum Wait {
     /// claiming or settling the turn's input. Like an approval response, the
     /// hook is taken ahead of the input queued behind the turn.
     Host(String),
-    /// Wait, holding no delivery, until these children settle: every one of
-    /// them, or with `any` the first. Each open child is asked once, in this
-    /// step's commit, and answers when it settles; a child already done
-    /// settled, so the turn continues at once.
-    Children {
-        /// The awaited children.
-        children: BTreeSet<AgentPath>,
-        /// Whether the first to settle resumes the turn.
-        any: bool,
-    },
-    /// Wait until this Unix millisecond deadline.
-    Until(u64),
+    /// Wait, holding no delivery, until a monotone condition holds or its
+    /// timeout passes (see [`Until`]). Arrivals meanwhile queue without a
+    /// turn step.
+    Until(Until),
     /// The turn finished; wait for more input.
     Input,
     /// The agent's task is complete.
     Done(AgentOutcome),
+}
+
+/// A monotone wait condition: `need` of the `awaited` agents settle, or the
+/// timeout passes, whichever is first. Every agent wait is one of its presets
+/// ([`Self::all`], [`Self::any`], [`Self::quorum`], [`Self::sleep`]).
+///
+/// Each awaited open agent is asked once, in the step's commit, and answers
+/// once when it settles; one already done has settled and counts at once.
+/// Each answer lowers the remaining need by one, so the condition only moves
+/// toward holding and a turn resumes at most once per wait. The timeout is
+/// one actor alarm, set from the delivery clock of the committing step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Until {
+    /// Agents whose settlement counts, each at most once.
+    pub awaited: BTreeSet<AgentPath>,
+    /// How many of them must settle.
+    pub need: u32,
+    /// Milliseconds after the committing step at which the turn resumes
+    /// regardless; `None` waits for the condition alone.
+    pub timeout_ms: Option<u64>,
+}
+
+impl Until {
+    /// Every one of `awaited` settled.
+    #[must_use]
+    pub fn all(awaited: BTreeSet<AgentPath>) -> Self {
+        let need = u32::try_from(awaited.len()).unwrap_or(u32::MAX);
+        Self::quorum(awaited, need)
+    }
+
+    /// The first of `awaited` settled.
+    #[must_use]
+    pub fn any(awaited: BTreeSet<AgentPath>) -> Self {
+        Self::quorum(awaited, 1)
+    }
+
+    /// `need` of `awaited` settled.
+    #[must_use]
+    pub fn quorum(awaited: BTreeSet<AgentPath>, need: u32) -> Self {
+        Self {
+            awaited,
+            need,
+            timeout_ms: None,
+        }
+    }
+
+    /// Nothing but the timeout.
+    #[must_use]
+    pub fn sleep(timeout_ms: u64) -> Self {
+        Self {
+            awaited: BTreeSet::new(),
+            need: 1,
+            timeout_ms: Some(timeout_ms),
+        }
+    }
+
+    /// The same condition, resuming after `timeout_ms` at the latest.
+    #[must_use]
+    pub fn within(self, timeout_ms: Option<u64>) -> Self {
+        Self { timeout_ms, ..self }
+    }
 }
 
 /// The result of one turn step.
@@ -514,26 +572,32 @@ impl PreparedStep {
 /// Runs one step for `wake`. Every control decision is made by [`kernel`].
 ///
 /// `state` is `None` only for the first delivery, which must be `ForkAdopted`.
+/// `now_unix_ms` is the delivery's clock: a wait's timeout counts from it.
 pub async fn step<T: TurnDriver + ?Sized>(
     driver: &T,
     path: &AgentPath,
     state: Option<AgentState>,
-    cursor: u64,
+    (cursor, now_unix_ms): (u64, u64),
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
-    Ok(
-        prepare_step(driver, path, state, cursor, wake, cancellation)
-            .await?
-            .step,
+    Ok(prepare_step(
+        driver,
+        path,
+        state,
+        (cursor, now_unix_ms),
+        wake,
+        cancellation,
     )
+    .await?
+    .step)
 }
 
 pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     driver: &T,
     path: &AgentPath,
     state: Option<AgentState>,
-    cursor: u64,
+    (cursor, now_unix_ms): (u64, u64),
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<PreparedStep, Error> {
@@ -615,7 +679,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         run(
             driver,
             &mut state,
-            cursor,
+            (cursor, now_unix_ms),
             alarm_wake,
             &mut outs,
             cancellation,
@@ -754,10 +818,8 @@ fn control(state: &AgentState) -> Control {
         mode: match &state.phase {
             Phase::Idle => Mode::Idle,
             Phase::Running => Mode::Running,
-            Phase::WaitingApproval { .. }
-            | Phase::WaitingHost { .. }
-            | Phase::WaitingChildren { .. } => Mode::Approval,
-            Phase::WaitingAlarm { deadline_unix_ms } => Mode::Alarm(*deadline_unix_ms),
+            Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
+            Phase::Waiting { deadline_unix_ms } => Mode::Await(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
         closed: state.closed,
@@ -782,6 +844,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     if !admitted.control.turn {
         state.turn = None;
         state.awaiting.clear();
+        state.need = 0;
     }
     if admitted.control.mode == Mode::Idle {
         state.phase = Phase::Idle;
@@ -835,16 +898,15 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     Ok(state)
 }
 
-/// An awaited `child` settled: the turn waiting in
-/// [`Phase::WaitingChildren`] resumes once its last awaited child (with `any`,
-/// its first) has. Each child is awaited once, so this is one set removal.
+/// An awaited `child` settled: it counts once toward the [`Until`] the turn
+/// waits on in [`Phase::Waiting`], which resumes, through
+/// [`kernel::satisfy`], when the last needed one has. One set removal.
 fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
     if !state.awaiting.remove(child) {
         return;
     }
-    if let Phase::WaitingChildren { any } = state.phase
-        && (any || state.awaiting.is_empty())
-    {
+    state.need = state.need.saturating_sub(1);
+    if state.need == 0 && kernel::satisfy(control(state)).mode == Mode::Running {
         state.awaiting.clear();
         state.phase = Phase::Running;
     }
@@ -881,7 +943,7 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
-    cursor: u64,
+    (cursor, now_unix_ms): (u64, u64),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
     cancellation: acyclic_actors::guest::CancellationToken,
@@ -944,7 +1006,7 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
         wait => wait,
     };
-    let mut awaiting = BTreeSet::new();
+    let mut awaiting = (BTreeSet::new(), 0);
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
         Wait::Approval { id, binding } => (
@@ -957,30 +1019,35 @@ async fn run<T: TurnDriver + ?Sized>(
             Some(Phase::WaitingHost { host }),
             None,
         ),
-        Wait::Children { children, any } => {
-            // Only an open child can still settle; one already done has, so
-            // a wait it satisfies continues at once and asks no child.
-            let open: BTreeSet<AgentPath> = children
+        Wait::Until(until) => {
+            // Only an open child can still settle; one already done has and
+            // counts now. A condition already holding continues at once and
+            // asks no one; one the open children can no longer meet waits
+            // only for its timeout, or continues at once without one.
+            let open: BTreeSet<AgentPath> = until
+                .awaited
                 .intersection(&state.open_children)
                 .cloned()
                 .collect();
-            let waits = !open.is_empty() && (!any || open.len() == children.len());
-            if waits {
-                outs.extend(open.iter().map(|child| Out::Send {
-                    to: child.clone(),
-                    record: InboxRecord::Awaited,
-                }));
-                awaiting = open;
-                (
-                    kernel::Wait::Approval,
-                    Some(Phase::WaitingChildren { any }),
-                    None,
-                )
-            } else {
+            let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
+            let need = until.need.saturating_sub(settled);
+            let reachable = usize::try_from(need).is_ok_and(|need| need <= open.len());
+            let deadline = until
+                .timeout_ms
+                .map(|timeout| now_unix_ms.saturating_add(timeout));
+            if need == 0 || !(reachable || deadline.is_some()) {
                 (kernel::Wait::Continue, None, None)
+            } else {
+                if reachable {
+                    outs.extend(open.iter().map(|child| Out::Send {
+                        to: child.clone(),
+                        record: InboxRecord::Awaited,
+                    }));
+                    awaiting = (open, need);
+                }
+                (kernel::Wait::Await(deadline), None, None)
             }
         }
-        Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
@@ -994,15 +1061,15 @@ async fn run<T: TurnDriver + ?Sized>(
         None => 0,
     };
     state.reported = next.reported;
-    state.awaiting = if next.mode == Mode::Approval {
+    (state.awaiting, state.need) = if matches!(next.mode, Mode::Await(_)) {
         awaiting
     } else {
-        BTreeSet::new()
+        (BTreeSet::new(), 0)
     };
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,
-        (Mode::Alarm(deadline_unix_ms), ..) => Phase::WaitingAlarm { deadline_unix_ms },
+        (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting { deadline_unix_ms },
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
             if send {

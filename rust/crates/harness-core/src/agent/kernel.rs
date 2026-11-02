@@ -3,7 +3,9 @@
 //! Every control decision of [`super::step`] is made here, over a `Copy` summary
 //! of the agent, so the solver harness in `tests/formal/agent_control.rs` checks
 //! the production code exhaustively: exactly one `ChildDone`, no turn after
-//! completion or archive, no lost wake-up, and a cascade that terminates.
+//! completion or archive, no lost wake-up (including a condition wait whose
+//! arrivals queue without a turn step, released by its condition or its
+//! deadline), and a cascade that terminates.
 
 /// Alarm deadline that is due immediately: continue in a fresh step.
 pub const CONTINUE_NOW: u64 = 1;
@@ -19,8 +21,10 @@ pub enum Mode {
     Running,
     /// A turn waits for its approval response or its host's event hook.
     Approval,
-    /// A turn waits until this Unix millisecond deadline.
-    Alarm(u64),
+    /// A turn waits, holding no delivery, until its monotone condition holds
+    /// (see [`satisfy`]) or, when set, this Unix millisecond deadline passes.
+    /// Arrivals meanwhile queue without a turn step.
+    Await(Option<u64>),
     /// The agent's task is complete.
     Done,
 }
@@ -132,8 +136,10 @@ pub const fn pick(control: Control, alarm_wake: bool, queued: bool, approval_rea
             }
         }
         Mode::Running if control.turn => Pick::Resume,
-        Mode::Alarm(_) if control.turn => {
-            if alarm_wake {
+        // Only the deadline resumes it here; its condition resumes it by
+        // [`satisfy`], and queued arrivals never start a step.
+        Mode::Await(deadline) if control.turn => {
+            if alarm_wake && deadline.is_some() {
                 Pick::Resume
             } else {
                 Pick::Nothing
@@ -156,8 +162,8 @@ pub enum Wait {
     Continue,
     /// Wait for the approval response.
     Approval,
-    /// Wait until this Unix millisecond deadline.
-    Until(u64),
+    /// Wait for a condition, and at most until this deadline when set.
+    Await(Option<u64>),
     /// Turn finished; wait for input.
     Input,
     /// Task complete.
@@ -177,13 +183,12 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
     match wait {
         Wait::Continue => (next(control, Mode::Running, true), false),
         Wait::Approval => (next(control, Mode::Approval, true), false),
-        Wait::Until(deadline) => (
+        Wait::Await(deadline) => (
             next(
                 control,
-                Mode::Alarm(if deadline < CONTINUE_NOW {
-                    CONTINUE_NOW
-                } else {
-                    deadline
+                Mode::Await(match deadline {
+                    Some(deadline) if deadline < CONTINUE_NOW => Some(CONTINUE_NOW),
+                    deadline => deadline,
                 }),
                 true,
             ),
@@ -191,6 +196,21 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
         ),
         Wait::Input => (next(control, Mode::Idle, false), false),
         Wait::Done => report(control),
+    }
+}
+
+/// The awaited condition now holds: the waiting turn continues in a fresh
+/// step. Conditions are monotone, so this runs at most once per wait; any
+/// other control is unchanged, so a late arrival after cancel, archive or
+/// completion cannot start a turn.
+#[must_use]
+pub const fn satisfy(control: Control) -> Control {
+    match control.mode {
+        Mode::Await(_) if control.turn && !control.closed => Control {
+            mode: Mode::Running,
+            ..control
+        },
+        _ => control,
     }
 }
 
@@ -273,7 +293,7 @@ pub const fn alarm(
             }
         }
         Mode::Running => Some(CONTINUE_NOW),
-        Mode::Alarm(deadline) => Some(deadline),
+        Mode::Await(deadline) => deadline,
         Mode::Idle => {
             if queued {
                 Some(CONTINUE_NOW)

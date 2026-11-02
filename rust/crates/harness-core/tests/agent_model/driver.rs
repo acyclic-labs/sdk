@@ -297,7 +297,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             &driver,
             &path,
             Some(state.clone()),
-            sequence,
+            (sequence, 0),
             Wake::Inbox { sequence, record },
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -417,7 +417,7 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
             &driver,
             &path,
             Some(AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts")),
-            1,
+            (1, 0),
             Wake::Inbox {
                 sequence: 1,
                 record: request("failed")?.0,
@@ -509,7 +509,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         &driver,
         &path,
         Some(state),
-        1,
+        (1, 0),
         Wake::Inbox {
             sequence: 1,
             record: request("m1")?.0,
@@ -531,7 +531,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         &driver,
         &path,
         Some(first.state.clone()),
-        2,
+        (2, 0),
         Wake::Inbox {
             sequence: 2,
             record: InboxRecord::Approval(Approval {
@@ -692,7 +692,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             &driver,
             &path,
             Some(state.clone()),
-            sequence,
+            (sequence, 0),
             Wake::Inbox { sequence, record },
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -826,7 +826,7 @@ ship it
             &driver,
             &path,
             Some(state),
-            sequence,
+            (sequence, 0),
             Wake::Inbox {
                 sequence,
                 record: user,
@@ -893,7 +893,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
                 &driver,
                 &path,
                 Some(state),
-                sequence,
+                (sequence, 0),
                 Wake::Inbox {
                     sequence,
                     record: InboxRecord::Message(message),

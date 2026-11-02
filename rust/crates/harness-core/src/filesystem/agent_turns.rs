@@ -1731,7 +1731,10 @@ where
             let approvals = Arc::new(
                 AgentApprovals::new(files, Arc::new(policy))
                     .yielding(Arc::clone(&effects))
-                    .awaiting(Arc::clone(&children)),
+                    .awaiting(
+                        Arc::clone(&children),
+                        matches!(agent.phase, crate::agent::Phase::Waiting { .. }),
+                    ),
             );
             let journal = journal
                 .with_stop(stop)
