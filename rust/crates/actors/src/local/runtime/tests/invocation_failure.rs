@@ -85,20 +85,20 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let snapshot = store.load(&address).await?;
     let epoch = snapshot.state().ok_or("missing original state")?.epoch();
     assert_eq!(epoch, 0, "idle discovery must not claim placement");
-    let wrong = Trigger::Record {
-        subscription: "inbox".into(),
-        sequence: ticket.record().sequence + 1,
-    };
+    // Ownership must be established before delivery validation is reachable.
     assert!(matches!(
         store.prepare_failed_input(
             &snapshot,
             epoch,
-            &wrong,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: ticket.record().sequence
+            },
             ticket.record(),
             &cause(),
             key("terminal-failure/wrong")?
         ),
-        Err(Error::Invalid(_))
+        Err(Error::Conflict)
     ));
     assert!(matches!(
         store.prepare_failed_input(
@@ -150,6 +150,20 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     assert!(publications.try_next().await?.is_none());
     let retained = store.load(&address).await?;
     assert_eq!(retained.tail, receipt.revision());
+    assert!(matches!(
+        store.prepare_failed_input(
+            &retained,
+            retained.state().ok_or("missing claimed state")?.epoch(),
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: ticket.record().sequence + 1
+            },
+            ticket.record(),
+            &cause(),
+            key("terminal-failure/wrong")?
+        ),
+        Err(Error::Invalid("failed input differs from its trigger"))
+    ));
     let publication = provider.read_commit(receipt.commit_id()).await?;
     let mut states = publication
         .mutations
