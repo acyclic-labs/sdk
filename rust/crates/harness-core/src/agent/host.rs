@@ -19,7 +19,8 @@ use acyclic_actors::{
     local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitRequest, FollowRequest, StreamError, StreamPath, StreamProvider, WhenAbsent,
+    CommitCondition, CommitMutation, CommitRequest, FollowRequest, ReadRequest, StreamError,
+    StreamPath, StreamProvider, WhenAbsent,
 };
 use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
@@ -403,6 +404,93 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(target, archive(target, by, id)?).await
     }
 
+    /// Close exactly the child's settled `status` and wait for the parent
+    /// commit that releases its membership. Keeps the original output cut,
+    /// so retry/resume never substitutes the subsequent archived status.
+    ///
+    /// One immutable status read, one archive commit and one release follow.
+    /// The archive commit fences both the status tail and the inbox cursor:
+    /// intervening input or progress is a conflict, never a readiness retry.
+    /// An exact intent retry replays that commit and its original receipt.
+    /// Roots have no parent membership and are refused before IO.
+    ///
+    /// The parent consuming `ChildDone` is the sole release producer. Session
+    /// owners must race this operation with their runtime failure event, as
+    /// they do for [`Self::spawned`]; a closed follow returns `Unavailable`.
+    pub async fn release_settled(
+        &self,
+        child: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        status: u64,
+    ) -> Result<(super::Settlement, super::ChildRelease), Error> {
+        use super::{AgentRecord as _, Phase, Settlement, commit};
+        let release_path = super::release::for_child(child)?;
+        let expected = status
+            .checked_add(1)
+            .ok_or(Error::Conflict("settlement status sequence overflows"))?;
+        let status_path = child.status()?;
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                key: None,
+                path: status_path.clone(),
+                from: status,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == status)
+            .ok_or(Error::Conflict("settlement status does not exist"))?;
+        drop(records);
+        let observed = super::StatusRecord::decode(&record.value)?;
+        if !matches!(observed.phase, Phase::Idle | Phase::Done { .. }) {
+            return Err(Error::Conflict("selected status has not settled"));
+        }
+        let settlement = Settlement {
+            status,
+            cursor: observed.cursor,
+            conversation: observed.conversation,
+        };
+        let retained = Settlement::path(child)?;
+        let mut request = commit::archive_at(child, by, id, Some(settlement.cursor))?;
+        request.conditions.extend([
+            CommitCondition::Tail {
+                path: status_path,
+                expected,
+            },
+            CommitCondition::Absent {
+                path: retained.clone(),
+            },
+        ]);
+        request.mutations.push(CommitMutation::Append {
+            path: retained,
+            records: vec![settlement.encode()?.into()],
+        });
+        if self.deliver(child, request).await? == Delivered::Closed {
+            return Err(Error::Conflict("child was archived by another intent"));
+        }
+        let mut request = FollowRequest::new(release_path, 0);
+        request.when_absent = WhenAbsent::Wait;
+        let mut records = acyclic_stream::records_only(
+            self.provider.follow(request).await.map_err(Error::Stream)?,
+        );
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        if record.sequence != 0 {
+            return Err(Error::Record("child release is not the original record"));
+        }
+        Ok((settlement, super::ChildRelease::decode(&record.value)?))
+    }
+
     /// Durably pause or resume one agent. A paused agent consumes nothing:
     /// its resources are parked too (its Machines suspended), and its next
     /// use after resuming wakes them.
@@ -481,7 +569,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             }
             Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
             Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
-            Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),
+            Submitted::Conflict(_) => Err(Error::Conflict("inbox admission changed")),
         }
     }
 }

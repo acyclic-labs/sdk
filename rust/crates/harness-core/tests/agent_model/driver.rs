@@ -731,6 +731,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             CommitOutcome::Committed(_)
         ));
         let mut wrong = Step {
+            released: settled.released.clone(),
             state: settled.state.clone(),
             outs: settled.outs.clone(),
             status: settled.status.clone(),

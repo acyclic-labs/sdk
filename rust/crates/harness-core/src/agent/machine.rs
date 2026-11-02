@@ -488,6 +488,9 @@ pub struct Step {
     pub outs: Vec<Out>,
     /// Status appended by this step, if the phase changed.
     pub status: Option<StatusRecord>,
+    /// Child whose membership this step actually removed. Its original
+    /// `ChildDone` is the consumed inbox record; duplicates release nothing.
+    pub released: Option<super::AgentId>,
     /// Desired alarm.
     pub alarm: Alarm,
 }
@@ -563,6 +566,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     // admitting a record (a cancel) can itself change the phase.
     let previous = state.as_ref().map_or(Phase::Idle, published);
     let inbox_wake = !alarm_wake;
+    let mut released = None;
     let mut state = match (state, wake) {
         (
             None,
@@ -606,7 +610,9 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             apply_spawns(&mut state, &mut outs, 0, free);
             state
         }
-        (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
+        (Some(state), Wake::Inbox { sequence, record }) => {
+            admit(state, sequence, record, &mut released)?
+        }
     };
     let applied = outs.len();
     if state.closed {
@@ -631,7 +637,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         outs.len(),
         state.pending_notices.clone(),
     );
-    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake, released)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
     // Only a state that must shed its growing input is encoded again.
@@ -639,6 +645,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         let Step {
             mut state,
             mut outs,
+            released,
             ..
         } = step;
         state.conversation_tail = tails.0;
@@ -649,7 +656,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+        step = finalize_step(state, outs, &previous, cursor, inbox_wake, released)?;
         bytes = checkpoint::encode(&step.state)?;
     }
     Ok(PreparedStep {
@@ -664,6 +671,7 @@ fn finalize_step(
     previous: &Phase,
     cursor: u64,
     inbox_wake: bool,
+    released: Option<super::AgentId>,
 ) -> Result<Step, Error> {
     let alarm = match kernel::alarm(
         control(&state),
@@ -735,6 +743,7 @@ fn finalize_step(
         state,
         outs,
         status,
+        released,
         alarm,
     })
 }
@@ -767,7 +776,12 @@ fn control(state: &AgentState) -> Control {
 }
 
 /// Folds one inbox record into the state.
-fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<AgentState, Error> {
+fn admit(
+    mut state: AgentState,
+    sequence: u64,
+    record: InboxRecord,
+    released: &mut Option<super::AgentId>,
+) -> Result<AgentState, Error> {
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
         InboxRecord::Cancel(_) => Admit::Cancel,
@@ -802,11 +816,14 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         }
     }
     if let InboxRecord::ChildDone(done) = &record {
-        if state.open_children.remove(&done.child) && state.turn.is_some() {
-            // The paused journal may already contain a replayed spawn of this
-            // child. Its slot remains owned by the turn until the driver next
-            // reconciles recorded effects. Duplicate ChildDone consumes none.
-            state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
+        if state.open_children.remove(&done.child) {
+            *released = Some(done.child.id());
+            if state.turn.is_some() {
+                // The paused journal may already contain a replayed spawn of this
+                // child. Its slot remains owned by the turn until the driver next
+                // reconciles recorded effects. Duplicate ChildDone consumes none.
+                state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
+            }
         }
         state.archive_pending.remove(&done.child);
     }
