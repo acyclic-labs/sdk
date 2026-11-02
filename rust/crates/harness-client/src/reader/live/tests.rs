@@ -345,6 +345,19 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             })
             .await
             .unwrap();
+        let acyclic_stream::AppendOutcome::Committed(child_append) = provider
+            .append(AppendRequest {
+                path: child.clone(),
+                records: vec![serde_json::to_vec(&call).unwrap().into()],
+                if_tail: Some(2),
+                idempotency_key: IdempotencyKey::new(b"child-local-usage".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("original child append must commit");
+        };
+        assert_ne!(child_append.commit_id, expected_commit);
         let selected = Source::new(child.clone());
         let mut listed = Reader::new(ReaderPolicy::default()).unwrap();
         listed.plan([(
@@ -366,7 +379,7 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         );
         assert!(listed.cache().origin_known(&child));
         assert_eq!(listed.cache().tail(&child), None);
-        let window = NonZeroU32::new(2).unwrap();
+        let window = NonZeroU32::new(3).unwrap();
         let want = selected.want_page(0, window).unwrap();
         assert_eq!(
             selected.page(&listed, 0, window).unwrap().next(),
@@ -388,12 +401,17 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             commit: records[0].commit,
             committed_at_micros: records[0].committed_at_micros,
         };
+        let child_time = records[2].committed_at_micros;
         listed.complete(id, loaded, 0);
         assert_eq!(listed.cache().tail(&child), None);
+        assert_eq!(
+            listed.cache().anchor(&child, 2),
+            Some(child_append.commit_id)
+        );
         let issued = listed.issued();
         let mut page = selected.page(&listed, 0, window).unwrap();
-        assert_eq!(page.end, 2);
-        for sequence in 0..2 {
+        assert_eq!(page.end, 3);
+        for sequence in 0..3 {
             let (position, row) = page.next().unwrap();
             let row = row.unwrap();
             let original: ModelUsageRecord = serde_json::from_slice(row).unwrap();
@@ -403,12 +421,18 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             );
             let evidence = row.evidence().unwrap();
             assert_eq!((position, evidence.sequence), (sequence, sequence));
-            assert_eq!(
-                evidence.origin, stream,
-                "selected fork is not append origin"
-            );
-            assert_eq!(evidence.commit, expected_commit);
-            assert_eq!(evidence.committed_at_micros, expected_time);
+            if sequence < 2 {
+                assert_eq!(
+                    evidence.origin, stream,
+                    "selected fork is not append origin"
+                );
+                assert_eq!(evidence.commit, expected_commit);
+                assert_eq!(evidence.committed_at_micros, expected_time);
+            } else {
+                assert_eq!(evidence.origin, child);
+                assert_eq!(evidence.commit, child_append.commit_id);
+                assert_eq!(evidence.committed_at_micros, child_time);
+            }
             if sequence == 0 {
                 assert_eq!(row.as_ptr(), pointer);
                 assert_eq!(evidence.origin.as_str().as_ptr(), origin_pointer);
