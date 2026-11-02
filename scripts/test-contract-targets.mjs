@@ -229,7 +229,19 @@ test("contract binaries use exact Cargo identities and current source/configurat
     const report = {};
     const build = () => buildContractTargets(root, targets, cargo, report);
     const run = binaries => binaries.map(binary => runContractTarget(root, binary).trim());
-    const binaries = build();
+    // Record the exact text received by the production JSON boundary during
+    // this SAME real build. Mutation controls below replay this captured wire;
+    // they neither invent compiler messages nor commission another build.
+    const recorded = { metadata: undefined, messages: [] }, decode = JSON.parse;
+    let binaries;
+    JSON.parse = (text, ...args) => {
+      const value = decode(text, ...args);
+      if (value?.packages) recorded.metadata = text;
+      else if (value?.reason) recorded.messages.push(text);
+      return value;
+    };
+    try { binaries = build(); }
+    finally { JSON.parse = decode; }
     assert.deepEqual(run(binaries), ["alpha:false:true", "beta:false:true"]);
     // --no-default-features disables selected packages' defaults; a dependency
     // keeps its defaults unless its dependency declaration disables them.
@@ -258,9 +270,63 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.deepEqual(run(build()), ["changed:false:false", "beta:true:false"]);
     const goodSource = readFileSync(join(root, "alpha/src/main.rs"));
     put("alpha/src/main.rs", "this is not Rust\n");
-    assert.throws(build, /STEP_FAILED contract-build:/);
+    let originalRefusal;
+    assert.throws(build, error => {
+      originalRefusal = error;
+      return /STEP_FAILED contract-build:/.test(error.message);
+    });
     put("alpha/src/main.rs", goodSource);
     assert.deepEqual(run(build()), ["changed:false:false", "beta:true:false"]);
+
+    // Replaying is confined to boundary mutations; the real Cargo builds above
+    // independently qualify freshness, features, source and executable bytes.
+    put("metadata", 'process.stdout.write(require("node:fs").readFileSync("metadata.json"));');
+    put("metadata.json", recorded.metadata);
+    put("build", 'process.stdout.write(require("node:fs").readFileSync("artifacts.jsonl"));');
+    const messages = recorded.messages.map(text => decode(text));
+    const emit = rows => put("artifacts.jsonl", rows.map(item => JSON.stringify(item)).join("\n"));
+    const replay = () => buildContractTargets(root, targets, process.execPath);
+    const first = messages.findIndex(message => message.executable === binaries[0]);
+    const second = messages.findIndex(message => message.executable === binaries[1]);
+    assert.ok(first >= 0 && second >= 0);
+    assert.equal(fuzzContractJson(Buffer.from(recorded.metadata)), true);
+    for (const text of recorded.messages) assert.equal(fuzzContractJson(Buffer.from(text)), true);
+    emit(messages);
+    assert.deepEqual(replay(), binaries);
+    // The real executable still exists: guessing its path must not admit it
+    // when Cargo's original artifact identity is missing or substituted.
+    emit(messages.filter((_, index) => index !== second));
+    assert.throws(replay, /Rust contract target was not built/);
+    for (const replacement of [
+      { package_id: messages[first].package_id },
+      { target: { ...messages[second].target, kind: ["bin"] } },
+      { target: { ...messages[second].target, name: "another-target" } },
+      { executable: null },
+    ]) {
+      emit(messages.map((message, index) => index === second ? { ...message, ...replacement } : message));
+      assert.throws(replay, /Rust contract target was not built/);
+    }
+    emit([...messages, messages[first]]);
+    assert.throws(replay, /duplicate Rust contract artifact/);
+    put("artifacts.jsonl", recorded.messages[first].slice(0, -1));
+    assert.throws(replay, error => error.cause instanceof SyntaxError && /STEP_FAILED contract-artifact:/.test(error.message));
+    const previousRustc = process.env.RUSTC;
+    try {
+      process.env.RUSTC = join(root, "missing-diagnostic-compiler");
+      emit(messages);
+      const refusedProbe = {};
+      assert.deepEqual(buildContractTargets(root, targets, process.execPath, refusedProbe), binaries);
+      assert.match(refusedProbe.rustc_error, /ENOENT/);
+    } finally {
+      if (previousRustc === undefined) delete process.env.RUSTC;
+      else process.env.RUSTC = previousRustc;
+    }
+    put("compiler-refusal.jsonl", originalRefusal.stdout);
+    put("build", `process.stdout.write(require("node:fs").readFileSync("compiler-refusal.jsonl")); process.exit(${originalRefusal.status});`);
+    assert.throws(replay, error => error.stdout === originalRefusal.stdout && error.status === originalRefusal.status
+      && error.signal === originalRefusal.signal && error.message.includes(originalRefusal.stdout));
+    assert.ok(binaries.every(binary => statSync(binary).isFile()));
+    assert.throws(() => buildContractTargets(root, [], process.execPath), /target set is empty/);
 
     // Capture output from the original Cargo-selected binaries. Count actual
     // starts and decodes independently of the generator's cache implementation.

@@ -8,65 +8,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createInterface } from "node:readline";
-import { buildContractTargets } from "./contract-targets.mjs";
-
-test("compiler artifact discovery rejects identity substitution and partial completion", () => {
-  const root = mkdtempSync(join(tmpdir(), "sdk-contract-artifacts-"));
-  const put = (name, content) => writeFileSync(join(root, name), content);
-  const pkg = name => ({ name, id: `path+file:///fixture/${name}#0.1.0`, targets: [{ name: "contract", kind: ["bin"] }] });
-  const packages = [pkg("alpha"), pkg("beta")];
-  const artifacts = packages.map(({ name, id }) => ({
-    reason: "compiler-artifact", package_id: id, target: { name: "contract", kind: ["bin"] },
-    executable: join(root, `${name}-contract`), fresh: true, features: [],
-  }));
-  const targets = packages.map(({ name }) => [name, "bin", "contract"]);
-  try {
-    put("metadata", 'process.stdout.write(require("node:fs").readFileSync("metadata.json"));');
-    put("metadata.json", JSON.stringify({ target_directory: join(root, "target"), packages }));
-    put("build", 'process.stdout.write(require("node:fs").readFileSync("artifacts.jsonl"));');
-    const emit = messages => put("artifacts.jsonl", messages.map(item => JSON.stringify(item)).join("\n"));
-    const build = () => buildContractTargets(root, targets, process.execPath);
-    emit(artifacts);
-    assert.deepEqual(build(), artifacts.map(item => item.executable));
-    const previousRustc = process.env.RUSTC;
-    try {
-      process.env.RUSTC = join(root, "missing-diagnostic-compiler");
-      const report = {};
-      assert.deepEqual(buildContractTargets(root, targets, process.execPath, report), artifacts.map(item => item.executable));
-      assert.match(report.rustc_error, /ENOENT/);
-    } finally {
-      if (previousRustc === undefined) delete process.env.RUSTC;
-      else process.env.RUSTC = previousRustc;
-    }
-    // The stale path exists, so path guessing would incorrectly accept it.
-    put("beta-contract", "stale bytes");
-    emit([artifacts[0]]);
-    assert.throws(build, /Rust contract target was not built/);
-    for (const replacement of [
-      { package_id: "another-package" },
-      { target: { name: "contract", kind: ["example"] } },
-      { target: { name: "another-target", kind: ["bin"] } },
-      { executable: null },
-    ]) {
-      emit([artifacts[0], { ...artifacts[1], ...replacement }]);
-      assert.throws(build, /Rust contract target was not built/);
-    }
-    emit([...artifacts, artifacts[0]]);
-    assert.throws(build, /duplicate Rust contract artifact/);
-    put("artifacts.jsonl", "{not JSON\n");
-    assert.throws(build, error => error.cause instanceof SyntaxError && /STEP_FAILED contract-artifact:/.test(error.message));
-    put("build", 'console.log(JSON.stringify({reason:"compiler-message",message:{rendered:"fixture compiler diagnostic"}})); process.exit(7);');
-    assert.throws(build, error => {
-      assert.match(error.message, /STEP_FAILED contract-build:.*failed with status 7/);
-      assert.match(error.message, /fixture compiler diagnostic/);
-      return true;
-    });
-    assert.equal(readFileSync(join(root, "beta-contract"), "utf8"), "stale bytes");
-    assert.throws(() => buildContractTargets(root, [], process.execPath), /target set is empty/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test("the generator compares executed bytes and records failure without changing checked files", async () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-drift-"));
