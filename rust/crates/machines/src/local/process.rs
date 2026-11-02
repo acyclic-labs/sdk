@@ -111,15 +111,15 @@ impl LocalMachine {
             maximum_output_bytes: maximum,
         }.stream(control.bind(handler)).await.map_err(|failure| match failure {
             LaunchFailure::Refused { failure, handler } => (
-                ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)),
+                ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)).with_cause(failure.error),
                 Some(handler.into_inner()),
             ),
             LaunchFailure::Control { error, handler } => (
-                ProviderError::Rejected(format!("local command owner refused before spawn: {error}; recovery: restore original workspace authority before a new command")),
+                ProviderError::Rejected(format!("local command owner refused before spawn: {error}; recovery: restore original workspace authority before a new command")).with_cause(error),
                 Some(handler.into_inner()),
             ),
-            LaunchFailure::Indeterminate { handler, .. } => (
-                ProviderError::CommandIndeterminate(machine), handler.map(ControlledCapture::into_inner),
+            LaunchFailure::Indeterminate { error, handler } => (
+                ProviderError::CommandIndeterminate(machine).with_cause(error), handler.map(ControlledCapture::into_inner),
             ),
         });
         LocalExecution(match result {
