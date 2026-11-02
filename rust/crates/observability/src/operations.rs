@@ -807,87 +807,96 @@ impl Visit for FirstCause<'_> {
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
 }
 
-struct Fields {
-    rpc: Option<String>,
-    durability: Option<crate::DurabilityAttempt>,
-    native_task: Option<crate::NativeTask>,
-    capture_retirement: Option<crate::CaptureRetirement>,
-    work: Option<crate::WorkSummary>,
-    publication: Option<crate::Publication>,
+struct Fields<'a> {
+    operation: &'a mut Operation,
+    record_rpc: bool,
 }
-impl Visit for Fields {
+impl Visit for Fields<'_> {
     fn record_bool(&mut self, field: &Field, value: bool) {
-        if let Some(capture) = self.capture_retirement.as_mut() {
+        if let Some(work) = self.operation.work.as_mut() {
+            work.record_bool(field, value);
+        }
+        if let Some(capture) = self.operation.capture_retirement.as_mut() {
             capture.record_bool(field, value);
         }
-        if let Some(task) = self.native_task.as_mut() {
+        if let Some(task) = self.operation.native_task.as_mut() {
             task.record_bool(field, value);
         }
     }
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "rpc" {
-            self.rpc = Some(value.to_owned());
-        } else if let Some(attempt) = self.durability.as_mut() {
+        if let Some(work) = self.operation.work.as_mut() {
+            work.record_str(field, value);
+        }
+        if self.record_rpc && field.name() == "rpc" {
+            self.operation.rpc = Some(value.to_owned());
+        } else if let Some(attempt) = self.operation.durability.as_mut() {
             attempt.record_str(field, value);
         }
-        if let Some(publication) = self.publication.as_mut() {
+        if let Some(publication) = self.operation.publication.as_mut() {
             publication.record_str(field, value);
         }
-        if let Some(task) = self.native_task.as_mut() {
+        if let Some(task) = self.operation.native_task.as_mut() {
             task.record_str(field, value);
         }
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
-        if let Some(capture) = self.capture_retirement.as_mut() {
+        if let Some(capture) = self.operation.capture_retirement.as_mut() {
             capture.record_u64(field, value);
         }
-        if let Some(attempt) = self.durability.as_mut() {
+        if let Some(attempt) = self.operation.durability.as_mut() {
             attempt.record_u64(field, value);
         }
-        if let Some(work) = self.work.as_mut() {
+        if let Some(work) = self.operation.work.as_mut() {
             work.record_u64(field, value);
         }
-        if let Some(task) = self.native_task.as_mut() {
+        if let Some(task) = self.operation.native_task.as_mut() {
             task.record_u64(field, value);
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
-        if let Some(capture) = self.capture_retirement.as_mut() {
+        if let Some(work) = self.operation.work.as_mut() {
+            work.record_i64(field, value);
+        }
+        if let Some(capture) = self.operation.capture_retirement.as_mut() {
             capture.record_i64(field, value);
         }
-        if let Some(attempt) = self.durability.as_mut() {
+        if let Some(attempt) = self.operation.durability.as_mut() {
             attempt.record_i64(field, value);
         }
-        if let Some(task) = self.native_task.as_mut() {
+        if let Some(task) = self.operation.native_task.as_mut() {
             task.record_i64(field, value);
         }
     }
-    fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if let Some(work) = self.operation.work.as_mut() {
+            work.record_debug(field, value);
+        }
+    }
 }
 
 impl Visit for Terminal {
-    fn record_bool(&mut self, field: &Field, _: bool) {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record_debug(field, &value);
         self.has_capture_retirement |= field.name() == "capture.cleanup_completed";
         self.has_native_task |= matches!(
             field.name(),
             "native.queued" | "native.started" | "native.panicked"
         );
     }
-    fn record_i64(&mut self, field: &Field, _: i64) {
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record_debug(field, &value);
         self.has_durability_fields |= field.name() == "error.os";
         self.has_native_task |= field.name() == "error.os";
         self.has_capture_retirement |= field.name() == "error.os";
     }
-    fn record_u64(&mut self, field: &Field, _: u64) {
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record_debug(field, &value);
         self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
         self.has_native_task |= field.name() == "error.os";
         self.has_capture_retirement |= field.name() == "error.os";
-        self.has_work |= matches!(
-            field.name(),
-            "work.items" | "work.bytes" | "work.durability"
-        );
     }
     fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_debug(field, &value);
         if field.name() == "outcome" {
             self.outcome = match value {
                 "ok" => Some(Outcome::Ok),
@@ -905,7 +914,12 @@ impl Visit for Terminal {
             self.has_native_task = true;
         }
     }
-    fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
+    fn record_debug(&mut self, field: &Field, _: &dyn fmt::Debug) {
+        self.has_work |= matches!(
+            field.name(),
+            "work.items" | "work.bytes" | "work.durability"
+        );
+    }
 }
 
 impl<C: Sink> Operations<C> {
@@ -979,8 +993,15 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             return;
         }
         let Some(span) = context.span(id) else { return };
-        let mut fields = Fields {
-            rpc: None,
+        let mut operation = Operation {
+            metadata,
+            // SpanRef::parent can scan past ancestors filtered by this layer.
+            // Read only the producer's creation-time edge, including roots.
+            parent_id: if attributes.is_contextual() {
+                context.current_span().id().cloned()
+            } else {
+                attributes.parent().cloned()
+            },
             capture_retirement: (self.0.capture_retirement_details()
                 && metadata.name() == "acyclic.runtime.capture")
                 .then(crate::CaptureRetirement::default),
@@ -1000,26 +1021,14 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                     .iter()
                     .any(|name| metadata.fields().field(name).is_some()))
             .then(crate::WorkSummary::default),
-        };
-        attributes.record(&mut fields);
-        let mut operation = Operation {
-            metadata,
-            // SpanRef::parent can scan past ancestors filtered by this layer.
-            // Read only the producer's creation-time edge, including roots.
-            parent_id: if attributes.is_contextual() {
-                context.current_span().id().cloned()
-            } else {
-                attributes.parent().cloned()
-            },
-            durability: fields.durability,
-            native_task: fields.native_task,
-            capture_retirement: fields.capture_retirement,
-            work: fields.work,
-            publication: fields.publication,
-            rpc: fields.rpc,
+            rpc: None,
             started: Instant::now(),
             error_kind: None,
         };
+        attributes.record(&mut Fields {
+            operation: &mut operation,
+            record_rpc: true,
+        });
         let mut terminal = Terminal::default();
         attributes.record(&mut terminal);
         if self.0.error_details() {
@@ -1061,21 +1070,10 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let OperationState::Active(operation) = &mut state.operation else {
             return;
         };
-        if let Some(attempt) = operation.durability.as_mut() {
-            values.record(attempt);
-        }
-        if let Some(capture) = operation.capture_retirement.as_mut() {
-            values.record(capture);
-        }
-        if let Some(task) = operation.native_task.as_mut() {
-            values.record(task);
-        }
-        if let Some(publication) = operation.publication.as_mut() {
-            values.record(publication);
-        }
-        if let Some(work) = operation.work.as_mut() {
-            values.record(work);
-        }
+        values.record(&mut Fields {
+            operation,
+            record_rpc: false,
+        });
         if operation.error_kind.is_none() && self.0.error_details() {
             values.record(&mut FirstCause(&mut operation.error_kind));
         }
