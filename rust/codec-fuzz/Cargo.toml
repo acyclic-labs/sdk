@@ -53,13 +53,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "call_journal"
-path = "fuzz_targets/call_journal.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "protobuf_json"
 path = "fuzz_targets/protobuf_json.rs"
 test = false

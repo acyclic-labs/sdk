@@ -1,5 +1,5 @@
 [package]
-name = "acyclic-actors-timer-fuzz"
+name = "acyclic-actors-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -8,6 +8,8 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+acyclic-actors = { path = "..", features = ["test-support"] }
+futures = "0.3.31"
 libfuzzer-sys = "0.4"
 acyclic-stream = { path = "../../stream", default-features = false, features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -19,6 +21,13 @@ uuid = { version = "1.25.0", features = ["serde"] }
 [[bin]]
 name = "timer_record"
 path = "fuzz_targets/timer_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "call_journal"
+path = "fuzz_targets/call_journal.rs"
 test = false
 doc = false
 bench = false
