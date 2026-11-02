@@ -58,13 +58,13 @@ pub(in crate::executor) fn stock_events_payload_bytes(events: &Vec<ModelEvent>) 
                     "event storage overflows",
                 )
             })?,
-        |bytes, event| {
-            crate::core::owned_sum([
-                bytes,
-                event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64,
-            ])
-        },
+        |bytes, event| crate::core::owned_sum([bytes, stock_event_payload_bytes(event)?]),
     )
+}
+
+#[cfg(feature = "filesystem")]
+fn stock_event_payload_bytes(event: &ModelEvent) -> Result<u64> {
+    Ok(event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64)
 }
 
 pub(in crate::executor) fn stock_retire_event(
@@ -73,7 +73,7 @@ pub(in crate::executor) fn stock_retire_event(
 ) -> Result<()> {
     #[cfg(feature = "filesystem")]
     let bytes = if io.is_some() {
-        event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64
+        stock_event_payload_bytes(&event)?
     } else {
         0
     };
@@ -188,6 +188,48 @@ impl<T> Iterator for StockVecIter<'_, T> {
 }
 impl<T> ExactSizeIterator for StockVecIter<'_, T> {}
 
+/// Yields admitted payload custody back to its original ledger. The shared
+/// vector owner destroys an unconsumed suffix before retiring its funding.
+pub(in crate::executor) struct StockEventIter<'a> {
+    storage: StockVecIter<'a, ModelEvent>,
+}
+
+impl Iterator for StockEventIter<'_> {
+    type Item = Result<ModelEvent>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let event = self.storage.next()?;
+        Some((|| {
+            #[cfg(feature = "filesystem")]
+            if let Some(hold) = &mut self.storage._hold {
+                hold.retain_part(stock_event_payload_bytes(&event)?)?;
+            }
+            Ok(event)
+        })())
+    }
+}
+
+pub(in crate::executor) fn stock_events_into_iter(
+    events: Vec<ModelEvent>,
+    io: Option<&PreparationIo>,
+) -> Result<StockEventIter<'_>> {
+    #[cfg(feature = "filesystem")]
+    let hold = io
+        .map(|io| io.guard_owned(stock_events_payload_bytes(&events)?))
+        .transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let hold = {
+        let _ = io;
+        None
+    };
+    Ok(StockEventIter {
+        storage: StockVecIter {
+            values: events.into_iter(),
+            _hold: hold,
+        },
+    })
+}
+
 pub(crate) fn stock_into_iter<'a, T>(
     values: Vec<T>,
     io: Option<&'a PreparationIo>,
@@ -228,6 +270,72 @@ pub(crate) fn stock_into_iter<'a, T>(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn event_selection_retires_only_its_unconsumed_suffix() -> Result<()> {
+        for native in [false, true] {
+            for consumed in 0..=3 {
+                let observed =
+                    crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+                        let sibling = stock_string_copy("retained sibling", Some(io))?;
+                        let sibling_bytes = sibling.capacity() as u64;
+                        let mut events = Vec::new();
+                        for text in ["first", "second", "unselected tail"] {
+                            stock_vec_push(
+                                &mut events,
+                                ModelEvent::Content {
+                                    delta: stock_string_copy(text, Some(io))?,
+                                },
+                                Some(io),
+                            )?;
+                        }
+                        let original = match &events[0] {
+                            ModelEvent::Content { delta } => delta.as_ptr(),
+                            _ => unreachable!(),
+                        };
+                        let mut iterator = stock_events_into_iter(events, Some(io))?;
+                        let mut selected = None;
+                        for at in 0..consumed {
+                            let event = iterator.next().unwrap()?;
+                            if at == 0 {
+                                let ModelEvent::Content { delta } = &event else {
+                                    unreachable!()
+                                };
+                                assert_eq!(delta.as_ptr(), original);
+                                selected = Some(event);
+                            } else {
+                                stock_retire_event(event, Some(io))?;
+                            }
+                        }
+                        // This is the same early drop as a selected call or a
+                        // consumer error; the original vector owns the suffix.
+                        drop(iterator);
+                        let retained = selected
+                            .as_ref()
+                            .map(stock_event_payload_bytes)
+                            .transpose()?
+                            .unwrap_or(0);
+                        assert_eq!(io.owned_bytes()?, sibling_bytes + retained);
+                        if let Some(event) = selected {
+                            stock_retire_event(event, Some(io))?;
+                        }
+                        assert_eq!(io.owned_bytes()?, sibling_bytes);
+                        stock_retire_text(sibling, Some(io))?;
+                        Ok::<_, Error>(())
+                    })
+                    .map_err(|(cause, _)| Error::Storage(cause))?;
+                observed.0?;
+                assert_eq!(observed.2, 0);
+                if native {
+                    assert_eq!(
+                        observed.5,
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     struct Witness<'a> {
         io: &'a PreparationIo,
