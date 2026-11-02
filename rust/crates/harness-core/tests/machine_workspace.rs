@@ -158,7 +158,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 acyclic_harness_core::tools::ShellInput {
                     command: command.into(),
                     cwd: None,
-                    timeout: None,
+                    timeout_ms: None,
                     target: None,
                 },
                 None,
@@ -178,7 +178,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 acyclic_harness_core::tools::ShellInput {
                     command: command.into(),
                     cwd: None,
-                    timeout: None,
+                    timeout_ms: None,
                     target: None
                 },
                 None

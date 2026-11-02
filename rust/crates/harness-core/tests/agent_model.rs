@@ -513,10 +513,11 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                 TurnStep {
                     checkpoint: Some(b"waiting".to_vec()),
                     outs: Vec::new(),
-                    wait: Wait::Children {
-                        children: BTreeSet::from([child.clone()]),
-                        any,
-                    },
+                    wait: Wait::Until(if any {
+                        Until::any(BTreeSet::from([child.clone()]))
+                    } else {
+                        Until::all(BTreeSet::from([child.clone()]))
+                    }),
                     drops: None,
                 },
                 TurnStep {
@@ -530,7 +531,7 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                 &driver,
                 &path,
                 Some(state),
-                2,
+                (2, 0),
                 Wake::Inbox {
                     sequence: 1,
                     record: InboxRecord::Approval(Approval {
@@ -540,7 +541,12 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                 CancellationToken::new(),
             )
             .await?;
-            assert_eq!(waiting.state.phase, Phase::WaitingChildren { any });
+            assert_eq!(
+                waiting.state.phase,
+                Phase::Waiting {
+                    deadline_unix_ms: None
+                }
+            );
             let completion = |child| {
                 if done {
                     InboxRecord::ChildDone(ChildDone {
@@ -555,7 +561,7 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                 &driver,
                 &path,
                 Some(waiting.state),
-                3,
+                (3, 0),
                 Wake::Inbox {
                     sequence: 2,
                     record: completion(foreign.clone()),
@@ -563,14 +569,19 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
                 CancellationToken::new(),
             )
             .await?;
-            assert_eq!(still_waiting.state.phase, Phase::WaitingChildren { any });
+            assert_eq!(
+                still_waiting.state.phase,
+                Phase::Waiting {
+                    deadline_unix_ms: None
+                }
+            );
             assert!(still_waiting.state.awaiting.contains(&child).await?);
             assert!(still_waiting.state.open_children.contains(&child).await?);
             let settled = step(
                 &driver,
                 &path,
                 Some(still_waiting.state),
-                4,
+                (4, 0),
                 Wake::Inbox {
                     sequence: 3,
                     record: completion(child.clone()),
@@ -588,17 +599,18 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
         let driver = script(vec![TurnStep {
             checkpoint: Some(b"foreign".to_vec()),
             outs: Vec::new(),
-            wait: Wait::Children {
-                children: BTreeSet::from([foreign.clone()]),
-                any,
-            },
+            wait: Wait::Until(if any {
+                Until::any(BTreeSet::from([foreign.clone()]))
+            } else {
+                Until::all(BTreeSet::from([foreign.clone()]))
+            }),
             drops: None,
         }]);
         let continued = step(
             &driver,
             &path,
             Some(state),
-            2,
+            (2, 0),
             Wake::Inbox {
                 sequence: 1,
                 record: InboxRecord::Approval(Approval {
@@ -1089,16 +1101,16 @@ async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result
         .map(|byte| root.child(&id(byte)))
         .collect::<std::result::Result<_, _>>()?;
     let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
-    state.open_children.clone_from(&children);
+    for child in &children {
+        state.open_children.insert(child.clone()).await?;
+    }
     let wait = || TurnStep {
-        reserved_children: 0,
         checkpoint: Some(b"waiting".to_vec()),
         outs: Vec::new(),
         wait: Wait::Until(Until::quorum(children.clone(), 2).within(Some(1_000))),
         drops: None,
     };
     let done = || TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
