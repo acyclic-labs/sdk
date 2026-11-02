@@ -53,6 +53,84 @@ impl<'a, A, O> Manifest<'a, A, O> {
     pub fn sources(&self) -> impl DoubleEndedIterator<Item = (&'static str, &'a Generation<A, O>)> {
         super::ORDER.into_iter().zip(self.generations)
     }
+
+    /// Resolves evaluator imports against this exact cut, using the caller's
+    /// original operation and byte bound. This creates no reader, follower or
+    /// work root; source reads retain their original filesystem byte owners.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn tree<'m, 'io>(
+        &'m self,
+        io: &'io crate::filesystem::PreparationIo,
+        maximum_bytes: u64,
+    ) -> ManifestTree<'m, 'a, 'io, A, O> {
+        ManifestTree {
+            manifest: self,
+            io,
+            maximum_bytes,
+        }
+    }
+}
+
+/// The evaluator's import adapter over one retained manifest. The same view is
+/// shared by settings, policies and enabled plugin modules. `sys/` comes only
+/// from the seed; other paths replace from the highest layer, including `off`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ManifestTree<'m, 'g, 'io, A: 'static, O: 'static> {
+    manifest: &'m Manifest<'g, A, O>,
+    io: &'io crate::filesystem::PreparationIo,
+    maximum_bytes: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    crate::config::Tree for ManifestTree<'_, '_, '_, A, O>
+{
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>> {
+        Box::pin(async move {
+            use crate::store::history::HistoryIo as _;
+            // The evaluator uses relative module names; the filesystem uses
+            // absolute portable paths. Fund and copy that one boundary spelling
+            // once, then borrow it for every layer lookup.
+            let absolute = {
+                let mut text = String::new();
+                let bytes = path
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| self.io.invalid("module path size overflows"))?;
+                let mut work = self.io.history_io();
+                work.admit_copy(bytes as u64)?;
+                work.reserve_text(&mut text, bytes)?;
+                text.push('/');
+                text.push_str(path);
+                work.copy_bytes(bytes as u64)?;
+                let hold = self.io.guard_owned(text.capacity() as u64)?;
+                (text, hold)
+            };
+            for (name, generation) in self.manifest.sources().rev() {
+                if !super::layered(path) && name != super::SEED {
+                    continue;
+                }
+                match self.io.sdk(
+                    generation
+                        .read(
+                            &absolute.0,
+                            self.maximum_bytes,
+                            self.io,
+                            self.io.cancellation(),
+                        )
+                        .await,
+                ) {
+                    Ok(bytes) => return Ok((!super::is_off(&bytes)).then_some(bytes)),
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(None)
+        })
+    }
 }
 
 /// A refused manifest condition retains the original commit and all its
