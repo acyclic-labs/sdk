@@ -34,17 +34,20 @@ pub fn check(input: &[u8]) {
         });
     }
     let headers = RecordHeaders::new(Vec::new(), attributes).expect("distinct sorted attributes");
-    check_record(&Record {
-        sequence: u64::from(tag & 32 != 0),
-        value: value.into(),
-        commit_id: CommitId::from_bytes([1; 32]),
-        committed_at_micros: 0,
-        headers,
-        origin: StreamPath::new("generated/call").expect("generated path"),
-    });
+    check_record(
+        &Record {
+            sequence: u64::from(tag & 32 != 0),
+            value: value.into(),
+            commit_id: CommitId::from_bytes([1; 32]),
+            committed_at_micros: 0,
+            headers,
+            origin: StreamPath::new("generated/call").expect("generated path"),
+        },
+        &Journal::default(),
+    );
 }
 
-pub(super) fn check_record(original: &Record) {
+pub(crate) fn check_record(original: &Record, before: &Journal) {
     if let Ok(entry) = Entry::decode(original) {
         let (kind, value, fence) = match &entry {
             Entry::Request(value) => (b"request".as_slice(), value.clone(), None),
@@ -66,10 +69,12 @@ pub(super) fn check_record(original: &Record) {
         roundtrip.headers = encoded.headers;
         assert_eq!(Entry::decode(&roundtrip).expect("entry roundtrip"), entry);
     }
-    let mut reader = Journal::default();
-    let before = reader.clone();
+    let mut reader = before.clone();
     if reader.apply(original).is_err() {
-        assert_eq!(reader, before, "refused record changed the original reader");
+        assert_eq!(
+            &reader, before,
+            "refused record changed the original reader"
+        );
     }
 }
 

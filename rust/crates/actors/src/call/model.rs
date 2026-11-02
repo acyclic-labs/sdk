@@ -275,7 +275,7 @@ impl Model {
 
     async fn check(&mut self, hop: Hop) -> Result<(), String> {
         for record in self.records(self.call.log(), self.journal.next()).await? {
-            super::codec_fuzz::check_record(&record);
+            super::codec_fuzz::check_record(&record, &self.journal);
             match self
                 .journal
                 .apply(&record)
@@ -304,6 +304,7 @@ impl Model {
                 return Err("original lost-session recovery did not settle".into());
             }
             for record in self.records(self.call.log(), self.journal.next()).await? {
+                super::codec_fuzz::check_record(&record, &self.journal);
                 if matches!(
                     self.journal
                         .apply(&record)
@@ -633,6 +634,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     terminal_sessions().await?;
     terminal_reasons().await?;
     claim_recovery().await?;
+    source_bound_claims().await?;
     // Preserve the owning acceptance control: only its settled guard is
     // removed from the original requestless, already cancelled call.
     let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
@@ -767,6 +769,88 @@ async fn claim_recovery() -> Result<(), String> {
             "negative control did not remove the required guard"
         );
     }
+    Ok(())
+}
+
+/// A commit identity covers every publication in its batch. It cannot replace
+/// the original destination when two different executor sessions share it.
+#[cfg(test)]
+async fn source_bound_claims() -> Result<(), String> {
+    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+    let sibling = CallPath::new(&StreamPath::new("caller").map_err(|e| e.to_string())?, "c2")
+        .map_err(|e| e.to_string())?;
+    let live_fence = StreamPath::new("other/sessions/1/ended").map_err(|e| e.to_string())?;
+    for accept in [false, true] {
+        let mut joined = Commit {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+        };
+        for (call, fence) in [(&model.call, &model.fence), (&sibling, &live_fence)] {
+            let step = if accept {
+                call.accept(
+                    &Accepted {
+                        executor: OwnedBytes::from("executor"),
+                        fence: Some(fence.clone()),
+                    },
+                    true,
+                )
+            } else {
+                call.request(OwnedBytes::from("run"), crate::escrow::Escrow::new(Some(1)))
+            }
+            .map_err(|e| e.to_string())?;
+            joined.conditions.extend(step.conditions);
+            joined.mutations.extend(step.mutations);
+        }
+        assert!(model.publish(joined).await?);
+    }
+    let original = model.records(model.call.log(), 0).await?;
+    let other = model.records(sibling.log(), 0).await?;
+    assert_eq!(original.len(), 3);
+    assert_eq!(other.len(), 3);
+    assert_eq!(original[2].commit_id, other[2].commit_id);
+    let mut journal = Journal::default();
+    for record in &original[..2] {
+        journal.apply(record).map_err(|e| e.to_string())?;
+    }
+    let before = journal.clone();
+    super::codec_fuzz::check_record(&other[2], &journal);
+    assert!(journal.apply(&other[2]).is_err());
+    assert_eq!(journal, before, "foreign source changed the reader");
+    journal.apply(&original[2]).map_err(|e| e.to_string())?;
+    assert!(journal.recover(&sibling, "lost").is_err());
+    assert!(
+        model
+            .publish(Commit {
+                conditions: Vec::new(),
+                mutations: vec![append(&model.fence, AppendRecord::from("ended"))],
+            })
+            .await?
+    );
+    assert_eq!(model.tail(&live_fence).await?, 0);
+    let recovery = journal
+        .recover(&model.call, "lost")
+        .map_err(|e| e.to_string())?
+        .ok_or("missing original recovery")?;
+    assert!(model.publish(recovery).await?);
+    let mut settled = journal.clone();
+    for record in model.records(model.call.log(), settled.next()).await? {
+        settled.apply(&record).map_err(|e| e.to_string())?;
+    }
+    assert!(settled.receipt_ref(model.call.log()).is_some());
+    assert!(settled.receipt_ref(sibling.log()).is_none());
+    assert_eq!(model.tail(sibling.settled()).await?, 0);
+
+    // Negative control discards the retained source binding. Both acceptance
+    // heads still carry the same genuine commit, so the original recovery
+    // guards alone would end the sibling whose own session is still live.
+    journal.origin = Some(sibling.log().clone());
+    let wrong = journal
+        .recover(&sibling, "lost")
+        .map_err(|e| e.to_string())?
+        .ok_or("missing negative control")?;
+    assert!(model.publish(wrong).await?);
+    assert_eq!(model.tail(sibling.settled()).await?, 1);
+    assert_eq!(model.tail(&live_fence).await?, 0);
     Ok(())
 }
 

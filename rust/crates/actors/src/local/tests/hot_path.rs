@@ -689,6 +689,170 @@ async fn physical_loss(fail_at: usize) -> TestResult {
     Ok(())
 }
 
+/// Lose the real durable acceptance reply, then cut the original recovery at
+/// each physical boundary. Retrying retains those publications, never a Run.
+#[tokio::test]
+async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
+    use crate::call::{Accepted, CallPath, Journal, Outcome};
+    use acyclic_stream::{AppendRecord, AppendRequest, CommitOutcome, OwnedBytes};
+
+    async fn read_call(
+        provider: &LocalStream,
+        call: &CallPath,
+        tail: u32,
+    ) -> Result<Journal, Box<dyn std::error::Error>> {
+        let mut journal = Journal::default();
+        let mut records = provider
+            .read(ReadRequest {
+                path: call.log().clone(),
+                from: 0,
+                limit: tail,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        while let Some(record) = records.try_next().await? {
+            crate::call::codec_fuzz::check_record(&record, &journal);
+            journal.apply(&record)?;
+        }
+        assert_eq!(journal.next(), u64::from(tail));
+        Ok(journal)
+    }
+
+    for fail_at in 0..3 {
+        let directory = tempfile::tempdir()?;
+        let call = CallPath::new(&StreamPath::new("caller")?, "original")?;
+        let fence = StreamPath::new("executor/session/ended")?;
+        let hold = crate::escrow::Escrow::new(Some(2));
+        let acceptance = call
+            .accept(
+                &Accepted {
+                    executor: OwnedBytes::from("executor"),
+                    fence: Some(fence.clone()),
+                },
+                true,
+            )?
+            .request(key("physical-call/accept")?);
+        let cut = Arc::new(PhysicalCut::new(Some(2)));
+        {
+            let provider = LocalStream::open(directory.path(), Default::default()).await?;
+            assert!(matches!(
+                provider
+                    .commit(
+                        call.request(OwnedBytes::from("run"), hold)?
+                            .request(key("physical-call/request")?),
+                    )
+                    .await?,
+                CommitOutcome::Committed(_)
+            ));
+            provider.cut_persistence(cut.clone());
+            assert!(matches!(
+                provider.commit(acceptance.clone()).await,
+                Err(StreamError::Unavailable)
+            ));
+            assert_eq!(cut.crashes.load(Ordering::SeqCst), 1);
+        }
+        let recovery;
+        let original_acceptance;
+        {
+            let provider = LocalStream::open(directory.path(), Default::default()).await?;
+            let accepted = provider.head(call.accepted().clone()).await?;
+            assert_eq!(accepted.tail, 1);
+            let accepted_commit = accepted
+                .last
+                .ok_or("missing original acceptance marker")?
+                .commit_id;
+            original_acceptance = provider.commit(acceptance.clone()).await?;
+            assert!(matches!(
+                &original_acceptance,
+                CommitOutcome::Committed(receipt) if receipt.commit_id == accepted_commit
+            ));
+            // Negative control: changing the retry identity cannot borrow the
+            // accepted receipt, while the session and call are still open.
+            let mut rival = acceptance.clone();
+            rival.idempotency_key = key("physical-call/rival")?;
+            assert!(matches!(
+                provider.commit(rival).await?,
+                CommitOutcome::Conflict(_)
+            ));
+            assert_eq!(provider.head(call.log().clone()).await?.tail, 3);
+            let journal = read_call(&provider, &call, 3).await?;
+            assert_eq!(journal.hold(), Some(hold));
+            assert!(journal.receipt(call.log()).is_none());
+            recovery = journal
+                .recover(&call, "executor lost")?
+                .ok_or("missing original recovery")?
+                .request(key("physical-call/recovery")?);
+            provider
+                .append(AppendRequest {
+                    path: fence.clone(),
+                    records: vec![AppendRecord::from("ended")],
+                    if_tail: Some(0),
+                    idempotency_key: key("physical-call/session-end")?,
+                })
+                .await?;
+            let cut = Arc::new(PhysicalCut::new(Some(fail_at)));
+            provider.cut_persistence(cut.clone());
+            assert!(matches!(
+                provider.commit(recovery.clone()).await,
+                Err(StreamError::Unavailable)
+            ));
+            assert_eq!(cut.crashes.load(Ordering::SeqCst), 1);
+        }
+        let provider = LocalStream::open(directory.path(), Default::default()).await?;
+        let retained_terminal = match provider.head(call.settled().clone()).await {
+            Ok(head) => Some(
+                head.last
+                    .ok_or("missing original terminal marker")?
+                    .commit_id,
+            ),
+            Err(StreamError::NotFound) => None,
+            Err(error) => return Err(error.into()),
+        };
+        assert_eq!(retained_terminal.is_some(), fail_at == 2);
+        let settled = provider.commit(recovery.clone()).await?;
+        let CommitOutcome::Committed(receipt) = &settled else {
+            return Err("original recovery did not commit".into());
+        };
+        if let Some(original) = retained_terminal {
+            assert_eq!(
+                receipt.commit_id, original,
+                "lost reply changed the terminal"
+            );
+        }
+        assert_eq!(provider.commit(recovery).await?, settled);
+        assert_eq!(
+            provider.commit(acceptance.clone()).await?,
+            original_acceptance
+        );
+        assert!(matches!(
+            provider
+                .commit(
+                    call.chunk(Some(&fence), OwnedBytes::from("late"))?
+                        .request(key("physical-call/late")?),
+                )
+                .await?,
+            CommitOutcome::Conflict(_)
+        ));
+        let journal = read_call(&provider, &call, 4).await?;
+        let terminal = journal
+            .receipt(call.log())
+            .ok_or("missing durable terminal")?;
+        assert_eq!(terminal.terminal.commit_id, receipt.commit_id);
+        assert!(matches!(terminal.outcome, Outcome::Indeterminate(_)));
+        assert_eq!(
+            journal.hold(),
+            Some(hold),
+            "recovery refunded its original hold"
+        );
+        assert!(journal.recover(&call, "again")?.is_none());
+        assert_eq!(provider.head(call.log().clone()).await?.tail, 4);
+        assert_eq!(provider.head(call.accepted().clone()).await?.tail, 1);
+        assert_eq!(provider.head(call.settled().clone()).await?.tail, 1);
+    }
+    Ok(())
+}
+
 async fn resident_work() -> TestResult {
     for population in [1_usize, 100_000] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
