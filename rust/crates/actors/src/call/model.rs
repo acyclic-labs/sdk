@@ -15,7 +15,7 @@ use acyclic_stream::{
     CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
     StreamProviderExt as _,
 };
-use futures::{FutureExt as _, StreamExt as _};
+use futures::StreamExt as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hop {
@@ -240,18 +240,13 @@ impl Model {
             .await
             .map_err(|error| error.to_string())?;
         if self.fault == Fault::Producer {
-            // Withdraw the original delivery source after its commit; the
-            // common progress oracle must refuse rather than await forever.
-            follow = Box::pin(futures::stream::pending());
+            // Close the original delivery source after its commit. Its
+            // receiver must return a typed refusal rather than wait forever.
+            follow = Box::pin(follow.take(0));
         }
         let mut records = Vec::new();
         while from + (records.len() as u64) < tail {
-            match follow
-                .next()
-                .now_or_never()
-                .ok_or("committed record has no ready delivery producer")?
-                .ok_or("follow ended")?
-            {
+            match follow.next().await.ok_or("follow ended")? {
                 Ok(FollowUpdate::Record(record)) => records.push(record),
                 Ok(_) => {}
                 Err(error) => return Err(error.to_string()),
