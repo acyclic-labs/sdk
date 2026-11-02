@@ -204,7 +204,7 @@
         },
         "run_in_background": {
           "type": "boolean",
-          "description": "Background execution is unavailable. Omit this field or set it to false."
+          "description": "Return the call identity without awaiting its terminal result. Use the background-tasks skill to observe or cancel the call."
         },
         "dangerouslyDisableSandbox": {
           "type": "boolean",

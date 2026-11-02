@@ -41,7 +41,9 @@ no default line, per-line character or whole-file byte ceiling.
 
 Command descriptions retain the native argument shapes while stating the
 supported lifetime and policy contract: omission is unbounded, background
-handoff is unavailable, and arguments cannot override host process policy.
+execution uses the shared non-awaited call, and arguments cannot override host
+process policy. The shared background-tasks seed skill covers observation,
+dependent joins and cancellation without duplicating that workflow per family.
 The Claude upstream fixed timeout ceilings and background defaults are not
 adopted. Gemini command source uses the selected workspace's native shell;
 its upstream process-group/PID presentation is not advertised by this profile.

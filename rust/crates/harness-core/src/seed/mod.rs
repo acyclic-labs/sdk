@@ -68,6 +68,7 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("plugins/spawn/topologies/search-derived.md"),
     seed_file!("plugins/spawn/topologies/service.md"),
     skill!("advisor-consultation"),
+    skill!("background-tasks"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
     skill!("debugging"),
