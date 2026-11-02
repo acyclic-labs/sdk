@@ -3,9 +3,14 @@
 use super::*;
 use crate::local::{LocalHarness, LocalHarnessConfig};
 use acyclic_native_runtime::ProcessStdio;
+use notify::Watcher;
 use std::{fs, sync::Arc};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn failed(step: &str, cause: impl std::fmt::Display) -> Box<dyn std::error::Error> {
+    format!("step={step}: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests").into()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_exited_session_settles_with_an_external_stderr_writer() -> Result {
@@ -24,8 +29,51 @@ async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
     served("codex", follow_up).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Result {
+    served("codex", |host, cwd| {
+        let (mut sessions, _) = children(host, cwd, "closed-pid")?;
+        let (mut running, view) = claim(
+            &mut sessions,
+            cwd,
+            "closed",
+            SessionAction::Spawn {
+                prompt: "closed producer".into(),
+            },
+        )?;
+        let mut command = native_fixture(&view, "", "0");
+        running
+            .process
+            .spawn(&mut command, running.claim.operation)?;
+        let pid = shell_pid(&mut running)?;
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{pid}/fd/1"))?;
+        running.process.queue_stdin(b"exit\n".to_vec())?;
+        assert!(
+            running.process.pump_stdin()?,
+            "the empty pipe accepts five bytes"
+        );
+        let error = shell_pid(&mut running).expect_err("an exited producer has no next PID");
+        assert!(
+            error
+                .to_string()
+                .contains("read native fixture PID: process exited before PID")
+        );
+        assert!(
+            running.process.read_stdout(&mut [0])?.is_none(),
+            "the external writer withholds stdout EOF"
+        );
+        wait_exit(&mut running)?;
+        assert!(sessions.refresh("closed", &mut running)?.is_some());
+        drop(writer);
+        Ok(())
+    })
+    .await
+}
+
 /// Runs `body` against a live workspace server for `host`.
-async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
+async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -33,18 +81,38 @@ async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
         LocalHarness::open(LocalHarnessConfig::native_host(&cwd).state_directory(state.path()))
             .await?,
     );
+    let owner_directory = cwd.join(".acyclic-sdk/host-files");
+    fs::create_dir_all(&owner_directory)?;
+    let (changed, mut changes) = tokio::sync::mpsc::channel(1);
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if !matches!(&event, Ok(event) if event.kind.is_access()
+            || !event.paths.iter().any(|path| path.file_name().is_some_and(|name| name == "owner.json")))
+        {
+            let _ = changed.try_send(event);
+        }
+    })?;
+    watcher.watch(&owner_directory, notify::RecursiveMode::NonRecursive)?;
     let server_local = Arc::clone(&local);
-    let server = tokio::spawn(async move { host_files::serve(server_local).await });
-    while !cwd.join(".acyclic-sdk/host-files/owner.json").is_file() {
-        assert!(
-            !server.is_finished(),
-            "fixture workspace server exited before admission"
-        );
-        tokio::task::yield_now().await;
-    }
-    let result = body(host, &cwd, state.path());
+    let mut server = tokio::spawn(async move { host_files::serve(server_local).await });
+    let result = async {
+        while !owner_directory.join("owner.json").is_file() {
+            tokio::select! {
+                result = &mut server => return Err(failed(
+                    "start native child workspace", format!("owner ended: {result:?}")
+                )),
+                event = changes.recv() => match event {
+                    Some(event) => { event.map_err(|cause| failed("watch native child workspace", cause))?; }
+                    None => return Err(failed("start native child workspace", "notification producer closed")),
+                },
+            }
+        }
+        drop(watcher);
+        body(host, &cwd)
+    }.await;
     server.abort();
-    let _ = server.await;
+    if !server.is_finished() {
+        let _ = server.await;
+    }
     Arc::try_unwrap(local)
         .map_err(|_| "fixture retained host server")?
         .disconnect()
@@ -117,7 +185,7 @@ fn claim(
 /// An idle child's view is released once its turn settles with nothing
 /// queued; a follow-up mounts it again, and its turn runs and settles under
 /// the child's original receipt.
-fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
+fn follow_up(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "follow-up")?;
     let prompts = [
         SessionAction::Spawn {
@@ -139,12 +207,10 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
             .stderr(ProcessStdio::piped());
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
-        let completed = loop {
-            if let Some(completed) = sessions.refresh("idle", &mut running)? {
-                break completed;
-            }
-            std::thread::yield_now();
-        };
+        wait_exit(&mut running)?;
+        let completed = sessions
+            .refresh("idle", &mut running)?
+            .ok_or_else(|| failed("settle idle child", "exited turn did not settle"))?;
         assert!(completed["next"].is_null(), "turn {turn} queued nothing");
         assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
         let results = completed["results"]
@@ -169,7 +235,64 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
     Ok(())
 }
 
-fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
+/// Drain actual output before parking on the original process-event producer.
+/// Direct-child exit owns this wait; another stderr writer cannot delay it.
+fn wait_exit(running: &mut Running) -> Result {
+    running.process.take_output_progress();
+    loop {
+        running.process.pump_stdin()?;
+        output(running)?;
+        if running.process.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if !running.process.take_output_progress() {
+            futures::executor::block_on(running.process.readiness()?).into_result()?;
+        }
+    }
+}
+
+/// Read the real shell's PID before releasing its stdin gate. EOF is a
+/// terminal refusal rather than a missing file to keep checking.
+fn shell_pid(running: &mut Running) -> Result<u32> {
+    let mut digits = [0; 11];
+    let mut length = 0;
+    loop {
+        match running.process.read_stdout(&mut digits[length..])? {
+            Some(count) if count > 0 => {
+                length += count;
+                if digits[length - 1] == b'\n' {
+                    return std::str::from_utf8(&digits[..length - 1])
+                        .ok()
+                        .and_then(|pid| pid.parse().ok())
+                        .ok_or_else(|| failed("read native fixture PID", "invalid PID"));
+                }
+                if length == digits.len() {
+                    return Err(failed("read native fixture PID", "unterminated PID"));
+                }
+            }
+            None => {
+                running.process.drain_stderr()?;
+                if running.process.try_wait()?.is_some() {
+                    return Err(failed(
+                        "read native fixture PID",
+                        "process exited before PID",
+                    ));
+                }
+                futures::executor::block_on(running.process.readiness()?).into_result()?;
+            }
+            _ => return Err(failed("read native fixture PID", "closed producer")),
+        }
+    }
+}
+
+fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
+    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+        .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
+    command
+}
+
+fn exercise(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "held-stderr")?;
     let (mut running, view) = claim(
         &mut sessions,
@@ -192,31 +315,16 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
     } else {
         ("", "17")
     };
-    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-    command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf '%s' \"$2\"; printf native-diagnostic >&2; exit \"$3\"", "fixture"])
-        .arg(state).arg(events).arg(exit).current_dir(&view).stdin(ProcessStdio::null()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
+    let mut command = native_fixture(&view, events, exit);
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
-    let pid = loop {
-        if let Ok(pid) = fs::read_to_string(state.join("pid"))
-            && let Ok(pid) = pid.trim().parse::<u32>()
-        {
-            break pid;
-        }
-        assert!(
-            running.process.try_wait()?.is_none(),
-            "fixture exited before exporting its pipe"
-        );
-        std::thread::yield_now();
-    };
+    let pid = shell_pid(&mut running)?;
     // A real duplicate writer held by this test process, outside child custody.
     let writer = fs::OpenOptions::new()
         .write(true)
         .open(format!("/proc/{pid}/fd/2"))?;
-    fs::write(state.join("exit"), b"exit")?;
-    while running.process.try_wait()?.is_none() {
-        std::thread::yield_now();
-    }
+    running.process.queue_stdin(b"exit\n".to_vec())?;
+    wait_exit(&mut running)?;
     assert!(
         !running.process.drain_stderr()?,
         "negative input must withhold stderr EOF"
