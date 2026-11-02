@@ -4,9 +4,7 @@
 use super::{Result, create, driver::file, id, intent, user};
 use acyclic_harness_core::agent::*;
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, StreamProvider,
-};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream};
 
 fn message(name: &str) -> Result<TurnInput> {
     Ok(TurnInput::Message {
