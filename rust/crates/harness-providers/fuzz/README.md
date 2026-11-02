@@ -27,6 +27,12 @@ text, tool invocation and the result continuation; they do not qualify other
 provider endpoints. Other existing corpus entries are not claimed as real
 provider captures by this table.
 
+The Flash shell and answer seeds use selector byte `03` followed by the exact
+captured Gemini response bodies. Their capture provenance is retained beside
+the original fixtures in `src/fixtures/gemini-flash-provenance.md`. The same
+inputs also reach the production local host's shell and durable continuation
+control; decoder chunk invariance alone cannot establish host continuity.
+
 The existing `checked_in_stream_corpus_obeys_the_properties` control replays
 all three recorded SSE bodies through the real Chat adapter and chunk-invariance
 oracle. Each must also decode successfully, so equal refusals cannot qualify a

@@ -31,6 +31,9 @@ rust/crates/harness-fuzz/corpus/** binary
 scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
 
 # Provider captures are original wire bytes, including their original newlines.
+rust/crates/harness-providers/src/fixtures/*.sse binary
+rust/crates/harness-providers/src/fixtures/*.body binary
+rust/crates/harness-providers/src/fixtures/gemini-flash-count.json binary
 rust/crates/conformance/fixtures/inference/**/*.body binary
 rust/crates/conformance/fixtures/inference/**/*.headers.txt binary
 rust/crates/conformance/fixtures/inference/**/*.request.json -text

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const CALL: &[u8] = include_bytes!("fixtures/gemini-flash-shell.sse");
 const ANSWER: &[u8] = include_bytes!("fixtures/gemini-flash-answer.sse");
 const COUNT: &[u8] = include_bytes!("fixtures/gemini-flash-count.json");
+const MISSING_SIGNATURE: &[u8] = include_bytes!("fixtures/gemini-flash-missing-signature.body");
 const PROMPT: &str = "Use the shell tool to create shell.txt containing exactly the UTF-8 bytes LIVE_dd7e4549fdec4891b0cc299b265e9be8, with no newline or other bytes, then reply DONE.";
 
 struct Recorded {
@@ -21,18 +22,25 @@ struct Recorded {
 }
 
 impl Recorded {
-    fn body(&self, request: HttpRequest) -> Bytes {
+    fn body(&self, request: HttpRequest) -> (u16, Bytes) {
         assert!(request.headers.keys().all(|key| !matches!(
             key.as_str(),
             "authorization" | "x-api-key" | "x-goog-api-key"
         )));
         if request.url.contains(":countTokens") {
-            return Bytes::from_static(COUNT);
+            return (200, Bytes::from_static(COUNT));
         }
         let mut requests = self.requests.lock().unwrap();
         let first = requests.is_empty();
+        let missing = !first
+            && signed_part(&request.body)
+                .is_none_or(|part| part["thoughtSignature"].as_str().is_none());
         requests.push(request.body);
-        Bytes::from_static(if first { CALL } else { ANSWER })
+        if missing {
+            (400, Bytes::from_static(MISSING_SIGNATURE))
+        } else {
+            (200, Bytes::from_static(if first { CALL } else { ANSWER }))
+        }
     }
 }
 
@@ -55,11 +63,16 @@ impl HttpTransport for Recorded {
 
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            assert!(
+                request.url.contains(":countTokens"),
+                "host generation must use its funded native path"
+            );
+            let (status, body) = self.body(request);
             Ok(HttpResponse {
-                status: 200,
+                status,
                 request_id: None,
                 retry_after: None,
-                body: Box::pin(futures::stream::iter([Ok(self.body(request))])),
+                body: Box::pin(futures::stream::iter([Ok(body)])),
             })
         })
     }
@@ -75,21 +88,35 @@ impl HttpTransport for Recorded {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
         acyclic_harness_core::NativeFutureBundle::new(work, || async move {
-            self.native.fetch_add(1, Ordering::SeqCst);
-            HttpResponse::with_native_body(
-                200,
-                futures::stream::iter([Ok(self.body(request))]),
-                work,
-            )
+            if !request.url.contains(":countTokens") {
+                self.native.fetch_add(1, Ordering::SeqCst);
+            }
+            let (status, body) = self.body(request);
+            HttpResponse::with_native_body(status, futures::stream::iter([Ok(body)]), work)
         })
     }
 }
 
 fn resolve(transport: Arc<Recorded>, route: &str) -> Result<ResolvedModel> {
+    resolve_with(transport, route, |_| {})
+}
+
+fn resolve_with(
+    transport: Arc<Recorded>,
+    route: &str,
+    configure: impl FnOnce(&mut ProviderSpec),
+) -> Result<ResolvedModel> {
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
-    let mut spec = crate::default_catalog()["gemini"].clone();
-    spec.authentication = Authentication::Optional;
+    let catalog = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        catalog.path(),
+        include_bytes!("fixtures/gemini-flash-catalog.json"),
+    )
+    .unwrap();
+    registry.load_catalog(catalog.path())?;
+    let mut spec = registry.catalog()["gemini"].as_ref().clone();
     spec.base_url = route.into();
+    configure(&mut spec);
     registry.register("gemini".into(), spec)?;
     registry.resolve("gemini/gemini-3.8-flash")
 }
@@ -107,6 +134,12 @@ fn signed_part(body: &[u8]) -> Option<Value> {
 
 #[tokio::test]
 async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> {
+    for seed in [
+        include_bytes!("../fuzz/corpus/provider_stream/gemini-flash-shell").as_slice(),
+        include_bytes!("../fuzz/corpus/provider_stream/gemini-flash-answer").as_slice(),
+    ] {
+        crate::fuzzing::assert_stream_invariants(seed);
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("project");
     std::fs::create_dir(&workspace).unwrap();
@@ -147,7 +180,7 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
     assert_eq!(original["thoughtSignature"].as_str().unwrap().len(), 960);
     let continuation = transport.requests.lock().unwrap()[1].clone();
     assert_eq!(signed_part(&continuation), Some(original.clone()));
-    assert!(transport.native.load(Ordering::SeqCst) >= 2);
+    assert_eq!(transport.native.load(Ordering::SeqCst), 2);
     assert_eq!(
         std::fs::read(workspace.join("shell.txt")).unwrap(),
         b"LIVE_dd7e4549fdec4891b0cc299b265e9be8"
@@ -161,6 +194,7 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
     ));
     let reopened = transport.requests.lock().unwrap()[2].clone();
     assert_eq!(signed_part(&reopened), Some(original));
+    assert_eq!(transport.native.load(Ordering::SeqCst), 3);
     Arc::try_unwrap(harness).ok().unwrap().disconnect().await?;
 
     // Unknown origins, changed route bindings and authenticated accounts may
@@ -173,6 +207,28 @@ async fn anonymous_signed_calls_survive_native_shell_and_reopen() -> Result<()> 
         Some(native.continuity.as_slice())
     );
     assert!(crate::project_native(Some(&native), &target(&changed)).is_none());
+    let changed_headers = resolve_with(transport.clone(), route, |spec| {
+        spec.headers.insert("x-route-revision".into(), "2".into());
+    })?;
+    assert!(crate::project_native(Some(&native), &target(&changed_headers)).is_none());
+    assert!(
+        resolve_with(transport.clone(), route, |spec| {
+            spec.authentication = Authentication::ApiKey;
+        })
+        .is_err()
+    );
+    // Every protocol uses the same admitted owner, without a second renderer
+    // or adapter-specific exception for the captured Gemini signature.
+    for adapter in [Adapter::Anthropic, Adapter::Responses, Adapter::Chat] {
+        let provider = resolve_with(transport.clone(), route, |spec| {
+            spec.adapter = adapter;
+            spec.token_counter = None;
+        })?;
+        let origin = target(&provider);
+        assert!(origin.credential_scope.is_some());
+        assert_ne!(origin.credential_scope, native.origin.credential_scope);
+        assert!(crate::project_native(Some(&native), &origin).is_none());
+    }
     let unknown = NativePart {
         origin: acyclic_harness_core::model::ReasoningOrigin {
             credential_scope: None,
