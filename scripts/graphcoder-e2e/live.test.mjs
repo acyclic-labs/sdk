@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
-import { answer, requireTools } from "./live.mjs";
+import { answer, requireTools, runCase } from "./live.mjs";
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
   const result = stdout => ({ code: 0, signal: null, stdout, stderr: "" });
@@ -86,6 +86,24 @@ test("a real command must publish exact bytes and a successful shell status", as
     for (let index = 0; index < 6; index++)
       await assert.rejects(fileBytes(path + index, "EXPECTED_BYTES"), { code: "ERR_ASSERTION" });
     await assert.rejects(fileBytes(path + "missing", "EXPECTED_BYTES"), { code: "ENOENT" });
+    // A real filesystem refusal must remain a preparation failure, with no
+    // executable admitted and no invented product-latency sample.
+    const refused = await runCase(process.execPath, root, path, "session", new AbortController().signal);
+    assert.equal(refused.status, "fail");
+    assert.ok(["ENOTDIR", "EEXIST"].includes(refused.code), refused.error);
+    assert.equal(refused.phase, "preparation");
+    assert.equal(refused.seconds, undefined);
+    assert.deepEqual(refused.captures, []);
+    assert.equal(refused.phases.at(-1).phase, "retired");
+    assert.equal(refused.phases.at(-1).outcome, "completed");
+    assert.ok(!refused.phases.some(phase => phase.phase === "admitted" || phase.phase === "run"));
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("cancelled before preparation"));
+    const stopped = await runCase(process.execPath, root, root, "session", cancelled.signal);
+    assert.match(stopped.error, /cancelled before preparation/);
+    assert.deepEqual(stopped.phases.map(phase => [phase.phase, phase.outcome]),
+      [["retired", "entered"], ["retired", "completed"]]);
+    assert.deepEqual(stopped.captures, []);
     // Original OS completion supplies these SDK ToolResult fields; the two
     // mutations require each status field to reject failure independently.
     const status = { success: result.code === 0, exit_code: result.code, stop: null };

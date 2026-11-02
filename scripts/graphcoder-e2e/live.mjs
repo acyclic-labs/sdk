@@ -57,25 +57,14 @@ export function requireTools(hooks, names, expectedChildResult) {
   if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
 }
 
-async function runCase(binary, login, root, name, signal) {
-  signal.throwIfAborted();
+export async function runCase(binary, login, root, name, signal) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
-  await mkdir(workspace, { recursive: true });
   const settings = join(directory, "settings");
-  const env = environment(settings);
-  // Explicitly authorized existing login, after shared fixture isolation and
-  // provider-key stripping. Neither the HOME nor the rest of the profile moves.
-  env.CODEX_HOME = login;
   const hookFile = join(workspace, "hooks.jsonl");
-  const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
-  const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
-  await mkdir(join(settings, ".claude"), { recursive: true });
-  await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: Object.fromEntries(
-    ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].map(event => [event, [{ hooks: [{ type: "command", command }] }]])) }));
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
-  let step = "invoke shipping GraphCoder", childHooks;
+  let step = "prepare workspace and isolated settings", env, childHooks, begin;
   const invoke = async (prompt, format = "text") => {
     const args = ["--workspace", workspace, "--settings-root", settings,
       "--model", "openai/gpt-6-luna", "--operation", operation,
@@ -97,9 +86,22 @@ async function runCase(binary, login, root, name, signal) {
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
   };
-  const begin = performance.now(), phases = [];
+  const phases = [];
+  const prepare = async () => {
+    await mkdir(workspace, { recursive: true });
+    env = environment(settings);
+    // Reuse only the admitted login path after stripping provider keys.
+    env.CODEX_HOME = login;
+    const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
+    const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
+    await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: Object.fromEntries(
+      ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].map(event => [event, [{ hooks: [{ type: "command", command }] }]])) }));
+  };
   try {
-    const receipt = await withOwnedCase({ processes, signal, onPhase: phase => phases.push(phase), run: async () => {
+    const receipt = await withOwnedCase({ processes, signal, origin: setupBegin, prepare,
+      onPhase: phase => phases.push(phase), run: async () => {
+      begin = performance.now();
+      step = "invoke shipping GraphCoder";
       if (name === "session") {
         const text = await invoke(`Reply with exactly ${marker}. Do not use tools.`);
         step = "assert session answer";
@@ -139,10 +141,13 @@ async function runCase(binary, login, root, name, signal) {
     } });
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
     return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds,
-      setup_seconds: (begin - setupBegin) / 1000, phases, captures, hooks: childHooks };
+      setup_seconds: receipt.preparation_seconds, total_seconds: receipt.total_seconds, phases, captures, hooks: childHooks };
   } catch (error) {
-    return { case: name, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000,
-      setup_seconds: (begin - setupBegin) / 1000, phases,
+    return { case: name, platform: process.platform, status: "fail", code: error.code,
+      phase: phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run"),
+      ...(begin === undefined ? {} : { seconds: (performance.now() - begin) / 1000 }),
+      setup_seconds: phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
+      total_seconds: (performance.now() - setupBegin) / 1000, phases,
       error: `step=${step}: ${error.message}; recovery=${recovery}`, captures, hooks: childHooks };
   }
 }
