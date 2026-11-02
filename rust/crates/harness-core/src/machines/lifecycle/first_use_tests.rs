@@ -2,10 +2,142 @@ use super::*;
 use crate::test_support::hash_calls;
 use acyclic_machines::*;
 use acyclic_stream::MemoryStream;
+use acyclic_stream::StreamProvider as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::watch;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+// Capture the original MemoryStream envelope, then displace only its position.
+// Opening metadata, payload, commit, source and all writes retain that provider.
+struct DisplacedRead {
+    inner: MemoryStream,
+    position: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl acyclic_stream::StreamProvider for DisplacedRead {
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        self.inner.context()
+    }
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, StreamError> {
+        self.inner.heads(request).await
+    }
+
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+        self.inner.inspect_idempotency(key).await
+    }
+
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> BoxProviderFuture<'_, std::result::Result<acyclic_stream::WriteOutcome, StreamError>> {
+        self.inner.write(request)
+    }
+
+    async fn read(
+        &self,
+        request: ReadRequest,
+    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+        use futures::StreamExt as _;
+        let displace = self.position.load(Ordering::Relaxed) as u64 == request.from;
+        Ok(self.inner.read(request).await?.map_cursor(|cursor| {
+            cursor
+                .map(move |result| {
+                    result.map(|mut record| {
+                        if displace {
+                            record.sequence += 1;
+                        }
+                        record
+                    })
+                })
+                .boxed()
+        }))
+    }
+
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
+    }
+
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for DisplacedRead {}
+
+#[tokio::test]
+async fn original_binding_positions_precede_allocation_and_recovery() -> TestResult {
+    let stream = Arc::new(DisplacedRead {
+        inner: MemoryStream::default(),
+        position: AtomicUsize::new(usize::MAX),
+    });
+    let (_release, ready) = watch::channel(true);
+    let provider = Arc::new(HeldInspection {
+        inner: SimulatedMachines::default(),
+        ready,
+        entered: tokio::sync::Notify::new(),
+        creates: AtomicUsize::new(0),
+        inspections: AtomicUsize::new(0),
+    });
+    let identity = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+    let machines = AgentMachines::new(
+        stream.clone(),
+        vec![ProvisionedTarget {
+            name: "machine".into(),
+            host: MachinesHost::new(provider.clone(), identity.clone())?,
+            artifact: Some(ArtifactRef::new(identity, [1; 32].into(), None)?),
+            network_policy_digest: [2; 32],
+        }],
+    )?;
+    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([93; 16]));
+    let target = machines.target("machine")?;
+    // The production plan and original provider supply every fixture field.
+    machines.plan(&agent, target).await?;
+    let path = agent.machine("machine")?;
+    assert_eq!(stream.inner.tail(path.clone()).await?, 1);
+    stream.position.store(0, Ordering::Relaxed);
+    assert!(
+        matches!(
+            machines.machine(&agent, "machine").await,
+            Err(Error::Storage(_))
+        ),
+        "a displaced provisioning record reached allocation"
+    );
+    assert_eq!(provider.creates.load(Ordering::Relaxed), 0);
+    assert_eq!(stream.inner.tail(path.clone()).await?, 1);
+
+    // Restoring the original envelope completes that same retained plan.
+    stream.position.store(usize::MAX, Ordering::Relaxed);
+    let original = machines.machine(&agent, "machine").await?;
+    assert_eq!(provider.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(stream.inner.tail(path.clone()).await?, 2);
+    stream.position.store(1, Ordering::Relaxed);
+    assert!(matches!(
+        machines.machine(&agent, "machine").await,
+        Err(Error::Storage(_))
+    ));
+    assert_eq!(provider.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(provider.inspections.load(Ordering::Relaxed), 0);
+    assert_eq!(stream.inner.tail(path).await?, 2);
+    stream.position.store(usize::MAX, Ordering::Relaxed);
+    assert_eq!(machines.machine(&agent, "machine").await?, original);
+    Ok(())
+}
 
 // Every operation reaches the real simulator. Only its original inspection
 // response is held, so overlapping first uses are deterministic.
