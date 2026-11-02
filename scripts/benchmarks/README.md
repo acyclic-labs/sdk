@@ -39,7 +39,7 @@ Generate a plan with an explicitly supplied, unauthenticated Responses endpoint:
 ```sh
 python3 -m scripts.benchmarks.plan plan \
   --stage tb2-20 --manifest /path/to/tb2-manifest.json \
-  --binary /path/to/acyclic run --binary-sha256 FULL_BINARY_SHA256 \
+  --binary /path/to/acyclic --binary-sha256 FULL_BINARY_SHA256 \
   --source-sha FULL_QUALIFIED_MAIN_COMMIT \
   --model openai/MODEL --base-url http://EXPLICIT_ENDPOINT/v1 \
   --context-tokens MODEL_CONTEXT_CAPACITY --output-tokens MODEL_OUTPUT_CAPACITY \
