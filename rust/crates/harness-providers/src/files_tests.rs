@@ -439,14 +439,45 @@ proptest! {
         futures::executor::block_on(async {
             let data: String = chars.into_iter().collect();
             for (adapter, _) in fixtures() {
-                let (mut provider, _) = provider(adapter, 200);
+                let (seed, script) = provider(adapter, 200);
+                let mut spec = seed.config.as_ref().clone();
+                spec.models.insert("model".into(), ModelSpec {
+                    tool_profile: None,
+                    thinking_levels: adapter == Adapter::Gemini,
+                    max_context_tokens: None,
+                    capacity: seed.capacity,
+                    features: ModelFeatures { tools: true, images: true },
+                });
+                let mut registry = Registry::with_transport(
+                    Credentials::explicit(BTreeMap::from([("fixture".into(), "scripted-key".into())])),
+                    script.clone(),
+                );
+                registry.register("fixture".into(), spec.clone()).unwrap();
+                let mut provider = registry.resolve("fixture/model").unwrap();
                 let reader = Arc::new(Reader {data:data.as_bytes().to_vec(), reads:AtomicUsize::new(0)});
                 provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
                 let request = with_parts(&provider, vec![ModelContentPart::File {
                     file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
                 }]).unwrap();
                 let prepared = crate::prepared::PreparedInput::new(&provider, request.clone()).await.unwrap();
+                crate::projection::ENCODED_BYTES.with(|total| total.set(0));
                 let count = prepared.count(&provider).await.unwrap();
+                assert_eq!(prepared.count(&provider).await.unwrap(), count);
+                assert_eq!(crate::projection::ENCODED_BYTES.with(std::cell::Cell::get), 0);
+                // Negative control: recomputing the original plan visits immutable message bytes.
+                crate::projection::plan(&provider, &request, 0).unwrap();
+                assert!(crate::projection::ENCODED_BYTES.with(std::cell::Cell::get) > 0);
+                // A new endpoint creates a distinct immutable selection. Retained bytes cannot
+                // be counted against it, even when the provider and model names still match.
+                script.counted.lock().unwrap().take();
+                spec.base_url = "http://127.0.0.1:4321/v1".into();
+                registry.register("fixture".into(), spec).unwrap();
+                let changed = registry.resolve("fixture/model").unwrap();
+                assert_ne!(provider.model.revision, changed.model.revision);
+                assert_eq!(prepared.count(&changed).await.unwrap_err().code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+                assert!(script.counted.lock().unwrap().is_none());
+                assert!(script.sent.lock().unwrap().is_empty());
+                assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
                 // Reusing the retained HTTP bytes for generation performs no file I/O.
                 {
                     let auth = crate::dispatch::authenticate(&provider, None).await.unwrap();

@@ -94,13 +94,16 @@ pub(crate) fn plan(
     })
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    pub(crate) static ENCODED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
-    usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
-        value,
-        u64::MAX,
-        &mut None,
-    )?)
-    .map_err(|_| invalid("token size overflow"))
+    let bytes = acyclic_harness_core::executor::json::json_byte_length(value, u64::MAX, &mut None)?;
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    ENCODED_BYTES.with(|total| total.set(total.get().checked_add(bytes).unwrap()));
+    usize::try_from(bytes).map_err(|_| invalid("token size overflow"))
 }
 
 #[cfg(test)]
