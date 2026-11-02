@@ -26,6 +26,12 @@ test("decoder fuzz targets retain captured native and shipping seeds across byte
   assert.deepEqual(afterAck.termination.execution_failure, termination.execution_failure);
   assert.equal(afterAck.termination.report_acknowledged, true);
   assert.equal(afterAck.termination.control_failure, "invalid-acknowledgement");
+  for (const tail of [wire({ ...ready, generation: "0".repeat(32) }),
+    wire({ ...acknowledgement, outcome: "invalid" })]) {
+    const result = await report(Buffer.concat([acknowledged, tail]));
+    assert.equal(result.termination.report_acknowledged, true);
+    assert.equal(result.termination.control_failure, "foreign-or-invalid-acknowledgement");
+  }
   // Keep captured wire bytes intact in the corpus; truncation, invalid UTF-8
   // and inserted frame boundaries are generated mutations, not new fixtures.
   for (const seed of seeds) {

@@ -17,7 +17,9 @@ const producer = `
   ready.generation = process.env.ACYCLIC_REPORT_GENERATION;
   const finish = prefix => {
     const tail = damage === 'json' ? JSON.stringify(ready).slice(0, -1) + '\\n'
-      : damage === 'tail' ? JSON.stringify(ready) : '';
+      : damage === 'tail' ? JSON.stringify(ready)
+      : damage === 'foreign' ? JSON.stringify({ ...ready, generation: '0'.repeat(32) }) + '\\n'
+      : damage === 'schema' ? JSON.stringify({ ...acknowledgement, outcome: 'invalid' }) + '\\n' : '';
     channel.end(prefix + tail, () => channel.destroy());
   };
   if (requested === 'true') {
@@ -61,6 +63,28 @@ test("report framing failure survives a prior acknowledgement and successful phy
         assert.throws(() => executionSucceeded(result), error =>
           error.actual === result.termination.control_failure);
       }
+    }
+  } finally { await scope.close(); }
+});
+
+for (const requested of [false, true]) test(`semantic report refusals survive physical exit (requested=${requested})`, async () => {
+  const scope = new Processes();
+  try {
+    for (const damage of ["foreign", "schema"]) {
+      const running = await scope.startReported(process.execPath,
+        ["-e", producer, JSON.stringify(captured), damage, String(requested)]);
+      running.input.end();
+      await running.reportReady;
+      if (requested) await running.requestReport(Number.MAX_SAFE_INTEGER);
+      const result = await running.closed;
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.signal, null);
+      assert.equal(scope.children.size, 0, "the original child must retire");
+      assert.equal(result.report_capability.ready, true);
+      if (requested) assert.equal(result.termination?.report_acknowledged, true);
+      assert.equal(result.termination?.control_failure, "foreign-or-invalid-acknowledgement");
+      assert.throws(() => executionSucceeded(result), error =>
+        error.actual === result.termination.control_failure);
     }
   } finally { await scope.close(); }
 });

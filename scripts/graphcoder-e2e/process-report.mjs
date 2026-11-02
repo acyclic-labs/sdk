@@ -96,8 +96,7 @@ export class ProcessReport {
       this.#finish("write-failed", "execution-failed");
       return;
     }
-    if (this.#terminal) return;
-    if (!this.#ready && message.generation === this.generation
+    if (!this.#terminal && !this.#ready && message.generation === this.generation
       && message.rejected && typeof message.rejected.phase === "string" && message.rejected.phase.length > 0
       && typeof message.rejected.cause === "string"
       && (message.rejected.raw_os_error === null || Number.isInteger(message.rejected.raw_os_error))) {
@@ -106,7 +105,7 @@ export class ProcessReport {
       this.#finish("write-failed", "startup-rejected", [], false, message.rejected);
       return;
     }
-    if (message.ready === true && message.generation === this.generation && !this.#ready) {
+    if (!this.#terminal && message.ready === true && message.generation === this.generation && !this.#ready) {
       this.#ready = true;
       this.#readyResolve();
       this.#write?.();
@@ -117,9 +116,13 @@ export class ProcessReport {
       || message.generation !== request.generation || !outcomes.has(message.outcome)
       || !Array.isArray(message.waits) || !message.waits.every(wait)
       || (message.outcome === "report" ? message.waits.length === 0 : message.waits.length !== 0)) {
-      this.#finish("write-failed", "foreign-or-invalid-acknowledgement");
+      this.#invalid("foreign-or-invalid-acknowledgement");
       return;
     }
+    // A diagnostic ACK closes its request, not semantic admission of later
+    // control frames. Validate their original identity/schema before ignoring
+    // an already-completed acknowledgement.
+    if (this.#terminal) return;
     // A buffered snapshot cannot win a race against the original drain
     // deadline merely because its timer callback has not run yet. Explicit
     // refusal frames still describe why the producer rejected the request.
