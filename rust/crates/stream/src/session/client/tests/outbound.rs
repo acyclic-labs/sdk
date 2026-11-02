@@ -34,9 +34,20 @@ impl StreamSessionService for PausedPeer {
         let Some(Body::Hello(hello)) = hello.body else {
             return Err(Status::invalid_argument("expected admission"));
         };
-        let interest = hello
-            .interest
-            .ok_or_else(|| Status::invalid_argument("missing first interest"))?;
+        let interest = match hello.interest {
+            Some(interest) => interest,
+            None => loop {
+                let frame = input
+                    .message()
+                    .await?
+                    .ok_or_else(|| Status::invalid_argument("missing first interest"))?;
+                match frame.body {
+                    Some(Body::Credential(_)) => (),
+                    Some(Body::Interest(interest)) => break interest,
+                    _ => return Err(Status::invalid_argument("expected credential or interest")),
+                }
+            },
+        };
         let welcome = frame(
             0,
             0,

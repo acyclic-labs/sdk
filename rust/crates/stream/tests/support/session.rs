@@ -182,7 +182,6 @@ pub(super) struct Traffic {
 
 #[derive(Default)]
 pub(super) struct Counts {
-    pub(super) opening_interests: AtomicUsize,
     pub(super) node: Mutex<String>,
     pub(super) destinations: Mutex<Vec<String>>,
     pub(super) connections: AtomicUsize,
@@ -218,7 +217,6 @@ impl Counts {
                     .map_err(|_| StreamError::Unavailable)?
                     .push(hello.destination_node.clone());
                 if let Some(interest) = &hello.interest {
-                    self.opening_interests.fetch_add(1, Ordering::Relaxed);
                     self.observe_interest(interest)?;
                 }
             }

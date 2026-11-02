@@ -446,32 +446,37 @@ async fn handshake(
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
     };
     let opening_credentials = credentials.clone();
-    let credentials = match credentials.keys().next_back().copied() {
-        Some(last) => (0..=last)
-            .map(|slot| credentials.get(&slot).cloned().unwrap_or_default())
-            .collect::<Vec<_>>(),
-        None => vec![],
-    };
     let opening_subscription = interest
         .upsert
         .first()
         .and_then(|subscription| subscription.channel);
     let revision = interest.revision;
+    // Credentials are individually admitted frames. Replay actual slots before
+    // the original subscription, without expanding gaps or packing a registry
+    // into one Hello. The complete prefix is available without a response wait.
+    let (hello_interest, initial_interest) = if credentials.is_empty() {
+        (Some(interest), None)
+    } else {
+        (None, Some(frame(0, 0, Body::Interest(interest))))
+    };
     let hello = frame(
         0,
         0,
         Body::Hello(wire::SessionHello {
             version: super::super::VERSION,
-            interest: Some(interest),
+            interest: hello_interest,
             client_id: identity,
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
-            credentials,
+            credentials: vec![],
         }),
     );
-    let bytes = hello.encoded_len();
-    if bytes > crate::MAX_COMMAND_BYTES {
+    if hello.encoded_len() > crate::MAX_COMMAND_BYTES
+        || initial_interest
+            .as_ref()
+            .is_some_and(|interest| interest.encoded_len() > crate::MAX_COMMAND_BYTES)
+    {
         return Err(StreamError::LimitExceeded);
     }
     // Ownership is installed before either credential or connection I/O await.
@@ -492,7 +497,19 @@ async fn handshake(
     let controls = stream::unfold(Arc::clone(&link.sender), |sender| async move {
         sender.next().await.ok().map(|frame| (frame, sender))
     });
-    let input: transport::Requests = Box::pin(stream::once(future::ready(hello)).chain(controls));
+    let credentials = stream::iter(credentials.into_iter().map(|(slot, credential)| {
+        frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential { slot, credential }),
+        )
+    }));
+    let input: transport::Requests = Box::pin(
+        stream::once(future::ready(hello))
+            .chain(credentials)
+            .chain(stream::iter(initial_interest))
+            .chain(controls),
+    );
     let mut response = link.channel.session(input).await?;
     let welcome = response
         .next()
