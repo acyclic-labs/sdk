@@ -26,7 +26,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
     }
   } catch (error) {
-    failures = [new Error(`step=drive JSONL conversation: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`, { cause: error })];
+    failures = [new Error(`step=drive JSONL conversation: ${error.message}`, { cause: error })];
     // Retire only this executable: the owner may also hold other cases and
     // their provider. EOF alone need not stop work owned by this executable.
     active.child.stdin.end();
@@ -41,9 +41,8 @@ export async function conversation(processes, binary, fixture, input, capture, b
     if (failures.length === 1) throw failures[0];
     throw new Error(failures[0].message, { cause: new AggregateError(failures, "conversation completion failures") });
   }
-  const recovery = `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`;
-  assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}; recovery=${recovery}`);
-  assert.equal(result.signal, null, `step=verify conversation retirement; recovery=${recovery}`);
+  assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}`);
+  assert.equal(result.signal, null, "step=verify conversation retirement");
   assert.equal(replies.sequence, input.turns.length,
-    `step=verify one committed reply per prompt; recovery=${recovery}`);
+    "step=verify one committed reply per prompt");
 }

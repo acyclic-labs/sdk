@@ -30,7 +30,7 @@ test("conversation rejection retires only its producer and retains independent c
         const peerEvents = new Spool(peer.child.stdout, peer.closed);
         await peerEvents.next(event => event.pid > 0);
         const running = conversation(processes, process.execPath, {
-          id: "rejected-conversation", workspace: root, args: ["-e",
+          workspace: root, args: ["-e",
             "const server=require('node:net').createServer();server.listen(0,'127.0.0.1',()=>console.error(JSON.stringify(server.address())));process.stdin.resume()", "--"],
         }, { operation: "selected-operation", turns: [{ id: "turn", text: "unused" }] }, result => captures.push(result),
         async (_, active) => {
@@ -44,6 +44,7 @@ test("conversation rejection retires only its producer and retains independent c
         });
         await assert.rejects(running, error => {
           assert.match(error.message, /drive JSONL conversation.*original-missing-input/);
+          assert.doesNotMatch(error.message, /recovery=/, "the caller owns its recovery command");
           if (!failedObservation) assert.equal(error.cause, original);
           else {
             assert.ok(error.cause instanceof AggregateError);
