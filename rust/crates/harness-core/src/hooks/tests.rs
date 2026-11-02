@@ -253,7 +253,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
     let root = std::env::current_dir().map_err(process_error)?;
     let mut future = Box::pin(run_hook(
         Arc::new(hook),
-        Arc::new((root.clone(), root, vec![])),
+        (root.clone(), root, vec![]),
         Arc::new(|| Ok(())),
         Some(65_536),
         None,

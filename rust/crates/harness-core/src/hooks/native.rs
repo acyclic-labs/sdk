@@ -83,7 +83,7 @@ impl Hooks {
                     }
                     None => input.encode(event, cwd, rewritten),
                 }
-                .map(|bytes| Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes)));
+                .map(|bytes| (workspace.to_path_buf(), cwd.to_path_buf(), bytes));
                 let hook = Arc::clone(hook);
                 let (check, wake, execution) =
                     (Arc::clone(&check), wake.clone(), execution.clone());
@@ -96,7 +96,7 @@ impl Hooks {
 
 pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
-    request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
+    request: (PathBuf, PathBuf, Vec<u8>),
     owner_check: HookCheck,
     maximum_bytes: Option<usize>,
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
@@ -112,7 +112,7 @@ pub(super) async fn run_hook(
         wakes,
     };
     let timeout = hook.timeout_ms.map(Duration::from_millis);
-    let input = request.2.clone();
+    let (workspace, cwd, input) = request;
     let spawner = acyclic_native_runtime::TaskSpawner::current();
     // Spawning may block; the running hook then holds no worker.
     let capture = run_blocking_io(
@@ -125,20 +125,19 @@ pub(super) async fn run_hook(
                 }));
             }
             handler.check().map_err(Error::process_io)?;
-            let mut command =
-                hook_command(&hook, &request.0, &request.1, |key| match &execution {
-                    Some(execution) => execution
-                        .environment
-                        .get(key)
-                        .map(|value| value.as_str().into()),
-                    None => crate::native_environment::variable(key),
-                })?;
+            let mut command = hook_command(&hook, &workspace, &cwd, |key| match &execution {
+                Some(execution) => execution
+                    .environment
+                    .get(key)
+                    .map(|value| value.as_str().into()),
+                None => crate::native_environment::variable(key),
+            })?;
             if let Some(execution) = &execution {
                 command.env_clear().envs(&execution.environment);
             }
             command
-                .current_dir(&request.1)
-                .env("CLAUDE_PROJECT_DIR", &request.0)
+                .current_dir(&cwd)
+                .env("CLAUDE_PROJECT_DIR", &workspace)
                 .stdin(ProcessStdio::piped())
                 .stdout(ProcessStdio::piped())
                 .stderr(ProcessStdio::piped());
