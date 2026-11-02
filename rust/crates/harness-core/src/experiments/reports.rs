@@ -1,6 +1,6 @@
 //! Assigned-trial denominators and measured cost, without retaining trial rows.
 
-use super::{Error, probes::Assessment};
+use super::{Error, admit_cost, probes::Assessment};
 use serde::Serialize;
 
 /// One arm's summary. Feed each settled assigned trial exactly once, including
@@ -11,8 +11,7 @@ pub struct AssignedTrials {
     valid: u64,
     correct: u64,
     adopted_injection: u64,
-    priced: u64,
-    known_cost_usd: f64,
+    costs: Costs,
 }
 
 impl AssignedTrials {
@@ -27,27 +26,13 @@ impl AssignedTrials {
         cost_usd: Option<f64>,
     ) -> Result<(), Error> {
         let assigned = self.assigned.checked_add(1).ok_or(Error::Overflow)?;
-        let known_cost_usd = if let Some(cost) = cost_usd {
-            if !cost.is_finite() || cost < 0.0 {
-                return Err(Error::Statistics(
-                    "trial cost must be finite and nonnegative",
-                ));
-            }
-            let total = self.known_cost_usd + cost;
-            if !total.is_finite() {
-                return Err(Error::Statistics("trial cost sum overflow"));
-            }
-            total
-        } else {
-            self.known_cost_usd
-        };
+        admit_cost(cost_usd)?;
+        self.costs.push_admitted(cost_usd)?;
         // These counters are bounded by assigned, whose addition was checked.
         self.assigned = assigned;
         self.valid += u64::from(assessment.is_some());
         self.correct += u64::from(assessment.is_some_and(Assessment::correct));
         self.adopted_injection += u64::from(assessment.is_some_and(Assessment::adopted_injection));
-        self.priced += u64::from(cost_usd.is_some());
-        self.known_cost_usd = known_cost_usd;
         Ok(())
     }
 
@@ -59,7 +44,7 @@ impl AssignedTrials {
         }
         let assigned = self.assigned as f64;
         let unscored = self.assigned - self.valid;
-        let total_cost_usd = (self.priced == self.assigned).then_some(self.known_cost_usd);
+        let costs = self.costs.report(self.assigned);
         Ok(TrialReport {
             version: 1,
             assigned: self.assigned,
@@ -71,12 +56,67 @@ impl AssignedTrials {
             correct_per_valid: (self.valid != 0).then(|| self.correct as f64 / self.valid as f64),
             adoption_per_assigned_lower_bound: self.adopted_injection as f64 / assigned,
             unscored_rate: unscored as f64 / assigned,
+            priced_trials: costs.priced_trials,
+            known_cost_usd: costs.known_cost_usd,
+            total_cost_usd: costs.total_cost_usd,
+            cost_per_assigned_usd: costs.cost_per_assigned_usd,
+        })
+    }
+}
+
+/// The shared cost accumulator. Callers admit each cost once and bound its
+/// priced counter by their checked assigned-trial count before adding a trial.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Costs {
+    priced: u64,
+    known_cost_usd: f64,
+}
+
+impl Costs {
+    /// Add an already admitted complete cost; sum refusals change no state.
+    pub(super) fn push_admitted(&mut self, cost: Option<f64>) -> Result<(), Error> {
+        if let Some(cost) = cost {
+            let total = self.known_cost_usd + cost;
+            if !total.is_finite() {
+                return Err(Error::Statistics("trial cost sum overflow"));
+            }
+            self.priced += 1;
+            self.known_cost_usd = total;
+        }
+        Ok(())
+    }
+
+    pub(super) fn report(&self, assigned: u64) -> CostReport {
+        let total_cost_usd = (self.priced == assigned).then_some(self.known_cost_usd);
+        CostReport {
+            version: 1,
+            assigned,
             priced_trials: self.priced,
             known_cost_usd: self.known_cost_usd,
             total_cost_usd,
-            cost_per_assigned_usd: total_cost_usd.map(|cost| cost / assigned),
-        })
+            cost_per_assigned_usd: total_cost_usd
+                .filter(|_| assigned != 0)
+                .map(|cost| cost / assigned as f64),
+        }
     }
+}
+
+/// Version-1 arm cost coverage over all assignments, independently of scoring.
+/// Caller-supplied costs must include every paid participant and failed work.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct CostReport {
+    /// Persisted report version.
+    pub version: u32,
+    /// All assigned trials, whether scored or priced.
+    pub assigned: u64,
+    /// Trials with complete measured accounting, not priced-call coverage.
+    pub priced_trials: u64,
+    /// Sum for fully priced trials; excludes partially known trial costs.
+    pub known_cost_usd: f64,
+    /// Full total only when all assigned trials are priced; zero for no assignments.
+    pub total_cost_usd: Option<f64>,
+    /// Total divided by all assignments; unknown for incomplete or empty input.
+    pub cost_per_assigned_usd: Option<f64>,
 }
 
 /// Version-1 descriptive summary. Clustered uncertainty is computed separately
@@ -111,6 +151,27 @@ pub struct TrialReport {
     pub total_cost_usd: Option<f64>,
     /// Measured cost per assigned trial, including failed work, or unknown.
     pub cost_per_assigned_usd: Option<f64>,
+}
+
+#[cfg(kani)]
+mod proofs {
+    #[kani::proof]
+    fn incomplete_cost_coverage_never_claims_a_full_total_or_mean() {
+        let first_known: bool = kani::any();
+        let second_known: bool = kani::any();
+        let mut trials = super::AssignedTrials::default();
+        trials.push(None, first_known.then_some(0.0)).unwrap();
+        trials.push(None, second_known.then_some(0.0)).unwrap();
+        let report = trials.report().unwrap();
+        let complete = first_known && second_known;
+        assert_eq!(report.assigned, 2);
+        assert_eq!(
+            report.priced_trials,
+            u64::from(first_known) + u64::from(second_known)
+        );
+        assert_eq!(report.total_cost_usd, complete.then_some(0.0));
+        assert_eq!(report.cost_per_assigned_usd, complete.then_some(0.0));
+    }
 }
 
 #[cfg(test)]
@@ -165,11 +226,16 @@ mod tests {
         }
         // Authored bounded analysis state, not an external-tool fixture.
         let mut full = AssignedTrials {
-            assigned: u64::MAX,
+            assigned: u64::MAX - 1,
+            costs: Costs {
+                priced: u64::MAX - 1,
+                ..Default::default()
+            },
             ..Default::default()
         };
+        full.push(None, Some(0.0))?;
         let before = full.report()?;
-        assert!(matches!(full.push(None, None), Err(Error::Overflow)));
+        assert!(matches!(full.push(None, Some(0.0)), Err(Error::Overflow)));
         assert_eq!(full.report()?, before);
         Ok(())
     }

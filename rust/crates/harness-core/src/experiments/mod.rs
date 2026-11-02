@@ -112,18 +112,21 @@ impl Observation {
     }
 
     fn admit(row: ObservationFile) -> Result<Self, Error> {
-        if row.version != 2
-            || row.score.is_some_and(|score| !score.is_finite())
-            || row
-                .cost_usd
-                .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
-        {
-            return Err(Error::Statistics(
-                "invalid observation version, score or cost",
-            ));
+        if row.version != 2 || row.score.is_some_and(|score| !score.is_finite()) {
+            return Err(Error::Statistics("invalid observation version or score"));
         }
+        admit_cost(row.cost_usd)?;
         Ok(Self(row))
     }
+}
+
+fn admit_cost(cost: Option<f64>) -> Result<(), Error> {
+    if cost.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
+        return Err(Error::Statistics(
+            "trial cost must be finite and nonnegative",
+        ));
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for Observation {
