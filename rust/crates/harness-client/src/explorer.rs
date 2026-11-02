@@ -280,6 +280,12 @@ mod tests {
                 &target_path,
                 record.sequence,
                 record.value,
+                Some(crate::reader::RecordEvidence {
+                    origin: record.origin,
+                    sequence: record.sequence,
+                    commit: record.commit_id,
+                    committed_at_micros: record.committed_at_micros,
+                }),
                 Some(protected),
             );
             explorer.reader.complete(

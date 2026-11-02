@@ -211,7 +211,9 @@ impl StreamView {
                         |record| record.value.clone(),
                     );
                     let metadata = charge - value.value.len();
-                    let payload = self.backings.retain(payload, self.policy.bytes - metadata);
+                    let payload = self
+                        .backings
+                        .retain(payload, None, self.policy.bytes - metadata);
                     let capacity = payload.backing().capacity();
                     let charge = metadata
                         .checked_add(capacity)
@@ -293,7 +295,9 @@ impl StreamView {
                 let (mut owned, metadata) =
                     retain_metadata(record, frame.original_record(), budget)?;
                 let payload = decoded.value;
-                let payload = self.backings.retain(payload, self.policy.bytes - metadata);
+                let payload = self
+                    .backings
+                    .retain(payload, None, self.policy.bytes - metadata);
                 let capacity = payload.backing().capacity();
                 let charge = metadata
                     .checked_add(capacity)
