@@ -54,6 +54,11 @@ pub(super) struct VringBatch<'a> {
 }
 
 impl VringQueue {
+    #[cfg(test)]
+    pub(super) fn probe_batch_retired(&self) -> bool {
+        self.state.try_lock().is_ok_and(|queue| !queue.leased)
+    }
+
     pub(super) fn new(maximum: std::num::NonZeroU16) -> Result<Self, NativeMountError> {
         Ok(Self {
             state: Mutex::new(PacketVring::new(maximum)?),
