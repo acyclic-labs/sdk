@@ -1,14 +1,11 @@
 use super::*;
 impl ObjectContentStore {
-    /// Stores `body` and returns its verified digest.
-    async fn publish(
-        &self,
-        body: acyclic_stream::OwnedBytes,
-        references: Vec<Digest>,
-    ) -> Result<Digest> {
-        let length = body.len() as u64;
-        let digest = Digest::of(&body);
-        let put = self.objects.put(body, references).await.map_err(|error| {
+    /// Verifies each ordered batch outcome before retaining the complete upload.
+    fn verify_publication(
+        put: std::result::Result<acyclic_objects::Put, acyclic_objects::Error>,
+        (digest, length): (Digest, u64),
+    ) -> Result<()> {
+        let put = put.map_err(|error| {
             if error.code == acyclic_objects::wire::ErrorCode::Conflict {
                 Error::Conflict("upload identity belongs to different content".into())
             } else {
@@ -20,7 +17,7 @@ impl ObjectContentStore {
             | acyclic_objects::Put::AlreadyExists { verified }
                 if verified.digest == digest && verified.length == length =>
             {
-                Ok(digest)
+                Ok(())
             }
             acyclic_objects::Put::Unknown => Err(Error::Storage(
                 "Objects publication outcome is unknown; retrying is safe".into(),
@@ -75,16 +72,13 @@ impl ContentPublisher for ObjectContentStore {
             }
             let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
             validate_content_path(path, &mut None)?;
-            let content = self
-                .publish(
-                    acyclic_stream::OwnedBytes::copy_from_slice(bytes),
-                    Vec::new(),
-                )
-                .await?;
+            let content =
+                acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::copy_from_slice(bytes));
+            let content_digest = Digest::sealed(&content);
             let reference = FileRef::new(
                 self.volume.clone(),
                 path.to_owned(),
-                content.to_hex(),
+                content_digest.to_hex(),
                 descriptor,
                 display_name.to_owned(),
                 &mut None,
@@ -93,18 +87,34 @@ impl ContentPublisher for ObjectContentStore {
             // intent's bytes name only the operation and its one reference is
             // the record, so a retry naming other content conflicts; retaining
             // it keeps all three through collection.
-            let record = self
-                .publish(self.record(&reference)?.into(), vec![content])
-                .await?;
+            let record = acyclic_objects::Sealed::new(self.record(&reference)?.into());
+            let record_digest = Digest::sealed(&record);
             let intent = format!(
                 "harness-upload-intent-v1:{}:{operation_id}",
                 self.volume.storage_name(&mut None)?
             );
-            let intent = self
-                .publish(intent.into_bytes().into(), vec![record])
-                .await?;
+            let intent = acyclic_objects::Sealed::new(intent.into_bytes().into());
+            let intent_digest = Digest::sealed(&intent);
+            let expected = [&content, &record, &intent]
+                .map(|body| (Digest::sealed(body), body.bytes().len() as u64));
+            let outcomes = self
+                .objects
+                .put_batch_sealed(vec![
+                    (content, Vec::new()),
+                    (record, vec![content_digest]),
+                    (intent, vec![record_digest]),
+                ])
+                .await;
+            if outcomes.len() != expected.len() {
+                return Err(Error::Storage(
+                    "Objects publication returned another batch length".into(),
+                ));
+            }
+            for (outcome, expected) in outcomes.into_iter().zip(expected) {
+                Self::verify_publication(outcome, expected)?;
+            }
             self.objects
-                .retain(&self.root()?, vec![intent])
+                .retain(&self.root()?, vec![intent_digest])
                 .await
                 .map_err(storage)?;
             Ok((reference, None))

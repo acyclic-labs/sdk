@@ -1,4 +1,4 @@
-use super::*;
+use super::{store::storage, *};
 use crate::{
     AgentId, Capabilities,
     conversation::{ContentMountResolver, VolumeClass, VolumeOwner},
@@ -9,7 +9,12 @@ use acyclic_objects::MemoryObjects;
 
 #[tokio::test]
 async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
-    let objects = Arc::new(MemoryObjects::memory());
+    let objects = MemoryObjects::memory();
+    #[cfg(feature = "conformance")]
+    let objects = acyclic_stream::testing::Counted::new(objects);
+    #[cfg(feature = "conformance")]
+    let ledger = objects.ledger();
+    let objects = Arc::new(objects);
     let owner = AgentId::from_bytes([7; 16]);
     let volume = VolumeRef::new(
         ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
@@ -36,7 +41,7 @@ async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
         &mut None,
     )?;
     let owner_store = ObjectContentStore::new(
-        objects,
+        objects.clone(),
         volume.provider().clone(),
         volume.clone(),
         (
@@ -56,16 +61,79 @@ async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
             crate::conversation::ContentAccess::default(),
         )
     };
+    #[cfg(feature = "conformance")]
+    let before = ledger.requests();
     let file = stage(10, "notes/one.txt", b"owner bytes")?.await?.0;
+    #[cfg(feature = "conformance")]
+    {
+        let calls = ledger.requests().since(before);
+        assert_eq!(calls.data(), 2, "one sealed batch and the original retain");
+        assert_eq!(calls.control(), 0);
+    }
     assert_eq!(stage(10, "notes/one.txt", b"owner bytes")?.await?.0, file);
     for (path, bytes) in [
         ("notes/one.txt", &b"other bytes"[..]),
         ("notes/two.txt", b"owner bytes"),
     ] {
+        #[cfg(feature = "conformance")]
+        let before = ledger.requests();
         let conflicting = stage(10, path, bytes)?.await;
         assert!(matches!(conflicting, Err(Error::Conflict(_))));
+        #[cfg(feature = "conformance")]
+        {
+            let calls = ledger.requests().since(before);
+            assert_eq!(
+                calls.data(),
+                1,
+                "a refused intent must not retain the batch"
+            );
+            assert_eq!(calls.control(), 0);
+        }
     }
+    // Partial conflicting batches may leave immutable orphans. The accepted
+    // original intent must still retain its exact record and payload.
+    objects.collect().await.map_err(storage)?;
+    objects.collect().await.map_err(storage)?;
+    assert_eq!(
+        owner_store
+            .read(&file, file.descriptor().byte_length(), None, None)?
+            .await?
+            .as_slice(),
+        b"owner bytes"
+    );
     assert_eq!(stage(42, "notes/one.txt", b"owner bytes")?.await?.0, file);
+    #[cfg(feature = "conformance")]
+    {
+        // Real serial publication is the cost negative control. The shared
+        // ledger measures provider calls, not hidden physical requests.
+        let before = ledger.requests();
+        let mut references = Vec::new();
+        for body in [
+            b"serial content".as_slice(),
+            b"serial record",
+            b"serial intent",
+        ] {
+            let sealed =
+                acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::copy_from_slice(body));
+            let digest = Digest::sealed(&sealed);
+            let result = objects
+                .put_sealed(sealed, references)
+                .await
+                .map_err(storage)?;
+            assert_eq!(result.verified().map(|value| value.digest), Some(digest));
+            references = vec![digest];
+        }
+        objects
+            .retain(
+                &acyclic_objects::RootId::new(b"serial-negative".to_vec()).map_err(storage)?,
+                references,
+            )
+            .await
+            .map_err(storage)?;
+        let calls = ledger.requests().since(before);
+        assert_eq!(calls.data(), 4);
+        assert_eq!(calls.control(), 0);
+    }
     Ok(())
 }
 #[tokio::test]
