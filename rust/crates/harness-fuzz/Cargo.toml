@@ -217,3 +217,11 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "config_policy"
+path = "fuzz_targets/config_policy.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
