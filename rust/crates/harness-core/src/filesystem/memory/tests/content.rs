@@ -1016,3 +1016,84 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     assert_eq!(producing.live_allocation_bytes(), producer_baseline);
     Ok(())
 }
+
+#[tokio::test]
+async fn read_only_bindings_reuse_exact_files_without_publication_authority() -> Result<()> {
+    use crate::runtime::Bindings;
+
+    let private = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let artifacts = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let project = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let mut artifact_binding = artifacts.content_bindings();
+    artifact_binding.writer = None;
+    let mut project_binding = project.content_bindings();
+    project_binding.writer = None;
+    let mut files = Vec::new();
+    for (storage, text) in [
+        (&private, b"private".as_slice()),
+        (&artifacts, b"summary"),
+        (&project, b"project"),
+    ] {
+        let file = storage
+            .stage(
+                OperationId::new(),
+                "summary.md",
+                text,
+                "text/plain",
+                "summary.md",
+            )
+            .await?;
+        files.push((file, text));
+    }
+    let task = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new(
+                files
+                    .iter()
+                    .map(|(file, _)| file.read_capability(&mut None))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            Limits::default(),
+        )?,
+        content: Some(project_binding),
+        artifacts: Some(artifact_binding),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), private.content_bindings())?;
+    for (file, text) in &files {
+        assert_eq!(task.read_file(file, None).await?.as_ref(), *text);
+        assert!(matches!(
+            task.stage_file(
+                Some(file.volume()),
+                OperationId::new(),
+                "replacement.md",
+                b"overwrite",
+                "text/plain",
+                "replacement.md"
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let revoked = task.scoped(Capabilities::default(), Limits::default())?;
+        assert!(matches!(
+            revoked.read_file(file, None).await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    // An exact grant for the summary must not authorize another authored file.
+    let secret = artifacts
+        .stage(
+            OperationId::new(),
+            "authored.md",
+            b"authored",
+            "text/plain",
+            "authored.md",
+        )
+        .await?;
+    assert!(matches!(
+        task.read_file(&secret, None).await,
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
+}
