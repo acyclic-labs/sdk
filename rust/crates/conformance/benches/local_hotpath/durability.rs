@@ -254,15 +254,15 @@ mod tests {
             let _inline = InlineBlocking::enter();
             let missing = read(directory.path().join("missing")).unwrap_err();
             let original_code = missing.raw_os_error().expect("original OS failure code");
-            assert_eq!(
-                projection.snapshot().tasks[1].first_os_error,
-                Some(original_code)
-            );
             let different = read(directory.path().to_path_buf()).unwrap_err();
             assert_ne!(different.raw_os_error(), Some(original_code));
+            // Generic host closures return application data, including an
+            // inner Result. Their successful native terminal cannot invent
+            // an I/O failure or extract a cause from that opaque payload.
+            assert_eq!(projection.snapshot().tasks[1].first_os_error, None);
             assert_eq!(
-                projection.snapshot().tasks[1].first_os_error,
-                Some(original_code)
+                projection.snapshot().tasks[1].outcome,
+                [Some(3), Some(0), Some(1)]
             );
 
             // Losing numeric precision cannot turn a later real terminal into
@@ -280,6 +280,40 @@ mod tests {
                     .flatten()
                     .all(|count| *count == Some(0))
             );
+
+            // A pipe reader cannot be flushed to stable storage. Preserve
+            // this actual syscall's cause, independently of task outcomes.
+            let (reader, _writer) = std::io::pipe()?;
+            #[unix]
+            let descriptor: std::os::fd::OwnedFd = reader.into();
+            #[windows]
+            let descriptor: std::os::windows::io::OwnedHandle = reader.into();
+            let file = std::fs::File::from(descriptor);
+            let error = acyclic_native_runtime::sync_file(
+                &file,
+                acyclic_native_runtime::Durability::Full,
+                None,
+            )
+            .unwrap_err();
+            let code = error
+                .raw_os_error()
+                .expect("original flush OS failure code");
+            let observed = projection.snapshot();
+            assert_eq!(
+                observed
+                    .calls
+                    .iter()
+                    .map(|row| row[1].unwrap())
+                    .sum::<u64>(),
+                1
+            );
+            let row = observed
+                .calls
+                .iter()
+                .position(|row| row[1] == Some(1))
+                .unwrap();
+            assert_eq!(observed.first_os_errors[row], Some(code));
+            assert_eq!(observed.missing[4], Some(0));
             Ok(())
         })
     }
