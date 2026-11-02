@@ -286,7 +286,11 @@ async fn original_provider_precedes_machine_allocation_and_recovery() -> TestRes
         let target = ProvisionedTarget {
             name: "machine".into(),
             host: MachinesHost::new(provider.clone(), original_ref.clone())?,
-            artifact: None,
+            artifact: Some(ArtifactRef::new(
+                original_ref.clone(),
+                [1; 32].into(),
+                None,
+            )?),
             network_policy_digest: [2; 32],
         };
         let original = Arc::new(AgentMachines::new(stream.clone(), vec![target.clone()])?);
@@ -311,10 +315,10 @@ async fn original_provider_precedes_machine_allocation_and_recovery() -> TestRes
         // Keep the exact same underlying provider and Machine IDs. Only its
         // admitted identity changes, so a provider call could otherwise succeed.
         let mut changed = target.clone();
-        changed.host = MachinesHost::new(
-            provider.clone(),
-            ProviderRef::new("foreign".into(), "machines".into(), "1".into(), &mut None)?,
-        )?;
+        let foreign_ref =
+            ProviderRef::new("foreign".into(), "machines".into(), "1".into(), &mut None)?;
+        changed.host = MachinesHost::new(provider.clone(), foreign_ref.clone())?;
+        changed.artifact = Some(ArtifactRef::new(foreign_ref, [1; 32].into(), None)?);
         let foreign = Arc::new(AgentMachines::new(stream.clone(), vec![changed])?);
         let executors = Arc::new(BoundExecutors {
             calls: AtomicUsize::new(0),
