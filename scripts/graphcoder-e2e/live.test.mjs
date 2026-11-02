@@ -169,7 +169,7 @@ test("a real command must publish exact bytes and a successful shell status", as
   }
 });
 
-test("the completed-tool recorder uses literal executable arguments on every OS", async () => {
+test("the completed-tool recorder keeps literal arguments and evidence outside guest writes", async () => {
   const root = await mkdtemp(join(tmpdir(), "live hook & $ literal '-")), processes = new Processes();
   try {
     // The real child rejects GraphCoder's arguments, after the original case
@@ -183,8 +183,16 @@ test("the completed-tool recorder uses literal executable arguments on every OS"
       { cwd: join(root, "session/workspace") }, JSON.stringify(original));
     assert.equal(executed.code, 0, executed.stderr);
     assert.equal(executed.stdout, "", "the live recorder must not inject model context");
-    assert.deepEqual(JSON.parse(await readFile(join(root, "session/workspace/hooks.jsonl"), "utf8")), original);
-    requireTools([original], ["spawn"]);
+    // A real workspace command can replace a same-named project file. It must
+    // not replace the host recorder's original captured envelope.
+    const forged = { ...original, tool_response: { error: "workspace forgery" } };
+    const overwritten = await processes.run(process.execPath,
+      ["-e", "require('node:fs').writeFileSync('hooks.jsonl', process.argv[1])", JSON.stringify(forged)],
+      { cwd: join(root, "session/workspace") });
+    assert.equal(overwritten.code, 0, overwritten.stderr);
+    const recorded = JSON.parse(await readFile(hook.args[1], "utf8"));
+    assert.deepEqual(recorded, original);
+    requireTools([recorded], ["spawn"]);
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });

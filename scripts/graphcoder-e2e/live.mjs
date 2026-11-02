@@ -73,7 +73,8 @@ export async function runCase(binary, login, root, name, signal) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   const settings = join(directory, "settings");
-  const hookFile = join(workspace, "hooks.jsonl");
+  // Keep host observations outside the guest's mutable project tree.
+  const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   let step = "prepare workspace and isolated settings", env, childHooks, begin;
