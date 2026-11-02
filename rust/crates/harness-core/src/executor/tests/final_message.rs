@@ -170,6 +170,106 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[test]
+fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload() -> Result<()> {
+    let mut stock = uncompacted_executor(
+        Model::new("generated".into(), "part-admission".into(), "1".into())?,
+        Arc::new(ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    stock.limits.render_bytes = 4;
+    for native in [false, true] {
+        for text in ["ok", "too long"] {
+            let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                let history = stock_string_copy("existing history", Some(io))?;
+                let original = history.as_ptr();
+                let mut messages = Vec::new();
+                stock_vec_push(
+                    &mut messages,
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text(history),
+                    },
+                    Some(io),
+                )?;
+                let baseline = io.owned_bytes()?;
+                let old_capacity = messages.capacity();
+                let incoming = stock_string_copy(text, Some(io))?;
+                let incoming_bytes = incoming.capacity() as u64;
+                let incoming_pointer = incoming.as_ptr();
+                let result = execution.append_assistant_part(
+                    &mut messages,
+                    ModelContentPart::Text {
+                        text: incoming,
+                        native: None,
+                    },
+                );
+                if text.len() <= 4 {
+                    result?;
+                    assert_eq!(messages.len(), 2);
+                    let ModelContent::Part(ModelContentPart::Text { text, .. }) =
+                        &messages[1].content
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(text.as_ptr(), incoming_pointer);
+                    assert_eq!(
+                        io.owned_bytes()?,
+                        baseline
+                            + incoming_bytes
+                            + ((messages.capacity() - old_capacity)
+                                * std::mem::size_of::<ModelMessage>())
+                                as u64
+                    );
+                } else {
+                    assert_eq!(
+                        result.err().map(|error| error.code()),
+                        Some(crate::wire::ErrorCode::Invalid)
+                    );
+                    assert_eq!(messages.len(), 1);
+                    assert_eq!(messages.capacity(), old_capacity);
+                    assert_eq!(io.owned_bytes()?, baseline);
+                }
+                let ModelContent::Text(history) = &messages[0].content else {
+                    unreachable!()
+                };
+                assert_eq!(history, "existing history");
+                assert_eq!(history.as_ptr(), original);
+                for message in stock_into_iter(messages, Some(io))? {
+                    let text = match message.content {
+                        ModelContent::Text(text)
+                        | ModelContent::Part(ModelContentPart::Text { text, .. }) => text,
+                        _ => unreachable!(),
+                    };
+                    stock_retire_text(text, Some(io))?;
+                }
+                assert_eq!(io.owned_bytes()?, 0);
+                Ok::<_, Error>(())
+            })
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+            observed.0?;
+            assert_eq!(observed.2, 0);
+            if native {
+                assert_eq!(
+                    observed.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
     use futures::FutureExt as _;

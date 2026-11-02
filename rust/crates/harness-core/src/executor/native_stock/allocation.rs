@@ -132,14 +132,24 @@ pub(crate) fn stock_vec_push<T>(
     value: T,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    stock_vec_prepare_push(values, io)?;
+    values.push(value);
+    Ok(())
+}
+
+/// Complete the fallible storage admission before moving a funded value.
+pub(in crate::executor) fn stock_vec_prepare_push<T>(
+    values: &mut Vec<T>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     with_history_io(io, |work| {
         if let Some(work) = work.as_deref_mut() {
             crate::store::history::reserve(values, values.len() + 1, work)?;
+        } else {
+            values.reserve(1);
         }
         Ok::<_, Error>(())
-    })?;
-    values.push(value);
-    Ok(())
+    })
 }
 
 /// Reserves retained index storage, including a relocating allocation's peak.
