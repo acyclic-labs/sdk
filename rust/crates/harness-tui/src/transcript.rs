@@ -136,7 +136,9 @@ impl Rendered {
             }
             crate::styled_cells::append(
                 &mut spans,
-                row.cells.into_iter().map(|cell| (cell.source.start, cell.symbol)),
+                row.cells
+                    .into_iter()
+                    .map(|cell| (cell.source.start, cell.symbol)),
                 &mut style_at,
             );
             self.push(spans)

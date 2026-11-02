@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 /// Version 10 unifies child and deadline waits as one monotone condition.
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
-pub const RECORD_VERSION: u32 = 12;
+/// Version 13 retains persistent child membership roots and staged diagnostic references.
+pub const RECORD_VERSION: u32 = 13;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -176,6 +176,14 @@ impl StockExecutors {
         self
     }
 
+    /// Configures the host's explicit open-child capacity. `None` admits any
+    /// number of children; it does not substitute a default limit.
+    #[must_use]
+    pub fn with_child_capacity(mut self, capacity: Option<u32>) -> Self {
+        self.max_children = capacity;
+        self
+    }
+
     /// Reads creation templates through the original filesystem admission.
     #[must_use]
     pub fn with_templates(mut self) -> Self {
