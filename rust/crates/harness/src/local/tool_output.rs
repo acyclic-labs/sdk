@@ -75,7 +75,7 @@ impl OutputTail {
                 {
                     call = Some(owner.to_owned());
                     reply = answer;
-                    chunks.push((owner.to_owned(), path.clone(), stderr));
+                    chunks.push((owner.len(), path, stderr));
                 } else if let Some(owner) = path.strip_suffix("/request.json") {
                     // A new call starts its display even before it writes.
                     call = Some(owner.to_owned());
@@ -85,7 +85,7 @@ impl OutputTail {
         }
         let reads = chunks
             .into_iter()
-            .filter(|(owner, _, _)| call.as_deref() == Some(owner))
+            .filter(|(owner, path, _)| call.as_deref() == Some(&path[..*owner]))
             .map(|(_, path, stderr)| (path, stderr))
             .collect();
         Some(Plan {
