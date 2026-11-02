@@ -36,16 +36,6 @@ impl FileReadSource {
         }
     }
 
-    pub(super) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        match self {
-            Self::Content(file) => file.validate(work),
-            Self::Authored(file) => file.validate(work),
-        }
-    }
-
     #[cfg(feature = "filesystem")]
     pub(super) fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
