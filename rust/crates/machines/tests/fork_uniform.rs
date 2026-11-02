@@ -94,13 +94,23 @@ async fn fork_uniform() -> Result<(), Box<dyn std::error::Error>> {
     };
     let MutationOutcome::Forked {
         provenance,
-        machines: children,
+        results,
     } = machines
         .fork_machine(parent.id, NonZeroU32::MIN, key(2)?)
         .await?
     else {
         return Err("fork did not return Machine observations".into());
     };
+    let children = machines
+        .read_results(
+            acyclic_machines::results::ResultCursor {
+                cut: results,
+                from: 0,
+            },
+            NonZeroU32::MIN,
+        )
+        .await?
+        .machines;
     let expected: Provenance<_, _> = Provenance {
         source: ForkSource::Machine(parent.id),
         inherited: ForkFidelity::MemoryAndDisk,

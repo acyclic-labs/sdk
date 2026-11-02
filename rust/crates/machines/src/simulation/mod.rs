@@ -14,18 +14,62 @@ enum MemoryIntent {
     DestroyCheckpoint(CheckpointId),
 }
 
-#[derive(Clone)]
 struct Replay {
     digest: [u8; 32],
     outcome: MutationOutcome,
+    results: Vec<MachineObservation>,
+}
+
+enum Completion {
+    Single(MutationOutcome),
+    Fork {
+        provenance: Provenance<ForkSource, ForkFidelity>,
+        machines: Vec<MachineObservation>,
+    },
+}
+
+impl From<MutationOutcome> for Completion {
+    fn from(value: MutationOutcome) -> Self {
+        Self::Single(value)
+    }
+}
+
+#[derive(Clone)]
+struct MachineRecord {
+    observation: MachineObservation,
+    parent: Option<MachineId>,
+    live_forks: u64,
+}
+
+impl MachineRecord {
+    fn new(observation: MachineObservation, parent: Option<MachineId>) -> Self {
+        Self {
+            observation,
+            parent,
+            live_forks: 0,
+        }
+    }
+}
+
+impl std::ops::Deref for MachineRecord {
+    type Target = MachineObservation;
+    fn deref(&self) -> &Self::Target {
+        &self.observation
+    }
+}
+
+impl std::ops::DerefMut for MachineRecord {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.observation
+    }
 }
 
 struct MemoryState {
     now: u64,
-    machines: BTreeMap<MachineId, MachineObservation>,
+    machines: BTreeMap<MachineId, MachineRecord>,
     checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
-    events: BTreeMap<MachineId, Vec<MachineEvent>>,
-    replays: BTreeMap<IdempotencyKey, Replay>,
+    events: BTreeMap<MachineId, tokio::sync::watch::Sender<Vec<MachineEvent>>>,
+    replays: BTreeMap<OperationId, Replay>,
 }
 
 impl Default for MemoryState {
@@ -115,7 +159,9 @@ impl SimulatedMachines {
                     created_at_unix_ms: now,
                     changed_at_unix_ms: now,
                 };
-                state.machines.insert(id, observation.clone());
+                state
+                    .machines
+                    .insert(id, MachineRecord::new(observation.clone(), None));
                 event(state, id, EventFact::State(MachineState::Running), now)?;
                 Ok(MutationOutcome::Created(observation))
             })
@@ -172,18 +218,20 @@ impl SimulatedMachines {
         }
     }
 
-    async fn apply<F>(
+    async fn apply<F, C>(
         &self,
         key: IdempotencyKey,
         intent: MemoryIntent,
         action: F,
     ) -> Result<MutationOutcome, ProviderError>
     where
-        F: FnOnce(&mut MemoryState) -> Result<MutationOutcome, ProviderError>,
+        F: FnOnce(&mut MemoryState) -> Result<C, ProviderError>,
+        C: Into<Completion>,
     {
         let digest = intent_digest(&intent)?;
         let mut state = self.state.lock().await;
-        if let Some(replay) = state.replays.get(&key) {
+        let operation = Self::operation(key);
+        if let Some(replay) = state.replays.get(&operation) {
             return if replay.digest == digest {
                 Ok(replay.outcome.clone())
             } else {
@@ -192,12 +240,32 @@ impl SimulatedMachines {
                 ))
             };
         }
-        let outcome = action(&mut state)?;
+        let (outcome, results) = match action(&mut state)?.into() {
+            Completion::Single(outcome) => (outcome, Vec::new()),
+            Completion::Fork {
+                provenance,
+                machines,
+            } => {
+                let revision = std::num::NonZeroU64::new(state.now)
+                    .ok_or_else(|| ProviderError::Rejected("fork settlement revision is empty; recovery: restore the original operation".into()))?;
+                let results = crate::results::NativeResults::open(operation, revision, &machines)?
+                    .cursor()
+                    .cut;
+                (
+                    MutationOutcome::Forked {
+                        provenance,
+                        results,
+                    },
+                    machines,
+                )
+            }
+        };
         state.replays.insert(
-            key,
+            operation,
             Replay {
                 digest,
                 outcome: outcome.clone(),
+                results,
             },
         );
         Ok(outcome)
@@ -226,15 +294,20 @@ fn event(
     fact: EventFact,
     observed_at: u64,
 ) -> Result<(), ProviderError> {
-    let values = state.events.entry(machine).or_default();
-    let sequence = u64::try_from(values.len())
+    let values = state
+        .events
+        .entry(machine)
+        .or_insert_with(|| tokio::sync::watch::Sender::new(Vec::new()));
+    let sequence = u64::try_from(values.borrow().len())
         .map_err(|_| ProviderError::Rejected("simulation event limit reached".into()))?
         + 1;
-    values.push(MachineEvent {
-        machine,
-        sequence,
-        observed_at_unix_ms: observed_at,
-        fact,
+    values.send_modify(|values| {
+        values.push(MachineEvent {
+            machine,
+            sequence,
+            observed_at_unix_ms: observed_at,
+            fact,
+        })
     });
     Ok(())
 }

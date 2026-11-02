@@ -501,6 +501,33 @@ machine_mutations! {
         })
     }
 
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        obs::operation!("acyclic.machines.follow_events", observation, async {
+            let events = self.client().await?
+                .follow_events(wire::FollowEventsRequest {
+                    protocol: Some(protocol()),
+                    machine: Some(encode_machine(machine)),
+                    after_sequence: after_sequence.unwrap_or(0),
+                })
+                .await
+                .map_err(|error| {
+                    obs::failed_rpc(&observation, &error);
+                    read_error(&error)
+                })?
+                .into_inner();
+            Ok(crate::provider::events::checked(machine, after_sequence, events, move |mut events| async move {
+                match events.message().await.map_err(|error| read_error(&error))? {
+                    Some(event) => Ok(Some((decode_event(&event, machine)?, events))),
+                    None => Ok(None),
+                }
+            }))
+        })
+    }
+
     async fn usage(
         &self,
         machine: MachineId,
@@ -532,6 +559,20 @@ machine_mutations! {
         })
     }
 
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        obs::operation!("acyclic.machines.read_results", observation, async {
+            let credit = NonZeroU32::new(credit.get().min(MAX_PAGE_SIZE)).unwrap_or(NonZeroU32::MIN);
+            cursor.interval(cursor.cut, credit)?;
+            let value = self.client().await?.read_results(wire::ReadResultsRequest {
+                protocol: Some(protocol()), cursor: Some(cursor.into()), credit: credit.get(),
+            }).await.map_err(|error| { obs::failed_rpc(&observation, &error); read_error(&error) })?.into_inner();
+            decode_result_page(value, cursor, credit)
+        })
+    }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.recover", observation, async {
             let (operation, value) = recovered_admission(self, key, &observation).await?;

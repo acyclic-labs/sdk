@@ -320,11 +320,13 @@ message MachineAdmission {
   MachineContract contract = 3;
   Provenance provenance = 4;
 }
-// The machines one Fork or ForkMachine admitted, in index order, under one
-// shared operation. Each entry carries that same operation.
+// Constant-sized original admission; children are read only after settlement.
 message MachineAdmissions {
   OperationId operation = 1;
-  repeated MachineAdmission machines = 2;
+  Provenance provenance = 3;
+  uint64 count = 4;
+  reserved 2;
+  reserved "machines";
 }
 message CheckpointAdmission {
   CheckpointId checkpoint = 1;
@@ -361,18 +363,41 @@ message RecoveredAdmission {
     PolicyAdmission set_suspension_policy = 8;
     MutationAdmission destroy_checkpoint = 9;
     MachineAdmission attach_volume = 11;
-    // Fork and ForkMachine; each entry's provenance names which.
+    // Fork and ForkMachine; the retained provenance names which.
     MachineAdmissions forked = 12;
   }
   reserved 4, 10;
   reserved "fork", "fork_machine";
 }
 
-// Retained terminal result. Unlike an admission, this contains the checked
-// observations produced after the operation has completed.
+// The original terminal publication, never a later Machine inspection.
+message ResultCut {
+  OperationId operation = 1;
+  oneof settlement {
+    bytes streams_commit = 2;
+    uint64 native_revision = 3;
+  }
+  uint64 count = 4;
+}
+message ResultCursor {
+  ResultCut cut = 1;
+  uint64 from = 2;
+}
+message ReadResultsRequest {
+  ProtocolVersion protocol = 1;
+  ResultCursor cursor = 2;
+  uint32 credit = 3;
+}
+message ResultPage {
+  ResultCursor cursor = 1;
+  repeated MachineState machines = 2;
+  ResultCursor next = 3;
+}
 message ForkedMachines {
-  repeated MachineState machines = 1;
   Provenance provenance = 2;
+  ResultCut results = 3;
+  reserved 1;
+  reserved "machines";
 }
 message PolicySet {
   MachineId machine = 1;
@@ -426,6 +451,13 @@ message EventsRequest {
 message EventPage {
   repeated MachineEvent events = 1;
   uint64 next_sequence = 2;
+}
+// Exclusive cursor. Events are replayed without gaps, then delivered live.
+// Destroyed ends the stream; producer loss before it is UNAVAILABLE.
+message FollowEventsRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 after_sequence = 3;
 }
 message UsageRequest {
   ProtocolVersion protocol = 1;
@@ -622,11 +654,13 @@ service MachinesService {
   rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete" extractor: "machines.delete" }; }
   rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete-checkpoint" extractor: "machines.delete-checkpoint" }; }
+  rpc ReadResults(ReadResultsRequest) returns (ResultPage) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read-results" }; }
   rpc Recover(RecoverRequest) returns (RecoveredAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
   rpc InspectMachine(InspectMachineRequest) returns (MachineState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read" }; }
   rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { action: "machines/read-checkpoint" extractor: "machines.read-checkpoint" }; }
   rpc ListMachines(ListMachinesRequest) returns (MachinePage) { option (acyclic.validation.v1.auth) = { action: "machines/list" extractor: "machines.list-visible" }; }
   rpc Events(EventsRequest) returns (EventPage) { option (acyclic.validation.v1.auth) = { action: "machines/follow" extractor: "machines.follow" }; }
+  rpc FollowEvents(FollowEventsRequest) returns (stream MachineEvent) { option (acyclic.validation.v1.auth) = { action: "machines/follow" extractor: "machines.follow" }; }
   rpc Usage(UsageRequest) returns (UsageReceipt) { option (acyclic.validation.v1.auth) = { action: "machines/read-usage" extractor: "machines.read-usage" }; }
   rpc Cancel(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/cancel" extractor: "machines.cancel-operation" }; }
   rpc InspectOperation(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read-operation" }; }

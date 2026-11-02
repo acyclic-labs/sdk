@@ -163,6 +163,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().events(machine, after_sequence, limit).await
     }
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().follow_events(machine, after_sequence).await
+    }
     async fn usage(
         &self,
         machine: MachineId,
@@ -173,6 +181,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         self.inner()
             .usage(machine, start_unix_ms, end_unix_ms)
             .await
+    }
+    async fn read_results(
+        &self,
+        cursor: crate::results::ResultCursor,
+        credit: NonZeroU32,
+    ) -> Result<crate::results::ResultPage, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().read_results(cursor, credit).await
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         self.record(RequestClass::Metadata);

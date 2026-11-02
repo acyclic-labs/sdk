@@ -117,7 +117,7 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
             Some(wire::MutationOutcome { result: None }),
             Some(wire::MutationOutcome {
                 result: Some(Outcome::Forked(wire::ForkedMachines {
-                    machines: vec![],
+                    results: None,
                     provenance: None,
                 })),
             }),
@@ -230,182 +230,106 @@ fn credential_failure_preserves_admitted_recovery_keys() {
 }
 
 #[tokio::test]
-async fn snapshot_recovery_uses_retained_results_without_resource_reads()
+async fn checkpoint_recovery_uses_retained_results_without_resource_reads()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
     let checkpoint = CheckpointId::parse("00000000-0000-0000-0000-000000000051")?;
     let child = MachineId::parse("00000000-0000-0000-0000-000000000052")?;
-    for kind in 0..3 {
-        let (mut service, script, source) = scripted_operation_service(Vec::new(), Vec::new());
-        let key = service.expected_key;
-        let operation = service.recovered.operation.clone();
-        let contract = codecs::wire_contract(&[wire::Capability::LiveFork]);
-        let machine = wire::MachineState {
-            machine: Some(encode_machine(child)),
-            status: wire::MachineStatus::Running as i32,
+
+    let (mut service, script, source) = scripted_operation_service(Vec::new(), Vec::new());
+    let key = service.expected_key;
+    let operation = service.recovered.operation.clone();
+    let contract = codecs::wire_contract(&[wire::Capability::LiveFork]);
+    let machine = wire::MachineState {
+        machine: Some(encode_machine(child)),
+        status: wire::MachineStatus::Running as i32,
+        contract: Some(contract.clone()),
+        endpoints: Vec::new(),
+        last_checkpoint: None,
+        created_at_unix_ms: 7,
+        changed_at_unix_ms: 7,
+    };
+    let (admission, result, expected) = {
+        let state = wire::CheckpointState {
+            checkpoint: Some(encode_checkpoint(checkpoint)),
+            source: Some(encode_machine(source)),
             contract: Some(contract.clone()),
-            endpoints: Vec::new(),
-            last_checkpoint: None,
+            forkable: true,
             created_at_unix_ms: 7,
-            changed_at_unix_ms: 7,
         };
-        let (admission, result, expected) = match kind {
-            0 => {
-                let state = wire::CheckpointState {
-                    checkpoint: Some(encode_checkpoint(checkpoint)),
-                    source: Some(encode_machine(source)),
-                    contract: Some(contract.clone()),
-                    forkable: true,
-                    created_at_unix_ms: 7,
-                };
-                (
-                    Admission::Checkpoint(wire::CheckpointAdmission {
-                        checkpoint: state.checkpoint.clone(),
-                        source: state.source.clone(),
-                        operation,
-                        contract: Some(contract.clone()),
-                    }),
-                    Outcome::Checkpointed(state),
-                    MutationOutcome::Checkpointed(CheckpointObservation {
-                        id: checkpoint,
-                        source,
-                        contract: decode_contract(Some(&contract))?,
-                        forkable: true,
-                        created_at_unix_ms: 7,
-                    }),
-                )
-            }
-            _ => {
-                // Both fork kinds reply with created-machine admissions; only
-                // the provenance and the inherited contract differ.
-                let (origin, contract) = if kind == 1 {
-                    let mut resumed = contract.clone();
-                    resumed.image = Some(encode_image(&Image::Checkpoint(checkpoint))?);
-                    (
-                        wire::provenance::Source::CheckpointId(encode_checkpoint(checkpoint)),
-                        resumed,
-                    )
-                } else {
-                    (
-                        wire::provenance::Source::MachineId(encode_machine(source)),
-                        contract.clone(),
-                    )
-                };
-                let provenance = wire::Provenance {
-                    source: Some(origin),
-                    fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
-                };
-                let machine = wire::MachineState {
-                    contract: Some(contract.clone()),
-                    ..machine.clone()
-                };
-                (
-                    Admission::Forked(wire::MachineAdmissions {
-                        operation: operation.clone(),
-                        machines: vec![wire::MachineAdmission {
-                            machine: Some(encode_machine(child)),
-                            operation,
-                            contract: Some(contract),
-                            provenance: Some(provenance.clone()),
-                        }],
-                    }),
-                    Outcome::Forked(wire::ForkedMachines {
-                        machines: vec![machine.clone()],
-                        provenance: Some(provenance.clone()),
-                    }),
-                    MutationOutcome::Forked {
-                        provenance: Provenance {
-                            source: if kind == 1 {
-                                ForkSource::Checkpoint(checkpoint)
-                            } else {
-                                ForkSource::Machine(source)
-                            },
-                            inherited: ForkFidelity::MemoryAndDisk,
-                        },
-                        machines: vec![decode_machine_observation(machine, child)?],
-                    },
-                )
-            }
-        };
-        service.recovered.result = Some(admission.clone());
-        let mut terminal =
-            operation_state(service.expected_operation, wire::OperationStatus::Succeeded);
-        terminal.outcome = Some(wire::MutationOutcome {
-            result: Some(result.clone()),
-        });
-        let mut replies = vec![
-            Some(result.clone()),
-            None,
-            Some(Outcome::Created(machine.clone())),
-        ];
-        for altered in 0..3 {
-            let mut result = result.clone();
-            match &mut result {
-                Outcome::Checkpointed(state) => match altered {
-                    0 => state.source = Some(encode_machine(child)),
-                    1 => {
-                        state
-                            .contract
-                            .as_mut()
-                            .expect("contract")
-                            .network_policy_digest = vec![2; 32]
-                    }
-                    _ => state.checkpoint = None,
-                },
-                Outcome::Forked(states) => match altered {
-                    0 => states.machines[0].machine = Some(encode_machine(source)),
-                    1 => {
-                        states.machines[0]
-                            .contract
-                            .as_mut()
-                            .expect("contract")
-                            .network_policy_digest = vec![2; 32]
-                    }
-                    _ if kind == 1 => states.machines.clear(),
-                    _ => {
-                        states.provenance.as_mut().expect("provenance").fidelity =
-                            wire::ForkFidelity::DiskOnly as i32
-                    }
-                },
-                _ => unreachable!(),
-            }
-            replies.push(Some(result));
+        (
+            Admission::Checkpoint(wire::CheckpointAdmission {
+                checkpoint: state.checkpoint.clone(),
+                source: state.source.clone(),
+                operation,
+                contract: Some(contract.clone()),
+            }),
+            Outcome::Checkpointed(state),
+            MutationOutcome::Checkpointed(CheckpointObservation {
+                id: checkpoint,
+                source,
+                contract: decode_contract(Some(&contract))?,
+                forkable: true,
+                created_at_unix_ms: 7,
+            }),
+        )
+    };
+    service.recovered.result = Some(admission.clone());
+    let mut terminal =
+        operation_state(service.expected_operation, wire::OperationStatus::Succeeded);
+    terminal.outcome = Some(wire::MutationOutcome {
+        result: Some(result.clone()),
+    });
+    let mut replies = vec![
+        Some(result.clone()),
+        None,
+        Some(Outcome::Created(machine.clone())),
+    ];
+    for altered in 0..3 {
+        let mut result = result.clone();
+        match &mut result {
+            Outcome::Checkpointed(state) => match altered {
+                0 => state.source = Some(encode_machine(child)),
+                1 => {
+                    state
+                        .contract
+                        .as_mut()
+                        .expect("contract")
+                        .network_policy_digest = vec![2; 32]
+                }
+                _ => state.checkpoint = None,
+            },
+            _ => unreachable!(),
         }
-        // Internal wire vectors. The server deliberately has no resource read
-        // implementation, as resources may be changed or deleted after success.
-        for reply in &replies {
-            let mut state = terminal.clone();
-            state.outcome = reply.clone().map(|result| wire::MutationOutcome {
-                result: Some(result),
-            });
-            script
-                .lock()
-                .expect("script")
-                .watches
-                .push_back(WatchReply::Items(vec![WatchItem::State(state)]));
-        }
-        let (provider, shutdown, server) = serve_operation_service(service).await?;
-        assert_eq!(provider.recover(key).await?, expected);
-        for _ in 1..replies.len() {
-            assert_eq!(
-                provider.recover(key).await,
-                Err(ProviderError::Indeterminate(key))
-            );
-        }
-        assert_eq!(
-            script.lock().expect("script").calls,
-            vec!["watch"; replies.len()]
-        );
-        let _ = shutdown.send(());
-        server.await??;
-        if let Admission::Forked(mut value) = admission {
-            let entry = value.machines[0].clone();
-            for machines in [Vec::new(), vec![entry.clone(), entry]] {
-                value.machines = machines;
-                assert!(decode_fork_admissions(&value).is_err());
-            }
-        }
+        replies.push(Some(result));
     }
+    // Internal wire vectors. The server deliberately has no resource read
+    // implementation, as resources may be changed or deleted after success.
+    for reply in &replies {
+        let mut state = terminal.clone();
+        state.outcome = reply.clone().map(|result| wire::MutationOutcome {
+            result: Some(result),
+        });
+        script
+            .lock()
+            .expect("script")
+            .watches
+            .push_back(WatchReply::Items(vec![WatchItem::State(state)]));
+    }
+    let (provider, shutdown, server) = serve_operation_service(service).await?;
+    assert_eq!(provider.recover(key).await?, expected);
+    for _ in 1..replies.len() {
+        assert_eq!(
+            provider.recover(key).await,
+            Err(ProviderError::Indeterminate(key))
+        );
+    }
+    assert_eq!(
+        script.lock().expect("script").calls,
+        vec!["watch"; replies.len()]
+    );
+    let _ = shutdown.send(());
+    server.await??;
     Ok(())
 }
 

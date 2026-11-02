@@ -23,31 +23,48 @@ use std::{
 /// The actual terminal publication owner. A native revision is scoped to the
 /// original authenticated controller partition; it is not a Streams commit,
 /// Machine incarnation or watch watermark. This value grants no authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Settlement {
-    Streams(CommitId),
+    Streams(#[serde(with = "commit_id")] CommitId),
     NativeController(NonZeroU64),
 }
 
 /// Immutable identity and extent retained with the original successful outcome.
 /// Reopening must use the same authenticated owner, operation and cut after
 /// lost acknowledgment. Neither expiry nor this metadata proves physical death.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResultCut {
     pub operation: OperationId,
     pub settlement: Settlement,
     pub count: u64,
 }
 
+mod commit_id {
+    use super::*;
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        value: &CommitId,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.as_bytes().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<CommitId, D::Error> {
+        <[u8; 32]>::deserialize(deserializer).map(CommitId::from_bytes)
+    }
+}
+
 /// A child index in one exact original result, never in current Machine state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResultCursor {
     pub cut: ResultCut,
     pub from: u64,
 }
 
 impl ResultCursor {
-    fn interval(
+    pub(crate) fn interval(
         self,
         original: ResultCut,
         credit: NonZeroU32,
@@ -70,6 +87,7 @@ impl ResultCursor {
 /// One visible page. Metadata is constant per page; payload and decode work are
 /// proportional only to returned observations. Native owners can borrow their
 /// original protobuf slice; Streams reads own only the decoded visible page.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResultPage<M = Vec<MachineObservation>> {
     pub cursor: ResultCursor,
     pub machines: M,

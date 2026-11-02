@@ -5,7 +5,7 @@ Streams. Its `source` identifies the parent or checkpoint, and `inherited`
 declares the fork fidelity. Wire and JavaScript projections retain their
 existing source/fidelity fields.
 
-Machines protocol 1.5 is shape-free. Customers choose an immutable image and
+Machines protocol 1.6 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
@@ -77,6 +77,17 @@ cargo add acyclic-machines
 
 `Machines` wraps a `MachinesProvider`; the crate also includes a gRPC client. Qualify an immutable image digest before creation and retain idempotency keys for mutation recovery. Inspect an operation when its outcome is indeterminate rather than assuming failure.
 
+`Machine::follow_events(after_sequence)` and `MachinesProvider::follow_events`
+replay events strictly after the original sequence cursor, then wait on the same
+producer for live events. `None` starts at sequence one. Retain the last delivered
+sequence to resume without replaying earlier history. A cursor beyond the retained
+tail is invalid; a cursor already after `Destroyed` is refused. Delivery of
+`Destroyed` ends the stream. Losing the producer or remote stream before that
+terminal returns `Unavailable`, never a successful end or a polling restart.
+Dropping interest does not mutate the Machine. The gRPC projection is the single
+server-streaming `FollowEvents` RPC; the native projection follows the original
+committed Streams journal. Each delivery copies or decodes only its selected event.
+
 Once a gRPC mutation is admitted, its completion wait consumes the original
 operation watch. Its producer publishes terminal success, failure or cancellation;
 silence causes no inspection or subscription restart. An interrupted watch returns
@@ -101,7 +112,7 @@ the original authenticated partition and verify terminal success. Native outcome
 decoding and transport serialization remain the producer's work; the borrowed
 view alone does not make a complete-array storage format lazy.
 
-`Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. Both `fork` and `fork_machine` settle to `MutationOutcome::Forked { provenance, machines }`: each child is the same `MachineObservation` a create yields, and `provenance` names the source and fidelity. A checkpoint fork child's `contract.image` is `Image::Checkpoint` on every read. The trait method documents the full semantics.
+`Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. Both `fork` and `fork_machine` settle to `MutationOutcome::Forked { provenance, results }`: `results` is the original `ResultCut`; `read_results(ResultCursor { cut: results, from: 0 }, credit)` reads only the credited original observations. Each child is the same `MachineObservation` a create yields, and `provenance` names the source and fidelity. A checkpoint fork child's `contract.image` is `Image::Checkpoint` on every read. The trait method documents the full semantics.
 
 `SimulatedMachines` is a bounded process-local state machine. It does **not** execute an operating system, isolate tenants, provide durability, or guarantee availability. Real providers must state their own assurance level. See the [Rust API](https://docs.rs/acyclic-machines/latest/acyclic_machines/) and [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines).
 
@@ -124,3 +135,12 @@ when qualifying physical request traffic. Run the reference adapter on demand:
 ```sh
 cargo test --locked -p acyclic-machines --features conformance --lib conformance::
 ```
+
+Fork admissions and successful outcomes retain operation, provenance and exact
+extent without embedding child arrays. `ReadResults` authenticates the SAME
+operation owner and reads the retained `ResultCut` with positive page credit;
+missing, foreign or truncated original results fail explicitly. Recovering a
+fork returns that same cut after later child mutation or deletion, never new
+observations. Admission and terminal metadata take constant space; creating the
+requested children and reading their selected bytes remain proportional to that
+selected work. Dropping a page reader does not cancel or redispatch the fork.

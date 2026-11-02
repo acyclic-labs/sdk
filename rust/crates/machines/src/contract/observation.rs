@@ -84,6 +84,12 @@ pub struct EventPage {
     pub next_sequence: Option<u64>,
 }
 
+/// Gapless events after an exclusive sequence cursor, followed by live events.
+/// Destroyed is the terminal event. Losing the producer before that event is
+/// a typed failure; dropping interest never changes the Machine.
+pub type EventStream =
+    acyclic_stream::BoxProviderStream<'static, Result<MachineEvent, ProviderError>>;
+
 /// Immutable usage receipt over one half-open interval.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UsageReceipt {
@@ -132,10 +138,11 @@ pub enum MutationOutcome {
     VolumeAttached(MachineObservation),
     Checkpointed(CheckpointObservation),
     /// Outcome of [`MachinesProvider::fork`] and [`MachinesProvider::fork_machine`]:
-    /// the children in index order, each the same resource a create yields.
+    /// a retained result cut. Credited pages preserve the original index order;
+    /// each child is the same resource a create yields.
     Forked {
         provenance: Provenance<ForkSource, ForkFidelity>,
-        machines: Vec<MachineObservation>,
+        results: crate::results::ResultCut,
     },
     Suspended(MachineId),
     Woken(MachineId),
