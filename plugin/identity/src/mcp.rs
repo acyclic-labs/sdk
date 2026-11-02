@@ -731,22 +731,23 @@ mod tests {
         path: PathBuf,
         endpoint: String,
         http: tokio::task::JoinHandle<()>,
-        consumed: std::sync::Arc<tokio::sync::Notify>,
+        consumed: tokio::sync::oneshot::Receiver<()>,
         released: std::sync::Arc<tokio::sync::Notify>,
         _directory: tempfile::TempDir,
     }
 
     async fn consumed_exchange(login: bool) -> ConsumedExchange {
-        use std::sync::Arc;
-        let consumed = Arc::new(tokio::sync::Notify::new());
+        let (notify, consumed) = tokio::sync::oneshot::channel();
+        let notify = Arc::new(Mutex::new(Some(notify)));
         let released = Arc::new(tokio::sync::Notify::new());
-        let notify = consumed.clone();
         let release = released.clone();
         let router = axum::Router::new().fallback(move || {
             let notify = notify.clone();
             let release = release.clone();
             async move {
-                notify.notify_one();
+                if let Some(notify) = notify.lock().expect("exchange entry").take() {
+                    let _ = notify.send(());
+                }
                 release.notified().await;
                 axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
                 "token_type": "Bearer", "expires_in": 900}))
@@ -929,6 +930,32 @@ mod tests {
                     io::ErrorKind::InvalidData,
                     format!("expected {expected:?}, received {event:?}"),
                 )),
+            }
+        }
+
+        async fn exchange_entered(
+            &mut self,
+            entered: &mut tokio::sync::oneshot::Receiver<()>,
+            http: &mut tokio::task::JoinHandle<()>,
+        ) -> io::Result<()> {
+            tokio::select! {
+                entered = entered => entered.map_err(|error| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, error)
+                }),
+                event = self.events.recv() => Err(io::Error::new(
+                    match event {
+                        Some(Event::WriterClosed) | None => io::ErrorKind::UnexpectedEof,
+                        _ => io::ErrorKind::InvalidData,
+                    },
+                    "identity output before HTTP entry",
+                )),
+                ended = http => Err(match ended {
+                    Ok(()) => io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "HTTP fixture ended before exchange entry",
+                    ),
+                    Err(error) => io::Error::new(io::ErrorKind::UnexpectedEof, error),
+                }),
             }
         }
     }
@@ -1144,6 +1171,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exchange_entry_reports_early_operation_failure_and_http_loss() {
+        for lost_http in [false, true] {
+            let ConsumedExchange {
+                mut server,
+                mut http,
+                mut consumed,
+                _directory,
+                ..
+            } = consumed_exchange(true).await;
+            // Use the real login refusal, before it can issue any HTTP request.
+            server.pending = None;
+            let mut client = connect(server, &Output::default());
+            client.reply().await;
+            if lost_http {
+                // The real HTTP producer exits before entry is observed.
+                http.abort();
+            } else {
+                client.send(&call(1, "identity_login_complete"));
+            }
+            let error = client
+                .exchange_entered(&mut consumed, &mut http)
+                .await
+                .expect_err("missing exchange cannot report readiness");
+            assert_eq!(
+                error.kind(),
+                if lost_http {
+                    io::ErrorKind::UnexpectedEof
+                } else {
+                    io::ErrorKind::InvalidData
+                }
+            );
+            client.close();
+            client.served.await.expect("served").expect("transport");
+            if !lost_http {
+                http.abort();
+                assert!(
+                    http.await
+                        .expect_err("HTTP producer aborted")
+                        .is_cancelled()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn login_transport_answers_ping_and_cancellation_and_retains_approval() {
         let directory = tempfile::tempdir().expect("directory");
         let mut server = server(directory.path().join("identity.json"));
@@ -1181,7 +1253,7 @@ mod tests {
     #[tokio::test]
     async fn blocked_output_still_reads_login_cancellation() {
         let _clock = crate::tests::poll_clock::Clock::start();
-        let (started, consumed) = tokio::sync::oneshot::channel();
+        let (started, mut consumed) = tokio::sync::oneshot::channel();
         let started = Arc::new(Mutex::new(Some(started)));
         let router = axum::Router::new().fallback(move || {
             if let Some(started) = started.lock().expect("exchange entry").take() {
@@ -1198,7 +1270,7 @@ mod tests {
             .await
             .expect("bind");
         let endpoint = format!("http://{}", listener.local_addr().expect("address"));
-        let http = tokio::spawn(async move {
+        let mut http = tokio::spawn(async move {
             axum::serve(listener, router).await.expect("serve");
         });
         let directory = tempfile::tempdir().expect("directory");
@@ -1209,11 +1281,10 @@ mod tests {
         let mut client = connect(server, &output);
         client.reply().await;
         client.send(&call(1, "identity_login_complete"));
-        tokio::select! {
-            biased;
-            reply = client.next_reply() => panic!("login ended before HTTP entry: {reply:?}"),
-            entered = consumed => entered.expect("original login exchange entered"),
-        }
+        client
+            .exchange_entered(&mut consumed, &mut http)
+            .await
+            .expect("original login exchange entered");
         let paused = output.pause();
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
         client
@@ -1259,8 +1330,8 @@ mod tests {
                 server,
                 path,
                 endpoint: _endpoint,
-                http,
-                consumed,
+                mut http,
+                mut consumed,
                 released,
                 _directory,
             } = consumed_exchange(login).await;
@@ -1276,7 +1347,8 @@ mod tests {
                     "identity_refresh"
                 },
             ));
-            tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+            client
+                .exchange_entered(&mut consumed, &mut http)
                 .await
                 .expect("consumed");
             client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
@@ -1324,8 +1396,8 @@ mod tests {
                     server,
                     path,
                     endpoint,
-                    http,
-                    consumed,
+                    mut http,
+                    mut consumed,
                     released,
                     _directory,
                 } = consumed_exchange(login).await;
@@ -1338,7 +1410,8 @@ mod tests {
                     "identity_refresh"
                 };
                 client.send(&call(1, name));
-                tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+                client
+                    .exchange_entered(&mut consumed, &mut http)
                     .await
                     .expect("consumed");
                 let failed = if fault == "oversized" {
