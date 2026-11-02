@@ -52,14 +52,14 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let mut projection = EventProjection::new("approval-export".into());
     let mut observer = client.replay(&projection)?;
     client.send("approval-input", "echo the request").await?;
-    let (id, delivery) = loop {
+    let (id, published_binding, delivery) = loop {
         let (event, delivery) = observer.next_projected().await?;
         if let Some(crate::local::Event::Status(StatusRecord {
-            phase: crate::agent::Phase::WaitingApproval { id },
+            phase: crate::agent::Phase::WaitingApproval { id, binding },
             ..
         })) = event?
         {
-            break (id, delivery);
+            break (id, binding, delivery);
         }
         let after = projection.event(&delivery).after;
         projection.accepted(delivery.resource.clone(), after);
@@ -68,6 +68,13 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         .event(&delivery)
         .sequence
         .ok_or_else(|| Error::Invalid("approval status has no sequence".into()))?;
+    let pending = client.pending_approval(&id).await?.ok_or_else(|| {
+        Error::Invalid("original approval binding is absent from the pending query".into())
+    })?;
+    assert_eq!(pending.status, sequence);
+    assert_eq!(Some(&pending.binding), published_binding.as_ref());
+    assert!(serde_json::to_vec(&pending).map_err(agent)?.len() < 1024);
+    let preview = client.approval_prompt(&id).await?;
     let before = projection.cursor(&delivery.resource);
     let checkpoint = serde_json::to_vec(&projection).map_err(agent)?;
     let mut bytes = Vec::new();
@@ -99,6 +106,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     assert!(length > MAX_READ_BYTES * 2);
     let request: crate::interaction::Interaction = serde_json::from_slice(&bytes).map_err(agent)?;
     let crate::interaction::Interaction::Approval {
+        prompt,
         operation_id,
         action_digest,
         subject:
@@ -110,6 +118,9 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     else {
         return Err(Error::Invalid("request is not a tool approval".into()));
     };
+    assert_eq!(preview.as_deref(), Some(prompt.as_str()));
+    assert_eq!(pending.binding.operation_id, operation_id);
+    assert_eq!(pending.binding.action_digest, action_digest);
     assert_eq!(saved, arguments);
     assert_eq!(
         client.approval_request(sequence, length).await?,
@@ -138,6 +149,8 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         .await?;
     let (agents, root) = harness.agents().await?;
     settled(agents, root).await?;
+    assert!(client.pending_approval(&id).await?.is_none());
+    assert!(client.approval_prompt(&id).await?.is_none());
     let requests = provider.request_count();
     let (historical, saved_length) = client.approval_request(sequence, 0).await?;
     assert_eq!(saved_length, length);

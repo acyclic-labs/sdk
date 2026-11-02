@@ -24,6 +24,56 @@ impl ApprovalBinding {
     }
 }
 
+impl Interaction {
+    /// Projects the complete explanation, if present in this bounded prefix of
+    /// an original canonical approval request. A missing explanation means the
+    /// caller needs more of the prefix, not that the request has no explanation.
+    ///
+    /// The request producer already validates the document. This uses the shared
+    /// JSON span cursor and stops before the subject; it does not decode, copy,
+    /// or validate the remainder of the request.
+    pub fn approval_prompt_preview(bytes: &[u8]) -> Result<Option<String>> {
+        use crate::executor::json::{JsonBounds, JsonSpans, SpanEvent, SpanKind};
+        let mut prompt = false;
+        let mut selected = None;
+        JsonSpans::default().feed(
+            bytes,
+            JsonBounds {
+                maximum_bytes: bytes.len() as u64,
+                maximum_items: bytes.len() as u64,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            &mut |_| Ok(()),
+            &mut |event| {
+                match event {
+                    SpanEvent::Key {
+                        depth: 1,
+                        start,
+                        end,
+                    } => {
+                        prompt = &bytes[start as usize..end as usize] == br#""prompt""#;
+                    }
+                    SpanEvent::End {
+                        depth: 1,
+                        kind: SpanKind::String,
+                        start,
+                        end,
+                    } if prompt => {
+                        selected = Some((start as usize, end as usize));
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+                Ok(false)
+            },
+        )?;
+        selected
+            .map(|(start, end)| crate::contract::json_from_slice(&bytes[start..end]))
+            .transpose()
+    }
+}
+
 crate::core::ownership::owned_struct!(ApprovalBinding {
     operation_id,
     action_digest

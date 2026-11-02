@@ -7,6 +7,41 @@ use crate::{
 use serde_json::json;
 
 #[test]
+fn approval_preview_stops_before_the_subject_and_never_returns_a_partial_prompt() -> Result<()> {
+    let prompt = "Run \"雪\"?\nKeep the original explanation.";
+    let request = Interaction::approval(
+        prompt.into(),
+        OperationId::from_bytes([4; 16]),
+        [5; 32],
+        ApprovalSubject::Tool {
+            route: ApprovalRoute::Human,
+            tool: "shell".into(),
+            call_id: "preview".into(),
+            arguments: json!({"command": "x".repeat(128 * 1024)}),
+            target: None,
+        },
+    )?;
+    let bytes = crate::contract::canonical_json_bytes(&request)?;
+    let prefix = &bytes[..1024];
+    assert!(crate::contract::json_from_slice::<Interaction>(prefix).is_err());
+    assert_eq!(
+        Interaction::approval_prompt_preview(prefix)?.as_deref(),
+        Some(prompt)
+    );
+    let end = bytes
+        .windows(b"\"subject\"".len())
+        .position(|window| window == b"\"subject\"")
+        .expect("canonical writer retains the subject");
+    for prefix in 0..end {
+        if let Some(preview) = Interaction::approval_prompt_preview(&bytes[..prefix])? {
+            assert_eq!(preview, prompt, "a truncated explanation was exposed");
+        }
+    }
+    assert!(Interaction::approval_prompt_preview(br#"{"prompt":!"#).is_err());
+    Ok(())
+}
+
+#[test]
 fn outcome_rejects_unrecognized_fields() {
     assert!(
         serde_json::from_str::<InteractionOutcome>(r#"{"kind":"approved","answer":"hidden"}"#)

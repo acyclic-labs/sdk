@@ -80,7 +80,10 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
-                        Wait::Approval(intent("decision"))
+                        Wait::Approval {
+                            id: intent("decision"),
+                            binding: None,
+                        }
                     } else {
                         Wait::Input
                     },
@@ -275,7 +278,13 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
                 Out::Conversation(b"first".to_vec()),
                 Out::Conversation(b"second".to_vec()),
             ],
-            wait: Wait::Approval(intent("decision")),
+            wait: Wait::Approval {
+                id: intent("decision"),
+                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([8; 16]),
+                    action_digest: [9; 32],
+                }),
+            },
             drops: None,
         }]);
         let host = AgentHost::new(
@@ -321,6 +330,33 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
                 }
             );
         } else {
+            let expected = Phase::WaitingApproval {
+                id: intent("decision"),
+                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([8; 16]),
+                    action_digest: [9; 32],
+                }),
+            };
+            assert_eq!(committed.phase, expected);
+            let statuses = values(&provider, root.status()?).await?;
+            let status = StatusRecord::decode(&statuses[(committed.status_tail - 1) as usize])?;
+            assert_eq!(
+                status.phase, expected,
+                "status and checkpoint lost original binding"
+            );
+            let mut invalid = status;
+            let Phase::WaitingApproval {
+                binding: Some(binding),
+                ..
+            } = &mut invalid.phase
+            else {
+                unreachable!()
+            };
+            binding.action_digest = [0; 32];
+            assert!(
+                invalid.encode().is_err(),
+                "an unbound action became valid status"
+            );
             assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
         }
     }

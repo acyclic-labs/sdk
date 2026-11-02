@@ -555,7 +555,7 @@ pub(super) async fn prompt(
                 .await?;
                 return Ok(1);
             }
-            if let Phase::WaitingApproval { id } = status.phase {
+            if let Phase::WaitingApproval { id, .. } = status.phase {
                 diagnostic(
                     &mut diagnostics,
                     acyclic_native_runtime::InheritedOutput::stderr,
@@ -892,7 +892,7 @@ pub(super) async fn jsonl(
     // once at reconnect; replay of that same status does not prompt twice.
     if projection.is_some()
         && input_format == super::args::InputFormat::Text
-        && let Phase::WaitingApproval { id } = conversation.phase().await?
+        && let Phase::WaitingApproval { id, .. } = conversation.phase().await?
     {
         diagnostic(
             &mut diagnostics,
@@ -1181,7 +1181,7 @@ pub(super) async fn jsonl(
                     approval = None;
                     announced = None;
                 }
-                if let Phase::WaitingApproval { id } = &status.phase
+                if let Phase::WaitingApproval { id, .. } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
                     // The decision input requires the exact shown binding;
@@ -1202,7 +1202,7 @@ pub(super) async fn jsonl(
                         && (event_operation.is_none()
                             || matches!(
                                 conversation.phase().await?,
-                                Phase::WaitingApproval { id: pending } if pending == *id
+                                Phase::WaitingApproval { id: pending, .. } if pending == *id
                             ))
                     {
                         diagnostic(

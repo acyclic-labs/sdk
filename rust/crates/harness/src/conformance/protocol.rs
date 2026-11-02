@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     },
     approvals::ApprovalPolicy,
     conversation::FileRef,
-    interaction::{ApprovalBinding, Interaction},
+    interaction::ApprovalBinding,
     model::{ModelContent, ModelEvent, ToolCall},
     tool::ToolDefinition,
 };
@@ -166,14 +166,10 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 return Err("an unapproved tool ran".into());
             }
             let pending = items.pop().ok_or("approval missing")?;
-            let Interaction::Approval {
+            let ApprovalBinding {
                 operation_id,
                 action_digest,
-                ..
-            } = pending.request
-            else {
-                return Err("pending request is not an approval".into());
-            };
+            } = pending.binding;
             let mut wrong = action_digest;
             let byte = wrong.first_mut().ok_or("empty action digest")?;
             *byte ^= 1;

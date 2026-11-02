@@ -31,7 +31,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 6 retains waking Notice payloads by immutable file reference.
 /// Version 7 pins each stock agent's role profile at adoption.
 /// Version 8 adds explicit generation-linked file/context restoration requests.
-pub const RECORD_VERSION: u32 = 8;
+/// Version 9 retains the original action binding in a waiting approval's status
+/// and actor checkpoint.
+pub const RECORD_VERSION: u32 = 9;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -513,6 +515,9 @@ pub enum Phase {
         /// Request identity.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
+        /// Exact original action, or absent when an external host publishes no
+        /// approval request. Display bodies stay in the immutable request file.
+        binding: Option<crate::interaction::ApprovalBinding>,
     },
     /// Waiting for an event hook from its host.
     WaitingHost {
@@ -738,9 +743,15 @@ impl AgentRecord for StatusRecord {
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
             Phase::WaitingHost { host } => check_text(host),
+            Phase::WaitingApproval {
+                binding: Some(binding),
+                ..
+            } => binding
+                .validate()
+                .map_err(|_| Error::Record("approval action binding is invalid")),
             Phase::Idle
             | Phase::Running
-            | Phase::WaitingApproval { .. }
+            | Phase::WaitingApproval { binding: None, .. }
             | Phase::WaitingChildren { .. }
             | Phase::WaitingAlarm { .. } => Ok(()),
         }
