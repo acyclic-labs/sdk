@@ -623,6 +623,54 @@ async fn availability_delivery_keeps_its_original_deadline() -> TestResult {
         next.await.unwrap().unwrap_err().code(),
         tonic::Code::DeadlineExceeded
     );
+    assert!(
+        frames
+            .next()
+            .now_or_never()
+            .is_some_and(|frame| frame.is_none())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn availability_source_failure_ends_delivery_before_its_deadline() -> TestResult {
+    use futures::{FutureExt as _, StreamExt as _};
+    use wire::blobs_service_server::BlobsService as _;
+
+    for timeout in [Some(Duration::from_secs(60)), None] {
+        let store = crate::Store::new(crate::MemoryMedium::default());
+        let account = Arc::new(store.account(b"delivery-source")?);
+        let resolve: AccountResolver = {
+            let account = Arc::clone(&account);
+            Arc::new(move |_| Ok(account.clone()))
+        };
+        let server = BlobsServer::new(resolve);
+        let digest = Digest::of(b"original physical source");
+        let mut request = Request::new(wire::AvailabilityRequest {
+            digest: Some(digest.into()),
+        });
+        if let Some(timeout) = timeout {
+            request.set_timeout(timeout);
+        }
+        let mut frames = server.availability(request).await?.into_inner();
+        frames.next().await.unwrap()?;
+        // The same live producer first makes progress through the public route.
+        account.availability_source().restored(digest)?;
+        frames.next().await.unwrap()?;
+        account.availability_source().fail();
+        assert_eq!(
+            frames.next().await.unwrap().unwrap_err().code(),
+            tonic::Code::Unavailable
+        );
+        // Terminal failure releases the observation; the deadline cannot keep
+        // a dead source pending, including when the caller has no deadline.
+        assert!(
+            frames
+                .next()
+                .now_or_never()
+                .is_some_and(|frame| frame.is_none())
+        );
+    }
     Ok(())
 }
 
