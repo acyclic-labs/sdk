@@ -6,7 +6,9 @@ use acyclic_harness_core::{
     live::{ContextAdmission, ContextInfo, Error as ProjectionError, Usage},
     model::ModelDispatch,
 };
-use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
+use acyclic_stream::{
+    AppendRequest, IdempotencyKey, MemoryStream, StreamProvider as _, StreamProviderExt as _,
+};
 use futures::StreamExt as _;
 
 // Generated arithmetic operands, not captured or fabricated provider output.
