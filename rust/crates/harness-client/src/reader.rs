@@ -21,7 +21,9 @@ mod driver;
 mod requests;
 
 pub use backing::RecordBytes;
-pub use cache::{Listing, ListingProjection, ListingProjections, RecordCache, SnapshotError};
+pub use cache::{
+    Listing, ListingProjection, ListingProjections, RecordCache, RecordSegment, SnapshotError,
+};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
 use demand::Demands;

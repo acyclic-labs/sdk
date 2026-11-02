@@ -162,6 +162,45 @@ struct Meta {
     used: u64,
 }
 
+/// One resolved cache segment under an immutable borrow of its original facts.
+///
+/// Construction walks the retained ancestry once. Point reads within the
+/// inclusive bounds reuse that selection, with the original cache lookup and
+/// access check. No record, payload or additional cache is retained. Dropping
+/// the borrow permits origin replacement, eviction or credential invalidation;
+/// a later segment resolves those facts again.
+pub struct RecordSegment<'a> {
+    cache: &'a RecordCache,
+    key: Key,
+    first: u64,
+    last: u64,
+}
+
+impl<'a> RecordSegment<'a> {
+    /// Coordinates that resolve to this same original owner. These are cache
+    /// selection bounds, not a provider snapshot or a promise of loaded rows.
+    #[must_use]
+    pub fn bounds(&self) -> std::ops::RangeInclusive<u64> {
+        self.first..=self.last
+    }
+
+    /// Borrow a selected row, or return `None` outside the segment or for a
+    /// missing/denied row. Each call performs at most the original two keyed
+    /// cache lookups (O(log entries)), without walking ancestry or allocating.
+    pub fn record(&mut self, sequence: u64) -> Option<&'a RecordBytes> {
+        if !self.bounds().contains(&sequence) {
+            return None;
+        }
+        if let Key::Record(_, position) = &mut self.key {
+            *position = sequence;
+        }
+        match self.cache.value(&self.key) {
+            Some(Value::Record(value)) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 /// Bounded immutable record cache shared by every renderer.
 pub struct RecordCache {
     pub(super) access: super::Access,
@@ -617,14 +656,17 @@ impl RecordCache {
 
     /// Resolve a record through fork aliases to the key that would hold it.
     pub(super) fn resolve(&self, stream: &StreamPath, sequence: u64) -> Key {
-        self.resolve_segment(stream, sequence).0
+        self.record_segment(stream, sequence).key
     }
 
-    /// The same owner applies until the first inherited cut crossed on this
-    /// lookup. An immutable cache borrow keeps those exact publications fixed.
-    fn resolve_segment(&self, stream: &StreamPath, sequence: u64) -> (Key, u64) {
+    /// Resolve once for repeated point reads in the same inherited segment.
+    /// The borrow keeps every original origin/cut fact fixed until released.
+    /// Unknown ancestry stays unknown; this adds no provider observation.
+    #[must_use]
+    pub fn record_segment(&self, stream: &StreamPath, sequence: u64) -> RecordSegment<'_> {
         let mut path = stream;
-        let mut end = u64::MAX;
+        let mut first = 0;
+        let mut last = u64::MAX;
         // An acyclic chain has at most one edge per retained fact. This also
         // terminates on malformed cyclic input without allocating per lookup.
         for _ in 0..self.meta.len() {
@@ -632,13 +674,23 @@ impl RecordCache {
             self.origin_visits.set(self.origin_visits.get() + 1);
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
                 Some(origin) if sequence < origin.inherited.forked_at => {
-                    end = end.min(origin.inherited.forked_at);
+                    // This branch proves the cut is nonzero.
+                    last = last.min(origin.inherited.forked_at - 1);
                     path = &origin.source;
+                }
+                Some(origin) => {
+                    first = origin.inherited.forked_at;
+                    break;
                 }
                 _ => break,
             }
         }
-        (Key::Record(path.clone(), sequence), end)
+        RecordSegment {
+            cache: self,
+            key: Key::Record(path.clone(), sequence),
+            first,
+            last,
+        }
     }
 
     /// Borrow a committed record without touching recency.
@@ -662,15 +714,9 @@ impl RecordCache {
     ) -> impl Iterator<Item = (u64, Option<&'a RecordBytes>)> + use<'a> {
         let mut segment = None;
         (from..to).map(move |next| {
-            let (key, end) = segment.get_or_insert_with(|| self.resolve_segment(stream, next));
-            if let Key::Record(_, sequence) = key {
-                *sequence = next;
-            }
-            let value = match self.value(key) {
-                Some(Value::Record(value)) => Some(value),
-                _ => None,
-            };
-            if next + 1 >= *end {
+            let selected = segment.get_or_insert_with(|| self.record_segment(stream, next));
+            let value = selected.record(next);
+            if next == selected.last {
                 segment = None;
             }
             (next, value)
@@ -1898,6 +1944,30 @@ mod tests {
             );
         }
         let point_visits = cache.origin_visits.replace(0);
+        for (at, first, last) in [(0, 0, 63), (64, 64, 95), (96, 96, 159)] {
+            let mut segment = cache.record_segment(&source, at);
+            assert_eq!(segment.bounds(), first..=last);
+            assert!(cache.origin_visits.replace(0) > 0);
+            // Random access reuses the original selected owner, including
+            // its exact inherited cut. A full-cache point lookup here would
+            // restore the ancestry walk and fail the zero-visit oracle.
+            for original in records
+                .iter()
+                .rev()
+                .filter(|record| (first..=last).contains(&record.sequence))
+            {
+                let value = segment
+                    .record(original.sequence)
+                    .ok_or("missing retained segment row")?;
+                assert_eq!(value.as_ref(), original.value.as_slice());
+                assert_eq!(value.as_ptr(), original.value.as_slice().as_ptr());
+            }
+            assert!(segment.record(last + 1).is_none());
+            if first != 0 {
+                assert!(segment.record(first - 1).is_none());
+            }
+            assert_eq!(cache.origin_visits.get(), 0, "point read walked ancestry");
+        }
         for ((sequence, value), original) in cache.records(&source, 0, 160).zip(&records) {
             let value = value.ok_or("missing inherited row")?;
             assert_eq!(sequence, original.sequence);
@@ -1921,6 +1991,7 @@ mod tests {
         assert!(cache.origin_visits.get() <= 4 * (depth + 3));
         let middle = StreamPath::new("owner1")?;
         cache.remove(&Key::Record(middle, 67));
+        assert!(cache.record_segment(&source, 64).record(67).is_none());
         assert_eq!(cache.first_missing(&source, 0, 160), Some(67));
         assert_eq!(
             cache
@@ -1933,6 +2004,7 @@ mod tests {
         assert_eq!(cache.records(&source, u64::MAX, u64::MAX).count(), 0);
         assert!(cache.has_range(&source, 5, 4));
         cache.access = super::super::Access::Closed;
+        assert!(cache.record_segment(&source, 0).record(0).is_none());
         assert!(
             cache
                 .records(&root, 0, 64)
@@ -1948,6 +2020,7 @@ mod tests {
         changed[0] ^= 1;
         origin.inherited.commit_id = CommitId::from_bytes(changed);
         cache.observe_origin(&leaf, Some(origin));
+        assert!(cache.record_segment(&source, 0).record(0).is_none());
         assert!(
             cache
                 .records(&source, 0, 160)
