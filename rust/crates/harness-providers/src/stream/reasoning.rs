@@ -32,7 +32,7 @@ impl<'work> State<'work> {
         let target = match self.thinking.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                self.budget.add(size_of::<(u64, Thinking)>(), 1)?;
+                self.budget.add(size_of::<(u64, Thinking)>())?;
                 entry.insert(Thinking::default())
             }
         };
@@ -119,7 +119,7 @@ impl<'work> State<'work> {
     pub(crate) fn set_origin(&mut self, origin: Option<ReasoningOrigin>) -> Result<()> {
         if let Some(origin) = &origin {
             self.budget
-                .add(origin.provider.capacity() + origin.model.capacity(), 0)?;
+                .add(origin.provider.capacity() + origin.model.capacity())?;
         }
         self.origin = origin;
         Ok(())
@@ -184,10 +184,10 @@ pub(super) fn native_origin(
     budget: &mut budget::Budget<'_>,
 ) -> Result<ReasoningOrigin> {
     Ok(if let Some(origin) = origin {
-        budget.add(origin.provider.len() + origin.model.len(), 0)?;
+        budget.add(origin.provider.len() + origin.model.len())?;
         origin.clone()
     } else {
-        budget.add(family(adapter).len(), 0)?;
+        budget.add(family(adapter).len())?;
         ReasoningOrigin {
             provider: family(adapter).into(),
             model: String::new(),

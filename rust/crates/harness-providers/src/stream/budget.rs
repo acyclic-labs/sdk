@@ -6,15 +6,9 @@ use std::mem::size_of;
 #[path = "budget_properties.rs"]
 mod properties;
 
-#[derive(Clone, Copy, Default)]
-pub(super) struct Size {
-    pub bytes: usize,
-    pub items: usize,
-}
-
 pub(super) struct Budget<'work> {
-    used: Size,
-    limit: Size,
+    used: usize,
+    limit: usize,
     #[cfg(not(target_arch = "wasm32"))]
     work: Option<&'work acyclic_fs::NativeMaterializationWork>,
     #[cfg(target_arch = "wasm32")]
@@ -30,20 +24,17 @@ impl<'work> Budget<'work> {
                 ..acyclic_fs::WorkCounters::UNCHARGED
             })?;
         }
-        Ok(self.used.bytes)
+        Ok(self.used)
     }
     #[cfg(test)]
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn used(&self) -> (usize, usize) {
-        (self.used.bytes, self.used.items)
+    pub fn used(&self) -> usize {
+        self.used
     }
     pub fn new(maximum: usize) -> Self {
         Self {
-            used: Size::default(),
-            limit: Size {
-                bytes: maximum,
-                items: maximum.min(1024),
-            },
+            used: 0,
+            limit: maximum,
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
             #[cfg(target_arch = "wasm32")]
@@ -57,46 +48,24 @@ impl<'work> Budget<'work> {
             ..Self::new(maximum)
         }
     }
-    pub fn replace(&mut self, old: Size, new: Size) -> Result<()> {
-        let bytes = self
-            .used
-            .bytes
-            .checked_sub(old.bytes)
-            .and_then(|n| n.checked_add(new.bytes));
-        let items = self
-            .used
-            .items
-            .checked_sub(old.items)
-            .and_then(|n| n.checked_add(new.items));
-        match (bytes, items) {
-            (Some(bytes), Some(items))
-                if bytes <= self.limit.bytes && items <= self.limit.items =>
-            {
-                self.used = Size { bytes, items };
+    pub fn replace(&mut self, old: usize, new: usize) -> Result<()> {
+        let bytes = self.used.checked_sub(old).and_then(|n| n.checked_add(new));
+        match bytes {
+            Some(bytes) if bytes <= self.limit => {
+                self.used = bytes;
                 Ok(())
             }
-            _ => Err(invalid(
-                "retained model state exceeds aggregate byte or item limit",
-            )),
+            _ => Err(invalid("retained model state exceeds aggregate byte limit")),
         }
     }
-    pub fn add(&mut self, bytes: usize, items: usize) -> Result<()> {
-        self.replace(Size::default(), Size { bytes, items })
+    pub fn add(&mut self, bytes: usize) -> Result<()> {
+        self.replace(0, bytes)
     }
     pub fn string(&mut self, target: &mut String, text: &str) -> Result<()> {
         if target == text {
             return Ok(());
         }
-        self.replace(
-            Size {
-                bytes: target.capacity(),
-                items: 0,
-            },
-            Size {
-                bytes: text.len(),
-                items: 0,
-            },
-        )?;
+        self.replace(target.capacity(), text.len())?;
         *target = text.into();
         Ok(())
     }
@@ -116,13 +85,11 @@ impl<'work> Budget<'work> {
             .ok_or_else(|| invalid("tool size overflow"))?;
         if required > target.capacity() {
             let old = target.capacity();
-            let available = (self.limit.bytes - self.used.bytes)
+            let available = (self.limit - self.used)
                 .checked_add(old)
                 .ok_or_else(|| invalid("tool capacity overflow"))?;
             if required > available {
-                return Err(invalid(
-                    "retained model state exceeds aggregate byte or item limit",
-                ));
+                return Err(invalid("retained model state exceeds aggregate byte limit"));
             }
             let capacity = required.max(old.saturating_mul(2)).max(8).min(available);
             // Only a growth can relocate old text. Native frame admission covers
@@ -134,9 +101,9 @@ impl<'work> Budget<'work> {
                     ..acyclic_fs::WorkCounters::UNCHARGED
                 })?;
             }
-            self.add(capacity - old, 0)?;
+            self.add(capacity - old)?;
             if target.try_reserve_exact(capacity - target.len()).is_err() {
-                self.used.bytes -= capacity - old;
+                self.used -= capacity - old;
                 return Err(invalid("tool buffer allocation failed"));
             }
         }
@@ -162,10 +129,7 @@ impl<'work> Budget<'work> {
             None => {
                 // Admit the map slot and payload before either is allocated.
                 let payload = size(value, true)?;
-                self.add(
-                    size_of::<(String, Value)>() + key.len() + payload.bytes,
-                    1 + payload.items,
-                )?;
+                self.add(size_of::<(String, Value)>() + key.len() + payload)?;
                 map.insert(key.into(), value.clone());
                 Ok(())
             }
@@ -178,32 +142,17 @@ impl<'work> Budget<'work> {
         text: &str,
     ) -> Result<()> {
         if let Some(target) = map.get_mut(key) {
-            self.replace(
-                size(target, false)?,
-                Size {
-                    bytes: text.len(),
-                    items: 0,
-                },
-            )?;
+            self.replace(size(target, false)?, text.len())?;
             *target = Value::String(text.into());
         } else {
-            self.add(size_of::<(String, Value)>() + key.len() + text.len(), 1)?;
+            self.add(size_of::<(String, Value)>() + key.len() + text.len())?;
             map.insert(key.into(), Value::String(text.into()));
         }
         Ok(())
     }
     pub fn encoded<T: serde::Serialize>(&mut self, target: &mut String, value: &T) -> Result<()> {
         let length = crate::projection::encoded_len(value)?;
-        self.replace(
-            Size {
-                bytes: target.capacity(),
-                items: 0,
-            },
-            Size {
-                bytes: length,
-                items: 0,
-            },
-        )?;
+        self.replace(target.capacity(), length)?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(length)
@@ -214,51 +163,36 @@ impl<'work> Budget<'work> {
     }
 }
 
-fn size(value: &Value, cloned: bool) -> Result<Size> {
-    let mut result = Size::default();
+fn size(value: &Value, cloned: bool) -> Result<usize> {
+    let mut result = 0;
     match value {
         // Also bounds Number's owned digits when arbitrary_precision is enabled
         // elsewhere in a workspace build; that representation is private to serde.
-        Value::Number(_) => result.bytes = crate::projection::encoded_len(value)?,
-        Value::String(text) => result.bytes = if cloned { text.len() } else { text.capacity() },
+        Value::Number(_) => result = crate::projection::encoded_len(value)?,
+        Value::String(text) => result = if cloned { text.len() } else { text.capacity() },
         Value::Array(values) => {
-            result.bytes = if cloned {
+            result = if cloned {
                 values.len()
             } else {
                 values.capacity()
             } * size_of::<Value>();
-            result.items = values.len();
             for value in values {
-                merge(&mut result, size(value, cloned)?)?;
+                result = result
+                    .checked_add(size(value, cloned)?)
+                    .ok_or_else(|| invalid("retained size overflow"))?;
             }
         }
         Value::Object(values) => {
-            result.bytes = values.len() * size_of::<(String, Value)>();
-            result.items = values.len();
+            result = values.len() * size_of::<(String, Value)>();
             for (key, value) in values {
-                merge(
-                    &mut result,
-                    Size {
-                        bytes: if cloned { key.len() } else { key.capacity() },
-                        items: 0,
-                    },
-                )?;
-                merge(&mut result, size(value, cloned)?)?;
+                let payload = size(value, cloned)?;
+                result = result
+                    .checked_add(if cloned { key.len() } else { key.capacity() })
+                    .and_then(|bytes| bytes.checked_add(payload))
+                    .ok_or_else(|| invalid("retained size overflow"))?;
             }
         }
         _ => {}
     }
     Ok(result)
-}
-
-fn merge(target: &mut Size, other: Size) -> Result<()> {
-    target.bytes = target
-        .bytes
-        .checked_add(other.bytes)
-        .ok_or_else(|| invalid("retained size overflow"))?;
-    target.items = target
-        .items
-        .checked_add(other.items)
-        .ok_or_else(|| invalid("retained size overflow"))?;
-    Ok(())
 }
