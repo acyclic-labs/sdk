@@ -83,6 +83,8 @@ mod stat;
 pub(crate) use stat::*;
 #[cfg(unix)]
 mod device;
+#[cfg(all(feature = "fuzzing", any(target_os = "linux", target_os = "macos")))]
+pub use device::check_device_codec;
 #[cfg(unix)]
 pub(crate) use device::*;
 #[cfg(test)]
