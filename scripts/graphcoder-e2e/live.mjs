@@ -10,25 +10,20 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
-import { fileBytes, toolOutcome } from "./assertions.mjs";
+import { fileBytes, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
 
-export function answer(result, format, expected) {
+export function answer(result, format, expected, id) {
   assert.equal(result.code, 0, `GraphCoder exit ${result.code}: ${result.stderr}`);
   assert.equal(result.signal, null, "GraphCoder was interrupted");
   let value;
   if (format === "text") value = result.stdout.replace(/\r?\n$/, "");
   else {
     assert.equal(format, "jsonl");
-    const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-    assert.equal(lines.length, 1, "JSONL needs exactly one authoritative answer");
-    const [line] = lines;
-    assert.ok(typeof line.id === "string" && Number.isSafeInteger(line.inbox) && line.inbox >= 0,
-      "missing committed message identity");
+    const line = jsonlReply(result.stdout, id);
     assert.equal(line.error, undefined, `failed turn: ${line.error}`);
-    assert.equal(typeof line.text, "string", "missing answer text");
     value = line;
   }
   if (expected !== undefined) assert.equal(format === "text" ? value : value.text, expected, "unexpected answer text");
@@ -84,6 +79,7 @@ export async function runCase(binary, login, root, name, signal) {
   const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
+  const messageId = "live";
   let step = "prepare workspace and isolated settings", env, childHooks, begin, receipt, hooksPending = false;
   const invoke = async (prompt, format, expected) => {
     hooksPending = true;
@@ -91,10 +87,10 @@ export async function runCase(binary, login, root, name, signal) {
       "--model", "openai/gpt-6-luna", "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
     const result = await processes.run(binary, args, { cwd: workspace, env, scopeReport: true },
-      format === "text" ? "" : JSON.stringify({ prompt, id: "live" }) + "\n");
+      format === "text" ? "" : JSON.stringify({ prompt, id: messageId }) + "\n");
     captures.push({ argv: args, ...result });
     step = "assert GraphCoder answer";
-    return answer(result, format, expected);
+    return answer(result, format, expected, messageId);
   };
   const hooks = async () => {
     hooksPending = false;

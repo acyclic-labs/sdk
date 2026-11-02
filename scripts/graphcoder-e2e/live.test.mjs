@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { fileBytes, requests } from "./assertions.mjs";
+import { fileBytes, jsonlReply, messageReply, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
@@ -17,13 +17,15 @@ test("live oracle uses the shipping text and committed JSONL contracts", () => {
   const text = "hé λ 🙂 **streamed answer**\n";
   assert.equal(answer(captured["text-responses"], "text", text), text);
   const message = { id: "e2e", inbox: 1, text: "done" };
-  assert.deepEqual(answer(captured["jsonl-reopen"], "jsonl", message.text), message);
+  assert.deepEqual(answer(captured["jsonl-reopen"], "jsonl", message.text, message.id), message);
+  assert.deepEqual(jsonlReply(captured["jsonl-reopen"].stdout, message.id), message);
+  assert.deepEqual(messageReply(message, message.id), message);
   // A successful process and two identical committed replies cannot admit a
   // wrong answer. Require the case's original expected bytes in either format.
   for (const [format, original, expected] of [["text", captured["text-responses"], text],
     ["jsonl", captured["jsonl-reopen"], message.text]]) {
     for (const wrong of ["", expected + " ", "\ufeff" + expected]) {
-      assert.throws(() => answer(original, format, wrong), error => {
+      assert.throws(() => answer(original, format, wrong, message.id), error => {
         assert.equal(error.actual, expected);
         assert.equal(error.expected, wrong);
         return true;
@@ -33,8 +35,35 @@ test("live oracle uses the shipping text and committed JSONL contracts", () => {
   for (const output of ["", "answer", "{}", JSON.stringify({ ...message, error: "failed" }),
     JSON.stringify({ ok: { text: "obsolete ExecutionResult" } }),
     JSON.stringify(message) + "\n" + JSON.stringify(message)]) {
-    assert.throws(() => answer(result(output), "jsonl"));
+    assert.throws(() => answer(result(output), "jsonl", undefined, message.id));
   }
+  // Mutations of the captured reply must fail the shared decoder used by the
+  // scripted runner too. An id-less error cannot be filtered out of success.
+  for (const mutate of [
+    value => { delete value.id; },
+    value => { value.id = 7; },
+    value => { value.id = "another prompt"; },
+    value => { delete value.inbox; },
+    value => { value.inbox = -1; },
+    value => { value.inbox = Number.MAX_SAFE_INTEGER + 1; },
+    value => { delete value.text; },
+    value => { value.text = false; },
+    value => { value.error = false; },
+  ]) {
+    const value = { ...message }; mutate(value);
+    assert.throws(() => messageReply(value, message.id), { code: "ERR_ASSERTION" });
+    assert.throws(() => jsonlReply(JSON.stringify(value), message.id), { code: "ERR_ASSERTION" });
+    assert.throws(() => answer(result(JSON.stringify(value)), "jsonl", undefined, message.id), { code: "ERR_ASSERTION" });
+  }
+  const terminal = { error: "execution failed" };
+  for (const stdout of [JSON.stringify(terminal) + "\n" + captured["jsonl-reopen"].stdout,
+    captured["jsonl-reopen"].stdout + JSON.stringify(terminal) + "\n"]) {
+    assert.throws(() => jsonlReply(stdout, message.id), { code: "ERR_ASSERTION" });
+    assert.throws(() => answer(result(stdout), "jsonl", undefined, message.id), { code: "ERR_ASSERTION" });
+  }
+  const failed = { id: message.id, error: "input rejected before commit" };
+  assert.deepEqual(jsonlReply(JSON.stringify(failed), message.id), failed);
+  assert.throws(() => answer(result(JSON.stringify(failed)), "jsonl", undefined, message.id), /failed turn/);
   assert.throws(() => answer({ ...result("answer"), code: 1, stderr: "startup failed" }, "text"), /startup failed/);
   assert.throws(() => answer({ ...result("answer"), signal: "SIGKILL" }, "text"), /interrupted/);
 });

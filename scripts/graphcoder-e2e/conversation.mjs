@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Spool } from "./process.mjs";
+import { messageReply } from "./assertions.mjs";
 
 // Keep the shipping JSONL connection open across turns. Each next prompt follows
 // the previous turn's committed reply.
@@ -20,10 +21,8 @@ export async function conversation(processes, binary, fixture, input, capture, b
       ]);
       assert.ok(!replies.has(turn.id), "committed reply preceded its prompt");
       active.child.stdin.write(JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n");
-      const reply = await replies.keyed(turn.id);
+      const reply = messageReply(await replies.keyed(turn.id), turn.id);
       assert.equal(reply.error, undefined, `failed JSONL turn ${turn.id}: ${reply.error}`);
-      assert.ok(Number.isSafeInteger(reply.inbox) && reply.inbox >= 0, "missing committed inbox identity");
-      assert.equal(typeof reply.text, "string", "missing committed answer text");
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
     }
   } catch (error) {

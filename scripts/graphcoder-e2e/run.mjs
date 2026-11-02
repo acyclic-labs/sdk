@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool, schedule } from "./process.mjs";
-import { requests, subset, recordedRequests } from "./assertions.mjs";
+import { requests, subset, recordedRequests, jsonlReply } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
@@ -65,14 +65,12 @@ function expand(value, fixture) {
 }
 // GraphCoder's headless outcome: `-p` prints the answer text and exits 0;
 // JSONL prints one `{"id", "inbox", "text"}` (or `"error"`) line per prompt.
-function outcome(input, result) {
+function outcome(input, result, id) {
   if (input.mode !== "jsonl") {
     return result.code === 0 ? { completion: "completed", ok: { text: result.stdout.replace(/\r?\n$/, "") } }
       : { completion: "failed", error: result.stderr.trim() };
   }
-  const results = result.stdout.trim().split("\n").filter(Boolean).map(JSON.parse).filter(line => line.id !== undefined);
-  assert.equal(results.length, 1, "one authoritative result");
-  const [line] = results;
+  const line = jsonlReply(result.stdout, id);
   return line.error === undefined ? { completion: "completed", ok: { text: line.text } } : { completion: "failed", error: line.error };
 }
 // A mock request is indexed by its case and step, and by its case, path and step.
@@ -119,6 +117,7 @@ async function execute(test, prepared) {
   let result;
   try {
     const operation = "00000000-0000-0000-0000-000000000001";
+    const messageId = "e2e";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       if (input.mode === "conversation") {
@@ -147,14 +146,14 @@ async function execute(test, prepared) {
         continue;
       } else if (input.mode === "jsonl") {
         // Message `<operation>:e2e`: rerunning the operation replays its answer.
-        running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: "e2e" }) + "\n");
+        running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
       } else running.child.stdin.end();
       const result = await running.closed; captures.push(result);
       assert.equal(result.code, input.exit ?? 0, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
-        const settled = outcome(input, result);
+        const settled = outcome(input, result, messageId);
         if (input.outcome !== undefined) {
           assert.equal(settled.completion, input.outcome.completion, `terminal outcome mismatch: ${JSON.stringify(settled)}`);
           if (input.outcome.error !== undefined) assert.ok(settled.error.includes(input.outcome.error), `terminal error mismatch: ${JSON.stringify(settled)}`);
