@@ -206,11 +206,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     ) -> crate::MeasuredResult<OperationReceipt<Option<JoinPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            accounting.check()?;
+            state.begin(&mut accounting)?;
             let plan = &state.plan;
             let (workspace, generation) = plan.side_workspace(side);
             let file_id = match conflict {
@@ -259,11 +255,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     {
         let (state, mut accounting) = self.owner.borrow();
         let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            accounting.check()?;
+            state.begin(&mut accounting)?;
             let plan = &state.plan;
             let (workspace, generation) = plan.side_workspace(side);
             let cancellation = accounting.cancellation();
@@ -443,14 +435,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinConten
     ) -> crate::MeasuredResult<OperationReceipt<&[u8]>, WorkspaceError> {
         let (state, mut accounting) = self.preview.owner.borrow();
         let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            if let Some(previous) = state.content.take() {
-                previous.retire(&mut accounting)?;
-            }
-            accounting.check()?;
+            state.begin(&mut accounting)?;
             let (workspace, _) = state.plan.side_workspace(self.side);
             let cancellation = accounting.cancellation();
             let read = workspace
@@ -477,17 +462,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinConten
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O> {
-    fn prepare_conflict(
-        &mut self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), WorkspaceError> {
+    // A content slice's borrow ends before another preview operation can
+    // start. Retire that physical page before admitting any new selection,
+    // traversal or range, preserving typed cleanup errors on this same frame.
+    fn begin(&mut self, accounting: &mut KernelAccounting<'_>) -> Result<(), WorkspaceError> {
         if self.failed {
             return Err(FsError::InvalidDiff.into());
         }
         self.failed = true;
-        if self.conflict_ready {
-            accounting.check()?;
-        } else {
+        if let Some(previous) = self.content.take() {
+            previous.retire(accounting)?;
+        }
+        accounting.check()?;
+        Ok(())
+    }
+
+    fn prepare_conflict(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceError> {
+        self.begin(accounting)?;
+        if !self.conflict_ready {
             accounting.charge_items(1)?;
             self.conflict_ready = true;
         }
@@ -499,12 +494,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
         &mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
-        if self.failed {
-            return Err(FsError::InvalidDiff.into());
-        }
-        self.failed = true;
+        self.begin(accounting)?;
         if self.clean_ready {
-            accounting.check()?;
             self.failed = false;
             return Ok(());
         }

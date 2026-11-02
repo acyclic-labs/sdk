@@ -757,6 +757,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
             .await
             .map_err(|failure| failure.error)?;
+        let baseline_live = original.live_allocation_bytes();
         let mut page_work = selected.work;
         let mut content = selected.value.ok_or("native body missing")?;
         let mut live = None;
@@ -775,6 +776,25 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             }
             live = Some(current);
         }
+        drop(content);
+        let mut content = native_pages
+            .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("reselected native body missing")?;
+        assert_eq!(
+            original.live_allocation_bytes(),
+            baseline_live,
+            "selection retained the preceding reader's physical page"
+        );
+        content
+            .read_range(crate::ByteRange {
+                offset: 0,
+                length: 2,
+            })
+            .await
+            .map_err(|failure| failure.error)?;
         range_cancel.cancel();
         assert!(
             content
@@ -917,6 +937,125 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         assert_eq!(unbounded!(main, read(path, 16))?.as_ref(), expected);
     }
     assert!(unbounded!(main, read("/deleted", 16)).is_err());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("range-main"))?;
+    main.write("/sparse", Bytes::from(vec![b'B'; 4096])).await?;
+    let mut seed = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        seed,
+        write_range("/sparse", 8192, Bytes::from_static(b"TAIL"))
+    )?;
+    assert!(matches!(
+        commit(&mut seed).await?,
+        TransactionCommit::Committed(_)
+    ));
+    let agent = fork_workspace(
+        &main,
+        "range-agent",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    for (workspace, byte) in [(&main, b'M'), (&agent, b'A')] {
+        let mut change = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(change, write_range("/sparse", 0, Bytes::from(vec![byte])))?;
+        assert!(matches!(
+            commit(&mut change).await?,
+            TransactionCommit::Committed(_)
+        ));
+    }
+    let conflict = crate::MergeConflict::File(unbounded!(main, stat("/sparse"))?.file_id);
+    let mut crossing = vec![0; 4102];
+    crossing[..2].copy_from_slice(b"BB");
+    crossing[4098..].copy_from_slice(b"TAIL");
+    let mut stored = vec![b'B'; 128];
+    stored[0] = b'M';
+    for native in [false, true] {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| FsError::from(error))?;
+        let plan = unbounded!(agent.join_into(&main), plan())?;
+        let options = ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let mut preview = if native {
+            plan.preview_pages(options, &original, &cancellation).await
+        } else {
+            plan.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        }
+        .map_err(|failure| failure.error)?
+        .value;
+        assert_eq!(preview.conflict_count(), 1);
+        let mut content = preview
+            .open_conflict_content(&conflict, crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("sparse body missing")?;
+        assert!(matches!(
+            content.record().payload,
+            FilePayload::Regular { .. }
+        ));
+        let baseline = original.live_allocation_bytes();
+        let mut first_live = None;
+        for (offset, expected) in [
+            (0, stored.as_slice()),
+            (4094, crossing.as_slice()),
+            (0, stored.as_slice()),
+        ] {
+            let read = content
+                .read_range(crate::ByteRange {
+                    offset,
+                    length: expected.len() as u64,
+                })
+                .await
+                .map_err(|failure| failure.error)?;
+            assert_eq!(read.value, expected);
+            if native && offset == 0 {
+                let live = original.live_allocation_bytes();
+                if let Some(first) = first_live {
+                    assert_eq!(live, first, "object page retained an earlier range");
+                }
+                first_live = Some(live);
+            }
+        }
+        drop(content);
+        let mut content = preview
+            .open_conflict_content(&conflict, crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("reselected sparse body missing")?;
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        assert!(
+            content
+                .read_range(crate::ByteRange {
+                    offset: u64::MAX,
+                    length: 1
+                })
+                .await
+                .is_err()
+        );
+        drop(content);
+        if native {
+            assert_eq!(
+                original.live_allocation_bytes(),
+                baseline,
+                "failed range retained scratch"
+            );
+        }
+        assert!(preview.next_clean().await.is_err());
+    }
     Ok(())
 }
 
