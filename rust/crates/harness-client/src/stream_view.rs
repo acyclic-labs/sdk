@@ -28,9 +28,9 @@ pub struct StreamViewPolicy {
 }
 
 impl StreamViewPolicy {
-    /// Refuses zero budgets and budgets above the client hard ceilings.
+    /// Admit the caller's exact nonzero display budgets without reserving them.
     pub fn new(records: usize, bytes: usize) -> Result<Self, StreamError> {
-        if records == 0 || records > 1024 || bytes == 0 || bytes > 16 * 1024 * 1024 {
+        if records == 0 || bytes == 0 {
             return Err(StreamError::LimitExceeded);
         }
         Ok(Self { records, bytes })
