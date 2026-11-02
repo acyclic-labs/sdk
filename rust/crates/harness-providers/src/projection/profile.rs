@@ -446,7 +446,7 @@ mod tests {
                             "model": provider.model(),
                             "prefix_digest": profile.prefix_digest(),
                             "prepared_request": std::str::from_utf8(request.bytes()).unwrap(),
-                            "request": serde_json::to_string(&projected).unwrap(),
+                            "request": String::from_utf8(projected.encode().unwrap()).unwrap(),
                             "system_bytes": header.len(),
                             "allocation_count": allocation.count_total,
                             "allocated_bytes": allocation.bytes_total,
