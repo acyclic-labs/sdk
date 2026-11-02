@@ -180,13 +180,13 @@ impl FollowFilter {
             return Ok(None);
         }
         if format.is_some() {
-            let headers = record.headers.clone();
             let body = crate::AppendRecord {
                 value: record.value,
                 headers: record.headers,
-            }
-            .retain_changes(|key| self.matches_entry(key, &headers))?
-            .ok_or(StreamError::InvalidArgument)?;
+            };
+            let body = body
+                .retain_changes(|key| self.matches_entry(key, &body.headers))?
+                .ok_or(StreamError::InvalidArgument)?;
             record.value = body.value;
             record.headers = body.headers;
         }
