@@ -499,7 +499,7 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
     }
     // Local sockets could delegate forbidden filesystem/network work to an
     // unconstrained host service. Only Internet address families are admitted.
-    let mut socket = vec![
+    let socket = [
         instruction(LOAD, 0, 0, 16),
         instruction(EQUAL, 2, 0, libc::AF_INET as u32),
         instruction(EQUAL, 1, 0, libc::AF_INET6 as u32),
@@ -507,7 +507,7 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
         instruction(LOAD, 0, 0, 24),
         instruction(AND, 0, 0, 0xf),
     ];
-    match network {
+    let protocol: &[Instruction] = match network {
         ExecutionNetwork::TcpPorts(_) => {
             // Deferred Fast Open reaches that same implicit-connect path on
             // ordinary write, without MSG_FASTOPEN. No socket crosses exec,
@@ -537,14 +537,6 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
                     instruction(LOAD, 0, 0, 0),
                 ]);
             }
-            socket.extend([
-                instruction(EQUAL, 1, 0, libc::SOCK_STREAM as u32),
-                instruction(RETURN, 0, 0, DENY),
-                instruction(LOAD, 0, 0, 32),
-                instruction(EQUAL, 2, 0, 0),
-                instruction(EQUAL, 1, 0, libc::IPPROTO_TCP as u32),
-                instruction(RETURN, 0, 0, DENY),
-            ]);
             for call in [
                 libc::SYS_bind,
                 libc::SYS_listen,
@@ -553,21 +545,30 @@ fn socket_filter(code: &mut Vec<Instruction>, network: &ExecutionNetwork) -> io:
             ] {
                 verdict(code, call, DENY)?;
             }
+            &[
+                instruction(EQUAL, 1, 0, libc::SOCK_STREAM as u32),
+                instruction(RETURN, 0, 0, DENY),
+                instruction(LOAD, 0, 0, 32),
+                instruction(EQUAL, 2, 0, 0),
+                instruction(EQUAL, 1, 0, libc::IPPROTO_TCP as u32),
+                instruction(RETURN, 0, 0, DENY),
+            ]
         }
-        ExecutionNetwork::On => socket.extend([
+        ExecutionNetwork::On => &[
             instruction(EQUAL, 2, 0, libc::SOCK_STREAM as u32),
             instruction(EQUAL, 1, 0, libc::SOCK_DGRAM as u32),
             instruction(RETURN, 0, 0, DENY),
-        ]),
+        ],
         ExecutionNetwork::Off => return Err(refused("inconsistent network filter")),
-    }
+    };
     code.push(instruction(
         EQUAL,
         0,
-        u8::try_from(socket.len()).map_err(|_| refused("invalid socket filter"))?,
+        u8::try_from(socket.len() + protocol.len())
+            .map_err(|_| refused("invalid socket filter"))?,
         number(libc::SYS_socket)?,
     ));
-    code.extend(socket);
+    code.extend(socket.into_iter().chain(protocol.iter().copied()));
     code.push(instruction(LOAD, 0, 0, 0));
     verdict(code, libc::SYS_socketpair, DENY)?;
     Ok(())
