@@ -354,9 +354,13 @@ mod tests {
             harness.verifier.audience().clone(),
         );
         let verifier = issuer.verifier(&mut None)?;
-        let io = crate::filesystem::PreparationIo::for_unmeasured(
-            &acyclic_fs::CancellationToken::new(),
-        )?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         let volume = &workspace.mounts.named(None)?.1.view.volume;
         let read = volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
         let write = volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
