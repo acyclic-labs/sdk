@@ -18,6 +18,7 @@ pub struct NativeCompletion<T> {
     pub(crate) state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     pub(crate) ready: Option<io::Result<T>>,
     pub(crate) pending: Option<NativeJob>,
+    inline: bool,
     pub(crate) waiter: Option<Arc<CapacityWaiter>>,
     pub(crate) predecessor: Option<Arc<OperationFence>>,
     pub(crate) completion: Option<Arc<OperationFence>>,
@@ -56,7 +57,8 @@ impl<T> NativeCompletion<T> {
     /// Requires this operation to run on its shared native workers, even when
     /// the thread polling it permits inline blocking work.
     #[must_use]
-    pub fn offloaded(self) -> Self {
+    pub fn offloaded(mut self) -> Self {
+        self.inline = false;
         self
     }
 
@@ -73,6 +75,7 @@ impl<T> NativeCompletion<T> {
             state: Some(state),
             ready: None,
             pending: Some(job),
+            inline: true,
             waiter: None,
             predecessor: None,
             completion: None,
@@ -88,6 +91,7 @@ impl<T> NativeCompletion<T> {
             state: None,
             ready: Some(result),
             pending: None,
+            inline: true,
             waiter: None,
             predecessor: None,
             completion: None,
@@ -200,6 +204,7 @@ impl<T> Future for NativeCompletion<T> {
             return early;
         }
         if std::ptr::eq(this.pool, &BLOCKING_WORKERS)
+            && this.inline
             && inline_blocking_allowed()
             && let Some(job) = this.pending.take()
         {
@@ -208,6 +213,7 @@ impl<T> Future for NativeCompletion<T> {
         #[cfg(windows)]
         if !std::ptr::eq(this.pool, &BLOCKING_WORKERS)
             && !std::ptr::eq(this.pool, &crate::workers::OUTPUT_WORKERS)
+            && this.inline
             && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {
