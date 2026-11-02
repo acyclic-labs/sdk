@@ -332,7 +332,9 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
             streams
                 .commit(acyclic_stream::CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: Vec::new(),
+                    conditions: vec![acyclic_stream::CommitCondition::Absent {
+                        path: copied.log().clone(),
+                    }],
                     mutations: vec![acyclic_stream::CommitMutation::Fork {
                         source: source.log().clone(),
                         destination: copied.log().clone(),

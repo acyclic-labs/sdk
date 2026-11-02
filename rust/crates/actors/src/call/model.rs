@@ -823,7 +823,9 @@ async fn source_bound_claims() -> Result<(), String> {
         assert!(
             model
                 .publish(Commit {
-                    conditions: Vec::new(),
+                    conditions: vec![CommitCondition::Absent {
+                        path: destination.log().clone(),
+                    }],
                     mutations: vec![CommitMutation::Fork {
                         source: source.log().clone(),
                         destination: destination.log().clone(),
