@@ -445,9 +445,10 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
         binding.transaction(|state| state.alarm(Some(50)))?;
         binding.flush(key("idle/replacement")?).await?;
         let generation = if original.is_some() { 2 } else { 1 };
-        let delivered = executor.run_until(state_after(&store, &address, |state| {
-            state.alarm().delivered_generation == Some(generation)
-        }))?;
+        executor.run_until_stalled();
+        let delivered = store.load(&address).await?;
+        let delivered = delivered.state().ok_or("missing delivered state")?;
+        assert_eq!(delivered.alarm().delivered_generation, Some(generation));
         assert_eq!(
             records(&*provider, "out/changed-alarm").await?,
             vec![Bytes::from_static(if original.is_some() {
