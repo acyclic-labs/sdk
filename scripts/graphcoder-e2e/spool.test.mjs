@@ -54,6 +54,39 @@ test("native event callback failures end unmatched waits with the original cause
   } finally { rmSync(root, { recursive: true }); }
 });
 
+test("retired native event observations release their captured payloads", async () => {
+  const processes = new Processes();
+  const code = `
+    import assert from 'node:assert/strict';
+    import { Processes, Spool } from ${JSON.stringify(new URL("./process.mjs", import.meta.url).href)};
+    const processes = new Processes();
+    try {
+      const producer = processes.start(process.execPath, ['-e', "console.log(JSON.stringify({id:'retained'}))"]);
+      producer.input.end();
+      const events = new Spool(producer.child.stdout, producer.closed, {key: event => [event.id]});
+      function observe() {
+        const payload = new Uint8Array(1024 * 1024);
+        events.subscribe(() => payload.byteLength);
+        return new WeakRef(payload);
+      }
+      const active = observe();
+      await events.next(() => false).catch(error => assert.equal(error.kind, 'eof'));
+      assert.equal((await producer.closed).code, 0);
+      const late = observe();
+      await new Promise(resolve => setImmediate(resolve));
+      global.gc();
+      assert.equal(active.deref() === undefined, true, 'terminal observation retained its capture');
+      assert.equal(late.deref() === undefined, true, 'late observation retained its capture');
+      assert.deepEqual(await events.keyed('retained'), {id:'retained'});
+      assert.equal(processes.children.size, 0);
+    } finally { await processes.close(); }
+  `;
+  try {
+    const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code]);
+    assert.equal(result.code, 0, result.stderr);
+  } finally { await processes.close(); }
+});
+
 test("keyed transcript lookups read exactly one original event, including after EOF", async () => {
   const source = new PassThrough();
   let close;

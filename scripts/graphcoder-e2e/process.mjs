@@ -510,6 +510,8 @@ export class Spool {
   #settle(cause) {
     if (!this.#state.open) return;
     this.#state = { open: false, cause };
+    this.#listeners.clear();
+
     for (const wait of this.#pending) wait.reject(cause);
     for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(cause);
     this.#pending.clear(); this.#waiting.clear();
@@ -577,7 +579,7 @@ export class Spool {
   }
   has(key) { return this.#index.has(key); }
   subscribe(listener) {
-    this.#listeners.add(listener);
+    if (this.#state.open) this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
   // Every event so far that `match` accepts, read from the transcript.
