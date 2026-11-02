@@ -64,18 +64,18 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         brief: None,
         policy: None,
     };
-    let state = AgentState::adopted(path.clone(), &adopted)?;
+    let mut state = AgentState::adopted(path.clone(), &adopted)?;
     let encoded = checkpoint::encode(&state)?;
     let envelope = checkpoint::from_encoded(encoded.clone())?;
     let id = IntentId::try_from("captured-intent")?;
-    Ok(vec![
+    let mut seeds = vec![
         (
-            "agent-adopted",
+            "adopted",
             InboxRecord::ForkAdopted(Box::new(adopted)).encode()?,
         ),
-        ("agent-awaited", InboxRecord::Awaited.encode()?),
+        ("awaited", InboxRecord::Awaited.encode()?),
         (
-            "agent-status",
+            "status",
             StatusRecord {
                 phase: Phase::Idle,
                 cursor: 0,
@@ -84,7 +84,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             .encode()?,
         ),
         (
-            "agent-closed",
+            "closed",
             Closed {
                 by: Sender::Agent { path: path.clone() },
                 id: id.clone(),
@@ -92,13 +92,55 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             .encode()?,
         ),
         (
-            "agent-effect",
+            "effect",
             records::seal(&TurnEffect::Archive { target: path, id })?,
         ),
-        ("agent-checkpoint", encoded),
+        ("checkpoint", encoded),
         (
-            "agent-checkpoint-envelope",
+            "checkpoint-envelope",
             crate::contract::canonical_json_bytes(&envelope)?,
         ),
-    ])
+    ];
+    for (names, binding) in [
+        (
+            [
+                "status-approval-bound",
+                "checkpoint-approval-bound",
+                "checkpoint-envelope-approval-bound",
+            ],
+            Some(crate::interaction::ApprovalBinding {
+                operation_id: crate::OperationId::from_bytes([11; 16]),
+                action_digest: [13; 32],
+            }),
+        ),
+        (
+            [
+                "status-approval-external",
+                "checkpoint-approval-external",
+                "checkpoint-envelope-approval-external",
+            ],
+            None,
+        ),
+    ] {
+        state.phase = Phase::WaitingApproval {
+            id: IntentId::try_from("captured-approval")?,
+            binding,
+        };
+        let status = StatusRecord {
+            phase: state.phase.clone(),
+            cursor: 0,
+            conversation: 0,
+        };
+        let status_bytes = status.encode()?;
+        assert_eq!(StatusRecord::decode(&status_bytes)?, status);
+        let encoded = checkpoint::encode(&state)?;
+        let envelope = checkpoint::from_encoded(encoded.clone())?;
+        assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
+        seeds.extend([
+            (names[0], status_bytes),
+            (names[1], encoded),
+            (names[2], crate::contract::canonical_json_bytes(&envelope)?),
+        ]);
+    }
+    Ok(seeds)
 }
