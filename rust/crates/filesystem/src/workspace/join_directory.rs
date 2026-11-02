@@ -405,23 +405,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         permit: crate::PublicationPermit,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        let mut transaction = self
-            .staging
-            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, cancellation)
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        let mut transaction = {
+            let mut accounting = self.preview.accounting()?;
+            self.staging
+                .begin_transaction_with_accounting(
+                    IdempotencyKey::new(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?
+        };
         let mut next = self.plan.clone();
         if matches!(self.plan_condition, FileCondition::Absent) {
             for name in ["clean", "conflicts"] {
+                let mut accounting = self.preview.accounting()?;
                 transaction
-                    .create_dir_all(
+                    .create_dirs(
                         &format!("{}/{name}", self.path),
-                        WorkBudget::UNBOUNDED,
+                        &mut accounting,
                         cancellation,
                     )
-                    .await
-                    .map_err(|failure| failure.error)?;
+                    .await?;
             }
         }
         for _ in 0..steps.get() {
@@ -455,7 +459,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                             self.path,
                             entry_name(b"clean-v1\0", file.path.as_bytes())
                         );
-                        write_file(&mut transaction, &path, json(&file)?, cancellation).await?;
+                        let bytes = json(&file)?;
+                        let mut accounting = self.preview.accounting()?;
+                        write_file(
+                            &mut transaction,
+                            &path,
+                            bytes,
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?;
                         next.clean = next
                             .clean
                             .checked_add(1)
@@ -527,7 +540,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     })?,
                 )
             };
-            write_file(&mut transaction, &path, bytes, cancellation).await?;
+            let mut accounting = self.preview.accounting()?;
+            write_file(
+                &mut transaction,
+                &path,
+                bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
             next.exposed_conflicts = next
                 .exposed_conflicts
                 .checked_add(1)
@@ -536,16 +557,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         next.complete = next.clean_complete && next.conflicts_complete;
         let bytes = json(&next)?;
         let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
-        transaction
-            .write_if(
-                &format!("{}/plan.json", self.path),
-                bytes,
-                self.plan_condition,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.error)?;
+        {
+            let mut accounting = self.preview.accounting()?;
+            transaction
+                .write_if_with_accounting(
+                    &format!("{}/plan.json", self.path),
+                    bytes,
+                    self.plan_condition,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+        }
         match transaction
             .commit::<WorkspaceError, _, _>(
                 None,
@@ -588,17 +611,11 @@ async fn write_file<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'sta
     transaction: &mut Transaction<A, O>,
     path: &str,
     bytes: Vec<u8>,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkspaceError> {
     transaction
-        .write_if(
-            path,
-            bytes,
-            FileCondition::Absent,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.error)?;
+        .write_if_with_accounting(path, bytes, FileCondition::Absent, accounting, cancellation)
+        .await?;
     Ok(())
 }

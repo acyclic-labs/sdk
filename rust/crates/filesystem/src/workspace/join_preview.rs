@@ -448,6 +448,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         self.owner.borrow().1.cancellation().clone()
     }
 
+    pub(super) fn accounting(&mut self) -> Result<KernelAccounting<'_>, WorkspaceError> {
+        let (state, accounting) = self.owner.borrow();
+        accounting.check()?;
+        if state.failed {
+            return Err(FsError::InvalidDiff.into());
+        }
+        Ok(accounting)
+    }
+
     pub(super) fn ensure_directory_start(&mut self) -> Result<(), WorkspaceError> {
         let (state, accounting) = self.owner.borrow();
         accounting.check()?;
