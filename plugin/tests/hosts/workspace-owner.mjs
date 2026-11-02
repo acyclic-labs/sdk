@@ -14,11 +14,14 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
  const watcher=watch(workspace,{recursive:true});
  watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
  try {
-  const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
-   {cwd:workspace,env,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
-  owner.closed.then(record=>{capture(record);failed(new Error('workspace owner exited before descriptor'));},failed);
-  if(existsSync(descriptor))ready();
-  await notified;return owner;
+  const reported=scope.startReportedOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
+   {cwd:workspace,env,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})}).then(async owner=>{
+    owner.closed.then(record=>{capture(record);failed(new Error('workspace owner exited before descriptor'));},failed);
+    if(existsSync(descriptor))ready();
+    await owner.reportReady;
+    return owner;
+   });
+  const [owner]=await Promise.all([reported,notified]);return owner;
  } finally {watcher.close();}
 }
 
