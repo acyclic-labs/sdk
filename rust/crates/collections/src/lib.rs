@@ -1,8 +1,8 @@
 //! Caller-funded indexes and immutable page mechanics shared by primitives.
 //!
-//! Branch bits strictly increase along every path. Lookup therefore examines
-//! at most eight branches per key byte and one leaf, independent of entry count.
-//! Key widths share insertion, accounting, lookup and constant-space retirement.
+//! Fixed-width indexes use increasing branch bits; variable-width prefixes use
+//! compressed byte edges. Both bound lookup work by query bytes, independently
+//! of entry count, and keep retirement independent of process stack depth.
 
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();

@@ -97,6 +97,24 @@ fn native_root_selection_is_bounded_by_query_bytes_after_foreign_growth() {
     println!(
         "foreign_roots=[0,100000] indexed_work={indexed_work:?} restored_comparisons={ordered_work:?}; lookup allocations=0"
     );
+    // Native volume roots include their separator in the prefix itself. An
+    // exact root must still win, while descendants select that shallowest
+    // declared ancestor even when a more specific declaration also matches.
+    let volume_root = base.ancestors().last().unwrap();
+    let root_slot = roots.len();
+    index.insert(volume_root, root_slot);
+    for query in [volume_root, deep.as_path(), roots[0].as_path()] {
+        let exact = if query == volume_root {
+            Some(root_slot)
+        } else {
+            roots.iter().position(|root| root == query)
+        };
+        let ancestor = (query != volume_root).then_some(root_slot);
+        let measured = acyclic_test_support::measure(|| {
+            assert_eq!(index.select(query, |_| {}), (exact, ancestor));
+        });
+        assert_eq!(measured.count_total, 0);
+    }
 }
 
 #[test]
