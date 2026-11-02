@@ -202,8 +202,8 @@ async function campaign(signal) {
     cells, results,
     ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
     pass: !signal.aborted && results.every(result => result.status === "pass") };
-  await publishReport(join(output, "matrix.json"), report);
-  process.exitCode = report.pass ? 0 : 1;
+  await publishReport(join(output, "matrix.json"), report, undefined, signal);
+  process.exitCode = !signal.aborted && report.pass ? 0 : 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
