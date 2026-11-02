@@ -169,11 +169,6 @@ Concurrent different meters are rejected before I/O; nested
 same-meter scopes share the original admission. All traffic reaching that
 physical root during the scope can consume its budget. This is accounting,
 not task identity: original owner, volume and path guards remain mandatory.
-`LazyMount::retain_payload_allocation` transfers an already-admitted caller
-container guard into the actual mounted payload without admission or allocation.
-Its first guard retains the caller's independent accounting view, not mount
-authority. Further absorption checks the same ledger/resource view and overflow,
-leaving both guards unchanged on failure. Keep the input until its container is freed.
 
 The canonical checkout compiler, name admission, generation mutation and safe
 rebase engines accept the same original native accounting context. Copied
