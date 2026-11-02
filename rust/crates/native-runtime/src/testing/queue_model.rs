@@ -108,7 +108,8 @@ fn capacity(fault: Fault) {
     eprintln!("capacity schedules: {}", schedules.load(Ordering::Relaxed));
 }
 
-fn terminal(drop_observer: bool, fault: Fault) {
+fn terminal(drop_observer: bool, panicked: bool, fault: Fault) {
+    const PANIC: &str = "original native task panic control";
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let orders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -120,6 +121,9 @@ fn terminal(drop_observer: bool, fault: Fault) {
         let mut task = run_blocking_io(
             move || {
                 executed.fetch_add(1, Ordering::SeqCst);
+                if panicked {
+                    std::panic::panic_any(PANIC);
+                }
                 17
             },
             None,
@@ -159,15 +163,28 @@ fn terminal(drop_observer: bool, fault: Fault) {
         if pending && !drop_observer {
             assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         }
-        match observer.as_mut() {
-            Some(task) => {
-                assert!(matches!(Pin::new(task).poll(&mut cx), Poll::Ready(Ok(17))));
-            }
+        let outcome = match observer.as_mut() {
+            Some(task) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Pin::new(task).poll(&mut cx)
+            })),
             None => {
                 // The independently owned worker still publishes after the
-                // sole caller drops; dropping a waker must not lose its result.
-                assert!(matches!(state.lock().unwrap().result.take(), Some(Ok(17))));
+                // sole caller drops; inspect its original result or panic.
+                let mut state = state.lock().unwrap();
+                if let Some(payload) = state.panic.take() {
+                    assert!(state.result.is_none());
+                    Err(payload)
+                } else {
+                    Ok(Poll::Ready(
+                        state.result.take().expect("original result retained"),
+                    ))
+                }
             }
+        };
+        if panicked {
+            assert_eq!(outcome.unwrap_err().downcast_ref::<&str>(), Some(&PANIC));
+        } else {
+            assert!(matches!(outcome, Ok(Poll::Ready(Ok(17)))));
         }
     });
     assert_eq!(
@@ -176,7 +193,7 @@ fn terminal(drop_observer: bool, fault: Fault) {
         "a completion order was not explored"
     );
     eprintln!(
-        "terminal schedules (drop={drop_observer}): {}",
+        "terminal schedules (drop={drop_observer}, panic={panicked}): {}",
         schedules.load(Ordering::Relaxed)
     );
 }
@@ -188,8 +205,10 @@ fn capacity_release_races_registration_on_the_real_queue() {
 
 #[test]
 fn physical_completion_races_observer_drop_on_the_real_terminal() {
-    terminal(false, Fault::None);
-    terminal(true, Fault::None);
+    for panicked in [false, true] {
+        terminal(false, panicked, Fault::None);
+        terminal(true, panicked, Fault::None);
+    }
 }
 
 #[test]
@@ -207,13 +226,25 @@ fn broken_capacity_accounting_is_detected() {
 #[test]
 #[should_panic(expected = "terminal wake lost")]
 fn broken_terminal_wake_is_detected() {
-    terminal(false, Fault::Wake);
+    terminal(false, false, Fault::Wake);
+}
+
+#[test]
+#[should_panic(expected = "terminal wake lost")]
+fn broken_panicked_terminal_wake_is_detected() {
+    terminal(false, true, Fault::Wake);
 }
 
 #[test]
 #[should_panic(expected = "terminal accounting lost")]
 fn broken_terminal_accounting_is_detected() {
-    terminal(true, Fault::Accounting);
+    terminal(true, false, Fault::Accounting);
+}
+
+#[test]
+#[should_panic(expected = "terminal accounting lost")]
+fn broken_panicked_terminal_accounting_is_detected() {
+    terminal(true, true, Fault::Accounting);
 }
 
 /// Result observation and abandonment race the worker's final shared release.
