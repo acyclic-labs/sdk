@@ -464,11 +464,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         pending.retire(accounting)?;
         drop(replacements);
         let mut mutations = Owned::<Vec<FileTableMutation>>::allocate(record_count, accounting)?;
-        // Emit canonical FileId order once; the writer's existing ordered-input
-        // check then needs no comparison sort or record relocation.
-        let mut entry = records.first(accounting)?;
-        while let Some((key, selected)) = entry {
-            let record = selected
+        // Consume canonical FileId order once, retiring each original owner
+        // without restarting a search from the root for every output record.
+        let mut records = records.into_entries();
+        while let Some(entry) = records.try_next(accounting)? {
+            let record = entry
+                .value()
                 .finish(&self.inner.objects, limits, accounting, cancellation)
                 .await?;
             selection_push(
@@ -477,7 +478,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 maximum,
                 accounting,
             )?;
-            entry = records.seek_after(*key, accounting)?;
         }
         drop(records);
         let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {

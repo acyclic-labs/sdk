@@ -345,6 +345,8 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
     let mut visits = Vec::new();
     let mut censuses = Vec::new();
     let mut moved = Vec::new();
+    let mut seeks = Vec::new();
+    let mut drains = Vec::new();
     for population in [1_u64, 100_000] {
         let bound =
             acyclic_collections::FixedIndex::<FileRecord, RetainedAllocation, 16>::insertion_bound(
@@ -422,6 +424,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         old[position..].rotate_right(1);
         records
             .get_or_try_insert_with(first.file_id.into_bytes(), &mut accounting, |_| Ok(first))?;
+        let before = accounting.spent();
         let mut entry = records.first(&mut accounting)?;
         for expected in &old {
             let (key, record) = entry.ok_or("selected record order ended early")?;
@@ -430,12 +433,26 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             entry = records.seek_after(*key, &mut accounting)?;
         }
         assert!(entry.is_none());
+        seeks.push(accounting.spent().items_examined - before.items_examined);
+        let before = accounting.spent();
+        let mut records = records.into_entries();
+        for expected in &old {
+            let entry = records
+                .try_next(&mut accounting)?
+                .ok_or("selected record drain ended early")?;
+            assert_eq!(*entry.key(), expected.file_id.into_bytes());
+            assert_eq!(entry.value(), expected);
+        }
+        assert!(records.try_next(&mut accounting)?.is_none());
+        let after = accounting.spent();
+        drains.push(after.items_examined - before.items_examined);
+        assert!(drains.last().copied().unwrap() <= 6 * (2 * old.len() - 1) as u64);
+        assert!(drains.last() < seeks.last());
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(original.live_allocation_bytes(), baseline);
         cancel.cancel();
-        assert!(
-            records
-                .get_mut(own.file_id.into_bytes(), &mut accounting)
-                .is_err()
-        );
+        assert!(records.try_next(&mut accounting).is_err());
         drop(records);
         assert_eq!(original.live_allocation_bytes(), baseline);
         original.receipt().verify(budget)?;
@@ -445,7 +462,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
     assert_eq!(censuses, [2, 100_001]);
     assert!(moved[1] > moved[0]);
     println!(
-        "selected record visits={visits:?}; original override census={censuses:?}; original sorted moved bytes={moved:?}"
+        "selected record visits={visits:?}; original override census={censuses:?}; original sorted moved bytes={moved:?}; ordered seeks={seeks:?}; owned drain={drains:?}"
     );
     Ok(())
 }

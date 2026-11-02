@@ -75,6 +75,31 @@ pub struct ExtractedEntries<V, A, const N: usize, F: FnMut(u64)> {
     visit: F,
 }
 
+impl<V, A, const N: usize, F: FnMut(u64)> ExtractedEntries<V, A, N, F> {
+    /// Admits each node examination on the original caller before consuming it.
+    /// Checks cancellation even when empty, allocates nothing and copies no key
+    /// or value. Refusal yields no entry and preserves all remaining entries in
+    /// order, although admitted rotations may already have changed their shape.
+    ///
+    /// An uninterrupted traversal costs O(consumed nodes) in total, with constant
+    /// space; each refused attempt pays for its admitted examinations. Dropping
+    /// after refusal or caller withdrawal still retires every
+    /// remaining owner through the infallible retained observation sink, without
+    /// fresh admission. Yielded values keep their original leaf funding.
+    pub fn try_next<W: IndexReadWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<Entry<V, A, N>>, W::Error> {
+        work.validate()?;
+        try_take_first_leaf(&mut self.entries.root, &mut |items| {
+            work.examine(items)?;
+            (self.visit)(items);
+            Ok(())
+        })
+        .map(|leaf| leaf.map(Entry::from_leaf))
+    }
+}
+
 impl<V, A, const N: usize, F: FnMut(u64)> Iterator for ExtractedEntries<V, A, N, F> {
     type Item = Entry<V, A, N>;
 
