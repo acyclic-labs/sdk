@@ -22,8 +22,8 @@ pub(super) struct PublicationProof<'a> {
 ///
 /// # Errors
 ///
-/// Returns stale for deterministic conflicts/fences and an engine failure for
-/// storage, authentication, cancellation, or indeterminate authority results.
+/// Returns stale for deterministic conflicts/fences. Other failures retain
+/// the shared native source error classification and original filesystem cause.
 pub async fn seal_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     operation_id: OperationId,
@@ -73,7 +73,7 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
                     },
                 )
                 .await
-                .map_err(|failure| publication_error(failure.error))?;
+                .map_err(|failure| MountSourceError::from(failure.error))?;
             private_ack(operation_id, receipt.value)
                 .map(|_| ())
                 .ok_or(MountSourceError::Stale)
@@ -82,7 +82,7 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
             let receipt = checkout
                 .resume_live(operation_id, budget, cancellation)
                 .await
-                .map_err(|failure| publication_error(failure.error))?;
+                .map_err(|failure| MountSourceError::from(failure.error))?;
             live_ack(operation_id, &receipt.value)
                 .map(|_| ())
                 .ok_or(MountSourceError::Stale)
@@ -214,18 +214,6 @@ fn live_ack(
     }
 }
 
-fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
-}
-
-fn publication_error(error: crate::FsError) -> MountSourceError {
-    match error {
-        crate::FsError::Work(error) => MountSourceError::Work(error),
-        crate::FsError::Cancelled(_) => MountSourceError::Cancelled,
-        error => engine_error(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +227,104 @@ mod tests {
         Filesystem(#[from] crate::FsError),
         #[error(transparent)]
         Source(#[from] MountSourceError),
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn public_seal_retains_lost_ack_cause_and_resumes_original_operation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let simulation = crate::Simulation::default();
+        let (authority, objects) = simulation.stores();
+        let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+        let volume = fs
+            .create_volume(
+                VolumeConfig::portable(Lifecycle::Ephemeral),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        checkout
+            .create(
+                crate::AuthoredMutation::CreateDirectory {
+                    path: crate::kernel::NamespacePath::from_text_in_profile(
+                        "/retained",
+                        crate::FilesystemProfile::Portable,
+                        checkout.volume_config().limits,
+                    )?,
+                    metadata: crate::kernel::FileMetadata::default(),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        let operation = OperationId::from_bytes([0x67; 16]);
+        simulation.schedule_next(
+            crate::SimulationOperation::AuthorityAppend,
+            crate::SimulationFault::AmbiguousAuthorityAppend,
+        )?;
+        let error = seal_checkout(
+            &mut checkout,
+            operation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .expect_err("the original authority acknowledgement was lost");
+        assert!(matches!(
+            error,
+            MountSourceError::Filesystem(crate::FsError::Authority(
+                crate::AuthorityStoreError::Indeterminate { source, .. }
+            )) if source.kind() == std::io::ErrorKind::ConnectionReset
+        ));
+        assert_eq!(
+            simulation
+                .trace()?
+                .iter()
+                .filter(
+                    |entry| entry.fault == Some(crate::SimulationFault::AmbiguousAuthorityAppend)
+                )
+                .count(),
+            1
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let before = simulation.trace()?;
+        assert!(matches!(
+            seal_checkout(&mut checkout, operation, WorkBudget::UNBOUNDED, &cancelled).await,
+            Err(MountSourceError::Cancelled)
+        ));
+        assert_eq!(simulation.trace()?, before);
+        seal_checkout(
+            &mut checkout,
+            operation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let published = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        assert_eq!(published.generation_id(), checkout.generation_id());
+        assert!(!checkout.has_pending_mutations());
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
