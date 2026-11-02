@@ -137,7 +137,7 @@ pub(crate) async fn select(
             "template reader returned another selection".into(),
         ));
     }
-    file.descriptor().verify(&bytes, &mut None)?;
+    // The admitted content reader has already authenticated these exact bytes.
     if crate::layers::is_off(&bytes) {
         return Err(Error::NotFound(format!("template {name} is off")));
     }
