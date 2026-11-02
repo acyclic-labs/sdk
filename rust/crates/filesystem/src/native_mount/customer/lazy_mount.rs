@@ -33,20 +33,6 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    /// Checks an observed parent entry against this active mount's held resources.
-    pub fn owns_native_parent_entry(
-        &self,
-        entry: &crate::native_host::HostListedEntry,
-        work: &NativeMaterializationWork,
-    ) -> Result<bool, crate::NativeTreeMaterializationError> {
-        self.session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .ok_or(crate::NativeTreeMaterializationError::ExternalMutation)?
-            .owns_parent_entry(entry, work)
-    }
-
     /// Returns this mount's original finite callback allowance.
     pub fn native_work(&self) -> Result<NativeMaterializationWork, MountLifecycleError> {
         self.source
@@ -94,16 +80,6 @@ where
             session.capture_host_paths(std::slice::from_ref(&path.0), &work)
         })?;
         Ok(())
-    }
-
-    /// Retains already-paid container capacity until its payload drops.
-    pub fn retain_payload_allocation(
-        &mut self,
-        incoming: &mut NativeAllocation,
-    ) -> Result<(), MountLifecycleError> {
-        self._destination_custody
-            .absorb(incoming)
-            .map_err(Into::into)
     }
 
     /// Authenticated post-mount native root witness.
