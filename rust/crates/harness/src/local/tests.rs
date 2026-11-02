@@ -20,7 +20,7 @@ use std::{path::Path, sync::Arc};
 mod agents;
 mod context;
 mod replay;
-mod settings;
+pub(super) mod settings;
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))

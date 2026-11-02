@@ -19,7 +19,11 @@ async fn open(directory: &Path) -> Result<LocalHarness> {
 }
 
 /// Writes a home settings module, returning its version.
-async fn write(harness: &LocalHarness, path: &str, source: &str) -> Result<String> {
+pub(in crate::local) async fn write(
+    harness: &LocalHarness,
+    path: &str,
+    source: &str,
+) -> Result<String> {
     let grant = ContentGrant::verify(
         &harness.verifier,
         &harness.signed,
