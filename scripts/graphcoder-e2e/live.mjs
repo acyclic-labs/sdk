@@ -30,9 +30,9 @@ export function answer(result, format) {
   return line;
 }
 
-export function requireTools(hooks, names, expectedChildResult) {
+export function requireTools(hooks, names, expectedChildResult, mergeChild = false) {
   const remaining = new Set(names);
-  let child, childName, consumed = false;
+  let child, childName, consumed = false, merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
     if (hook.tool_response === undefined || hook.tool_response === null)
@@ -56,10 +56,15 @@ export function requireTools(hooks, names, expectedChildResult) {
       assert.equal(settled.phase, "idle", "child did not settle successfully");
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
       consumed = true;
+    } else if (mergeChild && consumed && typeof childName === "string" && hook.tool_name === "fs"
+      && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
+      // The filesystem generates this message from its completed join operand.
+      merged = true;
     }
   }
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
   if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
+  if (mergeChild) assert.ok(merged, `step=admit committed merge of the settled child's branch; recovery=${recovery}`);
 }
 
 export async function runCase(binary, login, root, name, signal) {
@@ -137,13 +142,11 @@ export async function runCase(binary, login, root, name, signal) {
           before.filter(hook => hook.hook_event_name === "PostToolUse").length, "replay repeated a tool call");
       } else if (name === "fork-merge") {
         await collaborate(`Spawn a child named worker to use shell to write child.txt in its project checkout containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply with exactly ${marker}. End your spawn turn with exactly SPAWNED so it commits. Retain the exact canonical agent path returned by spawn for the next turn. The spawn result is a canonical agent path, not a branch alias.`,
-          "Use wait with the exact canonical agent path from the preceding spawn result and read that child's settled idle answer. Then use fs branch to find the actual published agents/ branch, merge that exact branch into your project, and read child.txt. Reply with exactly those file contents, without additional text.");
+          "Use wait with the exact canonical agent path from the preceding spawn result and read that child's settled idle answer. Its changes are on agents/<spawn name>. Use fs diff to inspect that branch, then fs merge to bring it into your project, and read child.txt. Reply with exactly those file contents, without additional text.");
         step = "assert child fork and merged parent bytes";
         const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "child.txt"), marker);
-        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker);
-        assert.ok(recorded.some(hook => hook.hook_event_name === "PostToolUse" && hook.tool_name === "fs"
-          && /\bmerge\s+['\"]?agents\//.test(hook.tool_input?.command ?? "")), "missing completed child merge");
+        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, true);
       } else assert.fail(`unknown case ${name}`);
     } });
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");

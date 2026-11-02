@@ -8,6 +8,7 @@ import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
+const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 import { answer, requireTools, runCase } from "./live.mjs";
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
@@ -70,6 +71,40 @@ test("collaboration requires the spawned child's exact settled public result", (
       const events = structuredClone(original);
       mutate(events);
       assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+    }
+  }
+});
+
+test("a child merge needs its committed branch result after settlement", () => {
+  // These are successful native operations from cases that still failed their
+  // whole-case time requirement. No historical case is requalified here.
+  for (const { events: original } of mergeResults) {
+    const expected = original.find(event => event.tool_name === "wait").tool_response.settled[0].answer;
+    const check = events => requireTools(events, ["spawn", "wait", "fs"], expected, true);
+    check(original);
+    for (const mutate of [
+      (events, merge) => { events.splice(events.indexOf(merge), 1); },
+      (_, merge) => { merge.hook_event_name = "PreToolUse"; },
+      (_, merge) => { merge.tool_response.result.Committed = null; },
+      (events, merge) => { merge.tool_response = structuredClone(events.find(event =>
+        event.tool_response?.result?.Filesystem?.Data?.kind === "diff").tool_response); },
+      (_, merge) => { merge.tool_response.result.Committed.message = "merge agents/other"; },
+      (_, merge) => { merge.tool_response.result.Committed.message = "rebase agents/worker"; },
+      (events, merge) => {
+        events.splice(events.indexOf(merge), 1);
+        events.splice(1, 0, merge);
+      },
+      (events, merge) => {
+        // The former unanchored command-text check accepted this inspection.
+        merge.tool_input.command = "diff 'merge agents/worker'";
+        merge.tool_response = structuredClone(events.find(event =>
+          event.tool_response?.result?.Filesystem?.Data?.kind === "diff").tool_response);
+      },
+    ]) {
+      const events = structuredClone(original);
+      const merge = events.find(event => event.tool_response?.result?.Committed);
+      mutate(events, merge);
+      assert.throws(() => check(events));
     }
   }
 });
