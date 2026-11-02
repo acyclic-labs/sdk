@@ -153,7 +153,6 @@ mod keys;
 mod ranges;
 mod reads;
 mod seed;
-#[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) use directory::DirectoryListing;
 mod import;
 mod volume_access;
