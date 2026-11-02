@@ -258,12 +258,20 @@ impl BrowserStream {
     ) -> Result<T, StreamError> {
         let mut dispatch = publication::Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
+        self.refresh_observation(&mut cache, &mut dispatch).await?;
+        operation(&cache.provider).await
+    }
+
+    async fn refresh_observation(
+        &self,
+        cache: &mut Cache,
+        dispatch: &mut publication::Dispatch,
+    ) -> Result<(), StreamError> {
         dispatch.repair = true;
-        let result = self.refresh(&mut cache, &mut dispatch.keys).await;
+        let result = self.refresh(cache, &mut dispatch.keys).await;
         dispatch.repair = false;
         dispatch.failed = result.is_err();
-        result?;
-        operation(&cache.provider).await
+        result
     }
 
     async fn with_retained<T>(
@@ -271,20 +279,23 @@ impl BrowserStream {
         lookup: impl AsyncFn(&MemoryStream) -> Result<T, StreamError>,
         retained: impl Fn(&T) -> bool,
     ) -> Result<T, StreamError> {
-        {
-            let cache = self.inner.cache.lock().await;
-            // Only completed durable replay certifies this cache. A cancelled
-            // transaction can leave tentative results in an invalid provider.
-            if cache.valid {
-                let value = lookup(&cache.provider).await?;
-                if retained(&value) {
-                    return Ok(value);
-                }
+        // The optional dispatch retires after the guard, including cancellation.
+        // A retained hit creates no dispatch owner.
+        let mut dispatch = None;
+        let mut cache = self.inner.cache.lock().await;
+        // Only completed durable replay certifies this cache. A cancelled
+        // transaction can leave tentative results in an invalid provider.
+        if cache.valid {
+            let value = lookup(&cache.provider).await?;
+            if retained(&value) {
+                return Ok(value);
             }
         }
         // Immutable hits need no current observation. Absence still requires
         // the original transaction, including repair of an invalid cache.
-        self.with_provider(lookup).await
+        let dispatch = dispatch.get_or_insert_with(|| publication::Dispatch::new(self));
+        self.refresh_observation(&mut cache, dispatch).await?;
+        lookup(&cache.provider).await
     }
 
     async fn execute(
