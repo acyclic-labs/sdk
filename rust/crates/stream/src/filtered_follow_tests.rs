@@ -319,7 +319,9 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
                 .first_mut()
                 .ok_or("missing commit mutation")?
             {
-                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
+                CommitMutation::Append { records, .. }
+                | CommitMutation::SoftAppend { records, .. }
+                | CommitMutation::Fork { records, .. } => {
                     *records = vec![body];
                 }
             }

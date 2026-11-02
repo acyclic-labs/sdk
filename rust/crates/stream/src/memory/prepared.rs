@@ -99,7 +99,7 @@ impl MemoryStream {
         // The tree can grow up to the admitted replay limit while this completion is pending.
         let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
         self.reserve_commit_index(&mut probes)?;
-        let mut plan = self.plan_commit(&mut state, &request, CommitId::default(), 0)?;
+        let mut plan = self.plan_commit(&mut state, &request, &[], CommitId::default(), 0)?;
         let range = append_mut(&mut plan.result);
         range.start = expected;
         range.tail = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;

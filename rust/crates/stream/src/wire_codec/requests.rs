@@ -204,6 +204,17 @@ fn mutation_len_with(mutation: &CommitMutation, length: &impl Fn(&AppendRecord) 
         CommitMutation::Append { path, records } => {
             block_len(path.as_str().len()).saturating_add(records_len_with(records, length))
         }
+        CommitMutation::SoftAppend {
+            path,
+            records,
+            closed,
+        } => block_len(path.as_str().len())
+            .saturating_add(records_len_with(records, length))
+            .saturating_add(
+                closed
+                    .as_ref()
+                    .map_or(0, |closed| block_len(closed.as_str().len())),
+            ),
         CommitMutation::Fork {
             source,
             destination,
@@ -412,6 +423,26 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
                 header(out, 1, block_len(path.as_str().len()) + records_len(values));
                 bytes(out, 1, path.as_str().as_bytes());
                 records(out, 2, values);
+            }
+            CommitMutation::SoftAppend {
+                path,
+                records: values,
+                closed,
+            } => {
+                header(
+                    out,
+                    5,
+                    block_len(path.as_str().len())
+                        + records_len(values)
+                        + closed
+                            .as_ref()
+                            .map_or(0, |closed| block_len(closed.as_str().len())),
+                );
+                bytes(out, 1, path.as_str().as_bytes());
+                records(out, 2, values);
+                if let Some(closed) = closed {
+                    bytes(out, 3, closed.as_str().as_bytes());
+                }
             }
             CommitMutation::Fork {
                 source,
@@ -636,6 +667,9 @@ pub(crate) fn accepted_response_limit(
     for mutation in &input.mutations {
         let records = match mutation.mutation.as_ref() {
             Some(crate::wire::commit_mutation::Mutation::Append(append)) => append.records.len(),
+            Some(crate::wire::commit_mutation::Mutation::SoftAppend(append)) => {
+                append.records.len()
+            }
             Some(crate::wire::commit_mutation::Mutation::Fork(fork)) => fork.records.len(),
             None => return Err(crate::StreamError::InvalidArgument),
         };

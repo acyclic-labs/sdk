@@ -18,7 +18,7 @@ use crate::preparation::commit_identity;
 use crate::query_sync::{Mutex, RwLock, watch};
 #[cfg(test)]
 use crate::request::validate_append_size;
-use crate::request::{append_digest, commit_digest, condition_path, fork_digest, mutation_path};
+use crate::request::{append_digest, commit_digest, condition_path, fork_digest};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::request::{
     hash_conditions, hash_path, hash_records, normalize_commit, request_hasher,

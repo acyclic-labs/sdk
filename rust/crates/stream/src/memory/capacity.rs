@@ -108,30 +108,34 @@ fn reserve_paths(
     }
 }
 
+/// Reserves `request` without its `skipped` soft appends.
 fn reserve_coordinated(
     state: &State,
     request: &CommitRequest,
+    skipped: &[StreamPath],
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     reserve_commit(state, limits)?;
-    let (new_paths, path_bytes) = missing_paths(state, request.mutations.iter().map(mutation_path))
-        .fold((0usize, 0usize), |(count, bytes), (_, end)| {
-            (count + 1, bytes.saturating_add(end))
-        });
+    let applied = crate::preparation::applied(request, skipped);
+    let (new_paths, path_bytes) =
+        missing_paths(state, applied.clone().map(crate::CommitMutation::path))
+            .fold((0usize, 0usize), |(count, bytes), (_, end)| {
+                (count + 1, bytes.saturating_add(end))
+            });
     let mut records = 0_usize;
     let mut bytes = 0_usize;
-    for mutation in &request.mutations {
+    for mutation in applied.clone() {
         let batch = match mutation {
-            CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
-                records
-            }
+            CommitMutation::Append { records, .. }
+            | CommitMutation::SoftAppend { records, .. }
+            | CommitMutation::Fork { records, .. } => records,
         };
         records = records.saturating_add(batch.len());
         bytes = bytes.saturating_add(batch.iter().map(AppendRecord::payload_bytes).sum::<usize>());
     }
     let mut inherited_paths = 0usize;
     let mut inherited_bytes = 0usize;
-    for mutation in &request.mutations {
+    for mutation in applied {
         if let CommitMutation::Fork {
             source,
             destination,

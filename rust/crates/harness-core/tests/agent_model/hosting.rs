@@ -626,10 +626,7 @@ async fn every_sealed_write_is_attested_and_an_unknown_retry_presents_the_same_e
     let paths = request
         .mutations
         .iter()
-        .map(|mutation| match mutation {
-            acyclic_stream::CommitMutation::Append { path, .. } => path.clone(),
-            acyclic_stream::CommitMutation::Fork { destination, .. } => destination.clone(),
-        })
+        .map(|mutation| mutation.path().clone())
         .collect::<acyclic_stream::HeadSet<_>>();
     let heads = acyclic_stream::HeadsRequest {
         limit: u32::try_from(paths.len())?,

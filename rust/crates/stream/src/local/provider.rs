@@ -474,10 +474,7 @@ fn describe_commit(request: &CommitRequest) {
             request
                 .mutations
                 .iter()
-                .map(|mutation| match mutation {
-                    crate::CommitMutation::Append { path, .. } => path.as_str(),
-                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
-                })
+                .map(|mutation| mutation.path().as_str())
                 .collect::<Vec<_>>()
         )
     });

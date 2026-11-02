@@ -125,6 +125,12 @@ export class StreamClient {
         sameProvider(this.provider, mutation.append.stream);
         return { append: { path: mutation.append.stream.path, values: mutation.append.values.map(value => mutation.append.stream.encode(value)) } };
       }
+      if ("softAppend" in mutation) {
+        const { stream, values, closed } = mutation.softAppend;
+        sameProvider(this.provider, stream);
+        if (closed !== undefined) validatePathValue(closed);
+        return { softAppend: { path: stream.path, values: values.map(value => stream.encode(value)), ...(closed === undefined ? {} : { closed }) } };
+      }
       if ("fork" in mutation) {
         sameProvider(this.provider, mutation.fork.source);
         validatePathValue(mutation.fork.destination);

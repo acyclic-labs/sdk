@@ -110,13 +110,59 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 
 /// Normalizes and validates a commit, then returns its canonical retry digest.
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
-    commit_binding_with(request, |_| Ok::<(), StreamError>(()))?.map(|binding| binding.digest())
+    validate_commit(request)?;
+    // The digest alone retains nothing, so it allocates nothing.
+    Ok(hash_commit(request, |_| ()).1)
 }
 
-/// Retains only the canonical conditions hash state, never a second record copy.
+/// Retains only the canonical conditions hash state and one digest per soft
+/// append, never a second record copy.
 pub struct CommitBinding {
     conditions: Sha256,
+    soft: Vec<SoftBinding>,
     digest: [u8; 32],
+}
+
+/// A soft append's identity, which a skip leaves out of the envelope.
+struct SoftBinding {
+    path: StreamPath,
+    closed: Option<StreamPath>,
+    records: [u8; 32],
+}
+
+/// Digest of a soft append's records, computable from the request or from
+/// the committed records alike.
+fn soft_records_digest<'a>(
+    records: impl ExactSizeIterator<Item = (&'a [u8], &'a crate::RecordHeaders)>,
+) -> [u8; 32] {
+    let mut hash = request_hasher(b"soft-records");
+    hash.update((records.len() as u64).to_le_bytes());
+    for (value, headers) in records {
+        hash_record(&mut hash, value, headers);
+    }
+    hash.finalize().into()
+}
+
+fn hash_soft(
+    hash: &mut Sha256,
+    path: &StreamPath,
+    closed: Option<&StreamPath>,
+    records: &[u8; 32],
+) {
+    hash.update([3]);
+    hash_path(hash, path);
+    match closed {
+        Some(closed) => {
+            hash.update([1]);
+            hash_path(hash, closed);
+        }
+        None => hash.update([0]),
+    }
+    hash.update(records);
+}
+
+fn soft_hash_bytes(path: &StreamPath, closed: Option<&StreamPath>) -> u64 {
+    1 + path_hash_bytes(path) + 1 + closed.map_or(0, path_hash_bytes) + 32
 }
 
 impl CommitBinding {
@@ -136,7 +182,11 @@ impl CommitBinding {
         if let Err(error) = crate::persistence::validate_envelope(envelope) {
             return Ok(Err(error));
         }
-        let mut bytes = 0;
+        let mut bytes = self
+            .soft
+            .iter()
+            .map(|soft| soft_hash_bytes(&soft.path, soft.closed.as_ref()))
+            .sum::<u64>();
         for mutation in &envelope.mutations {
             let records = match mutation {
                 crate::CommittedMutation::Append(append) => {
@@ -160,7 +210,37 @@ impl CommitBinding {
         }
         admit(bytes)?;
         let mut hash = self.conditions.clone();
+        let mut soft = self.soft.iter().peekable();
         for mutation in &envelope.mutations {
+            let path = match mutation {
+                crate::CommittedMutation::Append(append) => &append.path,
+                crate::CommittedMutation::Fork(fork) => &fork.destination,
+            };
+            // Soft appends before this fact were skipped: only their binding remains.
+            while let Some(skipped) = soft.next_if(|soft| soft.path < *path) {
+                hash_soft(
+                    &mut hash,
+                    &skipped.path,
+                    skipped.closed.as_ref(),
+                    &skipped.records,
+                );
+            }
+            if let Some(applied) = soft.next_if(|soft| soft.path == *path) {
+                let crate::CommittedMutation::Append(append) = mutation else {
+                    return Ok(Ok(false));
+                };
+                let records = soft_records_digest(
+                    append
+                        .records
+                        .iter()
+                        .map(|record| (&record.value[..], &record.headers)),
+                );
+                if records != applied.records {
+                    return Ok(Ok(false));
+                }
+                hash_soft(&mut hash, &applied.path, applied.closed.as_ref(), &records);
+                continue;
+            }
             let records = match mutation {
                 crate::CommittedMutation::Append(append) => {
                     hash.update([1]);
@@ -181,6 +261,14 @@ impl CommitBinding {
                 hash_record(&mut hash, &record.value, &record.headers);
             }
         }
+        for skipped in soft {
+            hash_soft(
+                &mut hash,
+                &skipped.path,
+                skipped.closed.as_ref(),
+                &skipped.records,
+            );
+        }
         Ok(Ok(<[u8; 32]>::from(hash.finalize()) == self.digest))
     }
 }
@@ -195,6 +283,22 @@ pub fn commit_binding_with<E>(
         return Ok(Err(error));
     }
     admit(commit_hash_bytes(request))?;
+    let mut soft = Vec::new();
+    let (conditions, digest) = hash_commit(request, |binding| soft.push(binding));
+    Ok(Ok(CommitBinding {
+        conditions,
+        soft,
+        digest,
+    }))
+}
+
+/// The one canonical commit hash: the conditions' hash state and the request
+/// digest. Each soft append's binding goes to `retain`, which a digest-only
+/// caller drops.
+fn hash_commit(
+    request: &mut CommitRequest,
+    mut retain: impl FnMut(SoftBinding),
+) -> (Sha256, [u8; 32]) {
     let mut hash = request_hasher(b"commit");
     hash_conditions(&mut hash, &request.conditions);
     let conditions = hash.clone();
@@ -204,6 +308,23 @@ pub fn commit_binding_with<E>(
                 hash.update([1]);
                 hash_path(&mut hash, path);
                 hash_records(&mut hash, records);
+            }
+            CommitMutation::SoftAppend {
+                path,
+                records,
+                closed,
+            } => {
+                let records = soft_records_digest(
+                    records
+                        .iter()
+                        .map(|record| (&record.value[..], &record.headers)),
+                );
+                hash_soft(&mut hash, path, closed.as_ref(), &records);
+                retain(SoftBinding {
+                    path: path.clone(),
+                    closed: closed.clone(),
+                    records,
+                });
             }
             CommitMutation::Fork {
                 source,
@@ -221,10 +342,7 @@ pub fn commit_binding_with<E>(
             }
         }
     }
-    Ok(Ok(CommitBinding {
-        conditions,
-        digest: hash.finalize().into(),
-    }))
+    (conditions, hash.finalize().into())
 }
 
 /// Normalizes a commit and admits its shape and complete encoded command size.
@@ -351,6 +469,17 @@ pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
                 CommitMutation::Append { path, records } => {
                     1 + path_hash_bytes(path) + records_hash_bytes(records)
                 }
+                // The records digest, then the mutation hash over it.
+                CommitMutation::SoftAppend {
+                    path,
+                    records,
+                    closed,
+                } => {
+                    b"acyclic.stream.request.v1\0".len() as u64
+                        + b"soft-records".len() as u64
+                        + records_hash_bytes(records)
+                        + soft_hash_bytes(path, closed.as_ref())
+                }
                 CommitMutation::Fork {
                     source,
                     destination,
@@ -407,13 +536,6 @@ pub(crate) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     }
 }
 
-pub(crate) fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
-    match mutation {
-        CommitMutation::Fork { destination, .. } => destination,
-        CommitMutation::Append { path, .. } => path,
-    }
-}
-
 pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
     if request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
@@ -423,7 +545,9 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     }
     for mutation in &request.mutations {
         match mutation {
-            CommitMutation::Append { records, .. } => validate_records(records)?,
+            CommitMutation::Append { records, .. } | CommitMutation::SoftAppend { records, .. } => {
+                validate_records(records)?
+            }
             CommitMutation::Fork { records, .. } if !records.is_empty() => {
                 validate_records(records)?;
             }
@@ -451,15 +575,15 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
                     .cmp(&matches!(right, CommitCondition::Absent { .. }))
             })
     });
-    request
-        .mutations
-        .sort_unstable_by(|left, right| mutation_path(left).cmp(mutation_path(right)));
+    request.mutations.sort_unstable_by(|left, right| {
+        crate::CommitMutation::path(left).cmp(crate::CommitMutation::path(right))
+    });
     if request
         .conditions
         .windows(2)
         .any(|pair| matches!(pair, [left, right] if condition_path(left) == condition_path(right)))
         || request.mutations.windows(2).any(
-            |pair| matches!(pair, [left, right] if mutation_path(left) == mutation_path(right)),
+            |pair| matches!(pair, [left, right] if crate::CommitMutation::path(left) == crate::CommitMutation::path(right)),
         )
     {
         return Err(StreamError::InvalidArgument);
@@ -487,7 +611,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
         } = mutation
             && (source == destination
                 || request.mutations.iter().any(|other| {
-                    let path = mutation_path(other).as_str();
+                    let path = crate::CommitMutation::path(other).as_str();
                     path.strip_prefix(destination.as_str())
                         .and_then(|suffix| suffix.strip_prefix('/'))
                         // Only an excluded direct child may be written in the
@@ -501,18 +625,33 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
             return Err(StreamError::InvalidArgument);
         }
         // An append may ride on conditions over other paths (a send guarded only
-        // by the recipient's closed marker). A fork must prove its destination absent.
-        if matches!(mutation, CommitMutation::Fork { .. }) {
-            let condition = request
-                .conditions
-                .binary_search_by(|condition| {
-                    condition_path(condition).cmp(mutation_path(mutation))
-                })
-                .ok()
-                .and_then(|index| request.conditions.get(index));
-            if !matches!(condition, Some(CommitCondition::Absent { .. })) {
+        // by the recipient's closed marker). A fork must prove its destination
+        // absent. A soft append's own presence check decides it, so no condition
+        // names its path, and it rides on a commit that publishes something.
+        let condition = request
+            .conditions
+            .binary_search_by(|condition| {
+                condition_path(condition).cmp(crate::CommitMutation::path(mutation))
+            })
+            .ok()
+            .and_then(|index| request.conditions.get(index));
+        match mutation {
+            CommitMutation::Fork { .. }
+                if !matches!(condition, Some(CommitCondition::Absent { .. })) =>
+            {
                 return Err(StreamError::InvalidArgument);
             }
+            CommitMutation::SoftAppend { path, closed, .. }
+                if condition.is_some()
+                    || closed.as_ref() == Some(path)
+                    || request
+                        .mutations
+                        .iter()
+                        .all(|other| matches!(other, CommitMutation::SoftAppend { .. })) =>
+            {
+                return Err(StreamError::InvalidArgument);
+            }
+            _ => {}
         }
     }
     Ok(())

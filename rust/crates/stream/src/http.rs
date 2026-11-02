@@ -273,6 +273,15 @@ impl HttpStream {
                     .map(|fork| parse_nested_fork(fork, &revision))
                     .collect::<Result<_, _>>()?,
                 revision,
+                skipped: match value.get("skipped") {
+                    Some(skipped) => skipped
+                        .as_array()
+                        .ok_or(StreamError::Unavailable)?
+                        .iter()
+                        .map(parse_path)
+                        .collect::<Result<_, _>>()?,
+                    None => Vec::new(),
+                },
             };
             receipt.validate().map_err(|_| StreamError::Unavailable)?;
             Ok(CommitOutcome::Committed(receipt))

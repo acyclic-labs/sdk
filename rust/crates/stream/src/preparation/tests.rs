@@ -248,3 +248,41 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     );
     Ok(())
 }
+
+#[test]
+fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
+-> Result<(), StreamError> {
+    let [closed, gone, live, marker] = ["a", "b", "c", "c-closed"].map(StreamPath::new);
+    let (closed, gone, live, marker) = (closed?, gone?, live?, marker?);
+    let mutation = |path: &StreamPath, closed: Option<&StreamPath>| CommitMutation::SoftAppend {
+        path: path.clone(),
+        records: vec![AppendRecord::from(vec![1])],
+        closed: closed.cloned(),
+    };
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: vec![
+            mutation(&closed, Some(&marker)),
+            mutation(&gone, None),
+            mutation(&live, None),
+        ],
+        idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"settle"))?,
+    };
+    // `a` exists but is closed, `b` is absent, `c` is open.
+    let tail = |path: &StreamPath| -> Result<Option<u64>, StreamError> {
+        Ok([&closed, &marker, &live].contains(&path).then_some(1))
+    };
+    // Negative control: an under-admitted output is refused, never grown.
+    assert!(matches!(
+        settle(&request, tail, Vec::with_capacity(2)),
+        Err(StreamError::InvalidArgument)
+    ));
+    let skipped = settle(&request, tail, Vec::with_capacity(soft(&request)))?;
+    assert_eq!(skipped, [closed.clone(), gone.clone()]);
+    let applied: Vec<_> = applied(&request, &skipped)
+        .map(crate::CommitMutation::path)
+        .collect();
+    assert_eq!(applied, [&live]);
+    Ok(())
+}

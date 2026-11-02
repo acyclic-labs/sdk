@@ -151,6 +151,17 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
                     "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
                 },
             }),
+            crate::CommitMutation::SoftAppend {
+                path,
+                records,
+                closed,
+            } => json!({
+                "softAppend": {
+                    "path": path.to_string(),
+                    "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
+                    "closed": closed.as_ref().map(ToString::to_string).unwrap_or_default(),
+                },
+            }),
             crate::CommitMutation::Fork {
                 source,
                 destination,

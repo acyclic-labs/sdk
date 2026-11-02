@@ -446,8 +446,9 @@ impl<'a> AuthorityWork<'a> {
         conditions.extend(request.conditions.iter().cloned());
         let mut mutations = self.vec(request.mutations.len())?;
         for mutation in &request.mutations {
-            let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
-                mutation;
+            let (CommitMutation::Append { records, .. }
+            | CommitMutation::SoftAppend { records, .. }
+            | CommitMutation::Fork { records, .. }) = mutation;
             let copied = WorkCounters {
                 items_examined: records.len() as u64,
                 ..WorkCounters::UNCHARGED
@@ -460,6 +461,11 @@ impl<'a> AuthorityWork<'a> {
                 CommitMutation::Append { path, .. } => CommitMutation::Append {
                     path: path.clone(),
                     records: copied_records,
+                },
+                CommitMutation::SoftAppend { path, closed, .. } => CommitMutation::SoftAppend {
+                    path: path.clone(),
+                    records: copied_records,
+                    closed: closed.clone(),
                 },
                 CommitMutation::Fork {
                     exclude,
@@ -506,8 +512,9 @@ impl<'a> AuthorityWork<'a> {
             ..WorkCounters::UNCHARGED
         };
         for mutation in &request.mutations {
-            let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
-                mutation;
+            let (CommitMutation::Append { records, .. }
+            | CommitMutation::SoftAppend { records, .. }
+            | CommitMutation::Fork { records, .. }) = mutation;
             for record in records {
                 delta = delta.checked_add(WorkCounters {
                     authority_records_appended: 1,

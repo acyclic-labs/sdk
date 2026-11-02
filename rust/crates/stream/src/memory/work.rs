@@ -190,7 +190,8 @@ impl MemoryStream {
                 .iter()
                 .map(|mutation| {
                     let (records, exclusions) = match mutation {
-                        CommitMutation::Append { records, .. } => (records, 0),
+                        CommitMutation::Append { records, .. }
+                        | CommitMutation::SoftAppend { records, .. } => (records, 0),
                         CommitMutation::Fork {
                             records, exclude, ..
                         } => (

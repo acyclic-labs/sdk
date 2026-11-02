@@ -796,7 +796,11 @@ impl MemoryStream {
                                         return Err(E::from(StreamError::IdempotencyMismatch));
                                     };
                                     let (receipt, mut claim) = provider
-                                        .receipt(value, provider.revisions.at(replay.index))
+                                        .replayed(
+                                            &request,
+                                            value,
+                                            provider.revisions.at(replay.index),
+                                        )
                                         .map_err(E::from)?;
                                     let envelope = provider
                                         .selected_envelope(value, accepted, &mut claim)
@@ -821,6 +825,7 @@ impl MemoryStream {
                                 .iter()
                                 .map(|mutation| match mutation {
                                     CommitMutation::Append { records, .. }
+                                    | CommitMutation::SoftAppend { records, .. }
                                     | CommitMutation::Fork { records, .. } => records
                                         .iter()
                                         .map(AppendRecord::payload_bytes)
@@ -977,7 +982,7 @@ impl MemoryStream {
         meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeStreamResult<u64> {
         let state = self.state.read().await;
-        let value = inspect(&meter, || state.paths.get(&path).map(|path| path.tail))?;
+        let value = inspect(&meter, || state.tail(&path))?;
         Ok(value
             .ok_or(StreamError::NotFound)
             .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))

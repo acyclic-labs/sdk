@@ -348,6 +348,14 @@ message AppendMutation {
   repeated AppendRecord records = 2;
 }
 
+// Appends only if `path` exists and `closed`, when nonempty, does not;
+// otherwise the commit skips it and reports `path` in CommitReceipt.skipped.
+message SoftAppendMutation {
+  string path = 1;
+  repeated AppendRecord records = 2;
+  string closed = 3;
+}
+
 // Forks the whole source subtree at the pre-commit cut, sharing its nodes.
 // at_tail selects the root stream prefix; descendant heads are inherited whole.
 // Appends records to the destination root at the same linearization point.
@@ -366,6 +374,7 @@ message CommitMutation {
   oneof mutation {
     AppendMutation append = 1;
     ForkMutation fork = 2;
+    SoftAppendMutation soft_append = 5;
   }
 }
 
@@ -466,6 +475,7 @@ message CommitReceipt {
   repeated AppendRange appends = 3;
   repeated ForkReceipt forks = 4;
   Revision revision = 5;
+  repeated string skipped = 6;
 }
 
 message ReadCommitRequest {

@@ -19,8 +19,8 @@ impl MemoryStream {
             self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
         let forked_at = crate::preparation::fork_cut(
             &request,
-            state.paths.get(&request.source).map(|path| path.tail),
-            state.paths.get(&request.destination).map(|path| path.tail),
+            state.tail(&request.source),
+            state.tail(&request.destination),
         )?;
         reserve_fork(&state, &request, self.limits)?;
         reserve_commit(&state, self.limits)?;

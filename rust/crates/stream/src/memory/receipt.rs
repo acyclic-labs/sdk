@@ -32,4 +32,20 @@ impl MemoryStream {
             })?;
         Ok((receipt, allocation))
     }
+
+    /// The receipt a retry of `request` replays from its retained `envelope`:
+    /// the original receipt, skipped soft appends included. Every replay
+    /// goes through here.
+    fn replayed(
+        &self,
+        request: &crate::CommitRequest,
+        envelope: &CommittedEnvelope,
+        revision: crate::Revision,
+    ) -> Result<(crate::CommitReceipt, Allocation), StreamError> {
+        let (mut receipt, mut claim) = self.receipt(envelope, revision)?;
+        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
+        self.absorb(&mut claim, skipped_claim)?;
+        receipt.skipped = crate::preparation::skipped(request, envelope, skipped)?;
+        Ok((receipt, claim))
+    }
 }

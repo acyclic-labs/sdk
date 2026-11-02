@@ -49,6 +49,7 @@ fn commit_encoder_emits_compact_receipt() -> Result<(), Box<dyn std::error::Erro
                     incarnation: Bytes::from(vec![3; 16]),
                     index: 1,
                 }),
+                skipped: vec![],
             },
         )),
     };

@@ -385,10 +385,7 @@ impl PreparedPublish {
         if self
             .reply
             .as_ref()
-            .is_some_and(|reply| match &effect.mutation {
-                CommitMutation::Append { path, .. } => path == reply,
-                CommitMutation::Fork { destination, .. } => covers(destination, reply),
-            })
+            .is_some_and(|reply| mutation_targets(&effect.mutation, reply))
         {
             return Err(Error::Invalid("effect changes the host's invocation reply"));
         }
@@ -412,6 +409,14 @@ impl PreparedPublish {
                     Some(existing) => existing.extend(records),
                     None => mutations.push(CommitMutation::Append { path, records }),
                 }
+            }
+            soft @ CommitMutation::SoftAppend { .. } => {
+                if let CommitMutation::SoftAppend { path, .. } = &soft
+                    && touches_own(path)
+                {
+                    return Err(Error::Invalid("effect targets actor state stream"));
+                }
+                mutations.push(soft);
             }
             fork @ CommitMutation::Fork { .. } => {
                 if let CommitMutation::Fork { destination, .. } = &fork
@@ -1111,12 +1116,11 @@ fn covers(ancestor: &StreamPath, path: &StreamPath) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
+/// Whether `mutation` writes `path`: a fork writes its whole subtree.
 fn mutation_targets(mutation: &CommitMutation, path: &StreamPath) -> bool {
     match mutation {
-        CommitMutation::Append {
-            path: destination, ..
-        } => destination == path,
         CommitMutation::Fork { destination, .. } => covers(destination, path),
+        mutation => mutation.path() == path,
     }
 }
 
