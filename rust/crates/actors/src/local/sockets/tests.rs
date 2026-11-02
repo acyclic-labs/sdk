@@ -5,7 +5,7 @@ use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
-use acyclic_stream::{BoxProviderFuture, MemoryStream};
+use acyclic_stream::{BoxProviderFuture, LocalStream, MemoryStream};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -19,20 +19,36 @@ struct Host {
     client: Client,
 }
 
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// `local::Runtime` plus `local::Sockets` behind the socket suite, reached
-/// through an in-process session exactly as a network peer would be.
+/// through the shared in-process session.
 struct LocalSockets {
-    store: Store<MemoryStream>,
-    host: fn(Sockets<MemoryStream>) -> Arc<dyn SocketHost>,
+    store: Store<LocalStream>,
+    host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
     /// The current host is last. Crashed hosts stay alive, holding their
     /// sockets, as a crashed process's peers would.
     hosts: std::sync::Mutex<Vec<Host>>,
 }
 
 impl LocalSockets {
-    async fn start(host: fn(Sockets<MemoryStream>) -> Arc<dyn SocketHost>) -> Result<Self, Error> {
+    async fn start(
+        host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let directory = Arc::new(tempfile::tempdir()?);
+        // The original provider owner also outlives detached journal work.
+        let provider = LocalStream::open_with_ownership_anchor(
+            directory.path(),
+            Default::default(),
+            acyclic_native_runtime::OwnershipAnchor::new(Arc::clone(&directory)),
+        )
+        .await?;
         let backend = Self {
-            store: Store::new(Arc::new(MemoryStream::default()), root()?),
+            store: Store::new(Arc::new(provider), root()?),
             host,
             hosts: std::sync::Mutex::new(Vec::new()),
         };
@@ -66,7 +82,8 @@ impl LocalSockets {
             Arc::new(PlatformExecutor),
             None,
         );
-        client.register_credential(
+        let host = Host { task, client };
+        host.client.register_credential(
             0,
             testing::credential_with_grants(vec![ResourceGrant {
                 resource: ResourcePattern {
@@ -79,7 +96,7 @@ impl LocalSockets {
         self.hosts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Host { task, client });
+            .push(host);
         Ok(())
     }
 
@@ -110,8 +127,8 @@ impl Peer for SessionPeer {
 }
 
 impl SocketBackend for LocalSockets {
-    type Provider = MemoryStream;
-    fn store(&self) -> &Store<MemoryStream> {
+    type Provider = LocalStream;
+    fn store(&self) -> &Store<LocalStream> {
         &self.store
     }
     fn account(&self) -> &[u8] {
@@ -144,11 +161,11 @@ impl SocketBackend for LocalSockets {
     }
 }
 
-fn faithful(sockets: Sockets<MemoryStream>) -> Arc<dyn SocketHost> {
+fn faithful(sockets: Sockets<LocalStream>) -> Arc<dyn SocketHost> {
     Arc::new(sockets)
 }
 
-async fn local_backend() -> Result<LocalSockets, Error> {
+async fn local_backend() -> Result<LocalSockets, Box<dyn std::error::Error>> {
     LocalSockets::start(faithful).await
 }
 
@@ -268,7 +285,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
 
 /// A host that forgets the auto-response pair wakes the actor for every
 /// keepalive: the broken behaviour the suite must reject.
-struct ForgetsAutoResponse(Sockets<MemoryStream>);
+struct ForgetsAutoResponse(Sockets<LocalStream>);
 
 impl SocketHost for ForgetsAutoResponse {
     fn accept_web_socket(
