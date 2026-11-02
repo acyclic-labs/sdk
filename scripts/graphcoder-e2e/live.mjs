@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
-import { failedCase, failureReport, publishReport } from "./report.mjs";
+import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 import { fileBytes, toolOutcome } from "./assertions.mjs";
 
@@ -204,16 +204,9 @@ async function campaign(signal) {
       if (signal.aborted) break sampling;
     }
   }
-  const cells = names.map(name => {
-    const attempts = results.filter(result => result.case === name);
-    const passed = attempts.filter(result => result.status === "pass").map(result => result.seconds).sort((a, b) => a - b);
-    const percentile = fraction => passed.length ? passed[Math.ceil(fraction * passed.length) - 1] : null;
-    return { case: name, attempts: attempts.length, n: passed.length, failures: attempts.length - passed.length,
-      p50_seconds: percentile(0.5), p99_seconds: percentile(0.99) };
-  });
   const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
     measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
-    cells, results,
+    cells: summarizeCases(names, results), results,
     ...(signal.aborted ? { cancellation: signal.reason.message } : {}),
     pass: !signal.aborted && results.every(result => result.status === "pass") };
   await publishReport(join(output, "matrix.json"), report, undefined, signal);
@@ -222,5 +215,8 @@ async function campaign(signal) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await main(); }
-  catch (error) { console.error(`step=live admission or publication: ${error.message}; recovery=${recovery}`); process.exitCode = 1; }
+  catch (error) {
+    console.error(JSON.stringify({ ...failureReport(error), step: "live admission or publication", recovery }));
+    process.exitCode = 1;
+  }
 }

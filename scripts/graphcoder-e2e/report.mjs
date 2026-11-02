@@ -56,6 +56,23 @@ export async function verifyReport(results, readRequests, verify, recovery) {
   return { results: results.map(result => verify(result, requests.get(result.case) ?? [])), requests };
 }
 
+// Index each original attempt once, keeping failures in its denominator.
+// Only successful intervals participate in the nearest-rank distribution.
+export function summarizeCases(selected, results) {
+  const cells = new Map(selected.map(name => [name, { case: name, attempts: 0, times: [] }]));
+  for (const result of results) {
+    const cell = cells.get(result.case);
+    cell.attempts++;
+    if (result.status === "pass") cell.times.push(result.seconds);
+  }
+  return Array.from(cells.values(), ({ case: name, attempts, times }) => {
+    times.sort((a, b) => a - b);
+    const percentile = fraction => times.length ? times[Math.ceil(fraction * times.length) - 1] : null;
+    return { case: name, attempts, n: times.length, failures: attempts - times.length,
+      p50_seconds: percentile(0.5), p99_seconds: percentile(0.99) };
+  });
+}
+
 // The job's retained stdout is the publication boundary. A fixture filesystem
 // failure must not make the only copy of its evidence depend on export/GC.
 export async function publishReport(path, report, io = {

@@ -7,6 +7,70 @@ import { fileURLToPath } from "node:url";
 import { Processes, Spool } from "./process.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failureReport, finishCase, retainCapture } from "./report.mjs";
+import { conversation } from "./conversation.mjs";
+
+test("conversation rejection retires only its producer and retains independent capture failure", async () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "conversation-failure-"));
+  try {
+    for (const failedObservation of [false, true]) {
+      let retirementAtEof, retirementRequested = false, selected, original;
+      const captures = [], processes = new Processes({ onProgress(event) {
+        if (event.phase === "node-spawn" && event.ordinal === 1 && failedObservation)
+          readFileSync(join(root, "missing-progress-sink"));
+        if (event.phase === "stdin-finish" && event.ordinal === 1) {
+          retirementAtEof = retirementRequested;
+          // Independently release a broken implementation too: the negative
+          // control reports lost ownership instead of hanging on the socket.
+          if (!retirementRequested) selected.child.kill("SIGKILL");
+        }
+      } });
+      try {
+        const peer = processes.start(process.execPath, ["-e",
+          "require('node:readline').createInterface({input:process.stdin}).on('line',text=>console.log(JSON.stringify({text})));console.log(JSON.stringify({pid:process.pid}))"]);
+        const peerEvents = new Spool(peer.child.stdout, peer.closed);
+        await peerEvents.next(event => event.pid > 0);
+        const running = conversation(processes, process.execPath, {
+          id: "rejected-conversation", workspace: root, args: ["-e",
+            "const server=require('node:net').createServer();server.listen(0,'127.0.0.1',()=>console.error(JSON.stringify(server.address())));process.stdin.resume()", "--"],
+        }, { operation: "selected-operation", turns: [{ id: "turn", text: "unused" }] }, result => captures.push(result),
+        async (_, active) => {
+          selected = active;
+          const kill = active.killExecutable;
+          active.killExecutable = () => { retirementRequested = true; return kill(); };
+          // The actual bound socket keeps the native child alive after EOF.
+          await new Spool(active.child.stderr, active.closed).next(event => event.port > 0);
+          try { readFileSync(join(root, "original-missing-input")); }
+          catch (error) { original = error; throw error; }
+        });
+        await assert.rejects(running, error => {
+          assert.match(error.message, /drive JSONL conversation.*original-missing-input/);
+          if (!failedObservation) assert.equal(error.cause, original);
+          else {
+            assert.ok(error.cause instanceof AggregateError);
+            assert.equal(error.cause.errors[0].cause, original);
+            assert.ok(error.cause.errors.slice(1).every(failure =>
+              failure.name === "ProcessObservationFailed" && failure.cause.code === "ENOENT"));
+            const report = failureReport(error);
+            assert.match(report.cause, /original-missing-input/);
+            assert.match(report.cause, /missing-progress-sink/);
+          }
+          return true;
+        });
+        assert.equal(retirementAtEof, true, "EOF cannot substitute for selected process retirement");
+        assert.equal(processes.stopping, false, "one failed conversation cannot close the suite owner");
+        assert.equal(processes.children.size, 1);
+        assert.ok(processes.children.has(peer.child), "unrelated original producer must remain live");
+        peer.input.write("peer survives\n");
+        await peerEvents.next(event => event.text === "peer survives");
+        const later = await processes.run(process.execPath, ["-e", "process.exitCode=7"]);
+        assert.equal(later.code, 7, "a later original case must still be admitted");
+        assert.equal(captures.length, failedObservation ? 0 : 1);
+      } finally { await processes.close().catch(error => {
+        if (!failedObservation || error.name !== "ProcessObservationFailed") throw error;
+      }); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
 
 test("capture failure preserves the case result and joins every original child", async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "case-capture-"));

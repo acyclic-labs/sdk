@@ -8,16 +8,15 @@ export async function conversation(processes, binary, fixture, input, capture, b
     "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   // One reply per turn, keyed by the turn's id: a repeated id fails the spool.
   const replies = new Spool(active.child.stdout, active.closed, { key: event => [event.id], unique: true });
-  const ended = active.closed.then(result => {
-    throw new Error(`conversation exited before its next turn: ${JSON.stringify(result)}`);
-  });
-  ended.catch(() => {});
+  let result, failures, ended;
   try {
     for (const turn of input.turns) {
       await beforeTurn(turn, active);
       if (turn.after_request) await Promise.race([
         fixture.waitRequest(turn.after_request),
-        ended,
+        ended ??= active.closed.then(result => {
+          throw new Error(`conversation exited before its next turn: ${JSON.stringify(result)}`);
+        }),
       ]);
       active.child.stdin.write(JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n");
       const reply = await replies.keyed(turn.id);
@@ -27,13 +26,21 @@ export async function conversation(processes, binary, fixture, input, capture, b
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
     }
   } catch (error) {
-    throw new Error(`step=drive JSONL conversation: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`, { cause: error });
-  } finally {
+    failures = [new Error(`step=drive JSONL conversation: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`, { cause: error })];
+    // Retire only this executable: the owner may also hold other cases and
+    // their provider. EOF alone need not stop work owned by this executable.
     active.child.stdin.end();
-    const result = await active.closed;
-    capture(result);
+    try { active.killExecutable(); }
+    catch (error) { failures.push(error); }
+  } finally {
+    if (!failures) active.child.stdin.end();
+    try { result = await active.closed; capture(result); }
+    catch (error) { (failures ??= []).push(error); }
   }
-  const result = await active.closed;
+  if (failures) {
+    if (failures.length === 1) throw failures[0];
+    throw new Error(failures[0].message, { cause: new AggregateError(failures, "conversation completion failures") });
+  }
   const recovery = `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`;
   assert.equal(result.code, 0, `step=verify conversation exit: ${result.stderr}; recovery=${recovery}`);
   assert.equal(result.signal, null, `step=verify conversation retirement; recovery=${recovery}`);
