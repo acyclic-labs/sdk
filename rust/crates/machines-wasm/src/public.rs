@@ -118,7 +118,12 @@ pub(crate) fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     value.serialize(&serializer).map_err(|e| err(e.to_string()))
 }
 pub(crate) fn provider_error(error: ProviderError) -> JsValue {
-    let code = match &error {
+    crate::js_error(provider_error_code(&error), error.to_string())
+}
+
+fn provider_error_code(error: &ProviderError) -> &'static str {
+    match error {
+        ProviderError::Caused(failure) => provider_error_code(failure.classification()),
         ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
         ProviderError::Unsupported(_) => "unsupported",
@@ -136,8 +141,7 @@ pub(crate) fn provider_error(error: ProviderError) -> JsValue {
         ProviderError::DeadlineSourceLost { machine: None, .. } => "unavailable",
         ProviderError::Failed => "failed",
         ProviderError::Cancelled => "cancelled",
-    };
-    crate::js_error(code, error.to_string())
+    }
 }
 fn parse_id<T>(
     kind: &str,

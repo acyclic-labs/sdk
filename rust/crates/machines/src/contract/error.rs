@@ -80,6 +80,13 @@ pub struct ProviderFailure {
     cause: Arc<dyn std::error::Error + Send + Sync>,
 }
 
+impl ProviderFailure {
+    /// The original bare class; its source is available through `Error::source`.
+    pub const fn classification(&self) -> &ProviderError {
+        &self.classification
+    }
+}
+
 impl fmt::Display for ProviderFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: {}", self.classification, self.cause)

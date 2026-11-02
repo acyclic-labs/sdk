@@ -98,6 +98,18 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             other => return Err(other),
         }
     }
+    let cause = ProviderError::CommandIndeterminate(machine).with_cause(std::io::Error::other(
+        "original guest command transport failure",
+    ));
+    let retained = map_error(cause, Some(receipt));
+    let wire = crate::wire_codec::encode_error(&retained);
+    assert_eq!(wire.code, ErrorCode::Indeterminate as i32);
+    assert_eq!(wire.operation_id, receipt.to_string());
+    assert!(
+        wire.message
+            .contains("original guest command transport failure")
+    );
+    assert!(std::error::Error::source(&retained).is_some());
     Ok(())
 }
 
