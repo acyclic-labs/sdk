@@ -65,9 +65,10 @@ function copy(value: Uint8Array): Uint8Array {
  * conditional commit and acknowledgement custody stay with the original native
  * producer. Reuse this object for every name selecting the same state kind. */
 export function materializeActorState(host: ActorStateHost): ActorStateBinding {
-  const metadata = new Map(host.seed.metadata.map(({key, value}) => [key, copy(value)]));
+  const seed = host.seed;
+  const metadata = new Map(seed.metadata.map(({key, value}) => [key, copy(value)]));
   // durable: acknowledged journal cut. staged: the cut after every dispatched packet.
-  let durable = position(BigInt(host.seed.journalTail)), staged = durable;
+  let durable = position(BigInt(seed.journalTail)), staged = durable;
   let writes = new Map<string, Uint8Array>();
   let journal: Uint8Array[] = [];
   let alarm: import("./generated/guest.js").ActorStateAlarm = {type:"keep"};
