@@ -9,13 +9,20 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-acyclic-actors = { path = "../rust/crates/actors" }
+acyclic-actors = { path = "../rust/crates/actors", features = ["test-support"] }
 serde_json = "1"
 acyclic-objects = { path = "../rust/crates/objects", default-features = false }
 
 [[bin]]
 name = "guest_json"
 path = "fuzz_targets/guest_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "call_record"
+path = "fuzz_targets/call_record.rs"
 test = false
 doc = false
 bench = false

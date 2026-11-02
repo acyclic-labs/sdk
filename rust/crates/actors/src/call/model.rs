@@ -275,6 +275,7 @@ impl Model {
 
     async fn check(&mut self, hop: Hop) -> Result<(), String> {
         for record in self.records(self.call.log(), self.journal.next()).await? {
+            super::codec_fuzz::check_record(&record);
             match self
                 .journal
                 .apply(&record)
@@ -627,6 +628,7 @@ async fn terminal_reasons() -> Result<(), String> {
 
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
+    super::codec_fuzz::seeds();
     assert_eq!(explore(Fault::None).await?, 0);
     terminal_sessions().await?;
     terminal_reasons().await?;

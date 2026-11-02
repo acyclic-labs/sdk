@@ -673,3 +673,8 @@ impl Journal {
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod model;
+
+/// Decoder fuzz entry point shared with the original committed-record controls.
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod codec_fuzz;
