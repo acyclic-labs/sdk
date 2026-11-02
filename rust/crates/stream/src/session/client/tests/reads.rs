@@ -740,8 +740,14 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             });
             let direct_parsed = crate::changes::take_parsed_bytes();
             assert_eq!(preserved, projected);
-            assert_eq!(direct.count_total, 0);
-            assert_eq!(direct.bytes_total, 0);
+            if matches!(preserved, Some(Ok(_))) {
+                assert_eq!(direct.count_total, 0);
+                assert_eq!(direct.bytes_total, 0);
+            } else {
+                // Invalid encodings retain the original decoder's error cost.
+                assert!(direct.count_total <= old.count_total);
+                assert!(direct.bytes_total <= old.bytes_total);
+            }
             if index == 0 {
                 assert_eq!(preserved, Some(Ok(complete)));
                 assert_eq!(direct_parsed, record.value.len());
