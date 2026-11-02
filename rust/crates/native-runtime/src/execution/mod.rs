@@ -52,7 +52,10 @@ impl ExecutionNetwork {
 /// decided the complete grant. The launch core consumes the same value for
 /// shell commands, subprocesses and executable tool adapters.
 #[derive(Clone, Debug)]
-pub struct ExecutionGrant(Arc<Grant>);
+pub struct ExecutionGrant {
+    policy: Arc<Grant>,
+    access: ExecutionAccess,
+}
 
 /// A definitive refusal before guest execution. The ordinary tool result
 /// renderer can consume the reason without repeating the failure prefix.
@@ -78,7 +81,6 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
-    access: ExecutionAccess,
     read: Vec<BoundPath>,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
@@ -233,14 +235,27 @@ impl ExecutionGrant {
         read.dedup_by(|left, right| left.path == right.path);
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
-        Ok(Self(Arc::new(Grant {
-            workspace,
+        Ok(Self {
+            policy: Arc::new(Grant {
+                workspace,
+                read,
+                network,
+                #[cfg(target_os = "linux")]
+                filter,
+            }),
             access,
-            read,
-            network,
-            #[cfg(target_os = "linux")]
-            filter,
-        })))
+        })
+    }
+
+    /// Removes workspace mutation authority while retaining the original
+    /// pinned roots and network policy. This consumes only the grant value:
+    /// no allocation, path resolution, descriptor duplication or syscall.
+    /// Clone first to retain the original grant. Launch still verifies every
+    /// original root; this does not refresh or authenticate stale authority.
+    #[must_use]
+    pub fn into_read_only(mut self) -> Self {
+        self.access = ExecutionAccess::ReadOnly;
+        self
     }
 
     /// Checks authority attenuation before returning another immutable grant.
@@ -275,7 +290,7 @@ impl ExecutionGrant {
         requested: &Self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
-        self.check_authority(requested.0.access, &requested.0.network)?;
+        self.check_authority(requested.access, &requested.policy.network)?;
         self.check_roots(requested, meter).map_err(failure)
     }
 
@@ -284,8 +299,8 @@ impl ExecutionGrant {
         access: ExecutionAccess,
         network: &ExecutionNetwork,
     ) -> io::Result<()> {
-        if (self.0.access == ExecutionAccess::ReadOnly && access == ExecutionAccess::WorkspaceWrite)
-            || !self.0.network.permits(network)
+        if (self.access == ExecutionAccess::ReadOnly && access == ExecutionAccess::WorkspaceWrite)
+            || !self.policy.network.permits(network)
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
@@ -297,26 +312,30 @@ impl ExecutionGrant {
         requested: &Self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
-        if !self.0.workspace.contains(&requested.0.workspace, meter)? {
+        if !self
+            .policy
+            .workspace
+            .contains(&requested.policy.workspace, meter)?
+        {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
-        for path in &requested.0.read {
+        for path in &requested.policy.read {
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
             if let Ok(index) = self
-                .0
+                .policy
                 .read
                 .binary_search_by(|root| root.path.cmp(&path.path))
             {
-                if self.0.read[index].contains(path, meter)? {
+                if self.policy.read[index].contains(path, meter)? {
                     continue;
                 }
             }
-            if self.0.workspace.contains(path, meter)? {
+            if self.policy.workspace.contains(path, meter)? {
                 continue;
             }
             let mut permitted = false;
-            for root in &self.0.read {
+            for root in &self.policy.read {
                 if root.contains(path, meter)? {
                     permitted = true;
                     break;
@@ -332,7 +351,7 @@ impl ExecutionGrant {
     /// Workspace to which the policy bound this execution.
     #[must_use]
     pub fn workspace(&self) -> &Path {
-        &self.0.workspace
+        &self.policy.workspace
     }
 
     pub(crate) fn validate_launch<'a>(
@@ -374,9 +393,9 @@ impl ExecutionGrant {
         _meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<PreparedExecution> {
         #[cfg(target_os = "linux")]
-        let workspace = self.0.workspace.bind_controlled(_meter)?;
+        let workspace = self.policy.workspace.bind_controlled(_meter)?;
         #[cfg(target_os = "linux")]
-        let platform = linux::Prepared::new(&self.0, workspace, _cwd, _meter)?;
+        let platform = linux::Prepared::new(&self.policy, self.access, workspace, _cwd, _meter)?;
         #[cfg(not(target_os = "linux"))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
@@ -427,7 +446,7 @@ impl PreparedExecution {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
-        self.platform.encode(&self.grant.0.filter, body)
+        self.platform.encode(&self.grant.policy.filter, body)
     }
 }
 

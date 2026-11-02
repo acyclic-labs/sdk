@@ -188,8 +188,22 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         .into_iter()
         .flat_map(|access| [None, Some(&custody)].map(|custody| (access, custody)))
     {
-        let grant =
-            ExecutionGrant::new(&workspace, access, read.clone(), ExecutionNetwork::Off).unwrap();
+        let grant = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::WorkspaceWrite,
+            read.clone(),
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        let grant = match access {
+            ExecutionAccess::ReadOnly => {
+                let readonly = grant.clone().into_read_only();
+                let error = readonly.check_attenuation(&grant).unwrap_err();
+                assert!(error.to_string().contains("exceeds its authority ceiling"));
+                readonly
+            }
+            ExecutionAccess::WorkspaceWrite => grant,
+        };
         let make_command = || {
             let mut command = Command::new("/bin/sh");
             command.args(["-c", "read value < readable; printf '%s\\n' \"$value\"; (printf changed > escape) 2>/dev/null; (printf created > new) 2>/dev/null; cat escape 2>/dev/null; true"])
