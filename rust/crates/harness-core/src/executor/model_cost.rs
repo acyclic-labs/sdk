@@ -674,6 +674,16 @@ mod tests {
             completed in proptest::array::uniform3(any::<bool>()),
             known in proptest::array::uniform3(any::<bool>()),
         ) {
+            let regroup = |parts: &[ModelUsageTotals; 3]| {
+                let mut left = parts[0].clone();
+                left.merge(&parts[1]).unwrap();
+                left.merge(&parts[2]).unwrap();
+                let mut right = parts[1].clone();
+                right.merge(&parts[2]).unwrap();
+                let mut regrouped = parts[0].clone();
+                regrouped.merge(&right).unwrap();
+                (left, regrouped)
+            };
             let rows = std::array::from_fn::<_, 3, _>(|index| {
                 let mut row = record(ModelTokenUsage {
                     input: known[index].then_some(units[index]),
@@ -691,18 +701,42 @@ mod tests {
                 part.push(&projected).unwrap();
                 reference.push(&projected).unwrap();
             }
-            let mut left = parts[0].clone();
-            left.merge(&parts[1]).unwrap();
-            left.merge(&parts[2]).unwrap();
-            let mut right = parts[1].clone();
-            right.merge(&parts[2]).unwrap();
-            let mut regrouped = parts[0].clone();
-            regrouped.merge(&right).unwrap();
+            let (left, regrouped) = regroup(&parts);
             prop_assert_eq!(&left, &reference);
             prop_assert_eq!(&regrouped, &reference);
             prop_assert_eq!(reference.input.value(), if completed.iter().all(|v| *v) && known.iter().all(|v| *v) {
                 Some(units.iter().sum())
             } else { None });
+
+            // Generated arithmetic operands force a known positive charge and
+            // an unknown charge in every selection, not merely by chance.
+            let priced_rows = std::array::from_fn::<_, 3, _>(|index| {
+                let mut row = record(ModelTokenUsage {
+                    input: Some(units[index] + 1),
+                    output: Some(units[index]),
+                    cached: Some(0),
+                    cache_write: Some(0),
+                    ..Default::default()
+                });
+                row.dispatch.step = u32::try_from(index).unwrap();
+                row
+            });
+            let selected_price = price();
+            let mut priced_parts = std::array::from_fn::<_, 3, _>(|_| ModelUsageTotals::new("USD".into()).unwrap());
+            let mut priced_reference = ModelUsageTotals::new("USD".into()).unwrap();
+            for (index, (part, row)) in priced_parts.iter_mut().zip(&priced_rows).enumerate() {
+                let price = (index == 0 || (index == 2 && known[2])).then_some(&selected_price);
+                let projected = row.estimate(price).unwrap();
+                part.push(&projected).unwrap();
+                priced_reference.push(&projected).unwrap();
+            }
+            let (priced_left, priced_regrouped) = regroup(&priced_parts);
+            prop_assert_eq!(&priced_left, &priced_reference);
+            prop_assert_eq!(&priced_regrouped, &priced_reference);
+            prop_assert!(priced_reference.token_nano_units.known > 0);
+            prop_assert!(priced_reference.token_nano_units.unknown > 0);
+            prop_assert_eq!(priced_reference.token_nano_units.value(), None);
+
             let unchanged = reference.clone();
             let mut foreign_version = reference.clone();
             foreign_version.version ^= 1;
