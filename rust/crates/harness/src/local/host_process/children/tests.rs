@@ -573,16 +573,13 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             "{failure}"
         );
     }
-    if !events.is_empty() {
-        let file: crate::conversation::FileRef =
-            serde_json::from_value(completed["events"].clone())?;
-        assert_eq!(
-            file.descriptor().byte_length(),
-            events.len() as u64,
-            "native event log discarded original captured bytes after cumulative cap"
-        );
-        file.descriptor().verify(events.as_bytes(), &mut None)?;
-    }
+    let file: crate::conversation::FileRef = serde_json::from_value(completed["events"].clone())?;
+    assert_eq!(
+        file.descriptor().byte_length(),
+        events.len() as u64,
+        "native event log discarded original captured bytes after cumulative cap"
+    );
+    file.descriptor().verify(events.as_bytes(), &mut None)?;
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
     host_files::request(
         cwd,

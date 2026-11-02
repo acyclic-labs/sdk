@@ -283,16 +283,17 @@ impl HostWorkspaceOwner {
                 // settled conversation entry carries it, and the resume id
                 // it last named is the session's.
                 let mut resume = super::super::host_process::children::SessionId::default();
-                let events =
-                    if let Some(mut source) = quiescence.events(claim.operation, &mut resume)? {
-                        Some(
-                            self.native
-                                .stage_events(child, claim.operation, &mut source)
-                                .await?,
-                        )
-                    } else {
-                        None
-                    };
+                let events = if let Some((length, mut source)) =
+                    quiescence.events(claim.operation, &mut resume)?
+                {
+                    Some(
+                        self.native
+                            .stage_events(child, claim.operation, length, &mut source)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
                 // Publication consumes and validates the complete source,
                 // including on replay. No second read derives the resume id.
                 if let Some(id) = resume.id

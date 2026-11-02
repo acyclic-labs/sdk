@@ -194,13 +194,13 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         for _ in 0..2 {
             let mut observed = SessionId::default();
             let file = {
-                let mut source = quiescent
+                let (length, mut source) = quiescent
                     .events(claim(&first)?.operation, &mut observed)?
                     .ok_or_else(|| Error::Invalid("recorded native log absent".into()))?;
                 fixture
                     .owner
                     .native
-                    .stage_events(&child, claim(&first)?.operation, &mut source)
+                    .stage_events(&child, claim(&first)?.operation, length, &mut source)
                     .await?
             };
             assert_eq!(

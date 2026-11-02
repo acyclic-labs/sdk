@@ -205,7 +205,7 @@ impl QuiescentHostProcess {
         &'a self,
         claim: OperationId,
         session: &'a mut children::SessionId,
-    ) -> Result<Option<impl crate::conversation::ContentSource + 'a>> {
+    ) -> Result<Option<(u64, impl crate::conversation::ContentSource + 'a)>> {
         use futures::TryStreamExt as _;
         let file = match self.0.root.open_file(&event_log(claim), false) {
             Ok(file) => file,
@@ -218,21 +218,30 @@ impl QuiescentHostProcess {
             Err(error) => return Err(storage(error)),
         };
         let work = polling_work()?;
+        let meter = work.runtime_meter();
+        // The closed handle's length is the publication budget and read cut.
+        // Account for this one metadata attempt, without a path re-open.
+        meter.admit_read(0).map_err(storage)?;
+        let metadata = file.metadata().map_err(storage)?;
+        if !metadata.is_file() {
+            return Err(Error::Invalid(
+                "step=read native event source: not a regular file; recovery=acyclic agents".into(),
+            ));
+        }
+        let length = metadata.len();
         let file = acyclic_native_runtime::NativeFile::from_file(
             file,
-            Some(acyclic_native_runtime::NativeFileMeter::Owned(
-                work.runtime_meter(),
-            )),
+            Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)),
         )
         .map_err(|(error, _)| storage(error))?;
-        let reader = acyclic_native_runtime::AsyncRangeReader::new(file, 0, u64::MAX);
+        let reader = acyclic_native_runtime::AsyncRangeReader::new(file, 0, length);
         // The retained lease proves this is a closed, finite source. Reuse the
         // native runtime's owned positional completion, including on cancellation.
         let stream = futures::stream::try_unfold(
             (reader, work, session),
             |(mut reader, work, session)| async move {
                 let window = work.invocation_window().map_err(std::io::Error::other)?;
-                let (bytes, allocation) = reader.read(8192, window.runtime_meter(), false).await?;
+                let (bytes, allocation) = reader.read(8192, window.runtime_meter(), true).await?;
                 if bytes.is_empty() {
                     session.finish();
                     return Ok::<_, std::io::Error>(None);
@@ -247,7 +256,7 @@ impl QuiescentHostProcess {
                 )))
             },
         );
-        Ok(Some(Box::pin(stream).into_async_read()))
+        Ok(Some((length, Box::pin(stream).into_async_read())))
     }
 
     /// Removes the log of turn `claim` once its conversation entry holds it.
