@@ -250,7 +250,7 @@ mod tests {
             let failure = allocator.failure();
             let (send, _receive) = tokio::sync::mpsc::channel(1);
             let result = super::super::interpreter::run(
-                "Array.from({length: 1000}, (_, i) => ({i})).length".into(),
+                "export default Array.from({length: 1000}, (_, i) => ({i})).length".into(),
                 acyclic_stream::OwnedBytes::from_static(b"[]"),
                 send,
                 tokio_util::sync::CancellationToken::new(),
@@ -261,7 +261,16 @@ mod tests {
             .await;
             if bytes == 1 {
                 assert!(result.is_err());
-                assert!(failure.lock().unwrap().is_some());
+                assert!(matches!(
+                    failure.lock().unwrap().as_ref(),
+                    Some(acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "peak_allocation_bytes",
+                            maximum: 1,
+                            ..
+                        }
+                    ))
+                ));
             } else {
                 assert_eq!(result.unwrap(), serde_json::json!(1000));
                 assert!(failure.lock().unwrap().is_none());
