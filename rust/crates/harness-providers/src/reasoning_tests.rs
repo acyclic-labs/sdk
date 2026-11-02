@@ -147,7 +147,8 @@ fn malformed_owned_native_continuity_refuses_before_request_encoding() {
         );
         let mut foreign = target;
         foreign.credential_scope = None;
-        let body: serde_json::Value = serde_json::from_slice(&encode(&foreign).unwrap().encode().unwrap()).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&encode(&foreign).unwrap().encode().unwrap()).unwrap();
         assert!(crate::validate_input(adapter, &body).is_empty());
         assert!(!body.to_string().contains("must-not-become-fallback-text"));
     }
