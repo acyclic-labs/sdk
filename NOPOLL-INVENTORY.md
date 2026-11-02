@@ -4,7 +4,7 @@ Identity cancellation retention successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `plugin/identity/src/mcp.rs:1238` | Retry tools/call and ping until the cancelled operation admits another call | Close input and await the original serving task, which joins the dispatched operation, then inspect the retained approval. | Source complete; runtime qualification pending |
+| `plugin/identity/src/mcp.rs:1238` | Retry tools/call and ping until the cancelled operation admits another call | Close input and await the original serving task, which joins the dispatched operation, then inspect the retained approval. | Named cancellation/withdrawal control passed on Linux x86_64 |
 
 The original real transport control keeps its ping and cancellation reply
 assertions. Its final assertion now directly checks that device approval survived
@@ -20,6 +20,10 @@ product code. The fixture has fixed work instead of work proportional to racing
 admission attempts. Dropping approval during cancellation fails the final state
 assertion. This bounded change does not claim a new admission event or close the
 broader census.
+
+The existing real transport control passed on Linux x86_64 (one test, 0.01 s),
+including the missing reply observed after writer withdrawal and retained device
+approval. This does not qualify the other transport controls or native mounts.
 
 Identity consumed-exchange release successor:
 
