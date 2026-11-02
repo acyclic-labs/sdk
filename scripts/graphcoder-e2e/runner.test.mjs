@@ -114,8 +114,9 @@ test("a spool ends with the exact typed cause", async t => {
     const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
     const events = new Spool(stream, closed);
+    const published = events.next(event => event.ready);
     stream.write('{"ready":true}\n');
-    await new Promise(resolve => setImmediate(resolve));
+    await published;
     const late = events.next(event => event.ready);
     stream.end(); close({ code: 0, signal: null });
     await assert.rejects(late, error => error.kind === "eof");
