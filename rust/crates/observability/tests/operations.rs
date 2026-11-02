@@ -42,6 +42,78 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
+fn named_operation_keeps_fields_and_context_through_completion_and_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Export, Outcome};
+    use std::sync::Arc;
+    use tokio::sync::{Semaphore, oneshot};
+
+    let foreign_metrics = Metrics::default();
+    let foreign_query = foreign_metrics.query("acyclic.test.named_operation");
+    let foreign =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(foreign_metrics)));
+    for abandon in [false, true] {
+        let (export, mut records) = Export::channel(Arc::new(Semaphore::new(1)), true);
+        let origin =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
+        let (producer, event) = oneshot::channel::<()>();
+        let mut work = Box::pin(async {
+            acyclic_observability::async_operation!(
+                @tracing::Level::DEBUG,
+                "acyclic.test.named_operation",
+                operation,
+                |result: &Result<(), oneshot::error::RecvError>| {
+                    assert_eq!(tracing::Span::current().id(), operation.id());
+                    operation.record("rpc.code", 14);
+                    result.as_ref().err().map(|_| "closed")
+                },
+                acyclic_native_runtime::obs::OperationSpan::new,
+                async { event.await },
+                rpc.code = tracing::field::Empty,
+            )
+        });
+        tracing::dispatcher::with_default(&origin, || {
+            // Retaining the producer is the negative control for completion.
+            assert!(
+                work.as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+        });
+        if abandon {
+            tracing::dispatcher::with_default(&foreign, || drop(work));
+            assert!(producer.is_closed(), "abandoned work retained its event");
+        } else {
+            drop(producer);
+            assert!(tracing::dispatcher::with_default(&foreign, || ready(work))?.is_err());
+        }
+        let terminal = ready(records.recv())?.ok_or("original terminal absent")?;
+        let sample = terminal.sample();
+        assert_eq!(*sample.metadata.level(), tracing::Level::DEBUG);
+        assert!(sample.metadata.fields().field("rpc.code").is_some());
+        assert_eq!(
+            sample.outcome,
+            if abandon {
+                Outcome::Incomplete
+            } else {
+                Outcome::Err
+            }
+        );
+        assert_eq!(
+            sample.error_kind,
+            if abandon { None } else { Some("closed") }
+        );
+        drop(terminal);
+        drop(origin);
+        assert!(ready(records.recv())?.is_none(), "duplicate terminal");
+    }
+    // Polling and destruction under another subscriber must not steal evidence.
+    assert_eq!(foreign_query.snapshot().err, 0);
+    assert_eq!(foreign_query.snapshot().incomplete, 0);
+    Ok(())
+}
+
+#[test]
 fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Binding, BindingError, Export, Outcome, WorkSummary};
