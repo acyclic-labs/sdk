@@ -484,52 +484,70 @@ impl LocalHarness {
         // model has no policy-update record, and replaying a creation with
         // another policy would refuse the reopen.
         let existing = AgentPath::root(&id);
-        let configured = self.root_policy(&id).await?;
-        let server = match bound.agents().state(&existing).await {
-            Ok(state) => {
-                if state.policy.as_ref() != Some(&configured) {
-                    tracing::warn!(
-                        "the configured approval policy differs from the one this workspace's \
+        let root = async {
+            let configured = self.root_policy(&id).await?;
+            let server = match bound.agents().state(&existing).await {
+                Ok(state) => {
+                    if state.policy.as_ref() != Some(&configured) {
+                        tracing::warn!(
+                            "the configured approval policy differs from the one this workspace's \
                          root agent was created with; the agent keeps its original policy"
-                    );
+                        );
+                    }
+                    // This runtime runs the reopened root; reopening only restores
+                    // its placement.
+                    bound.agents().host(&existing).map_err(storage)?;
+                    crate::hosting::reopen(bound, platform, existing)
+                        .await
+                        .map_err(storage)?
                 }
-                // This runtime runs the reopened root; reopening only restores
-                // its placement.
-                bound.agents().host(&existing).map_err(storage)?;
-                crate::hosting::reopen(bound, platform, existing)
-                    .await
-                    .map_err(storage)?
-            }
-            Err(crate::agent::Error::NoSuchAgent) => {
-                let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-                    name: name.to_owned(),
-                    volume: volume.clone(),
-                };
-                let request = RootRequest {
-                    agent: id,
-                    fresh: Vec::new(),
-                    retained: vec![
-                        bind(PRIVATE_VOLUME, &self.journal),
-                        bind("project", &self.project),
-                        bind(HOME_VOLUME, &self.scratch),
-                    ],
-                    brief: None,
-                    policy: Some(configured),
-                };
-                let intent = IntentId::try_from("root").map_err(storage)?;
-                match crate::hosting::serve(bound, platform, &intent, request)
-                    .await
-                    .map_err(storage)?
-                {
-                    Serving::Served(server) => server,
-                    Serving::Unknown(_) => {
-                        return Err(Error::Storage(
-                            "the root agent's creation is uncertain; reopen to settle it".into(),
-                        ));
+                Err(crate::agent::Error::NoSuchAgent) => {
+                    let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
+                        name: name.to_owned(),
+                        volume: volume.clone(),
+                    };
+                    let request = RootRequest {
+                        agent: id,
+                        fresh: Vec::new(),
+                        retained: vec![
+                            bind(PRIVATE_VOLUME, &self.journal),
+                            bind("project", &self.project),
+                            bind(HOME_VOLUME, &self.scratch),
+                        ],
+                        brief: None,
+                        policy: Some(configured),
+                    };
+                    let intent = IntentId::try_from("root").map_err(storage)?;
+                    match crate::hosting::serve(bound, platform, &intent, request)
+                        .await
+                        .map_err(storage)?
+                    {
+                        Serving::Served(server) => server,
+                        Serving::Unknown(_) => {
+                            return Err(Error::Storage(
+                                "the root agent's creation is uncertain; reopen to settle it"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
+                Err(error) => return Err(storage(error)),
+            };
+            Ok::<_, Error>(server)
+        };
+        // The staged policy and the root's creation or reopen are frames of
+        // the agent journal; one drain makes them durable before any turn
+        // can name the root, whatever number of frames hosting wrote.
+        let server = match &self.agent_stream {
+            Some(stream) => {
+                let server =
+                    acyclic_stream::deferring_provider_durability(stream.as_ref(), root).await?;
+                acyclic_stream::StreamProvider::durability_barrier(stream.as_ref())
+                    .await
+                    .map_err(storage)?;
+                server
             }
-            Err(error) => return Err(storage(error)),
+            None => root.await?,
         };
         let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
         Ok(Hosted { server, runtime })
