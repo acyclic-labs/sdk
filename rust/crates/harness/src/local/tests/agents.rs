@@ -1984,20 +1984,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone())?;
-    let runtime = &harness
-        .agents
-        .get()
-        .ok_or_else(|| Error::Invalid("agent runtime missing".into()))?
-        .runtime;
-    let settlement = || async {
-        tokio::select! {
-            result = settled(&agents, &root) => result,
-            result = runtime.completion() => {
-                result?;
-                Err(Error::Storage("agent runtime ended before settlement".into()))
-            }
-        }
-    };
+    let settlement = || settled(&harness, &agents, &root);
     client.send("first", "hello").await?;
     settlement().await?;
     let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
