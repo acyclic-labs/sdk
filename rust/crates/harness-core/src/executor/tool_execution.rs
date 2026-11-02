@@ -890,7 +890,7 @@ mod cancellation_tests {
         use acyclic_actors::call::{Accepted, CallPath, Entry, Journal, Outcome};
         use acyclic_stream::{
             FollowRequest, FollowUpdate, IdempotencyKey, MemoryStream, StreamPath,
-            StreamProvider as _, WhenAbsent,
+            StreamProvider as _, StreamProviderExt as _, WhenAbsent,
         };
         use futures::{FutureExt as _, StreamExt as _};
         for (accepted, lost_stop) in [(false, false), (true, false), (false, true), (true, true)] {
