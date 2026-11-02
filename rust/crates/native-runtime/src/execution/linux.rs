@@ -245,7 +245,7 @@ impl Policy {
         // The kernel ruleset owns the inserted inode reference. The grant
         // independently pins every original object against identity reuse;
         // another live descriptor per rule buys no additional guarantee.
-        for root in &grant.read {
+        for root in grant.read.entries() {
             prepared.path(&root.bind_controlled(meter)?, READ, root.is_dir, meter)?;
         }
         // Null output and entropy are capabilities of computation. No arbitrary
@@ -354,7 +354,7 @@ impl Prepared {
             Some(policy) => {
                 // Retention saves compilation, never the original path fences.
                 // A replaced read root refuses before any child can launch.
-                for root in &grant.read {
+                for root in grant.read.entries() {
                     drop(root.bind_controlled(meter)?);
                 }
                 PolicyOwner::Shared(Arc::clone(policy))
