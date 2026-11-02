@@ -77,8 +77,11 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(decoded["hook_event_name"], event.name());
             assert_eq!(decoded["cwd"], "workspace");
         }
-        let encoded = HookInput::Fields(&fields)
-            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"), None);
+        let encoded = HookInput::Fields(&fields).encode(
+            HookEvent::PreToolUse,
+            std::path::Path::new("workspace"),
+            None,
+        );
         if fields.is_object() {
             let decoded: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
             assert_eq!(decoded["cwd"], "workspace");
