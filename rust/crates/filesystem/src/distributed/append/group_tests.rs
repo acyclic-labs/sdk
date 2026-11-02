@@ -5,6 +5,8 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod completion;
+#[cfg(not(target_arch = "wasm32"))]
+mod work;
 
 pub(in crate::distributed) fn requests(
     authority: AuthorityId,
@@ -62,6 +64,8 @@ pub(in crate::distributed) async fn fixture()
 
 #[tokio::test]
 async fn atomic_group_has_one_append_and_distinct_recoverable_receipts() -> TestResult {
+    #[cfg(not(target_arch = "wasm32"))]
+    work::original_work_survives_group_guard_and_withdrawal().await?;
     let (store, authority) = fixture().await?;
     let requests = requests(authority, 4)?;
     let token = CancellationToken::new();
