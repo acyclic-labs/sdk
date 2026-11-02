@@ -521,7 +521,7 @@ impl ModelResolver {
         }
     }
 
-    fn resolve(&self, selection: &str) -> Result<ModelBinding> {
+    pub(super) fn resolve(&self, selection: &str) -> Result<ModelBinding> {
         let mut resolved = self
             .resolved
             .lock()

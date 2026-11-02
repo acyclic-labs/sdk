@@ -22,6 +22,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 pub mod agent_conversation;
+mod agent_settings;
 mod agents;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
@@ -101,6 +102,8 @@ pub struct LocalHarness {
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
+    /// The sampling `agent.ts` selected for every model call.
+    sampling: Option<crate::config::Sampling>,
     /// The verifier of a served tree's caller and clients; see
     /// [`LocalHarnessConfig::served`].
     served: Option<Arc<dyn Verifier>>,
