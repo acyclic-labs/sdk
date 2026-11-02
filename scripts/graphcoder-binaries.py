@@ -29,6 +29,12 @@ def binaries(manifest, names=("acyclic", "harness-mock-model")):
 
 
 if __name__ == "__main__":
-    for name, path in binaries(sys.argv[1], sys.argv[2:] or ("acyclic", "harness-mock-model")).items():
-        variable = "SESSIONS_ACYCLIC_BINARY" if name == "acyclic" else "SESSIONS_MOCK_BINARY"
-        print(f"export {variable}={shlex.quote(path)}")
+    try:
+        variables = {"acyclic": "SESSIONS_ACYCLIC_BINARY", "graphcoder": "SESSIONS_GRAPHCODER_BINARY",
+                     "harness-mock-model": "SESSIONS_MOCK_BINARY"}
+        for name, path in binaries(sys.argv[1], sys.argv[2:] or ("acyclic", "harness-mock-model")).items():
+            print(f"export {variables[name]}={shlex.quote(path)}")
+    except (IndexError, KeyError, OSError, ValueError) as error:
+        print(f"step=select Cargo executables: {error}; recovery command: "
+              "python3 scripts/graphcoder-binaries.py ORIGINAL_CARGO_JSON acyclic graphcoder", file=sys.stderr)
+        raise SystemExit(1) from error

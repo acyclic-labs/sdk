@@ -25,7 +25,7 @@ use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, Command, InputFormat, OutputFormat, Template};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
-use std::{future::Future, sync::Arc};
+use std::{future::Future, io::IsTerminal as _, sync::Arc};
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 // Construct each phase on its own call frame. Boxing an already constructed
@@ -84,6 +84,9 @@ where
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
+    }
+    if args.default_config && matches.value_source("catalog") != Some(ValueSource::CommandLine) {
+        args.catalog = None;
     }
     if let Err(error) = args.prepare_input() {
         Args::command()
@@ -418,6 +421,8 @@ async fn drive(
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && args.output_format != OutputFormat::Jsonl
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
     let operation = args
         .operation

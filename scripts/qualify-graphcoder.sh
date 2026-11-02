@@ -22,8 +22,9 @@ bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 
 cargo build --locked -p acyclic-plugin --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .sessions-shipping.jsonl
-python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl acyclic > .sessions-binaries.env
+python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl acyclic graphcoder > .sessions-binaries.env
 source .sessions-binaries.env
+node scripts/test-graphcoder-entry.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_ACYCLIC_BINARY"
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY"
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY" interactive-prompt
 node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY" interactive

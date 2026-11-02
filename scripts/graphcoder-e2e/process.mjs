@@ -251,7 +251,7 @@ export class Processes {
     if (process.platform !== "win32") return start(binary, args, { ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
-    return start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    return start(host, [binary, ...args], { ...options, env, scopeInheritInput: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
@@ -341,22 +341,6 @@ export class ProcessObservationFailed extends Error {
   }
 }
 
-// The ConPTY host admits the launch paths plus typed options; the case owner holds the only deadline.
-export function conptyArgs(binary, args) {
-  const flags = new Map();
-  let resume = false;
-  for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--resume" && !resume) { resume = true; continue; }
-    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation"].includes(args[index])
-      && !flags.has(args[index]) && index + 1 < args.length, `ConPTY host cannot launch argument ${args[index]}`);
-    flags.set(args[index], args[++index]);
-  }
-  const [workspace, catalog, settings, model] = ["--workspace", "--catalog", "--settings-root", "--model"].map(flag => flags.get(flag));
-  assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
-  const operation = flags.get("--operation");
-  return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
-    ...(operation === undefined ? [] : ["--operation", operation])];
-}
 
 // A settled process result. Its output is the explicit historical query of
 // the transcript on disk, read when a caller asks for it.
