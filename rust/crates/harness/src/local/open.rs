@@ -7,6 +7,13 @@ struct Opening {
     state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
+    /// The configured compaction choice, reselected when `agent.ts` changes
+    /// the model.
+    compaction_choice: Option<crate::context::CompactionPolicy>,
+    /// Resolves a model `agent.ts` selects; without one the host's binding
+    /// is fixed.
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    models: Option<Arc<config::ModelResolver>>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -40,6 +47,8 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        let models = config.models.as_ref().map(|(models, _)| Arc::clone(models));
         // Settings resolve once, before the model and approvers they select.
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let (config, settings_configuration) = {
@@ -114,7 +123,7 @@ impl Opening {
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let tools = installation.tools;
         let compaction = if let Some((model, provider)) = &config.model {
-            compaction::select(config.compaction.take(), model, provider.as_ref())?
+            compaction::select(config.compaction.clone(), model, provider.as_ref())?
         } else {
             crate::context::CompactionPolicy::Disabled
         };
@@ -127,12 +136,16 @@ impl Opening {
         if native_mounts && !passive {
             checkout_tools::shell::executable()?;
         }
+        let compaction_choice = config.compaction.take();
         Ok(Self {
             config,
             preset,
             state_location,
             tools,
+            compaction_choice,
             compaction,
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            models,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: settings_configuration,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -415,6 +428,53 @@ impl Opening {
             ..crate::runtime::Bindings::local()
         }
         .build()?;
+        // `agent.ts` selects the model and its sampling as the session starts.
+        let (agent, sampling, compaction) = match self.config.model.clone() {
+            Some(started) => {
+                #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+                let resolver = self
+                    .models
+                    .as_deref()
+                    .map(|models| move |selection: &str| models.resolve(selection));
+                #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+                let resolve = resolver.as_ref().map(|resolve| {
+                    resolve as &(dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)
+                });
+                #[cfg(not(any(
+                    test,
+                    feature = "hooks",
+                    feature = "mcp-stdio",
+                    feature = "mcp-http"
+                )))]
+                let resolve = None;
+                let settings = agent_settings::admit(
+                    &agent_settings::Volumes {
+                        files: &files,
+                        verifier: &verifier,
+                        signed: &signed,
+                        home: &scratch,
+                        journal: &journal,
+                        maximum_bytes: self.config.limits.file_bytes,
+                    },
+                    owner.agent,
+                    started.clone(),
+                    resolve,
+                    self.config.clock.as_ref(),
+                )
+                .await?;
+                let compaction = if settings.model.0 == started.0 {
+                    self.compaction
+                } else {
+                    compaction::select(
+                        self.compaction_choice,
+                        &settings.model.0,
+                        settings.model.1.as_ref(),
+                    )?
+                };
+                (Some(settings.model), settings.sampling, compaction)
+            }
+            None => (None, None, self.compaction),
+        };
         Ok(LocalHarness {
             files,
             #[cfg(all(target_os = "linux", feature = "native-execution"))]
@@ -433,7 +493,8 @@ impl Opening {
             signed,
             preset: self.preset,
             approval_models: self.config.approval_models,
-            agent: self.config.model,
+            agent,
+            sampling,
             served: self.config.served,
             active_directory: self.config.active_directory,
             skill_cache: context::skills::cache(),
@@ -444,7 +505,7 @@ impl Opening {
             #[cfg(any(test, feature = "hooks"))]
             settings: self.settings,
             limits: self.config.limits,
-            compaction: self.compaction,
+            compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,

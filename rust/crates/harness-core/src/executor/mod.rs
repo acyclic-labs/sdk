@@ -87,6 +87,8 @@ mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use code_mode::MEMORY_BYTES as ENGINE_MEMORY;
 mod summary;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
