@@ -19,7 +19,7 @@ pub enum Error {
     Statistics(&'static str),
     /// Invalid ordering, arm selection or incomplete input to the file analysis.
     #[error(
-        "analyze observation stream: {0}; recovery: choose distinct arms, retain every declared assignment in strictly increasing (population, replicate) order with baseline then treatment, and call analysis::Contrast::new and Contrast::analyze again"
+        "analyze observation stream: {0}; recovery: choose distinct arms, supply the original predeclared assignment stream, retain every assignment in strictly increasing (population, replicate) order with baseline then treatment, and call analysis::Contrast::new and Contrast::analyze again"
     )]
     Analysis(&'static str),
     /// An invalid or unrepresentable assignment declaration.
@@ -32,6 +32,11 @@ pub enum Error {
         "decode observation: {0}; recovery: correct the version-2 JSON object and call Observation::decode"
     )]
     Json(#[from] serde_json::Error),
+    /// Original assignment-file decoding failure.
+    #[error(
+        "decode pair assignment: {0}; recovery: correct the version-1 JSON object and call serde_json::from_slice::<plan::PairAssignment> or repeat the assignment stream decoder"
+    )]
+    AssignmentJson(serde_json::Error),
     /// Invalid scoring contrast or decision version.
     #[error(
         "admit probe decision: {0}; recovery: supply version-1 files with distinct expected/injected values and call Scorer::decode or Decision::decode"
