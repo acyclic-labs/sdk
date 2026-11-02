@@ -131,15 +131,23 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
-        self.stock.resolved_sampling.get_or_try_init(|| {
-            let profile = self.stock.provider.model_profile(&self.stock.model)?;
-            if let (Some(explicit), Some(profile)) = (self.stock.sampling, profile)
-                && explicit != profile.sampling() {
-                return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid,
-                    "sampling admission failed: explicit settings differ from the pinned profile; recovery: select the same sampling in the model profile"));
-            }
-            Ok(profile.map_or(self.stock.sampling.unwrap_or_default(), |profile| profile.sampling()))
-        }).copied()
+        self.stock
+            .resolved_sampling
+            .get_or_try_init(|| {
+                let profile = self.stock.provider.model_profile(&self.stock.model)?;
+                crate::model::ModelSampling::admit(
+                    self.stock.sampling,
+                    profile.map(|profile| profile.sampling()),
+                )
+                .map_err(|_| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "sampling admission failed: invalid settings or a pinned-profile conflict; recovery: select valid sampling that agrees with the model profile",
+                    )
+                })
+            })
+            .copied()
     }
 
     pub(super) fn output_budget(&self) -> Result<Option<u32>> {

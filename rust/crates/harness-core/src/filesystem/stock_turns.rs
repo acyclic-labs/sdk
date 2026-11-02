@@ -137,6 +137,8 @@ pub struct StockExecutors {
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
     templates: bool,
+    /// Settings sampling (`agent.ts`) for every model call.
+    sampling: Option<crate::config::Sampling>,
     context: Arc<dyn TurnContext>,
 }
 
@@ -159,7 +161,29 @@ impl StockExecutors {
             compaction,
             agent_tools: Vec::new(),
             templates: false,
+            sampling: None,
             context,
+        }
+    }
+
+    /// Calls the model with `sampling` on every turn. Admission
+    /// ([`crate::config::AgentConfig`]) has already checked its numbers; a
+    /// turn re-checks them.
+    #[must_use]
+    pub fn with_sampling(mut self, sampling: crate::config::Sampling) -> Self {
+        self.sampling = Some(sampling);
+        self
+    }
+
+    fn sample(executor: StockExecutor, sampling: crate::config::Sampling) -> Result<StockExecutor> {
+        let executor = executor.with_sampling(crate::model::ModelSampling {
+            seed: None,
+            temperature: sampling.temperature,
+            top_p: sampling.top_p,
+        })?;
+        match sampling.max_output_tokens {
+            Some(maximum) => executor.with_max_output_tokens(maximum),
+            None => Ok(executor),
         }
     }
 
@@ -246,6 +270,10 @@ impl TurnExecutors for StockExecutors {
             )
             .with_limits(self.limits)
             .with_compaction_policy(self.compaction.clone());
+            let executor = match self.sampling {
+                Some(sampling) => Self::sample(executor, sampling)?,
+                None => executor,
+            };
             let executor = self
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)

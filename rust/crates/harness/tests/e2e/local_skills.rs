@@ -174,7 +174,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
         );
     }
     // Seed skills are read in place from the one seed volume, never copied.
-    for (path, _) in acyclic_harness::seed::TREE {
+    for (path, _) in acyclic_harness::seed::tree() {
         let Some(name) = path
             .strip_prefix("skills/")
             .and_then(|path| path.strip_suffix("/SKILL.md"))

@@ -3,8 +3,9 @@ use rquickjs::{AsyncContext, AsyncRuntime, CaughtError, Function, Promise, prelu
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-// Protective engine ceilings, independent of product capacity and tool counts.
-const MEMORY_BYTES: usize = 1024 * 1024 * 1024;
+// Protective engine ceilings, independent of product capacity and tool
+// counts. Settings evaluation (`crate::config`) shares the memory ceiling.
+pub(crate) const MEMORY_BYTES: usize = 1024 * 1024 * 1024;
 pub(super) const INTERRUPT_BUDGET: u64 = 1_000_000_000;
 
 struct Reply(Option<acyclic_stream::OwnedBytes>);

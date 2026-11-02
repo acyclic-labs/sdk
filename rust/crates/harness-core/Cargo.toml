@@ -40,10 +40,10 @@ filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acy
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-machines?/local"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
-hooks = ["dep:regex-lite"]
+hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
-mcp-http = ["dep:reqwest"]
-mcp-stdio = ["tokio/process", "tokio/io-util"]
+mcp-http = ["dep:reqwest", "dep:toml"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
 # Native environment access for acyclic-harness-search credentials.
 search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
@@ -95,7 +95,8 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["dese
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-toml.workspace = true
+toml = { workspace = true, optional = true }
+ts-rs = "=12.0.1"
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
@@ -114,6 +115,12 @@ protoc-bin-vendored.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
+oxc_allocator = "=0.156.0"
+oxc_codegen = { version = "=0.156.0", default-features = false }
+oxc_parser = { version = "=0.156.0", default-features = false }
+oxc_semantic = { version = "=0.156.0", default-features = false }
+oxc_span = "=0.156.0"
+oxc_transformer = { version = "=0.156.0", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
 dirs = { workspace = true, optional = true }

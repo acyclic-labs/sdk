@@ -898,26 +898,23 @@ impl ToolContext {
     /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
     /// over the seed (`sys/` only from the seed), so the read returns that
     /// layer's own pinned file; other paths are returned unchanged. A home
-    /// file holding only `off: true` hides the seed's. Configuration both
-    /// layers hold merges per key and has no single source file to return.
+    /// file holding only `off: true` hides the seed's. A composed settings
+    /// file reads as its highest module; its value is the evaluated fold.
     pub(crate) async fn effective_tool_path<'a>(
         &self,
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<std::borrow::Cow<'a, str>> {
-        use crate::layers::{Rule, WHY_SUFFIX, is_off, layered};
+        use crate::layers::{WHY_SUFFIX, is_off, layered};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
             return Ok(std::borrow::Cow::Borrowed(path));
         };
         let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
-        let unsupported = || {
-            Error::Unsupported(format!(
-                "{path} merges layers; read its copies under {HOME_PATH} and {SEED_PATH}"
-            ))
-            .tool_input()
-        };
         if relative.ends_with(WHY_SUFFIX) {
-            return Err(unsupported());
+            return Err(Error::Unsupported(format!(
+                "{path} is derived; read its modules under {HOME_PATH} and {SEED_PATH}"
+            ))
+            .tool_input());
         }
         let seed = format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
@@ -949,12 +946,6 @@ impl ToolContext {
         };
         if selected.byte_length <= probe.length && is_off(&bytes) {
             return Err(missing());
-        }
-        if seeded
-            && Rule::of(relative) == Rule::Merge
-            && held(self.read_tool_path_range(&seed, None, probe, io).await)?.is_some()
-        {
-            return Err(unsupported());
         }
         Ok(home.into())
     }
