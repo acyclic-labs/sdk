@@ -25,6 +25,21 @@ I/O. Dropping preparation before admission installs nothing. The product owner
 still checks the full account and live authorization before installation;
 subsequent publication and transport cleanup keep their original owners.
 
+`session::Client::actor_call_input` admits a product request header before its
+input reaches EOF. Its `CallInputSender` sends original immutable fragments under
+both call and connection credit; `finish` sends ordered trailers without needing
+data credit. The product implements `CallProvider::call_input` and consumes the
+same `CallInput`. Retaining a returned chunk retains its receive credit. An
+unsupported product refuses streaming input rather than collecting it.
+
+Reply completion retires only the reply half: an unfinished upload can continue
+on the same admitted call. Dropping an incomplete reply or upload withdraws that
+call, and source or credential loss returns a typed failure. Input is never
+replayed on reconnect. Session protocol version 3 carries this header and input
+terminal; other versions are refused before credentials and interests. Product
+authorization, handler admission and durable application completion remain the
+product's responsibility.
+
 An unexpected provider-follow EOF closes the original session channel with
 `Unavailable`. The server opens that provider follow once; a caller may create
 a new subscription explicitly. A completed caller-bounded range ends cleanly.

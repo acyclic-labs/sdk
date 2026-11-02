@@ -77,7 +77,7 @@ test("guest gRPC body serves canonical ActorCall while upload remains open and c
     const invocation = fromBinary(InvokeActorRequestSchema, f.host.binding());
     invocation.body = command.bytes();
     upload.enqueue(envelope({ body: { case: "interest", value: { revision: 1n, upsert: [{ channel: { channelId: 1n, generation: 1n },
-      resume: { next: 0n }, credential: 0, kind: { case: "actorCall", value: toBinary(InvokeActorRequestSchema, invocation) } }] } } }));
+      resume: { next: 0n }, credential: 0, kind: { case: "actorCall", value: { invocation: toBinary(InvokeActorRequestSchema, invocation), input: false } } }] } } }));
     for (;;) {
       const frame = await read();
       if (frame.body.case === "opened") {
