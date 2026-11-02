@@ -575,7 +575,11 @@ impl ToolContext {
         for change in changes {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(change.path(), work)?;
-                if change.path().len() > self.effective_scope().limits().path_bytes
+                if self
+                    .effective_scope()
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|limit| change.path().len() > limit.get())
                     || crate::conversation::is_internal_path(change.path())
                 {
                     return Err(Error::tool_rejected(
@@ -603,7 +607,12 @@ impl ToolContext {
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
                 ContentChange::DeleteExpected { .. } => 0,
             };
-            if bytes > self.effective_scope().limits().file_bytes {
+            if self
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .is_some_and(|limit| bytes > limit)
+            {
                 return Err(Error::tool_rejected(
                     "conditional file exceeds original task capacity",
                 ));
