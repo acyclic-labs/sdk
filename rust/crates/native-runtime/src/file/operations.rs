@@ -25,23 +25,60 @@ pub fn sync_file(
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
+    sync_file_with_device(
+        file,
+        durability,
+        meter,
+        #[cfg(target_vendor = "apple")]
+        None,
+    )
+}
+
+pub(super) fn sync_owned_file(
+    file: &NativeFilePayload,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    sync_file_with_device(
+        file,
+        durability,
+        meter,
+        #[cfg(target_vendor = "apple")]
+        Some(&file.device),
+    )
+}
+
+fn sync_file_with_device(
+    file: &File,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+    #[cfg(target_vendor = "apple")] held: Option<&crate::device_flush::HeldDevice>,
+) -> io::Result<()> {
+    let run = || {
+        sync_file_impl(
+            file,
+            durability,
+            meter,
+            #[cfg(target_vendor = "apple")]
+            held,
+        )
+    };
     #[cfg(feature = "test-support")]
-    return testing::durable_operation(trace_name("file:sync", durability), || {
-        sync_file_impl(file, durability, meter)
-    });
+    return testing::durable_operation(trace_name("file:sync", durability), run);
     #[cfg(not(feature = "test-support"))]
-    sync_file_impl(file, durability, meter)
+    run()
 }
 
 fn sync_file_impl(
     file: &File,
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
+    #[cfg(target_vendor = "apple")] held: Option<&crate::device_flush::HeldDevice>,
 ) -> io::Result<()> {
     if let Some(meter) = meter {
         #[cfg(target_vendor = "apple")]
         return crate::persistence_syscall(|| {
-            apple::sync_once(file, durability, || {
+            apple::sync_once(file, durability, held, || {
                 meter.check()?;
                 meter.admit_durability()
             })
@@ -65,7 +102,12 @@ fn sync_file_impl(
     );
     operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
-            crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
+            crate::persistence_syscall(|| {
+                #[cfg(target_vendor = "apple")]
+                return apple::sync_once(file, durability, held, || Ok(()));
+                #[cfg(not(target_vendor = "apple"))]
+                sync_file_unsequenced(file, durability)
+            })
         }))
     })
 }
@@ -100,19 +142,15 @@ fn sync_full(
     })
 }
 
-pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
-    #[cfg(target_vendor = "apple")]
-    return apple::sync_once(file, durability, || Ok(()));
-    #[cfg(not(target_vendor = "apple"))]
+#[cfg(not(target_vendor = "apple"))]
+fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
+    // Every durability is the full flush here; see `Durability::Barrier`.
+    #[cfg(any(windows, target_os = "linux"))]
+    return sync_full(file, durability, None);
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
-        // Every durability is the full flush here; see `Durability::Barrier`.
-        #[cfg(any(windows, target_os = "linux"))]
-        return sync_full(file, durability, None);
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = durability;
-            file.sync_all()
-        }
+        let _ = durability;
+        file.sync_all()
     }
 }
 
@@ -148,7 +186,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
         operation.finish(with_file_admission(file, || {
             crate::persistence_syscall(|| {
                 #[cfg(target_vendor = "apple")]
-                return apple::sync_once(file, durability, || Ok(()));
+                return apple::sync_once(file, durability, None, || Ok(()));
                 #[cfg(windows)]
                 return sync_file_unsequenced(file, durability);
                 #[cfg(target_os = "linux")]
