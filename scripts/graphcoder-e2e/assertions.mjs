@@ -7,6 +7,8 @@ import { readFile } from "node:fs/promises";
 export function executionSucceeded(result) {
   assert.equal(result.termination?.startup_rejection ?? result.termination?.execution_failure,
     undefined, "selected native execution reported failure");
+  assert.equal(result.termination?.control_failure, undefined,
+    "step=admit complete native report stream; recovery=node --test scripts/graphcoder-e2e/process-report-tail.test.mjs");
   if (result.code !== 0) assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
   assert.equal(result.signal, null, "executable was interrupted");
 }
