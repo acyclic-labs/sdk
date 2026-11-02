@@ -17,7 +17,9 @@ mod plan;
 mod snapshot;
 mod spec;
 pub(crate) use spec::HookSite;
-pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
+pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, RequestMatch};
+mod chain;
+mod request;
 mod input;
 pub use input::HookInput;
 
@@ -30,7 +32,45 @@ pub(crate) struct BoundHooks {
 struct Binding {
     event: HookEvent,
     matcher: Option<Matcher>,
-    commands: Vec<Arc<HookSpec>>,
+    commands: Vec<(Arc<HookSpec>, Option<Requests>)>,
+}
+
+/// A compiled [`RequestMatch`].
+struct Requests {
+    actions: Vec<String>,
+    command: Option<Regex>,
+    path: Option<Regex>,
+}
+
+impl Requests {
+    fn compile(matcher: &RequestMatch) -> Result<Self> {
+        let pattern = |pattern: &Option<String>| {
+            pattern
+                .as_deref()
+                .map(Regex::new)
+                .transpose()
+                .map_err(|error| Error::Invalid(format!("plugin hook matcher: {error}")))
+        };
+        Ok(Self {
+            actions: matcher.action.clone(),
+            command: pattern(&matcher.command)?,
+            path: pattern(&matcher.path)?,
+        })
+    }
+
+    /// Whether a plugin hook's request (`request::request`) is selected.
+    fn matches(&self, request: &Value) -> bool {
+        let field = |name| request.get(name).and_then(Value::as_str);
+        let selects = |pattern: &Option<Regex>, name| {
+            pattern
+                .as_ref()
+                .is_none_or(|pattern| field(name).is_some_and(|text| pattern.is_match(text)))
+        };
+        (self.actions.is_empty()
+            || field("action").is_some_and(|action| self.actions.iter().any(|a| a == action)))
+            && selects(&self.command, "command")
+            && selects(&self.path, "path")
+    }
 }
 
 enum Matcher {
@@ -126,13 +166,22 @@ impl Hooks {
             } else {
                 Some(Matcher::Exact(group.matcher))
             };
-            for hook in &group.hooks {
+            let mut commands = Vec::with_capacity(group.hooks.len());
+            for hook in group.hooks {
                 hook.validate()?;
+                let requests = match &hook.run {
+                    HookRun::Plugin {
+                        matcher: Some(matcher),
+                        ..
+                    } => Some(Requests::compile(matcher)?),
+                    _ => None,
+                };
+                commands.push((Arc::new(hook), requests));
             }
             bindings.push(Binding {
                 event,
                 matcher,
-                commands: group.hooks.into_iter().map(Arc::new).collect(),
+                commands,
             });
         }
         self.bindings.extend(bindings);
@@ -145,7 +194,8 @@ impl Hooks {
         input: impl Into<HookInput<'input>>,
         registry: &'a ToolRegistry,
     ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
-        let subject = input.into().subject(event);
+        let input = input.into();
+        let subject = input.subject(event);
         #[cfg(any(test, feature = "test-support"))]
         let subject = if SUBSTITUTE_HOOK_NAME.with(std::cell::Cell::get) {
             "mcp__docs__search"
@@ -157,6 +207,21 @@ impl Hooks {
         } else {
             None
         };
+        // A plugin matcher reads the normalized request, built once and only
+        // when some hook of this event has a matcher.
+        let request = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.event == event)
+            .flat_map(|binding| &binding.commands)
+            .any(|(_, requests)| requests.is_some())
+            .then(|| {
+                Arc::new(request::request(
+                    subject,
+                    request::capability(subject, tool),
+                    input.tool_input().unwrap_or(&Value::Null),
+                ))
+            });
         Ok(self
             .bindings
             .iter()
@@ -170,7 +235,15 @@ impl Hooks {
                             })
                     })
             })
-            .flat_map(|binding| &binding.commands))
+            .flat_map(|binding| &binding.commands)
+            .filter(move |(_, requests)| {
+                requests.as_ref().is_none_or(|requests| {
+                    request
+                        .as_deref()
+                        .is_some_and(|request| requests.matches(request))
+                })
+            })
+            .map(|(hook, _)| hook))
     }
 
     /// The outcome of `event`'s hooks after a run interrupted before its
@@ -206,22 +279,28 @@ impl Hooks {
         mut execute: F,
     ) -> Result<HookOutput>
     where
-        F: FnMut(&Arc<HookSpec>, usize) -> Fut,
+        F: FnMut(&Arc<HookSpec>, usize, Option<&Value>) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
         let input = input.into();
         let commands = self.commands(event, input, registry)?;
         let count = commands.clone().count();
         let quota = capture_quota(maximum_bytes, count);
+        if event.site() == HookSite::BeforeTool {
+            let hooks: Vec<_> = commands.collect();
+            let original = input.tool_input().unwrap_or(&Value::Null);
+            return chain::judge(&hooks, event, original, (quota, maximum_bytes), &mut execute)
+                .await;
+        }
         let mut budget = budget::Budget::new(maximum_bytes)?;
         let results = futures::future::join_all(commands.map(|hook| {
-            let execution = execute(hook, quota);
-            async move { (hook.failure, execution.await) }
+            let execution = execute(hook, quota, None);
+            async move { (hook, execution.await) }
         }))
         .await;
         let mut output = HookOutput::default();
-        for (failure, result) in results {
-            budget.apply(&mut output, event, failure, result);
+        for (hook, result) in results {
+            budget.apply(&mut output, event, &**hook, result);
         }
         budget.finish(&mut output);
         Ok(output)

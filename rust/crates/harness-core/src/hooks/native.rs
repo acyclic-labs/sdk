@@ -70,17 +70,16 @@ impl Hooks {
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
-        let bytes = input.encode(event, cwd)?;
-        let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
-        self.run_commands(event, input, registry, maximum_bytes, |hook, quota| {
-            run_hook(
-                Arc::clone(hook),
-                Arc::clone(&request),
-                Arc::clone(&check),
-                quota,
-                wake.clone(),
-                execution.clone(),
-            )
+        self.run_commands(event, input, registry, maximum_bytes, |hook, quota, rewritten| {
+            // Each hook reads its own protocol's bytes for the input it judges.
+            let request = match hook.plugin() {
+                Some((_, config)) => request::encode(input, event, config, (rewritten, registry)),
+                None => input.encode(event, cwd, rewritten),
+            }
+            .map(|bytes| Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes)));
+            let hook = Arc::clone(hook);
+            let (check, wake, execution) = (Arc::clone(&check), wake.clone(), execution.clone());
+            async move { run_hook(hook, request?, check, quota, wake, execution).await }
         })
         .await
     }
@@ -210,6 +209,20 @@ fn hook_command(
         }
         HookRun::Shell { command, shell } => {
             shell_command(command, shell.as_deref()).map_err(Error::process_io)?
+        }
+        HookRun::Plugin { sh, ps1, .. } => {
+            // The target runs the form native to it; a Windows target never
+            // borrows a POSIX shell, so a plugin without `.ps1` cannot run
+            // there and its request is denied.
+            let (script, shell, form) = if cfg!(windows) {
+                (ps1.as_deref(), None, ".ps1")
+            } else {
+                (sh.as_deref(), Some("sh"), ".sh")
+            };
+            let script = script.ok_or_else(|| {
+                Error::Unsupported(format!("this target runs a plugin hook's {form} form"))
+            })?;
+            shell_command(script, shell).map_err(Error::process_io)?
         }
     })
 }
