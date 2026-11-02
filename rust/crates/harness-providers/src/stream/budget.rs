@@ -7,7 +7,7 @@ use std::mem::size_of;
 mod properties;
 
 pub(super) struct Budget<'work> {
-    used: Size,
+    used: usize,
     maximum_bytes: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     work: Option<&'work acyclic_fs::NativeMaterializationWork>,
@@ -33,7 +33,7 @@ impl<'work> Budget<'work> {
     }
     pub fn new(maximum: impl Into<Option<usize>>) -> Self {
         Self {
-            used: Size::default(),
+            used: 0,
             maximum_bytes: maximum.into(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
@@ -51,22 +51,11 @@ impl<'work> Budget<'work> {
             ..Self::new(maximum)
         }
     }
-    pub fn replace(&mut self, old: Size, new: Size) -> Result<()> {
-        let bytes = self
-            .used
-            .bytes
-            .checked_sub(old.bytes)
-            .and_then(|n| n.checked_add(new.bytes));
-        let items = self
-            .used
-            .items
-            .checked_sub(old.items)
-            .and_then(|n| n.checked_add(new.items));
-        match (bytes, items) {
-            (Some(bytes), Some(items))
-                if self.maximum_bytes.is_none_or(|maximum| bytes <= maximum) =>
-            {
-                self.used = Size { bytes, items };
+    pub fn replace(&mut self, old: usize, new: usize) -> Result<()> {
+        let bytes = self.used.checked_sub(old).and_then(|n| n.checked_add(new));
+        match bytes {
+            Some(bytes) if self.maximum_bytes.is_none_or(|maximum| bytes <= maximum) => {
+                self.used = bytes;
                 Ok(())
             }
             _ => Err(invalid(
@@ -105,7 +94,7 @@ impl<'work> Budget<'work> {
                 .maximum_bytes
                 .map(|maximum| {
                     maximum
-                        .checked_sub(self.used.bytes)
+                        .checked_sub(self.used)
                         .and_then(|remaining| remaining.checked_add(old))
                         .ok_or_else(|| invalid("tool capacity overflow"))
                 })
