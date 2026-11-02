@@ -152,3 +152,7 @@ for assumptions, negative controls and the boundary with agent composition.
 the complete admitted ancestry. Parsing retains its original input and validates
 IDs without temporary owned copies. Containment grants no permission: the
 shared hosting path still checks the current caller and owner policy on use.
+
+For offline paired differences, clustered uncertainty, power planning and
+objective organism-probe scoring, use `experiments`. See the
+[analysis guide](../harness-core/docs/experiments.md).

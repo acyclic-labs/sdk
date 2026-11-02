@@ -6,6 +6,16 @@ use std::fmt;
 /// to the same derive, borrowing its original keys and values without buffering.
 pub(crate) struct JsonObject<S>(pub S);
 
+/// Decode one complete typed object without a JSON tree or trailing input.
+pub(crate) fn decode_object<'de, T: serde::Deserialize<'de>>(
+    bytes: &'de [u8],
+) -> serde_json::Result<T> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = deserialize_object(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
 /// Field adapter over the same seed, with the field's original value layout.
 pub(crate) fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where

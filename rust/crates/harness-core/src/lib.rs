@@ -47,6 +47,7 @@ pub mod devices;
 pub mod distributed;
 mod effects;
 pub mod executor;
+pub mod experiments;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
 pub mod extension;
