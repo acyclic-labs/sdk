@@ -14,7 +14,7 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
-        self.append_projected(operation, None, key, event, &[], None, io, |receipt| {
+        self.append_projected(operation, None, key, event, &[], None, io, move |receipt| {
             receipt
                 .sequence
                 .filter(|sequence| *sequence > 0)
