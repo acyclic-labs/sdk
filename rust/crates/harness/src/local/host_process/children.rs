@@ -427,6 +427,11 @@ impl NativeChildren {
     /// each. A child whose turn settled launches the next input its
     /// settlement carried; one whose pass left output unread is queued again.
     pub fn pump(&mut self) -> Result<()> {
+        self.pump_output(&mut [0; 8192])
+    }
+
+    /// Reuses one scratch page across the ready children and their exit drains.
+    fn pump_output(&mut self, buffer: &mut [u8]) -> Result<()> {
         let mut ready = self.ready.take().into_iter();
         while let Some(reference) = ready.next() {
             let Some(mut running) = self.children.remove(&reference) else {
@@ -436,7 +441,7 @@ impl NativeChildren {
                 self.children.insert(reference, running);
                 continue;
             }
-            let result = match self.refresh(&reference, &mut running) {
+            let result = match self.refresh(&reference, &mut running, buffer) {
                 Ok(Some(mut settled)) => self.launch(&reference, &mut settled),
                 Ok(None) => {
                     if running.process.take_output_progress() {
@@ -466,7 +471,12 @@ impl NativeChildren {
 
     /// The settlement reply, carrying the next input, once the process exited
     /// and its turn settled.
-    fn refresh(&self, reference: &str, running: &mut Running) -> Result<Option<Value>> {
+    fn refresh(
+        &self,
+        reference: &str,
+        running: &mut Running,
+        buffer: &mut [u8],
+    ) -> Result<Option<Value>> {
         if running.settlement.is_some() {
             // A settlement whose exchange had no known outcome is resent.
             return self
@@ -478,7 +488,7 @@ impl NativeChildren {
             None => running
                 .process
                 .pump_stdin()
-                .and_then(|_| output(running))
+                .and_then(|_| output(running, buffer))
                 .and_then(|_| running.process.try_wait())
                 .map_err(|error| error.to_string()),
         };
@@ -491,7 +501,7 @@ impl NativeChildren {
             }
             // Exit is the capture boundary. A detached process can retain a
             // pipe writer after containment stops; EOF cannot own settlement.
-            match output(running) {
+            match output(running, buffer) {
                 // Full output credit queues another pass through pump's
                 // original progress edge. Exit cannot truncate a reply still
                 // behind already captured bytes, nor wait for inherited EOF.
@@ -522,6 +532,9 @@ impl NativeChildren {
                 }) => Outcome::Indeterminate {
                     operation_id: *operation_id,
                     cause: cause.clone(),
+                },
+                None if running.answer.omitted => Outcome::Failed {
+                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit or contained invalid UTF-8; recovery=acyclic agents".into(),
                 },
                 None => Outcome::Failed {
                     message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),
@@ -596,7 +609,7 @@ impl NativeChildren {
                 self.complete(reference, &mut running, Outcome::Cancelled, false)
             } else {
                 running.process.terminate_descendants().and_then(|()| {
-                    let _ = output(&mut running);
+                    let _ = output(&mut running, &mut [0; 8192]);
                     self.complete(reference, &mut running, Outcome::Cancelled, false)
                 })
             };
@@ -653,18 +666,17 @@ impl NativeChildren {
 /// custodied event log, keeping its latest answer. The settlement derives the
 /// native resume reference from that log, so a running turn sends nothing.
 /// Returns true when the full pass was used and another pass is required.
-fn output(running: &mut Running) -> Result<bool> {
+fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
     running.process.drain_stderr()?;
-    let mut chunk = [0u8; 8192];
     // Bound each pass so a busy child cannot starve cancellation or peers.
     for _ in 0..16 {
-        let Some(count) = running.process.read_stdout(&mut chunk)? else {
+        let Some(count) = running.process.read_stdout(buffer)? else {
             return Ok(false);
         };
         if count == 0 {
             return Ok(false);
         }
-        let bytes = chunk
+        let bytes = buffer
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
@@ -672,15 +684,7 @@ fn output(running: &mut Running) -> Result<bool> {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.
-                running.answer.pending = None;
-                if !matches!(
-                    running.answer.outcome,
-                    Some(
-                        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. }
-                    )
-                ) {
-                    running.answer.outcome = Some(Outcome::Failed { message: "step=read native reply: an event exceeded the 65,536-byte frame limit or contained invalid UTF-8; recovery=acyclic agents".into() });
-                }
+                running.answer.omit();
                 // The saved log marks where the event was dropped.
                 running.process.record_event(EVENT_OMITTED)?;
                 continue;

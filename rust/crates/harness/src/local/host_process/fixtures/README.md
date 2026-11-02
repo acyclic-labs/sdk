@@ -22,4 +22,6 @@ SHA-256:
 - Claude Code: `a4c4a86ed094e949983389230343a95ba9129df847235366541a9b6cda75d7ae`.
 
 The refusal controls mutate the captured Claude success flag and Codex terminal
-type in memory; those derived negatives are not captured native output.
+type in memory. The framing-loss control corrupts the first byte of a copy of
+the captured Codex start line, then replays the original reply. These derived
+negatives are not captured native output.

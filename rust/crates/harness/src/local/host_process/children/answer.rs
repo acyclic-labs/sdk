@@ -7,9 +7,20 @@ use super::{ANSWER_LIMIT, Outcome, Value};
 pub(super) struct NativeAnswer {
     pub(super) pending: Option<String>,
     pub(super) outcome: Option<Outcome<String>>,
+    pub(super) omitted: bool,
 }
 
 impl NativeAnswer {
+    /// Framing loss invalidates a preview, but is not a native terminal.
+    /// A later complete reply can recover; a native refusal stays authoritative.
+    pub(super) fn omit(&mut self) {
+        self.pending = None;
+        if matches!(self.outcome, Some(Outcome::Succeeded(_))) {
+            self.outcome = None;
+        }
+        self.omitted = true;
+    }
+
     pub(super) fn record(&mut self, event: &Value) {
         match event.get("type").and_then(Value::as_str) {
             Some("turn.started") => *self = Self::default(),
@@ -112,6 +123,13 @@ mod tests {
                 // Removing the original terminal leaves no completed reply,
                 // even when a native agent-message preview was received.
                 assert!(answer.outcome.is_none());
+                if event.get("type").and_then(Value::as_str) != Some("turn.started")
+                    && answer.pending.is_none()
+                {
+                    // Derived framing loss before the captured reply must not
+                    // become a sticky native refusal.
+                    answer.omit();
+                }
                 answer.record(&event);
                 if events.peek().is_none() {
                     assert_eq!(
@@ -132,6 +150,7 @@ mod tests {
                         let mut refused = event.clone();
                         refused["type"] = Value::String("turn.failed".into());
                         answer.record(&refused);
+                        answer.omit();
                         answer.record(&event);
                         assert!(matches!(answer.outcome, Some(Outcome::Failed { .. })));
                         for line in captured.lines() {
