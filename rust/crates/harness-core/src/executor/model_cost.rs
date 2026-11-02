@@ -116,9 +116,25 @@ fn family_cost(
     rate: Option<u64>,
     children: &[(Option<u64>, TokenPrice)],
 ) -> Option<u128> {
+    family(parent, rate, children)?.cost
+}
+
+struct Family {
+    tokens: Option<u64>,
+    cost: Option<u128>,
+}
+
+// One interpretation of included/subset/additional counters serves both the
+// public inclusive count and billing. Unknown prices do not erase known units.
+fn family(
+    parent: Option<u64>,
+    rate: Option<u64>,
+    children: &[(Option<u64>, TokenPrice)],
+) -> Option<Family> {
     let mut parent = parent?;
     let mut inclusive = parent;
-    let mut extra = 0u128;
+    let mut tokens_total = Some(parent);
+    let mut extra = Some(0u128);
     for &(tokens, price) in children {
         match price {
             TokenPrice::Included => {
@@ -132,16 +148,23 @@ fn family_cost(
                 let tokens = tokens?;
                 inclusive = inclusive.checked_sub(tokens)?;
                 parent = parent.checked_sub(tokens)?;
-                extra = extra.checked_add(charge(tokens, nano_units_per_million)?)?;
+                extra = extra
+                    .and_then(|extra| extra.checked_add(charge(tokens, nano_units_per_million)?));
             }
             TokenPrice::Additional {
                 nano_units_per_million,
             } => {
-                extra = extra.checked_add(charge(tokens?, nano_units_per_million)?)?;
+                let tokens = tokens?;
+                tokens_total = tokens_total.and_then(|total| total.checked_add(tokens));
+                extra = extra
+                    .and_then(|extra| extra.checked_add(charge(tokens, nano_units_per_million)?));
             }
         }
     }
-    charge(parent, rate)?.checked_add(extra)
+    Some(Family {
+        tokens: tokens_total,
+        cost: charge(parent, rate).and_then(|ordinary| ordinary.checked_add(extra?)),
+    })
 }
 
 impl ModelPriceRecord {
@@ -199,12 +222,23 @@ impl ModelUsageRecord {
         &'a self,
         price: Option<&'a ModelPriceRecord>,
     ) -> Result<ModelUsageProjection<'a>, ModelPriceError> {
+        self.estimate_with_input(price)
+            .map(|(estimate, _)| estimate)
+    }
+
+    // Live usage needs the inclusive input count beside the estimate. Validate
+    // the binding and interpret the counters once for that original call.
+    pub(crate) fn estimate_with_input<'a>(
+        &'a self,
+        price: Option<&'a ModelPriceRecord>,
+    ) -> Result<(ModelUsageProjection<'a>, Option<u64>), ModelPriceError> {
         let mut estimated_cost = ModelCostEstimate {
             price_revision: None,
             effective_at: None,
             currency: None,
             token_nano_units: None,
         };
+        let mut input_tokens = None;
         if let Some(price) = price {
             price.validate_for(self)?;
             estimated_cost.price_revision = Some(Cow::Borrowed(&price.revision));
@@ -213,7 +247,7 @@ impl ModelUsageRecord {
             estimated_cost.token_nano_units = self
                 .completed
                 .then(|| {
-                    let input = family_cost(
+                    let input = family(
                         self.tokens.input,
                         price.input_nano_units_per_million,
                         &[
@@ -221,20 +255,24 @@ impl ModelUsageRecord {
                             (self.tokens.cache_write, price.cache_write),
                         ],
                     )?;
+                    input_tokens = input.tokens;
                     let output = family_cost(
                         self.tokens.output,
                         price.output_nano_units_per_million,
                         &[(self.tokens.reasoning, price.reasoning)],
                     )?;
-                    u64::try_from(input.checked_add(output)?.div_ceil(1_000_000)).ok()
+                    u64::try_from(input.cost?.checked_add(output)?.div_ceil(1_000_000)).ok()
                 })
                 .flatten();
         }
-        Ok(ModelUsageProjection {
-            version: 2,
-            usage: Cow::Borrowed(self),
-            estimated_cost,
-        })
+        Ok((
+            ModelUsageProjection {
+                version: 2,
+                usage: Cow::Borrowed(self),
+                estimated_cost,
+            },
+            input_tokens,
+        ))
     }
 }
 
