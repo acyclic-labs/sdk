@@ -121,6 +121,15 @@ never become metric labels.
 Native worker context is retained by the original persistence job. Unobserved
 leaves, concurrent work and original provider/group attribution remain unknown,
 so these diagnostics do not qualify `durability_calls` or count device drains.
+The same optional projection retains fixed terminal-sample counters for original
+persistence and blocking-I/O tasks. Queue transfer, closure entry and panic each
+distinguish unknown, false and true; terminal disposition distinguishes unknown,
+success, I/O error, panic and missing result. Outcome remains independent of the
+panic flag, preserving a stored I/O error alongside a panic. An abandoned
+unsubmitted task contributes incomplete evidence with unknown admission and
+terminal, rather than a fabricated successful transfer. These terminal samples
+do not count still-active jobs, queue latency, final backing retirement or native
+Worker execution, and supply no authenticated physical admission binding.
 Run the deterministic observer controls with
 `cargo test --locked -p acyclic-test-support scale::tests`. They execute an
 injected scan, real per-agent threads, virtual timer registrations and a lost
