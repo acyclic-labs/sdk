@@ -78,7 +78,14 @@ impl StockExecution<'_> {
         self.stage_summary_source(journal, operation_id, step, source_bytes.as_deref())
             .await?;
         let events = executor
-            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
+            .run_model_step(
+                journal,
+                &input,
+                step,
+                request::ModelStepHistory::Selected(&[]),
+                ModelPurpose::Summary,
+                phase,
+            )?
             .await?;
         let text = self.collect_summary_text(events)?;
         self.publish_summary(

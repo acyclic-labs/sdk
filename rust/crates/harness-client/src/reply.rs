@@ -392,12 +392,31 @@ fn validate_reply(
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
         (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
-            // An answer is the entry of exactly the requested message.
+            // Correlate the original prompt or verified in-turn steering message.
             return match reply {
-                Reply::Answered { entry, origin, .. } => {
+                Reply::Answered {
+                    entry,
+                    origin,
+                    steering,
+                    ..
+                } => {
                     let request = origin.as_deref().unwrap_or(entry);
-                    if request.inbox != *inbox
-                        || !matches!(&request.input, TurnInput::Message { id: settled, .. } if settled == id)
+                    let matches_input = match steering {
+                        Some(source) => {
+                            source.inbox == *inbox
+                                && &source.id == id
+                                && request.inbox < source.inbox
+                                && request
+                                    .steering
+                                    .as_ref()
+                                    .is_some_and(|cut| source.inbox < cut.through)
+                        }
+                        None => {
+                            request.inbox == *inbox
+                                && matches!(&request.input, TurnInput::Message { id: settled, .. } if settled == id)
+                        }
+                    };
+                    if !matches_input
                         || match origin {
                             Some(origin) => !origin
                                 .goal
@@ -1151,8 +1170,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn reply_keeps_the_original_request_and_exact_goal_run()
+    #[tokio::test]
+    async fn reply_keeps_the_original_request_and_exact_goal_run()
     -> Result<(), Box<dyn std::error::Error>> {
         use acyclic_harness_core::{
             AgentId, OperationId,
@@ -1191,6 +1210,7 @@ mod tests {
             goal: Some(run),
             targets: None,
             tool_results: None,
+            steering: None,
             notices: None,
         };
         let terminal = ConversationEntry {
@@ -1217,6 +1237,7 @@ mod tests {
                         sequence: 2,
                         entry,
                         origin,
+                        steering: None,
                     },
                 }),
                 &command,
@@ -1228,6 +1249,38 @@ mod tests {
             reply: Reply::Answered { entry, origin: Some(origin), .. }
         }) if entry.inbox == 3 && origin.inbox == 1)
         );
+        let steered_command = AgentCommand::Reply {
+            agent: agent.clone(),
+            id: IntentId::try_from("steered")?,
+            inbox: 2,
+        };
+        let mut steered_origin = origin.clone();
+        steered_origin.steering = Some(acyclic_harness_core::agent::SteeringTranscript {
+            through: 3,
+            file: steered_origin.output.clone(),
+        });
+        let steered_goal = AgentReply::Reply {
+            reply: Reply::Answered {
+                sequence: 2,
+                entry: terminal.clone(),
+                origin: Some(Box::new(steered_origin)),
+                steering: Some(acyclic_harness_core::agent::SteeringReply {
+                    inbox: 2,
+                    id: IntentId::try_from("steered")?,
+                }),
+            },
+        };
+        let bytes = encode_agent_reply(&Ok(steered_goal), &steered_command)?;
+        assert!(matches!(
+            decode_agent_reply(&bytes, &steered_command)?,
+            Ok(AgentReply::Reply {
+                reply: Reply::Answered {
+                    origin: Some(_),
+                    steering: Some(_),
+                    ..
+                }
+            })
+        ));
         // The first settlement cannot masquerade as terminal, nor can a
         // foreign goal or sender replace the authenticated self-continuation.
         assert!(matches!(
@@ -1255,13 +1308,123 @@ mod tests {
             goal: None,
             ..origin
         };
-        let bytes = encode(ordinary, None)?;
+        let bytes = encode(ordinary.clone(), None)?;
         assert!(matches!(
             decode_agent_reply(&bytes, &command)?,
             Ok(AgentReply::Reply {
                 reply: Reply::Answered { origin: None, .. }
             })
         ));
+        // Exercise the actual inbox/conversation producer before crossing the
+        // same envelope codec used by the remote client.
+        use acyclic_harness_core::agent::{
+            AgentRecord as _, AgentState, ForkAdopted, InboxRecord, Message, SteeringTranscript,
+            Submitted, create_root, intent_key, reply, send, submit,
+        };
+        use acyclic_stream::{
+            CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
+            StreamProviderExt as _,
+        };
+        let provider = MemoryStream::default();
+        let adopted = ForkAdopted {
+            profile: None,
+            agent: agent.id(),
+            parent: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        };
+        let created = create_root(&IntentId::try_from("create")?, adopted.clone())?;
+        assert!(matches!(
+            submit(&provider, created.request).await?,
+            Submitted::Committed(_)
+        ));
+        let TurnInput::Message { from, body, .. } = &ordinary.input else {
+            return Err("original request is not a message".into());
+        };
+        for name in ["prompt", "steered"] {
+            let record = InboxRecord::Message(Message {
+                from: from.clone(),
+                id: IntentId::try_from(name)?,
+                body: body.clone(),
+                attachments: None,
+            });
+            assert!(matches!(
+                submit(&provider, send(&agent, from, &record)?).await?,
+                Submitted::Committed(_)
+            ));
+        }
+        let mut settled = ordinary;
+        settled.steering = Some(SteeringTranscript {
+            through: 3,
+            file: settled.output.clone(),
+        });
+        let conversation = agent.conversation()?;
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: vec![CommitCondition::Tail {
+                        path: conversation.clone(),
+                        expected: 0
+                    }],
+                    mutations: vec![CommitMutation::Append {
+                        path: conversation,
+                        records: vec![settled.encode()?.into()]
+                    }],
+                    idempotency_key: intent_key("settlement", &[])?,
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut state = AgentState::adopted(agent.clone(), &adopted)?;
+        state.conversation_tail = 1;
+        let command = AgentCommand::Reply {
+            agent: agent.clone(),
+            id: IntentId::try_from("steered")?,
+            inbox: 2,
+        };
+        let AgentCommand::Reply { id, inbox, .. } = &command else {
+            unreachable!()
+        };
+        let answered = reply(&provider, &state, 3, id, *inbox).await?;
+        let bytes = encode_agent_reply(&Ok(AgentReply::Reply { reply: answered }), &command)?;
+        assert!(
+            matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Reply {
+            reply: Reply::Answered { entry, steering: Some(source), origin: None, .. }
+        }) if entry == settled && source.inbox == 2 && source.id == *id)
+        );
+        let envelope = Envelope::decode(bytes.as_slice())?;
+        let Some(envelope::Value::Reply(body)) = &envelope.value else {
+            return Err("steering envelope lost its reply".into());
+        };
+        let original: serde_json::Value = serde_json::from_slice(body)?;
+        for field in ["id", "inbox", "through", "missing"] {
+            let mut changed = original.clone();
+            match field {
+                "id" => changed["reply"]["steering"]["id"] = "foreign".into(),
+                "inbox" => changed["reply"]["steering"]["inbox"] = 1.into(),
+                "through" => changed["reply"]["entry"]["steering"]["through"] = 2.into(),
+                _ => changed["reply"]["steering"] = serde_json::Value::Null,
+            }
+            let mut envelope = Envelope::decode(bytes.as_slice())?;
+            let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                unreachable!()
+            };
+            *body = serde_json::to_vec(&changed)?;
+            assert!(matches!(
+                decode_agent_reply(&envelope.encode_to_vec(), &command),
+                Err(CommandError::Invalid)
+            ));
+            let decoded: AgentReply = serde_json::from_value(changed)?;
+            assert!(matches!(
+                encode_agent_reply(&Ok(decoded), &command),
+                Err(CommandError::Invalid)
+            ));
+        }
         Ok(())
     }
 

@@ -214,10 +214,14 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
         })
     }
     /// Opens `turn` for `agent`, whose model-visible input is `input`.
+    /// `cursor` is this original actor delivery's exclusive inbox cursor;
+    /// together with the retained queue it distinguishes consumed responses.
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        inbox: u64,
+        cursor: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
@@ -243,10 +247,12 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        inbox: u64,
+        cursor: u64,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>> {
-        (**self).open(agent, turn, input, stop)
+        (**self).open(agent, turn, inbox, cursor, input, stop)
     }
 }
 
@@ -286,6 +292,9 @@ impl TurnOutcome {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ConversationEntry {
+    /// Inputs admitted at model boundaries during this turn, in source order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering: Option<super::SteeringTranscript>,
     /// Inbox sequence of the record that started the turn (see [`Queued`]).
     /// An agent appends its own entries in strictly increasing inbox order.
     pub inbox: u64,
@@ -639,6 +648,7 @@ async fn settle_selection(
         goal: None,
         targets: None,
         tool_results: None,
+        steering: None,
         notices: None,
     };
     Ok(TurnStep {
@@ -658,6 +668,9 @@ fn appended(
     let mut outs = vec![Out::Conversation(entry.encode()?)];
     if let Some(selection) = &entry.notices {
         outs.push(Out::Notices(selection.clone()));
+    }
+    if let Some(steering) = &entry.steering {
+        outs.push(Out::Steered(steering.through));
     }
     if let (Some(_), Some((_, digest))) = (&entry.targets, roster) {
         outs.push(Out::Roster(*digest));
@@ -705,7 +718,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,
-        _cursor: u64,
+        cursor: u64,
         input: Option<Queued>,
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
@@ -760,7 +773,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let content = model_input(&input)?;
             let open = self
                 .host
-                .open(agent, turn, &content, stop.clone())
+                .open(agent, turn, inbox, cursor, &content, stop.clone())
                 .await
                 .map_err(host_error)?;
             let progress = open
@@ -789,6 +802,10 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     goal,
                     targets: announced(&open),
                     tool_results: open.outputs.tool_results(turn),
+                    steering: match open.journal.model_boundary() {
+                        Some(boundary) => boundary.transcript(turn).await.map_err(host_error)?,
+                        None => None,
+                    },
                     notices: notices.clone(),
                 };
                 return Ok(TurnStep {
@@ -868,6 +885,12 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         goal: run,
                         targets: announced(&open),
                         tool_results: open.outputs.tool_results(turn),
+                        steering: match open.journal.model_boundary() {
+                            Some(boundary) => {
+                                boundary.transcript(turn).await.map_err(host_error)?
+                            }
+                            None => None,
+                        },
                         notices: notices.clone(),
                     };
                     // The tools' recorded effects commit with the turn's settlement.

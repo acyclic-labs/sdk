@@ -47,7 +47,7 @@ impl StockExecution<'_> {
                     journal,
                     input,
                     step,
-                    &prior_messages,
+                    request::ModelStepHistory::Turn(&mut prior_messages),
                     ModelPurpose::Response,
                     phase,
                 )?

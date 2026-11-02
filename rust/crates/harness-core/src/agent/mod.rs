@@ -41,7 +41,13 @@ pub(crate) mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
+mod messaging;
 mod slots;
+mod steering;
+pub use messaging::{MessageDelivery, peer_send_allowed};
+pub use steering::{
+    BoundaryCut, BoundarySelection, ModelBoundary, SteeringTranscript, select_boundary,
+};
 mod targets;
 pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
@@ -81,7 +87,7 @@ pub use records::{
     NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnProfiles, SpawnRequest,
     StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
-pub use reply::{Reply, reply};
+pub use reply::{Reply, SteeringReply, reply};
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]

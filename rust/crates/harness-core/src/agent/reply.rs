@@ -7,13 +7,28 @@
 //! queued and read back in inbox order, and an approval response taken out of
 //! order resumes the waiting turn instead of starting an entry. So the entry
 //! answering a request is found by binary search over the agent's own committed
-//! range. A goal run joins its original request to its terminal conversation
+//! range. A steering message joins the preceding entry through its admitted
+//! exclusive cursor, verifying its identity at the original inbox sequence.
+//! A goal run joins its original request to its terminal conversation
 //! entry through the one reference committed with that entry; no output is copied.
 
 use super::{AgentRecord as _, AgentState, ConversationEntry, Error, IntentId, TurnInput};
 use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
+
+/// Original message identity verified in the admitted steering interval.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct SteeringReply {
+    /// Original inbox sequence of the steering message.
+    pub inbox: u64,
+    /// Original intent of that message.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub id: IntentId,
+}
 
 /// Where one accepted message stands in the committed agent state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +46,9 @@ pub enum Reply {
         /// Ordinary prompts answer with their own entry and no origin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<Box<ConversationEntry>>,
+        /// Verified steering message answered by the original settling entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steering: Option<SteeringReply>,
     },
     /// Unread, queued or in the running turn.
     Pending,
@@ -55,16 +73,20 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<Reply, Error> {
     let conversation = state.path.conversation()?;
     let (mut low, mut high) = (state.conversation_base, state.conversation_tail);
+    let mut preceding = None;
     while low < high {
         let middle = low + (high - low) / 2;
         let entry = entry(provider, &conversation, middle).await?;
         match entry.inbox.cmp(&inbox) {
-            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Less => {
+                low = middle + 1;
+                preceding = Some((middle, entry));
+            }
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
                     TurnInput::Message { id: settled, .. } if settled == id => {
-                        goal_reply(provider, state, middle, entry).await
+                        goal_reply(provider, state, middle, entry, None).await
                     }
                     _ => Err(Error::Conflict(
                         "the inbox sequence settled another request",
@@ -73,21 +95,55 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             }
         }
     }
-    let queued = state.queued.iter().any(|queued| queued.inbox == inbox);
-    let unread = state
-        .overflow
-        .is_some_and(|first| inbox >= first && !state.taken.contains(&inbox));
-    Ok(
-        if inbox >= cursor
-            || queued
-            || unread
-            || state.turn.as_ref().is_some_and(|turn| turn.inbox == inbox)
-        {
-            Reply::Pending
-        } else {
-            Reply::Dropped
-        },
-    )
+    if let Some((sequence, entry)) = preceding
+        && entry
+            .steering
+            .as_ref()
+            .is_some_and(|steering| inbox < steering.through)
+    {
+        // Every Message before this admitted cursor passed the same boundary;
+        // controls are not messages and a FollowUp stops that boundary. Read
+        // exactly the requested immutable source record, never the transcript.
+        let mut records = provider
+            .read(ReadRequest {
+                key: None,
+                path: state.path.inbox()?,
+                from: inbox,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == inbox)
+            .ok_or(Error::Record("admitted steering input is missing"))?;
+        return match super::InboxRecord::decode(&record.value)? {
+            super::InboxRecord::Message(message) if &message.id == id => {
+                goal_reply(
+                    provider,
+                    state,
+                    sequence,
+                    entry,
+                    Some(SteeringReply {
+                        inbox,
+                        id: message.id,
+                    }),
+                )
+                .await
+            }
+            _ => Err(Error::Conflict(
+                "the inbox sequence admitted another request",
+            )),
+        };
+    }
+    Ok(if state.input_pending(cursor, inbox) {
+        Reply::Pending
+    } else {
+        Reply::Dropped
+    })
 }
 
 /// Committed conversation entry `sequence`.
@@ -120,12 +176,14 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     state: &AgentState,
     sequence: u64,
     request: ConversationEntry,
+    steering: Option<SteeringReply>,
 ) -> Result<Reply, Error> {
     let Some(run) = request.goal else {
         return Ok(Reply::Answered {
             sequence,
             entry: request,
             origin: None,
+            steering,
         });
     };
     let pending = || {
@@ -165,5 +223,6 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         sequence: completed.sequence,
         entry,
         origin: Some(Box::new(request)),
+        steering,
     })
 }

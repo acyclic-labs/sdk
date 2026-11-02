@@ -75,6 +75,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection: projection.clone(),
+                steering: None,
             },
             None,
         )?

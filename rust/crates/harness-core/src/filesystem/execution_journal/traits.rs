@@ -37,6 +37,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {
+        self.boundary.as_deref()
+    }
+
     fn cache_identity(&self) -> Option<crate::executor::ExecutionJournalCacheId> {
         Some(self.cache_identity)
     }

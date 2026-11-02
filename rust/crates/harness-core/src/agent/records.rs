@@ -33,7 +33,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 8 adds explicit generation-linked file/context restoration requests.
 /// Version 9 retains the original action binding in a waiting approval's status
 /// and actor checkpoint.
-pub const RECORD_VERSION: u32 = 10;
+/// Version 10 unifies child and deadline waits as one monotone condition.
+/// Version 11 adds admitted boundary steering and next-turn messages.
+pub const RECORD_VERSION: u32 = 11;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -145,9 +147,13 @@ impl<'de> Deserialize<'de> for Header<'de> {
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+#[heap_layout(as = String)]
 pub struct IntentId(String);
+crate::core::ownership::owned_tuple!(IntentId, (text));
 
 impl IntentId {
     /// Canonical text.
@@ -469,6 +475,8 @@ pub enum InboxRecord {
     ForkAdopted(Box<ForkAdopted>),
     /// `send`.
     Message(Message),
+    /// A message reserved for a new turn, never injected into the active one.
+    FollowUp(Message),
     /// One primitive event; the payload independently decides whether to run.
     Notice {
         /// Original producer event identity, retained across delivery replay.
@@ -687,6 +695,7 @@ impl AgentRecord for InboxRecord {
                 Ok(())
             }
             Self::Message(Message { from, .. })
+            | Self::FollowUp(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. }) => check_sender(from),
             Self::Context(ContextRequest { by, action, .. }) => {

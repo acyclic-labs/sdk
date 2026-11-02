@@ -94,6 +94,9 @@ pub struct AgentState {
     /// of the number of pending events. This is not a conversation-item cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_notices: Option<std::ops::Range<u64>>,
+    /// Exclusive inbox cursor included at an admitted model boundary. Payloads
+    /// remain in the original inbox; checkpoint cost is constant per agent.
+    pub steered_through: u64,
     /// Cancelled inputs before this sequence, including goal continuations.
     #[serde(default)]
     pub dropped_before: u64,
@@ -167,6 +170,23 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// Whether an inbox input remains unread, queued, or is the running turn.
+    /// `cursor` is the original actor delivery's exclusive inbox cursor. The
+    /// bounded input window and existing overflow exceptions are the authority;
+    /// an out-of-order approval/hook already removed by the driver is consumed.
+    #[must_use]
+    pub fn input_pending(&self, cursor: u64, sequence: u64) -> bool {
+        sequence >= cursor
+            || self.queued.iter().any(|queued| queued.inbox == sequence)
+            || self
+                .overflow
+                .is_some_and(|first| sequence >= first && !self.taken.contains(&sequence))
+            || self
+                .turn
+                .as_ref()
+                .is_some_and(|turn| turn.inbox == sequence)
+    }
+
     /// Exclusive inbox prefix with no remaining turn or queued work, at the
     /// actor's original consumed cursor. Consumption alone may checkpoint a
     /// paused turn or move later inputs into the retained window. Fixed
@@ -198,6 +218,7 @@ impl AgentState {
             brief,
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
+            steered_through: 0,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
@@ -322,7 +343,10 @@ impl AgentState {
         let mut next = self.overflow.unwrap_or(end);
         for (sequence, record) in records {
             next = sequence + 1;
-            if self.taken.remove(&sequence) {
+            if (sequence < self.steered_through
+                && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. }))
+                || self.taken.remove(&sequence)
+            {
                 continue;
             }
             let Some(input) = input(sequence, record) else {
@@ -346,6 +370,8 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Inbox inputs before this exclusive cursor already reached the model.
+    Steered(u64),
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
@@ -764,6 +790,22 @@ fn finalize_step(
     let mut sequence = state.conversation_tail;
     for out in &outs {
         match out {
+            Out::Steered(through) => {
+                state.steered_through = state.steered_through.max(*through);
+                state.queued.retain(|input| {
+                    input.inbox >= *through
+                        || !matches!(
+                            input.input,
+                            TurnInput::Message { .. } | TurnInput::Notice { .. }
+                        )
+                });
+                if let Some(range) = &mut state.pending_notices {
+                    range.start = range.start.max(*through);
+                    if range.start >= range.end {
+                        state.pending_notices = None;
+                    }
+                }
+            }
             Out::Conversation(_) => {
                 sequence = sequence
                     .checked_add(1)
@@ -830,6 +872,11 @@ fn control(state: &AgentState) -> Control {
 
 /// Folds one inbox record into the state.
 fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<AgentState, Error> {
+    if sequence < state.steered_through
+        && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
+    {
+        return Ok(state);
+    }
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
         InboxRecord::Cancel(_) => Admit::Cancel,
@@ -840,6 +887,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     if admitted.clear_queue {
         state.dropped_before = state.dropped_before.max(sequence);
         state.drop_queue();
+        state.pending_notices = None;
     }
     if !admitted.control.turn {
         state.turn = None;
@@ -915,6 +963,7 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
+        Out::Steered(_) => true,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
