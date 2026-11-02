@@ -544,10 +544,10 @@ async fn server_retains_the_transport_deadline_before_effects() -> TestResult {
     };
     let server = BlobsServer::new(resolve);
     let body = b"original transport budget";
-    let digest = Digest::hash(body);
+    let digest = Digest::of(body);
     let mut request = Request::new(wire::PutBlobRequest {
         digest: Some(digest.into()),
-        body: body.to_vec(),
+        body: bytes::Bytes::from_static(body),
         references: Vec::new(),
     });
     // Use tonic's emitted timeout and the transport's original arrival,
@@ -566,7 +566,7 @@ async fn server_retains_the_transport_deadline_before_effects() -> TestResult {
     // The same public route with a live original budget publishes once.
     let mut request = Request::new(wire::PutBlobRequest {
         digest: Some(digest.into()),
-        body: body.to_vec(),
+        body: bytes::Bytes::from_static(body),
         references: Vec::new(),
     });
     request.set_timeout(Duration::from_secs(60));
