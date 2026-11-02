@@ -20,10 +20,42 @@ pub(super) fn request(tool: &str, capability: &str, input: &Value) -> Value {
     };
     let (action, named) = match capability {
         name if name == crate::tools::shell::PLATFORM.name => {
-            ("exec", text(&["command"]).map(|command| ("command", command)))
+            (
+                "exec",
+                input
+                    .get("command")
+                    .and_then(|command| match command {
+                        Value::String(command) => Some(command.clone()),
+                        // Plain words stay readable to command matchers; JSON quoting
+                        // preserves every other literal argument boundary. This
+                        // display form is matched, never executed as a shell.
+                        Value::Array(args) if args.iter().all(Value::is_string) => Some(
+                            args.iter()
+                                .map(|arg| match arg {
+                                    Value::String(word)
+                                        if !word.is_empty()
+                                            && word.bytes().all(|byte| {
+                                                byte.is_ascii_alphanumeric()
+                                                    || b"_./:-".contains(&byte)
+                                            }) =>
+                                    {
+                                        word.clone()
+                                    }
+                                    _ => arg.to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ),
+                        _ => None,
+                    })
+                    .map(|command| ("command", command)),
+            )
         }
-        "read" | "write" | "edit" => (capability, text(&["path", "file_path"]).map(|path| ("path", path))),
-        name if name.starts_with("mcp__") => ("mcp", None),
+        "read" | "write" | "edit" => (
+            capability,
+            text(&["path", "file_path"]).map(|path| ("path", path.to_owned())),
+        ),
+        name if name.starts_with("mcp.") => ("mcp", None),
         _ => ("other", None),
     };
     let mut request = serde_json::json!({
@@ -61,4 +93,23 @@ pub(super) fn encode(
     .map_err(|error| Error::Invalid(error.to_string()))?;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn normalized_calls_keep_guard_actions_and_literal_arguments() {
+        let request = request(
+            "shell",
+            crate::tools::shell::PLATFORM.name,
+            &serde_json::json!({"command": ["git", "push", "--force", "a b", "$(id)"]}),
+        );
+        assert_eq!(request["action"], "exec");
+        assert_eq!(request["command"], r#"git push --force "a b" "$(id)""#);
+        assert_eq!(
+            super::request("mcp.docs.search", "mcp.docs.search", &Value::Null)["action"],
+            "mcp"
+        );
+    }
 }
