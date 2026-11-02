@@ -104,7 +104,7 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         .map_err(std::io::Error::from_raw_os_error)?
         .unique;
     let original = cache_work(FINITE_HANDLER_POLICY, &crate::CancellationToken::new());
-    let baseline = original.live_allocation_bytes();
+    let original_meter = Arc::downgrade(&original.runtime_meter());
     // Return, cancellation and producer unwind use the same physical path.
     for exit in 0..3 {
         let (work, _cancellation) = original.invocation_view()?;
@@ -187,6 +187,8 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             .as_ref()
             .cloned()
             .ok_or("original memory missing")?;
+        let mapping_owner = Arc::downgrade(&memory);
+        let queue_owner = Arc::downgrade(&device);
         let ram = memory.memory();
         ram.write_slice(&attributes.request, GuestAddress(1024))?;
         ram.write_obj(
@@ -277,9 +279,16 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         }
         assert!(device.memory.try_write().is_ok());
         assert!(device.queues[1].state.try_lock().is_ok());
+        drop(memory);
+        drop(device);
+        assert!(mapping_owner.upgrade().is_none());
+        assert!(queue_owner.upgrade().is_none());
     }
     original.charge(crate::WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    // The original meter owns finished callback-read registry backings until
+    // its own retirement. Packet allocations must not extend that lifetime.
+    drop(original);
+    assert!(original_meter.upgrade().is_none());
     Ok(())
 }
 
