@@ -82,6 +82,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SecretVariableKind::decl(&ts_rs::Config::default()),
         SecretVariable::decl(&ts_rs::Config::default()),
         SecretListReply::decl(&ts_rs::Config::default()),
+        IssuanceRequest::decl(&ts_rs::Config::default()),
+        IssuanceRefusal::decl(&ts_rs::Config::default()),
+        IssuanceRejected::decl(&ts_rs::Config::default()),
+        IssuanceUnknown::decl(&ts_rs::Config::default()),
+        IssuanceDecision::decl(&ts_rs::Config::default()),
+        IssuanceReply::decl(&ts_rs::Config::default()),
     ] {
         typescript.push_str("export ");
         typescript.push_str(&declaration);

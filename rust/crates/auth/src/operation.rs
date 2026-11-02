@@ -182,16 +182,27 @@ impl Context {
     /// Remaining transport metadata from the SAME retained clock. This starts
     /// no registration and never renews the absolute deadline.
     pub fn remaining(&self) -> Result<Duration, BudgetError> {
-        self.check()?;
-        let clock = self.clock.as_ref().ok_or(BudgetError::ClockUnavailable)?;
         let remaining = self
             .deadline_unix_millis
-            .saturating_sub(clock.now_unix_millis()?);
+            .saturating_sub(self.now_unix_millis()?);
+        Ok(Duration::from_millis(remaining))
+    }
+
+    /// Read the original custodian's clock, fencing source loss before and
+    /// after the read and enforcing the original absolute deadline even before
+    /// its alarm callback runs. An event-only context cannot supply a fallback.
+    ///
+    /// # Errors
+    /// Refuses a stopped invocation or an unavailable original clock.
+    pub fn now_unix_millis(&self) -> Result<u64, BudgetError> {
         self.check()?;
-        if remaining == 0 {
+        let clock = self.clock.as_ref().ok_or(BudgetError::ClockUnavailable)?;
+        let now = clock.now_unix_millis()?;
+        self.check()?;
+        if now >= self.deadline_unix_millis {
             return Err(Stopped::Deadline.into());
         }
-        Ok(Duration::from_millis(remaining))
+        Ok(now)
     }
 
     /// Original absolute deadline for transports that admit it on the wire.

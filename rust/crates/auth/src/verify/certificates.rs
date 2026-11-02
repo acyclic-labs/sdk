@@ -35,6 +35,30 @@ impl CertificateVerifier {
         })
     }
 
+    /// Authenticate public certificates without minting a workload or taking
+    /// custody of a leaf key. Uses the same signature owner and current-trust
+    /// checker as workload verification, requiring every certificate to have
+    /// been signed by the exact requested issuer. The result is not a bearer
+    /// credential.
+    ///
+    /// # Errors
+    /// Rejects malformed, forged, revoked, expired or wrong-trust certificates.
+    pub fn verify_certificates(
+        &mut self,
+        certificates: CertificateChainProto,
+        issuer: &BlockId,
+        trust: &(impl Trust + ?Sized),
+        now_unix_seconds: u64,
+    ) -> Result<CertificateChain, VerifyError> {
+        let roots = self.authenticate(&certificates, trust, now_unix_seconds)?;
+        if !roots.issuers.iter().all(|actual| actual == issuer) {
+            return Err(VerifyError::Trust);
+        }
+        let certificates = CertificateChain::try_from(certificates)?;
+        current::check_certificates(&certificates, &roots, trust, now_unix_seconds)?;
+        Ok(certificates)
+    }
+
     pub(super) fn authenticate(
         &mut self,
         certificates: &CertificateChainProto,
