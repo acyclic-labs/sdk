@@ -8,7 +8,7 @@ pub fn stream_resource(path: &str) -> String {
         if index != 0 {
             resource.push('/');
         }
-        resource.push_str(&acyclic_auth::encode_component(component.as_bytes()));
+        acyclic_auth::append_component(component.as_bytes(), &mut resource);
     }
     resource
 }
@@ -90,6 +90,30 @@ mod tests {
             "literal%2F/key",
         ] {
             let resource = stream_resource(path);
+            // The original temporary-component composition is the independent
+            // ownership control; both must produce the identical resource.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (_, [temporary, composed]) = acyclic_test_support::differential(
+                    || {
+                        let mut resource = String::from("streams:/");
+                        for (index, component) in path.split('/').enumerate() {
+                            if index != 0 {
+                                resource.push('/');
+                            }
+                            resource
+                                .push_str(&acyclic_auth::encode_component(component.as_bytes()));
+                        }
+                        resource
+                    },
+                    || stream_resource(std::hint::black_box(path)),
+                );
+                assert!(composed.count_total < temporary.count_total);
+                eprintln!(
+                    "resource={path} allocations: temporary={} composed={}",
+                    temporary.count_total, composed.count_total
+                );
+            }
             let decoded = stream_path(&resource)?;
             assert_eq!(decoded.as_str(), path);
             assert!(stream_resource_matches(&resource, &decoded));
