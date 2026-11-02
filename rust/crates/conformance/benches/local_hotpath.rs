@@ -190,7 +190,7 @@ fn run() -> Result {
         #[cfg(not(feature = "local-hotpath-proofs"))]
         return Err("--proofs requires --features local-hotpath-proofs".into());
     }
-    report::check_quantiles()?;
+    report::check_observations()?;
     std::fs::create_dir(&options.root)?;
     let executable = std::fs::read(std::env::current_exe()?)?;
     emit(serde_json::json!({

@@ -50,6 +50,8 @@ until original physical work, provider groups and a matched device guarantee
 are established. The report emits no percentile pass fields. Timestamp
 resolution is checked against the modeled floor itself, without multiplying
 it by an acceptance threshold.
+Each operation cohort requires identical floor terms across all its samples;
+a sample with different required work refuses before changing that cohort.
 These are single-operation latency measurements, not throughput or concurrency
 claims. Payloads and exact reads are checked outside the measured intervals.
 Root setup and session samples share the same exact requested-agent receipt
