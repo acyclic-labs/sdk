@@ -54,7 +54,7 @@ fn small_events_cannot_exceed_retained_byte_capacity() -> Result<()> {
     }
     assert!(rejected);
     assert!(state.calls.len() < 10_000);
-    assert!(state.budget.used().0 <= 256);
+    assert!(state.budget.used() <= 256);
     let before = state.calls.len();
     assert!(state.call(20_000).is_err());
     assert_eq!(
@@ -76,7 +76,7 @@ fn small_events_cannot_exceed_retained_byte_capacity() -> Result<()> {
     assert!(rejected);
     assert!(state.thinking.len() < 10_000);
     assert!(state.thinking.len() > 1024);
-    assert!(state.budget.used().0 <= 1024 * 1024);
+    assert!(state.budget.used() <= 1024 * 1024);
     Ok(())
 }
 

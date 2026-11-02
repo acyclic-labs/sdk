@@ -437,12 +437,18 @@ impl MemoryStream {
         let applied = crate::preparation::applied(request, skipped);
         let (facts, facts_claim) = self.facts(state, applied.clone(), commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
-        let (paths, paths_claim) = self.paths(state, applied.map(crate::CommitMutation::path), |prefix| {
-                request.mutations.binary_search_by(|mutation| {
-                    crate::CommitMutation::path(mutation).as_str().cmp(prefix)
-                }).is_ok_and(|index| {
-                    skipped.binary_search(crate::CommitMutation::path(&request.mutations[index])).is_err()
-                })
+        let (paths, paths_claim) =
+            self.paths(state, applied.map(crate::CommitMutation::path), |prefix| {
+                request
+                    .mutations
+                    .binary_search_by(|mutation| {
+                        crate::CommitMutation::path(mutation).as_str().cmp(prefix)
+                    })
+                    .is_ok_and(|index| {
+                        skipped
+                            .binary_search(crate::CommitMutation::path(&request.mutations[index]))
+                            .is_err()
+                    })
             })?;
         let envelope = CommittedEnvelope {
             commit_id,
