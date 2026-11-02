@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::allocation::retained::Retained;
 
 /// Selection remains resident until the original write completes. Restore it
 /// on either refusal or withdrawal before releasing the exclusive file lease.
@@ -160,7 +161,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     ) -> Result<(), ObjectStoreError> {
         let mut spill = self.spill_io.write().await;
         self.spill_locked(&mut spill, work).await?;
-        let (_target_allocation, targets) = {
+        let targets = {
             let index = self.index();
             if index.spill_end <= MAXIMUM_SPILL_BYTES {
                 return Ok(());
@@ -168,12 +169,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let mut bytes = 0_u64;
             let mut count = 0;
             for staged in index.objects.values() {
-                if let Some(native) = work.original {
-                    native.charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                }
+                work.accounting()
+                    .charge_items(1)
+                    .map_err(crate::async_storage::object_error)?;
                 if let Staged::Spilled { length, .. } = staged {
                     if count != 0 && bytes.saturating_add(*length) > MAXIMUM_DRAIN_BYTES {
                         break;
@@ -182,25 +180,24 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     count += 1;
                 }
             }
-            let (allocation, mut targets) = staged_vector(count, work.original)?;
+            let targets = work.vec_owned(count)?;
+            let mut targets = Retained::from_owned(targets, &mut work.accounting())
+                .map_err(crate::async_storage::object_error)?;
             for (&id, staged) in &index.objects {
-                if targets.len() == count {
+                if targets.value.len() == count {
                     break;
                 }
-                if let Some(native) = work.original {
-                    native.charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                }
+                work.accounting()
+                    .charge_items(1)
+                    .map_err(crate::async_storage::object_error)?;
                 if matches!(staged, Staged::Spilled { .. }) {
-                    targets.push(id);
+                    targets.value.push(id);
                 }
             }
-            (allocation, targets)
+            targets
         };
         let unswept = self.collection.unswept().await;
-        self.drain_locked(&mut spill, &unswept, &targets, work)
+        self.drain_locked(&mut spill, &unswept, &targets.value, work)
             .await?;
         Ok(())
     }

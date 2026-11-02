@@ -436,6 +436,28 @@ async fn spill_relief_retains_original_work_cancellation_and_refusal()
     // Stand in for a spill file that has grown past its bound.
     advance_spill_past_bound(&store).await?;
 
+    let private = store.index().spilled_objects;
+    for counter in ["items_examined", "allocation_operations"] {
+        let mut budget = crate::performance::BOUNDARY_BUDGET;
+        if counter == "items_examined" {
+            budget.items_examined = 0;
+        } else {
+            budget.allocation_operations = 0;
+        }
+        let mut refused = AuthorityWork::new(budget, &token);
+        assert!(matches!(
+            store.relieve_window(&mut refused).await,
+            Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                counter: refused_counter,
+                ..
+            })) if refused_counter == counter
+        ));
+        assert_eq!(refused.spent().backend_read_operations, 0);
+        assert_eq!(refused.spent().backend_write_operations, 0);
+        assert_eq!(store.index().spilled_objects, private);
+        assert_eq!(store.inner().stored.load(Ordering::Relaxed), 0);
+    }
+
     let mut denied = AuthorityWork::new(
         WorkBudget {
             backend_read_operations: 0,
