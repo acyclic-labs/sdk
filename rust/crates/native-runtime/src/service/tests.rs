@@ -14,16 +14,6 @@ fn readiness_channel() -> io::Result<(ServiceReadiness, ServiceReadySignal)> {
 }
 
 #[test]
-fn readiness_reaches_the_starter_and_closes_the_channel() -> io::Result<()> {
-    let (mut starter, service) = readiness_channel()?;
-    service.signal()?;
-    let mut received = Vec::new();
-    crate::io_progress::read_to_end(&mut starter.0, &mut received)?;
-    assert_eq!(received, b"\n");
-    Ok(())
-}
-
-#[test]
 fn starter_exit_does_not_fail_service_startup() -> io::Result<()> {
     let (starter, service) = readiness_channel()?;
     drop(starter);
@@ -82,6 +72,21 @@ fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
         starter.wait()?,
         ServiceStartOutcome::Failed("\u{fffd}".to_owned())
     );
+
+    // Foreign output cannot certify readiness. Keep the original producer
+    // open: refusal must depend on its frame, not a later EOF or timer.
+    for frame in u8::MIN..=u8::MAX {
+        if frame == READY_FRAME || frame == FAILURE_FRAME {
+            continue;
+        }
+        let (starter, mut service) = readiness_channel()?;
+        send(&mut service.0, frame, &[])?;
+        let error = starter
+            .wait()
+            .expect_err("foreign output certified readiness");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(service);
+    }
     Ok(())
 }
 

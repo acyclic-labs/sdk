@@ -999,9 +999,6 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied) {
-                continue;
-            }
             let id = self.next_id;
             self.next_id += 1;
             let op = match key {
@@ -2644,6 +2641,7 @@ mod reader_tests {
             // Other callers' failures cannot retire an original denial or
             // silently authorize a new read with its old credential.
             let mut denied_reads = Reader::new(policy).unwrap();
+            denied_reads.plan(wants());
             for path in heads.keys() {
                 denied_reads.denied(path);
             }
@@ -2652,6 +2650,9 @@ mod reader_tests {
                 heads.len(),
                 "unrelated denial retired an unacknowledged issue"
             );
+            denied_reads.demand.take_visits();
+            assert!(denied_reads.poll(0).is_empty());
+            assert_eq!(denied_reads.demand.take_visits(), 0);
             denied_reads.plan(wants());
             assert!(denied_reads.poll(0).is_empty());
             denied_reads.acknowledge_issue(&denied);
