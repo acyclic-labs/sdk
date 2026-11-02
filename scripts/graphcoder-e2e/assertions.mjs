@@ -86,16 +86,24 @@ export function subset(actual, expected) {
 // Both provider records and PostToolUse carry the original ToolResult value.
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
+function toolFailure(error, expectedErrors, recovery, caseId) {
+  if (error === undefined || error === null) return;
+  const encoded = JSON.stringify(error);
+  assert.ok(expectedErrors?.some(text => encoded.includes(text)),
+    `unexpected tool error ${encoded}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+}
+
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
-  const error = value && typeof value === "object" ? value.error
-    ?? (value.version === 2 && Array.isArray(value.context) ? value.output?.error : undefined)
-    ?? (Array.isArray(value.settled) ? value.settled.find(child => child.phase?.done?.outcome?.failed)?.phase.done.outcome.failed : undefined)
-    ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
-      ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
-    : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
-  if (error !== undefined && error !== null) assert.ok(
-    expectedErrors?.some(text => JSON.stringify(error).includes(text)),
-    `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+  if (value && typeof value === "object") {
+    toolFailure(value.error, expectedErrors, recovery, caseId);
+    if (value.version === 2 && Array.isArray(value.context))
+      toolFailure(value.output?.error, expectedErrors, recovery, caseId);
+    if (Array.isArray(value.settled)) for (const child of value.settled)
+      toolFailure(child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
+    if (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0))
+      toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
+  } else if (typeof value === "string" && value.startsWith("tool executor rejected the admitted call ("))
+    toolFailure(value, expectedErrors, recovery, caseId);
 }
 
 export function toolResults(records) {

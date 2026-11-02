@@ -43,6 +43,26 @@ test("completed wait retains the original failed descendant settlement", () => {
   }
 });
 
+test("every retained tool failure needs its own selected allowance", () => {
+  const allowed = "volume alias names another binding";
+  const original = nestedFailures[0].event.tool_response;
+  const first = original.settled[0], second = structuredClone(nestedFailures[1].event.tool_response.settled[0]);
+  // Two real captured failures supply the envelopes; substitute the other
+  // retained VM refusal to make the second child's disposition independent.
+  second.phase.done.outcome.failed = { message: codeFailure.tool_response.output.error };
+  for (const settled of [[first, second], [second, first]]) {
+    const value = { ...original, settled };
+    assert.throws(() => toolOutcome(value, [allowed], "inspect original settlement"),
+      error => error.message.includes(codeFailure.tool_response.output.error));
+    toolOutcome(value, [allowed, codeFailure.tool_response.output.error]);
+  }
+  for (const value of [
+    { ...original, error: allowed, settled: [second] },
+    { version: 2, context: [], error: allowed, output: { error: codeFailure.tool_response.output.error } },
+    { error: allowed, success: false },
+  ]) assert.throws(() => toolOutcome(value, [allowed], "inspect original tool failures"));
+});
+
 test("file reads retain the original authored or content source", () => {
   for (const { event } of fileReads) {
     const original = event.tool_response, expected = original.text;
