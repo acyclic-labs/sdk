@@ -290,8 +290,10 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         if !recovery && (!devices.active || connection.target.state != TargetState::Online) {
             return Err(Error::Target(roster.refusal(name, Refused::Offline)));
         }
-        let connection = connection.clone();
         let mut record = connection.target.clone();
+        let session = connection.session.clone();
+        let socket = connection.socket.clone();
+        let generation = connection.generation;
         if !devices.active {
             record.state = TargetState::Offline;
         }
@@ -299,8 +301,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         let terminal = if recovery {
             None
         } else {
-            let socket = connection
-                .socket
+            let socket = socket
                 .clone()
                 .ok_or_else(|| Error::Invalid("online device has no original socket".into()))?;
             let terminal = self
@@ -317,7 +318,9 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             paths: self.paths.clone(),
             name: record.name.clone(),
             sockets: Arc::clone(&self.sockets),
-            connection,
+            session,
+            socket,
+            generation,
             terminal,
             wake: self
                 .store
@@ -336,7 +339,9 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     paths: TargetPaths,
     name: String,
     sockets: Arc<dyn acyclic_actors::guest::SocketHost>,
-    connection: TargetStatus,
+    session: Option<String>,
+    socket: Option<String>,
+    generation: u64,
     terminal: Option<Arc<dyn acyclic_actors::guest::SocketTerminal>>,
     wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
@@ -454,8 +459,8 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                         .terminal
                         .as_ref()
                         .filter(|_| {
-                            self.connection.socket.as_deref() == Some(socket.as_str())
-                                && self.connection.generation == generation
+                            self.socket.as_deref() == Some(socket.as_str())
+                                && self.generation == generation
                         })
                         .cloned()
                         .or_else(|| {
@@ -577,9 +582,9 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             .flatten()
             .filter(|status| {
                 status.target.state == TargetState::Online
-                    && status.session == self.connection.session
-                    && status.socket == self.connection.socket
-                    && status.generation == self.connection.generation
+                    && status.session == self.session
+                    && status.socket == self.socket
+                    && status.generation == self.generation
             })
             .and_then(|status| {
                 status
