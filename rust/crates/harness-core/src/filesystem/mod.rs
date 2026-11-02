@@ -27,7 +27,7 @@ use acyclic_fs::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 mod content_input;
-use content_input::ContentInput;
+use content_input::{ContentInput, ContentPublication, HashedSource, PublicationInput};
 mod content_publisher;
 mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
@@ -178,8 +178,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
-        // Refuse invalid or unauthorized input before admitting an allocated future.
-        let bytes = input.as_ref();
+        self.put_content_input(
+            ContentPublication {
+                volume,
+                grant,
+                path,
+                media_type,
+                display_name,
+                maximum_bytes,
+                idempotency_key,
+                internal_class,
+                expected_generation,
+                ceiling,
+                io,
+            },
+            input.publication_input(),
+        )
+    }
+
+    fn put_content_input<'a>(
+        &'a self,
+        request: ContentPublication<'a>,
+        mut input: PublicationInput<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>
+    where
+        A: 'static,
+        O: 'static,
+    {
+        let ContentPublication {
+            volume,
+            grant,
+            path,
+            media_type,
+            display_name,
+            maximum_bytes,
+            idempotency_key,
+            internal_class,
+            expected_generation,
+            ceiling,
+            io,
+        } = request;
+        // Refuse invalid or unauthorized input before consuming any source.
         grant.require(volume, VolumeOperation::Write, io)?;
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
@@ -192,7 +231,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "content caller lacks a filesystem write grant",
             ));
         }
-        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+        if volume.provider() != &self.provider
+            || input
+                .bytes()
+                .is_some_and(|bytes| bytes.len() as u64 > maximum_bytes)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -202,36 +245,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
         })?;
-        match internal_class {
-            Some(class)
-                if volume.class() == VolumeClass::AgentPrivate
-                    && path.starts_with(class.prefix()) => {}
-            Some(_) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.and_then(PreparationIo::original_native_work).is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "journal path or volume is not assigned to this host",
-                    });
-                }
-                return Err(Error::Unauthorized(
-                    "journal path or volume is not assigned to this host".into(),
-                ));
-            }
-            None if path == ".system"
-                || path.starts_with(".system/")
-                || path == "tools/.results"
-                || path.starts_with(InternalContentClass::ToolResult.prefix())
-                || path == "turns/.canonical"
-                || path.starts_with("turns/.canonical/") =>
-            {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "internal storage paths are reserved",
-                ));
-            }
-            None => {}
+        InternalContentClass::require_path(internal_class, path, io)?;
+        if internal_class.is_some() && volume.class() != VolumeClass::AgentPrivate {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "internal publication requires its assigned private volume",
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(&input, PublicationInput::Stream(_))
+            && io.and_then(PreparationIo::original_native_work).is_some()
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "stream source lacks original native allocation custody; recovery: use ContentPublisher::stage_once with already owned bytes",
+            ));
         }
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -243,43 +273,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &unmeasured
             };
             let io = Some(active_io);
-            let descriptor = crate::executor::with_history_io(io, |work| {
-                FileDescriptor::from_bytes(bytes, media_type, work)
-            })?;
-            let operation = bounded_io::operation_key(idempotency_key, io)?;
-            let provisional = crate::executor::with_history_io(io, |work| {
-                FileRef::new(
-                    volume.copy(work)?,
-                    stock_string_copy(path, io)?,
-                    bounded_io::hex_key(&operation.into_bytes(), io)?,
-                    FileDescriptor::new(
-                        *descriptor.sha256(),
-                        descriptor.byte_length(),
-                        stock_string_copy(descriptor.media_type(), io)?,
-                    )?,
-                    stock_string_copy(display_name, io)?,
-                    work,
-                )
-            })?;
-            let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
-            let receipt_identity = if internal_class.is_some() {
-                provisional.path()
+            // Metadata is admitted once before workspace or source IO.
+            let descriptor = if let Some(bytes) = input.bytes() {
+                crate::executor::with_history_io(io, |work| {
+                    FileDescriptor::from_bytes(bytes, media_type, work)
+                })?
             } else {
-                idempotency_key.as_str()
+                FileDescriptor::new([0; 32], 0, stock_string_copy(media_type, io)?)?
             };
-            let receipt_path =
-                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
-            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
-            let receipt_bytes = match io {
-                Some(io) => io.encode(
-                    &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
-                    true,
-                )?,
-                None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
-                    &(&provisional, expected_generation),
-                )?),
-            };
+            let operation = bounded_io::operation_key(idempotency_key, io)?;
+            let workspace = bounded_io::content_workspace(&self.provider, volume, io)?;
             let root = self.open(&workspace, io).await?;
             // Host records stay with the same volume owner as their readers
             // and journal. User content follows the selected project branch.
@@ -293,7 +296,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             if needs_binding {
                 let (generation, fence) = self
-                    .authorize_content_write(&root, grant, provisional.path(), true, ceiling, io)?
+                    .authorize_content_write(&root, grant, path, true, ceiling, io)?
                     .await?;
                 let _hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 self.bind_content_operation(
@@ -322,14 +325,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let root_authorization = if opened.id() != root.id() {
                 let (generation, fence) = self
-                    .authorize_content_write(
-                        &root,
-                        grant,
-                        provisional.path(),
-                        prior.is_some(),
-                        ceiling,
-                        io,
-                    )?
+                    .authorize_content_write(&root, grant, path, prior.is_some(), ceiling, io)?
                     .await?;
                 let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 Some((generation, hold, fence))
@@ -338,14 +334,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
             let (authorized_generation, policy_fence) = self
-                .authorize_content_write(
-                    &opened,
-                    grant,
-                    provisional.path(),
-                    prior.is_some(),
-                    ceiling,
-                    io,
-                )?
+                .authorize_content_write(&opened, grant, path, prior.is_some(), ceiling, io)?
                 .await?;
             let generation_hold = io
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
@@ -354,6 +343,85 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, io).await?;
             }
+            // The original transaction stages immutable chunks. Its one
+            // publication below binds the resulting digest and metadata.
+            let mut staged = None;
+            let descriptor = if input.bytes().is_some() {
+                descriptor
+            } else {
+                let prepared = crate::conversation::BoundedContentFuture::new(io, || async {
+                use sha2::Digest;
+                let PublicationInput::Stream(source) = &mut input else {
+                    return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                        "content input is not a stream; recovery: supply the admitted publication source"));
+                };
+                let mut staged = None;
+                let mut source = HashedSource {
+                    source: &mut **source, io: active_io, hash: sha2::Sha256::new(), length: 0,
+                };
+                if prior.is_some() {
+                    // Replay needs the request digest, never new content puts.
+                    let mut chunk = [0; 8192];
+                    loop {
+                        let remaining = maximum_bytes.checked_sub(source.length)
+                            .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))?;
+                        let read = source.read(&mut chunk, remaining.saturating_add(1), active_io.cancellation())
+                            .await.map_err(|error| {
+                                if active_io.cancellation().is_cancelled() { Error::Cancelled }
+                                else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
+                            })?;
+                        if source.length > maximum_bytes {
+                            return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
+                        }
+                        if read == 0 { break; }
+                    }
+                } else {
+                    let transaction = active_io.sdk(opened.begin_transaction(
+                        operation, active_io, active_io.cancellation()).await)?;
+                    let content = active_io.sdk(transaction.stage_content(
+                        &mut source, maximum_bytes.max(1), active_io, active_io.cancellation()).await)?;
+                    if source.length > maximum_bytes {
+                        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                            "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
+                    }
+                    staged = Some((transaction, content));
+                }
+                let descriptor = descriptor.with_content_identity(source.hash.finalize().into(), source.length)?;
+                Ok((descriptor, staged))
+                })?.await?;
+                staged = prepared.1;
+                prepared.0
+            };
+            let mut provisional = crate::executor::with_history_io(io, |work| {
+                FileRef::new(
+                    volume.copy(work)?,
+                    stock_string_copy(path, io)?,
+                    bounded_io::hex_key(&operation.into_bytes(), io)?,
+                    descriptor,
+                    stock_string_copy(display_name, io)?,
+                    work,
+                )
+            })?;
+            let receipt_identity = if internal_class.is_some() {
+                provisional.path()
+            } else {
+                idempotency_key.as_str()
+            };
+            let receipt_path =
+                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
+            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
+            let receipt_bytes = match io {
+                Some(io) => io.encode(
+                    &(&provisional, expected_generation),
+                    io.remaining()?.bytes_encoded,
+                    true,
+                )?,
+                None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
+                    &(&provisional, expected_generation),
+                )?),
+            };
             if let Some(prior) = prior {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
                 bounded_io::retain(&prior, io).await?;
@@ -390,35 +458,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "upload metadata index does not match",
                     ));
                 }
-                let reference = {
-                    let descriptor = &descriptor;
-                    crate::executor::with_history_io(io, |work| {
-                        crate::conversation::FileRef::new(
-                            (volume).copy(work)?,
-                            stock_string_copy(path, io)?,
-                            stock_string_copy(&version, io)?,
-                            crate::conversation::FileDescriptor::new(
-                                *descriptor.sha256(),
-                                descriptor.byte_length(),
-                                stock_string_copy(descriptor.media_type(), io)?,
-                            )?,
-                            stock_string_copy(display_name, io)?,
-                            work,
-                        )
-                    })
-                }?;
-                let committed = self
-                    .read_retained_file(&prior, &reference, maximum_bytes, io)?
-                    .await?;
-                if committed.as_ref() != bytes {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to different content",
-                    ));
-                }
+                crate::executor::with_history_io(io, |work| {
+                    provisional.pin_version(version, work)
+                })?;
                 grant.recheck(io)?;
-                return self.seal_publication(reference, io);
+                return self.seal_publication(provisional, io);
             }
             let absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
@@ -448,11 +492,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     path: stock_string_copy(parent, io)?,
                 });
             }
-            let owned_bytes = input.mutation_bytes(io)?;
-            mutations.push(WorkspaceMutation::PutFile {
-                path: absolute,
-                bytes: owned_bytes,
-            });
+            let staged = match staged {
+                Some((transaction, content)) => Some((transaction, absolute, content)),
+                None => {
+                    mutations.push(WorkspaceMutation::PutFile {
+                        path: absolute,
+                        bytes: input.mutation_bytes(io)?,
+                    });
+                    None
+                }
+            };
             mutations.push(WorkspaceMutation::CreateDirectory {
                 path: stock_string_copy("/.system/harness-file-metadata", io)?,
             });
@@ -479,6 +528,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     active_io,
+                    staged,
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
@@ -489,28 +539,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     None => retain_published_generation(&generation).await?,
                 }
             }
-            let reference = {
-                let descriptor = &descriptor;
-                crate::executor::with_history_io(io, |work| {
-                    crate::conversation::FileRef::new(
-                        (volume).copy(work)?,
-                        stock_string_copy(path, io)?,
-                        stock_string_copy(&version, io)?,
-                        crate::conversation::FileDescriptor::new(
-                            *descriptor.sha256(),
-                            descriptor.byte_length(),
-                            stock_string_copy(descriptor.media_type(), io)?,
-                        )?,
-                        stock_string_copy(display_name, io)?,
-                        work,
-                    )
-                })
-            }?;
-            self.read_retained_file(&generation, &reference, maximum_bytes, io)?
-                .await?;
+            crate::executor::with_history_io(io, |work| provisional.pin_version(version, work))?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
-            self.seal_publication(reference, io)
+            self.seal_publication(provisional, io)
         })
     }
     #[inline(never)]

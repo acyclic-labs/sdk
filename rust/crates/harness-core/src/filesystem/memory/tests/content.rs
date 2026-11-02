@@ -1,6 +1,138 @@
 use super::*;
 use crate::IdempotencyKey;
 
+#[tokio::test]
+async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 128 * 1024).await?;
+    let operation = OperationId::new();
+    let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
+    let mut source = futures::io::Cursor::new(bytes.as_slice());
+    let (original, _) = storage
+        .publisher
+        .stage_stream_once(
+            operation,
+            "streamed",
+            &mut source,
+            "application/octet-stream",
+            "streamed",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(storage.read(&original).await?.as_ref(), bytes.as_slice());
+    // Both public entrances share one request identity and original receipt.
+    let (replayed, _) = storage
+        .publisher
+        .stage_once(
+            operation,
+            "streamed",
+            &bytes,
+            "application/octet-stream",
+            "streamed",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(replayed, original);
+    let mut replay = futures::io::Cursor::new(bytes.as_slice());
+    assert_eq!(
+        storage
+            .publisher
+            .stage_stream_once(
+                operation,
+                "streamed",
+                &mut replay,
+                "application/octet-stream",
+                "streamed",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?
+            .0,
+        original
+    );
+    let mut changed = futures::io::Cursor::new(b"changed".as_slice());
+    assert!(matches!(
+        storage
+            .publisher
+            .stage_stream_once(
+                operation,
+                "streamed",
+                &mut changed,
+                "application/octet-stream",
+                "streamed",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(storage.read(&original).await?.as_ref(), bytes.as_slice());
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -> Result<()> {
+    use futures::{FutureExt, TryStreamExt};
+    for cancel in [false, true] {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let operation = OperationId::new();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation)?;
+        let (started, reading) = futures::channel::oneshot::channel();
+        let (producer, receiver) = futures::channel::oneshot::channel::<Vec<u8>>();
+        let stream = futures::stream::once(async move {
+            started
+                .send(())
+                .map_err(|_| std::io::Error::other("read observer retired"))?;
+            receiver.await.map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "content producer retired; recovery: recreate the complete original source",
+                )
+            })
+        });
+        let mut source = Box::pin(stream).into_async_read();
+        let publication = storage
+            .publisher
+            .stage_stream_once(
+                operation,
+                "retired",
+                &mut source,
+                "application/octet-stream",
+                "retired",
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io),
+                },
+            )?
+            .fuse();
+        futures::pin_mut!(publication);
+        let reading = reading.fuse();
+        futures::pin_mut!(reading);
+        futures::select_biased! {
+            ready = reading => ready.map_err(|_| Error::Storage("source entrance retired; recovery: run streaming_producer_retirement_and_cancellation_leave_no_publication".into()))?,
+            result = publication => return Err(Error::Storage(format!("publication settled before its source event: {result:?}; recovery: run streaming_producer_retirement_and_cancellation_leave_no_publication"))),
+        }
+        if cancel {
+            cancellation.cancel();
+        } else {
+            drop(producer);
+        }
+        assert!(publication.await.is_err());
+        assert!(
+            storage
+                .publisher
+                .observe_staged_once(
+                    operation,
+                    None,
+                    4096,
+                    crate::conversation::ContentAccess::default()
+                )?
+                .await?
+                .0
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // Recovery authenticates the publication operation, not the later head or

@@ -249,6 +249,8 @@ mod files;
 mod history;
 mod message;
 mod outcome;
+#[cfg(feature = "research")]
+pub mod read_set;
 mod selection;
 mod state;
 mod volumes;
@@ -264,7 +266,7 @@ pub use content::require_owner_reader;
 pub use content::{
     BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentChange,
     ContentChangeResult, ContentChanges, ContentHold, ContentIo, ContentMountResolver,
-    ContentPublisher, ContentResidencyVerifier,
+    ContentPublisher, ContentResidencyVerifier, ContentSource,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,

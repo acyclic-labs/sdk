@@ -22,8 +22,28 @@ use std::{collections::HashMap, io::Write, sync::Arc};
 pub mod provenance;
 
 /// Bounded read-receipt projection; coverage is explicit rather than inferred.
-#[cfg(feature = "provenance-export")]
-pub mod read_set;
+#[cfg(feature = "research")]
+pub use super::read_set;
+
+#[cfg(feature = "research")]
+pub(super) fn read_observation(
+    agent: &str,
+    operation: OperationId,
+    observation: &super::read_set::Observation,
+) -> Result<Batch> {
+    let mut row = Row::new(
+        agent,
+        Some(operation),
+        observation.sequence,
+        "journal",
+        "file_read",
+    );
+    row.source = Some(serde_json::to_string(&observation.source).map_err(export_error)?);
+    row.source_type = Some("file_generation");
+    row.target = Some(agent.into());
+    row.target_type = Some("agent");
+    batch(Table::Edges, &[row])
+}
 
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -768,7 +788,7 @@ mod tests {
         }
         #[cfg(feature = "provenance-export")]
         assert!(provenance::write(&batch(Table::Agents, &[row])?, Refused).is_err());
-        #[cfg(feature = "provenance-export")]
+        #[cfg(feature = "research")]
         assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0).is_err());
         Ok(())
     }
