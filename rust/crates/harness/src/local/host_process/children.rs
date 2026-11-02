@@ -23,6 +23,9 @@ use std::future::Future as _;
 use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
+mod answer;
+use answer::NativeAnswer;
+
 mod tools;
 pub use tools::serve;
 
@@ -39,7 +42,7 @@ struct Running {
     /// The first spawn, stdin or readiness failure, settled as the turn's failure.
     failure: Option<String>,
     events: acyclic_native_runtime::lines::LineBuffer,
-    answer: Outcome<String>,
+    answer: NativeAnswer,
     /// The settlement once decided. A retry after an unknown outcome resends
     /// exactly it, under the same claim.
     settlement: Option<Outcome<TurnOutput>>,
@@ -389,7 +392,7 @@ impl NativeChildren {
             claim,
             failure: None,
             events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-            answer: Outcome::Succeeded(String::new()),
+            answer: NativeAnswer::default(),
             settlement: None,
             wake,
             armed: None,
@@ -476,7 +479,7 @@ impl NativeChildren {
                 .process
                 .pump_stdin()
                 .and_then(|_| output(running))
-                .and_then(|()| running.process.try_wait())
+                .and_then(|_| running.process.try_wait())
                 .map_err(|error| error.to_string()),
         };
         if matches!(&exited, Ok(Some(_))) {
@@ -488,14 +491,19 @@ impl NativeChildren {
             }
             // Exit is the capture boundary. A detached process can retain a
             // pipe writer after containment stops; EOF cannot own settlement.
-            if let Err(error) = output(running) {
-                exited = Err(error.to_string());
+            match output(running) {
+                // Full output credit queues another pass through pump's
+                // original progress edge. Exit cannot truncate a reply still
+                // behind already captured bytes, nor wait for inherited EOF.
+                Ok(true) => return Ok(None),
+                Ok(false) => {}
+                Err(error) => exited = Err(error.to_string()),
             }
         }
         let outcome = match exited {
             Err(message) => Outcome::Failed { message },
-            Ok(Some(status)) if status.success() => match &running.answer {
-                Outcome::Succeeded(text) => Outcome::Succeeded(TurnOutput {
+            Ok(Some(status)) if status.success() => match &running.answer.outcome {
+                Some(Outcome::Succeeded(text)) => Outcome::Succeeded(TurnOutput {
                     #[cfg(feature = "research")]
                     journal_cut: None,
                     text: text.clone(),
@@ -504,16 +512,19 @@ impl NativeChildren {
                     transcript: Vec::new(),
                     attachments: Vec::new(),
                 }),
-                Outcome::Failed { message } => Outcome::Failed {
+                Some(Outcome::Failed { message }) => Outcome::Failed {
                     message: message.clone(),
                 },
-                Outcome::Cancelled => Outcome::Cancelled,
-                Outcome::Indeterminate {
+                Some(Outcome::Cancelled) => Outcome::Cancelled,
+                Some(Outcome::Indeterminate {
                     operation_id,
                     cause,
-                } => Outcome::Indeterminate {
+                }) => Outcome::Indeterminate {
                     operation_id: *operation_id,
                     cause: cause.clone(),
+                },
+                None => Outcome::Failed {
+                    message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),
                 },
             },
             Ok(Some(status)) => Outcome::Failed {
@@ -641,16 +652,17 @@ impl NativeChildren {
 /// Reads one bounded pass of the child's native event stream into its
 /// custodied event log, keeping its latest answer. The settlement derives the
 /// native resume reference from that log, so a running turn sends nothing.
-fn output(running: &mut Running) -> Result<()> {
+/// Returns true when the full pass was used and another pass is required.
+fn output(running: &mut Running) -> Result<bool> {
     running.process.drain_stderr()?;
     let mut chunk = [0u8; 8192];
     // Bound each pass so a busy child cannot starve cancellation or peers.
     for _ in 0..16 {
         let Some(count) = running.process.read_stdout(&mut chunk)? else {
-            break;
+            return Ok(false);
         };
         if count == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let bytes = chunk
             .get(..count)
@@ -660,8 +672,14 @@ fn output(running: &mut Running) -> Result<()> {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.
-                if matches!(running.answer, Outcome::Succeeded(_)) {
-                    running.answer = Outcome::Succeeded("[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into());
+                running.answer.pending = None;
+                if !matches!(
+                    running.answer.outcome,
+                    Some(
+                        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. }
+                    )
+                ) {
+                    running.answer.outcome = Some(Outcome::Failed { message: "step=read native reply: an event exceeded the 65,536-byte frame limit or contained invalid UTF-8; recovery=acyclic agents".into() });
                 }
                 // The saved log marks where the event was dropped.
                 running.process.record_event(EVENT_OMITTED)?;
@@ -672,68 +690,10 @@ fn output(running: &mut Running) -> Result<()> {
             };
             // The whole event stream joins the conversation at settlement.
             running.process.record_event(line.as_bytes())?;
-            if let Some(answer) = answer(&event) {
-                running.answer = answer;
-            }
+            running.answer.record(&event);
         }
     }
-    Ok(())
-}
-
-/// The answer a native event carries: a Codex agent message, a Claude Code
-/// result, or a Pi assistant message end.
-fn answer(event: &Value) -> Option<Outcome<String>> {
-    let text = if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message") {
-        event.pointer("/item/text")
-    } else {
-        event.get("result")
-    };
-    if let Some(text) = text.and_then(Value::as_str) {
-        return Some(Outcome::Succeeded(bounded(text)));
-    }
-    // Pi can report a failed assistant turn and still exit successfully. Keep
-    // its semantic outcome until process exit; a subsequent successful turn
-    // replaces it if the native host retries the request itself.
-    if event.get("type").and_then(Value::as_str) == Some("message_end")
-        && event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
-        && matches!(
-            event.pointer("/message/stopReason").and_then(Value::as_str),
-            Some("error" | "aborted")
-        )
-    {
-        return Some(
-            if event.pointer("/message/stopReason").and_then(Value::as_str) == Some("aborted") {
-                Outcome::Cancelled
-            } else {
-                Outcome::Failed {
-                    message: event
-                        .pointer("/message/errorMessage")
-                        .and_then(Value::as_str)
-                        .unwrap_or("native assistant turn failed")
-                        .to_owned(),
-                }
-            },
-        );
-    }
-    let parts = (event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
-        && event.get("type").and_then(Value::as_str) == Some("message_end"))
-    .then(|| event.pointer("/message/content").and_then(Value::as_array))
-    .flatten()?;
-    Some(Outcome::Succeeded(bounded(
-        &parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<String>(),
-    )))
-}
-
-fn bounded(text: &str) -> String {
-    text.chars()
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
+    Ok(true)
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -783,17 +743,11 @@ mod framing {
             assert!(events.buffered_bytes() <= EVENT_LIMIT);
         }
         assert_eq!(omitted, 1, "oversized output must be reported once");
-        let lines = events.push(b"\n{\"result\":\"probe\"}\n");
+        let lines = events.push(b"\ncomplete frame\n");
         let [Ok(line)] = lines.as_slice() else {
             panic!("valid frame after omitted event: {lines:?}");
         };
-        let event: Value = serde_json::from_str(line).expect("frame is JSON");
-        assert_eq!(answer(&event), Some(Outcome::Succeeded("probe".into())));
-    }
-
-    #[test]
-    fn native_answers_are_bounded_on_character_boundaries() {
-        assert!(bounded(&"😀".repeat(4096)).len() <= ANSWER_LIMIT);
+        assert_eq!(line, "complete frame");
     }
 
     /// The ready queue holds only children whose registration fired, and a

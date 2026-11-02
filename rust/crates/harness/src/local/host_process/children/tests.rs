@@ -65,7 +65,16 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
             "the external writer withholds stdout EOF"
         );
         wait_exit(&mut running)?;
-        assert!(sessions.refresh("closed", &mut running)?.is_some());
+        let completed = sessions
+            .refresh("closed", &mut running)?
+            .ok_or("exited child did not settle")?;
+        let failure = completed["results"][0]["outcome"]["Failed"]["message"]
+            .as_str()
+            .ok_or("missing reply was reported successful")?;
+        assert!(
+            failure.contains("process exited without a completed native reply"),
+            "{failure}"
+        );
         drop(writer);
         Ok(())
     })
@@ -174,7 +183,7 @@ fn claim(
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
         events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-        answer: Outcome::Succeeded(String::new()),
+        answer: NativeAnswer::default(),
         settlement: None,
         wake: std::task::Waker::noop().clone(),
         armed: None,
@@ -199,8 +208,13 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
         let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
         command
-            .args(["-c", "printf turn > \"turn-$1\"", "fixture"])
+            .args([
+                "-c",
+                "printf turn > \"turn-$1\"; printf '%s' \"$2\"",
+                "fixture",
+            ])
             .arg(turn.to_string())
+            .arg(include_str!("../fixtures/codex-completed.jsonl"))
             .current_dir(&view)
             .stdin(ProcessStdio::null())
             .stdout(ProcessStdio::piped())
@@ -217,9 +231,9 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             .as_array()
             .ok_or("settled results absent")?;
         assert!(
-            results
-                .last()
-                .is_some_and(|result| result["outcome"].get("Succeeded").is_some()),
+            results.last().is_some_and(
+                |result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"
+            ),
             "turn {turn} recorded its reply: {results:?}"
         );
     }
