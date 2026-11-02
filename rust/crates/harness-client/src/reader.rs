@@ -110,7 +110,7 @@ impl ReaderPolicy {
     pub fn validate(&self) -> Result<(), StreamError> {
         let ok = (64 * 1024..=256 << 20).contains(&self.cache_bytes)
             && (16..=65_536).contains(&self.streams)
-            && (2..=64).contains(&self.requests)
+            && self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
@@ -443,7 +443,6 @@ struct Anchors {
 
 const MAX_ANCHORED_PARENTS: usize = 64;
 const MAX_ANCHORS: usize = 256;
-const MAX_REFUSED: usize = 64;
 
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1096,7 +1095,7 @@ impl Reader {
                     self.denied(flight.key.path());
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
-                    self.refuse(flight.key.clone());
+                    self.refused.insert(flight.key.clone());
                 }
                 self.fail(failure, now);
                 return;
@@ -1162,7 +1161,7 @@ impl Reader {
         } else {
             self.demand
                 .restore_paging(&flight.key, flight.paging, false);
-            self.refuse(flight.key);
+            self.refused.insert(flight.key);
         }
     }
 
@@ -1359,16 +1358,6 @@ impl Reader {
         }
     }
 
-    fn refuse(&mut self, key: OpKey) {
-        if self.refused.len() >= MAX_REFUSED
-            && let Some(first) = self.refused.iter().next().cloned()
-        {
-            self.refused.remove(&first);
-            self.demand.set_ready(&first, true);
-        }
-        self.refused.insert(key);
-    }
-
     fn fail(&mut self, failure: Failure, now: u64) {
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
@@ -1498,7 +1487,8 @@ impl Reader {
         self.invalidate(stream, true);
     }
 
-    /// Read failures and cursor discontinuities, bounded independently of history.
+    /// Unacknowledged read failures and cursor discontinuities. Source replacement
+    /// retires its issues; unrelated failures cannot acknowledge them.
     pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
         self.issues.iter().map(|(path, issue)| (path, *issue))
     }
@@ -1515,12 +1505,6 @@ impl Reader {
     }
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
-        if self.issues.len() == MAX_REFUSED
-            && !self.issues.contains_key(stream)
-            && let Some(first) = self.issues.keys().next().cloned()
-        {
-            self.issues.remove(&first);
-        }
         self.issues.insert(stream.clone(), issue);
     }
 
@@ -2383,7 +2367,7 @@ mod reader_tests {
             let provider = MemoryStream::default();
             let denied = StreamPath::new("requests/denied").unwrap();
             let mut heads = BTreeMap::new();
-            for path in std::iter::once(denied.clone()).chain((0..32).map(|index| {
+            for path in std::iter::once(denied.clone()).chain((0..128).map(|index| {
                 StreamPath::new(format!("requests/denied/independent-{index}")).unwrap()
             })) {
                 provider
@@ -2539,7 +2523,7 @@ mod reader_tests {
             retry.complete(resumed[0].id(), Outcome::Head(heads[&paths[0]].clone()), at);
             assert!(retry.poll(at).is_empty());
             let policy = ReaderPolicy {
-                requests: 64,
+                requests: heads.len(),
                 prefetch_requests: 0,
                 timeout_ms: 100,
                 ..ReaderPolicy::default()
@@ -2618,6 +2602,27 @@ mod reader_tests {
             assert!(matches!(&resumed[0], Op::Head { stream, .. } if stream == older));
             assert!(matches!(&resumed[1], Op::Head { stream, .. } if stream == newer));
             assert_eq!(refused.demand.take_visits(), 2);
+
+            // Other callers' failures cannot retire an original denial or
+            // silently authorize a new read with its old credential.
+            let mut denied_reads = Reader::new(policy).unwrap();
+            for path in heads.keys() {
+                denied_reads.denied(path);
+            }
+            assert_eq!(
+                denied_reads.issues().count(),
+                heads.len(),
+                "unrelated denial retired an unacknowledged issue"
+            );
+            denied_reads.plan(wants());
+            assert!(denied_reads.poll(0).is_empty());
+            denied_reads.acknowledge_issue(&denied);
+            assert_eq!(denied_reads.issues().count(), heads.len() - 1);
+            assert!(
+                heads.keys().filter(|path| *path != &denied).all(|path| {
+                    denied_reads.issues.get(path) == Some(&ReadIssue::AccessDenied)
+                })
+            );
 
             // Mutate only the tail of the actual captured provider fact.
             // Invalid bytes retain the same explicit acknowledgment boundary.
