@@ -362,7 +362,7 @@ impl MountDestinationGuard {
             (
                 crate::native_host::HostRoot::open(parent, work)
                     .map_err(|error| Self::missing_destination(parent, error))?
-                    .directory,
+                    .into_directory(),
                 None,
             )
         } else {
@@ -382,7 +382,7 @@ impl MountDestinationGuard {
             let child = parent
                 .open_directory(Path::new(leaf), work)
                 .map_err(|error| Self::missing_destination(destination, error))?;
-            (child.directory, Some(parent.directory))
+            (child.into_directory(), Some(parent.into_directory()))
         };
         if !allow_nonempty {
             let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;

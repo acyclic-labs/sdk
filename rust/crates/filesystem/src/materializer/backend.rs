@@ -158,7 +158,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                 &backend.held_backup,
             ] {
                 let parent = held_child(root, parent, &backend.work)?;
-                crate::native_host::sync_directory_held(&parent.directory(), &mut &backend.work)?;
+                parent.sync_directory(&mut &backend.work)?;
             }
             Ok(())
         })
@@ -439,7 +439,7 @@ pub(super) fn remove_native_entry_durable(
         host_path(leaf, state, |path, work| parent.remove(path, None, work))
     })
     .map_err(native_materialization_work_error)?;
-    crate::native_host::sync_directory_held(&parent.directory(), &mut &*work)
+    parent.sync_directory(&mut &*work)
 }
 pub(super) fn host_stat(
     root: &HostRoot,
