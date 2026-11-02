@@ -224,10 +224,10 @@ impl FileTool {
             let (file, custody) =
                 super::version::decode_tool_version(context, path, version, work)?;
             match file {
-                FileReadSource::Content(file) => Ok((Some(file), custody)),
+                super::version::SelectedVersion::Content(file) => Ok((Some(file), custody)),
                 // A selected generation grants no authority. The ordinary path
                 // authorization below must still establish the directory grant.
-                FileReadSource::Authored(_) => Ok((None, custody)),
+                super::version::SelectedVersion::Authored(_) => Ok((None, custody)),
             }
         })
     }

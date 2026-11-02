@@ -233,22 +233,16 @@ impl FileTool {
                 super::version::decode_tool_version(Some(context), path, version, work)?;
             original_custody = custody;
             match file {
-                FileReadSource::Content(file) => {
+                super::version::SelectedVersion::Content(file) => {
                     return Ok(Source {
                         file,
                         bytes: None,
                         _custody: original_custody,
                     });
                 }
-                FileReadSource::Authored(selected) => {
+                super::version::SelectedVersion::Authored(selected) => {
                     let source =
                         Source::read(context, path, Some(&selected.generation), io).await?;
-                    if source.file.descriptor().byte_length() != selected.byte_length {
-                        return Err(rejection(
-                            work,
-                            "file version length differs from its selection",
-                        ));
-                    }
                     return Ok(source);
                 }
             }
@@ -515,30 +509,37 @@ impl ToolExecutor for FileTool {
                     invocation,
                     Some(work),
                 )?;
-                (source.map(FileReadSource::Content), custody)
+                (
+                    source.map(super::version::SelectedVersion::Content),
+                    custody,
+                )
             };
-            let receipt =
-                if matches!(self, Self::Write) && source.0.is_none() {
-                    let path = invocation
-                        .arguments
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| rejection(Some(work), "write receipt requires its path"))?;
-                    context
-                        .observe_tool_path_once(invocation.operation_id, path, Some(&io))
-                        .await?
-                } else {
-                    context
-                        .observe_tool_source_file_once(
-                            invocation.operation_id,
-                            source.0.as_ref().map(FileReadSource::volume),
-                            source.0.as_ref().map(FileReadSource::path).or_else(|| {
-                                invocation.arguments.get("path").and_then(Value::as_str)
-                            }),
-                            Some(&io),
-                        )
-                        .await?
-                };
+            let receipt = if matches!(self, Self::Write) && source.0.is_none() {
+                let path = invocation
+                    .arguments
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| rejection(Some(work), "write receipt requires its path"))?;
+                context
+                    .observe_tool_path_once(invocation.operation_id, path, Some(&io))
+                    .await?
+            } else {
+                context
+                    .observe_tool_source_file_once(
+                        invocation.operation_id,
+                        source
+                            .0
+                            .as_ref()
+                            .map(super::version::SelectedVersion::volume),
+                        source
+                            .0
+                            .as_ref()
+                            .map(super::version::SelectedVersion::path)
+                            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str)),
+                        Some(&io),
+                    )
+                    .await?
+            };
             match receipt.0 {
                 Some(file) => {
                     let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;

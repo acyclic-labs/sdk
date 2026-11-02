@@ -174,11 +174,18 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
         );
     }
     for (prefix, storage) in [("", &project), (crate::layers::HOME_PATH, &home)] {
-        for mode in ["omitted", "any", "absent", "content", "authored"] {
+        for mode in [
+            "omitted",
+            "any",
+            "absent",
+            "content",
+            "authored",
+            "namespace",
+        ] {
             let relative = format!("{mode}.txt");
             let path = format!("{prefix}{relative}");
             let mut arguments = json!({"path":path,"content":"committed"});
-            if matches!(mode, "content" | "authored") {
+            if matches!(mode, "content" | "authored" | "namespace") {
                 let source = storage
                     .stage(
                         OperationId::new(),
@@ -190,6 +197,17 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .await?;
                 let version = if mode == "content" {
                     encode_version(&source, None)?.0
+                } else if mode == "namespace" {
+                    // The existing directory producer supplies the generation;
+                    // the version needs no file-body read, length or digest.
+                    let (generation, page) =
+                        storage.list_private_directory("", None, None, 128).await?;
+                    assert!(
+                        page.entries
+                            .iter()
+                            .any(|entry| entry.name.as_bytes() == relative.as_bytes())
+                    );
+                    encode_path_version(storage.volume(), &relative, &generation, None)?.0
                 } else {
                     let invocation = ToolInvocation {
                         operation_id: OperationId::new(),
@@ -334,10 +352,30 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     &relative,
                 )
                 .await?;
+            if mode == "namespace" {
+                // A token from a directory page must keep the original file,
+                // even after both replacement publications changed its head.
+                let pinned = ToolInvocation {
+                    operation_id: OperationId::new(),
+                    call_id: "namespace-pinned-read".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":path,"version":invocation.arguments["ifVersion"]}),
+                };
+                let pinned_context =
+                    ToolContext::new(task.clone(), pinned.operation_id, &pinned.call_id)?;
+                assert_eq!(
+                    read()?
+                        .executor
+                        .execute(pinned, Some(pinned_context))
+                        .await?
+                        .value["text"],
+                    "original"
+                );
+            }
             let before = storage.list_private_directory("", None, None, 1).await?.0;
             let restarted =
                 ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
-            if matches!(mode, "content" | "authored") {
+            if matches!(mode, "content" | "authored" | "namespace") {
                 // The former unconditional lookup cannot recover a replacement.
                 assert!(
                     restarted
@@ -393,7 +431,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .code(),
                 crate::wire::ErrorCode::Unauthorized
             );
-            if matches!(mode, "content" | "authored") {
+            if matches!(mode, "content" | "authored" | "namespace") {
                 let mut forged = invocation.clone();
                 forged.arguments["path"] = json!(format!("{prefix}other.txt"));
                 assert!(

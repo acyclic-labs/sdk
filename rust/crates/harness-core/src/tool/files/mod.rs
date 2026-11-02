@@ -57,7 +57,7 @@ pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
-pub(crate) use version::encode_version;
+pub(crate) use version::{encode_path_version, encode_version};
 
 /// The same opaque version used by file projections, without a second codec in
 /// guest code. Decode only the immutable reference, not the retained text.

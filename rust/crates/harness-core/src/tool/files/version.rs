@@ -1,13 +1,63 @@
 use super::*;
 
-const AUTHORED: &str = "authored-file-v1:";
+const AUTHORED: &str = "authored-path-v1:";
+
+/// A version pins a namespace selection, without inventing file metadata.
+/// Only the original read producer supplies the length in FileReadSource.
+pub(super) enum SelectedVersion {
+    Content(FileRef),
+    Authored(crate::conversation::PathSelection),
+}
+
+impl SelectedVersion {
+    pub(super) fn volume(&self) -> &crate::conversation::VolumeRef {
+        match self {
+            Self::Content(file) => file.volume(),
+            Self::Authored(path) => &path.volume,
+        }
+    }
+    pub(super) fn path(&self) -> &str {
+        match self {
+            Self::Content(file) => file.path(),
+            Self::Authored(path) => &path.path,
+        }
+    }
+    fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        match self {
+            Self::Content(file) => file.validate(work),
+            Self::Authored(path) => path.validate(work),
+        }
+    }
+    #[cfg(feature = "filesystem")]
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        match self {
+            Self::Content(file) => file.logical_owned_bytes(),
+            Self::Authored(path) => path.logical_owned_bytes(),
+        }
+    }
+    pub(super) fn matches_source(&self, source: &FileReadSource) -> bool {
+        match (self, source) {
+            (Self::Content(expected), FileReadSource::Content(actual)) => expected == actual,
+            (Self::Authored(expected), FileReadSource::Authored(actual)) => {
+                expected.matches_source(actual)
+            }
+            (Self::Authored(expected), FileReadSource::Content(actual)) => {
+                expected.matches_content(actual)
+            }
+            (Self::Content(expected), FileReadSource::Authored(actual)) => {
+                actual.path_selection().matches_content(expected)
+                    && actual.byte_length == expected.descriptor().byte_length()
+            }
+        }
+    }
+}
 
 pub(super) fn decode_tool_version(
     context: Option<&ToolContext>,
     path: &str,
     version: &str,
     work: crate::NativeWork<'_>,
-) -> Result<(FileReadSource, crate::NativeCustody)> {
+) -> Result<(SelectedVersion, crate::NativeCustody)> {
     let Some(context) = context else {
         return decode_version(path, version, work);
     };
@@ -37,31 +87,31 @@ pub(super) fn decode_version(
     path: &str,
     version: &str,
     work: crate::NativeWork<'_>,
-) -> Result<(FileReadSource, crate::NativeCustody)> {
+) -> Result<(SelectedVersion, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let (file, mut reservation) = if let Some(selected) = version.strip_prefix(AUTHORED) {
-            let (file, reservation) = io.decode::<crate::conversation::FilePathSelection>(
+            let (file, reservation) = io.decode::<crate::conversation::PathSelection>(
                 std::marker::PhantomData,
                 selected.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
             )?;
-            (FileReadSource::Authored(file), reservation)
+            (SelectedVersion::Authored(file), reservation)
         } else {
             let (file, reservation) = io.decode::<FileRef>(
                 std::marker::PhantomData,
                 version.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
             )?;
-            (FileReadSource::Content(file), reservation)
+            (SelectedVersion::Content(file), reservation)
         };
         crate::executor::with_history_io(Some(&io), |history| file.validate(history))
             .map_err(Error::tool_input)?;
         if file.path() != path {
             return Err(Error::tool_rejected("file version belongs to another path"));
         }
-        let retained = (std::mem::size_of::<FileReadSource>() as u64)
+        let retained = (std::mem::size_of::<SelectedVersion>() as u64)
             .checked_add(file.logical_owned_bytes()?)
             .ok_or_else(|| Error::tool_rejected("file version ownership overflow"))?;
         reservation.substitute(retained)?;
@@ -69,11 +119,11 @@ pub(super) fn decode_version(
         return Ok((file, Some(io.into_native_custody(retained)?)));
     }
     let file = if let Some(selected) = version.strip_prefix(AUTHORED) {
-        FileReadSource::Authored(
+        SelectedVersion::Authored(
             serde_json::from_str(selected).map_err(|error| Error::Invalid(error.to_string()))?,
         )
     } else {
-        FileReadSource::Content(
+        SelectedVersion::Content(
             serde_json::from_str(version).map_err(|error| Error::Invalid(error.to_string()))?,
         )
     };
@@ -99,8 +149,29 @@ pub(super) fn encode_source(
 ) -> Result<(String, crate::NativeCustody)> {
     match file {
         FileReadSource::Content(file) => encode_version(file, work),
-        FileReadSource::Authored(file) => encode_token(file, AUTHORED, work),
+        FileReadSource::Authored(file) => {
+            super::encode_path_version(&file.volume, &file.path, &file.generation, work)
+        }
     }
+}
+
+/// Encodes the original namespace producer's selection, without materializing
+/// a body, synthesizing a digest or claiming a regular-file length.
+pub(crate) fn encode_path_version(
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+    generation: &crate::resources::GenerationRef,
+    work: crate::NativeWork<'_>,
+) -> Result<(String, crate::NativeCustody)> {
+    encode_token(
+        &crate::conversation::PathSelectionView {
+            volume,
+            path,
+            generation,
+        },
+        AUTHORED,
+        work,
+    )
 }
 
 fn encode_token<T: Serialize>(

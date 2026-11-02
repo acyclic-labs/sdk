@@ -38,7 +38,7 @@ impl Window {
             })
             .transpose()?;
         let original = match original {
-            Some((FileReadSource::Content(file), hold)) => {
+            Some((super::version::SelectedVersion::Content(file), hold)) => {
                 source_hold = hold;
                 let range = content_range(&file, range, work)?;
                 let bytes = context.read_file_range(&file, range, io).await?;
@@ -51,8 +51,8 @@ impl Window {
             original => original,
         };
         let expected = original.as_ref().and_then(|(source, _)| match source {
-            FileReadSource::Authored(file) => Some(file),
-            FileReadSource::Content(_) => None,
+            super::version::SelectedVersion::Authored(file) => Some(file),
+            super::version::SelectedVersion::Content(_) => None,
         });
         let hold;
         let (source, bytes, retained) = context
@@ -64,7 +64,7 @@ impl Window {
             )
             .await?;
         hold = custody(io, retained)?;
-        if expected.is_some_and(|expected| expected != &source) {
+        if expected.is_some_and(|expected| !expected.matches_source(&source)) {
             return Err(executor::rejection(
                 work,
                 "range belongs to another source selection",

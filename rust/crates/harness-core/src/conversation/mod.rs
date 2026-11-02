@@ -266,7 +266,8 @@ pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
-pub use file_source::FilePathSelection;
+pub(crate) use file_source::PathSelectionView;
+pub use file_source::{FilePathSelection, PathSelection};
 pub use files::{FileDescriptor, FileRef};
 #[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};
