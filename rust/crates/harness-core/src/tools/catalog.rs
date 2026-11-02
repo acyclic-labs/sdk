@@ -92,6 +92,11 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     specs.into_iter()
 }
 
+/// These tools already carry their call schemas in the native model surface.
+pub(crate) fn is_native_declaration(name: &str) -> bool {
+    catalog().any(|spec| spec.name == name)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 static CODE: ToolSpec = ToolSpec {
     name: "code",

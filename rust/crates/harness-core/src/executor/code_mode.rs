@@ -47,6 +47,29 @@ impl StockExecution<'_> {
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
+        crate::model::charge_items(self.io, tools.len() as u64)?;
+        // Native declarations already expose these exact call schemas. Only
+        // dynamic tools need a second surface for JavaScript composition.
+        struct DynamicTools<'a>(&'a [crate::tool::ToolDefinition]);
+        impl Serialize for DynamicTools<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut sequence = serializer.serialize_seq(None)?;
+                for tool in self.0 {
+                    if !crate::tools::catalog::is_native_declaration(&tool.name) {
+                        sequence.serialize_element(tool)?;
+                    }
+                }
+                sequence.end()
+            }
+        }
+        let has_dynamic = tools
+            .iter()
+            .any(|tool| !crate::tools::catalog::is_native_declaration(&tool.name));
+        let tools = DynamicTools(tools);
         #[derive(Serialize)]
         struct Body<'a> {
             offset: usize,
@@ -83,22 +106,37 @@ impl StockExecution<'_> {
             }
         }
         let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
-        #[cfg(feature = "filesystem")]
-        let funded = self
-            .io
-            .map(|io| io.encode(&tools, u64::MAX, false))
-            .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let funded: Option<acyclic_stream::OwnedBytes> = None;
-        let table = match funded {
-            Some(bytes) => bytes,
-            None => serde_json::to_vec(tools)
-                .map(Into::into)
-                .map_err(|_| invalid("tool table encoding failed"))?,
+        let table = if has_dynamic {
+            #[cfg(feature = "filesystem")]
+            let funded = self
+                .io
+                .map(|io| io.encode(&tools, u64::MAX, false))
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let funded: Option<acyclic_stream::OwnedBytes> = None;
+            Some(match funded {
+                Some(bytes) => bytes,
+                None => serde_json::to_vec(&tools)
+                    .map(Into::into)
+                    .map_err(|_| invalid("tool table encoding failed"))?,
+            })
+        } else {
+            None
         };
         #[cfg(feature = "filesystem")]
-        let _table_hold = self.io.map(|io| io.guard_bytes(&table)).transpose()?;
-        let table = std::str::from_utf8(&table).map_err(|_| invalid("tool table is not UTF-8"))?;
+        let _table_hold = self
+            .io
+            .zip(table.as_ref())
+            .map(|(io, table)| io.guard_bytes(table))
+            .transpose()?;
+        // An empty update revokes the last dynamic table without inspecting
+        // history. Its borrowed bytes avoid encoding native definitions.
+        let table = match table.as_deref() {
+            Some(table) => {
+                std::str::from_utf8(table).map_err(|_| invalid("tool table is not UTF-8"))?
+            }
+            None => "[]",
+        };
         crate::model::charge_items(self.io, table.len() as u64)?;
         // Charge actual JSON escaping, with worst-case offset and completion
         // framing. A schema larger than one part is split without truncation.
