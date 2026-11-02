@@ -824,9 +824,7 @@ impl Reader {
                 priority,
                 paging,
                 &mut self.next_ticket,
-                |key, priority| {
-                    inflight.set_priority(key, priority);
-                },
+                |key, priority| inflight.set_priority(key, priority),
             );
         }
         for key in self.demand.finish_plan() {
@@ -995,8 +993,7 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.inflight.contains_key(key)
-                || self.refused.contains(key)
+            if self.refused.contains(key)
                 || self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied)
             {
                 continue;
@@ -1039,10 +1036,8 @@ impl Reader {
             ops.push(op);
         }
         for op in &ops {
-            if let Some(flight) = self.inflight.get_mut(&op.id()) {
-                flight.paging = self.demand.dispatch(&flight.key, self.next_ticket);
-                self.next_ticket += 1;
-            }
+            self.inflight
+                .dispatch(&op.id(), &mut self.demand, &mut self.next_ticket);
         }
         ops
     }
@@ -2214,7 +2209,7 @@ mod reader_tests {
                 Priority::Prefetch,
                 Paging::default(),
                 &mut reader.next_ticket,
-                |_, _| {},
+                |_, _| false,
             );
         };
         // Invalidation must leave dormant history and its accumulated age
@@ -2502,6 +2497,41 @@ mod reader_tests {
                 switched.complete(id, Outcome::Head(heads[&stream].clone()), 0);
             }
             assert_eq!(switched.inflight.prefetch(), 2);
+
+            let mut aliases = Reader::new(credit_policy).unwrap();
+            aliases.begin_frame(0);
+            aliases.plan([want(0, Priority::Visible)]);
+            assert_eq!(aliases.poll(0).len(), 1);
+            // Withdraw a visible demand while preserving its original read,
+            // then admit an alias before that read has completed.
+            aliases.plan([want(1, Priority::Visible)]);
+            aliases.plan([want(0, Priority::Prefetch), want(1, Priority::Visible)]);
+            assert_eq!(
+                aliases.poll(0).len(),
+                1,
+                "active alias was dispatched twice"
+            );
+            aliases.demand.take_visits();
+            assert!(aliases.poll(0).is_empty());
+            assert_eq!(
+                aliases.demand.take_visits(),
+                0,
+                "active alias returned to ready order"
+            );
+
+            let mut retry = Reader::new(credit_policy).unwrap();
+            retry.begin_frame(0);
+            retry.plan([want(0, Priority::Visible)]);
+            let original = retry.poll(0);
+            retry.complete(original[0].id(), Outcome::Failed(Failure::Unavailable), 0);
+            assert!(retry.poll(0).is_empty());
+            let at = retry.next_deadline().expect("original retry timer");
+            retry.begin_frame(at);
+            let resumed = retry.poll(at);
+            assert_eq!(resumed.len(), 1, "failed request lost ready membership");
+            assert!(matches!(&resumed[0], Op::Head { stream, .. } if stream == &paths[0]));
+            retry.complete(resumed[0].id(), Outcome::Head(heads[&paths[0]].clone()), at);
+            assert!(retry.poll(at).is_empty());
             let policy = ReaderPolicy {
                 requests: 64,
                 prefetch_requests: 0,
@@ -2638,6 +2668,13 @@ mod reader_tests {
             );
             let ops = reader.poll(0);
             assert_eq!(ops.len(), heads.len());
+            reader.demand.take_visits();
+            assert!(reader.poll(0).is_empty());
+            assert_eq!(
+                reader.demand.take_visits(),
+                0,
+                "dispatch revisited active requests"
+            );
             assert!(
                 matches!(ops.first(), Some(Op::Head { stream, .. }) if stream == &first),
                 "deduplication reordered original admission"
