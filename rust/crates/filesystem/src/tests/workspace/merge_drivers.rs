@@ -248,9 +248,8 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ));
     }
 
-    // Calibrate the selected scalar records using the real retained reader.
-    // The original output allowance must also cover subsequent body reads,
-    // even when the selected binary returns only immutable references.
+    // Use an actual selected-body size and a complete rendering receipt, so
+    // path admission cannot mask an independently unfunded body read.
     {
         let conflict = MergeConflict::File(unbounded!(main, stat("/binary"))?.file_id);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
@@ -258,30 +257,44 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        for side in [ConflictSide::Base, ConflictSide::Ours, ConflictSide::Theirs] {
-            let record = calibration
-                .conflict_record(&conflict, side)
+        let record = calibration
+            .conflict_record(&conflict, ConflictSide::Base)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .ok_or("binary control lost an original record")?;
+        let body_bytes = match record.payload {
+            FilePayload::InlineRegular(bytes) => bytes.as_bytes().len() as u64,
+            FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+            _ => return Err("binary control selected a non-regular body".into()),
+        };
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(|failure| failure.error)?
-                .value
-                .ok_or("binary control lost an original record")?;
-            assert_eq!(record.kind, FileKind::Regular);
-        }
-        let record_output = calibration.work().output_bytes;
+        )?;
         let before_body = calibration.work();
-        let view = calibration.describe_conflict_file(conflict.clone()).await?;
+        let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
+        let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
         assert!(
             calibration.work().output_bytes > before_body.output_bytes,
             "the selected body was absent from the original work receipt"
         );
+        let without_body = calibration
+            .work()
+            .output_bytes
+            .checked_sub(body_bytes)
+            .ok_or("selected body was missing from the actual receipt")?;
+        drop(rendered);
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut bounded = value!(
             join.preview_pages(
                 options,
                 WorkBudget {
-                    output_bytes: record_output,
+                    output_bytes: without_body,
                     ..WorkBudget::UNBOUNDED
                 },
                 &cancellation,
@@ -313,7 +326,8 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .await
         )?;
         let prepared_components = calibration.work().source_path_components;
-        let view = calibration.describe_conflict_file(conflict.clone()).await?;
+        let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
+        let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
         assert_eq!(view.path.as_deref(), Some(path));
         if path == "/replaced" {

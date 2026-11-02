@@ -74,20 +74,6 @@ fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     key
 }
 
-pub(super) fn logical_name_text(
-    name: &LogicalName,
-    cancellation: &CancellationToken,
-) -> Result<String, WorkspaceError> {
-    let text = name
-        .unicode_text(crate::WorkBudget::UNBOUNDED, cancellation)
-        .ok()
-        .map(|receipt| receipt.value);
-    cancellation.check()?;
-    text.ok_or_else(|| {
-        WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
-    })
-}
-
 pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
     if path.is_root() {
         return Ok("/".to_owned());

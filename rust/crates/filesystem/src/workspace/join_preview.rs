@@ -450,7 +450,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     pub(super) async fn describe_conflict_file(
         &mut self,
         conflict: MergeConflict,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<Retained<crate::ConflictView>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         state.begin(&mut accounting)?;
         let view = state

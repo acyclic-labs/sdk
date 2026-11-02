@@ -1,4 +1,6 @@
 use super::*;
+use crate::kernel::Owned;
+use crate::kernel::allocation::retained::Retained;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ConflictContents {
@@ -70,19 +72,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             &cancellation,
         )
         .await
+        .map(|view| view.value)
     }
 
     pub(super) async fn describe_conflict_file(
         &self,
         conflict: MergeConflict,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<Retained<crate::ConflictView>, WorkspaceError> {
         let cancellation = accounting.cancellation();
         let view = self
             .describe_conflict_contents(conflict, ConflictContents::Files, accounting, cancellation)
             .await?;
-        cancellation.check()?;
-        Ok(view)
+        Retained::from_owned(view, accounting).map_err(Into::into)
     }
 
     async fn describe_conflict_contents(
@@ -91,36 +93,59 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
         cancellation.check()?;
-        let MergeConflict::File(file_id) = conflict else {
-            let mut view = binding_conflict_view(self, conflict.clone());
-            if let MergeConflict::Binding { directory_id, name } = conflict
-                && let Some(directory) = self.conflict_path(directory_id, cancellation).await?
-                && let Ok(name) = logical_name_text(&name, cancellation)
-            {
-                view.path = Some(if directory == "/" {
-                    format!("/{name}")
-                } else {
-                    format!("{directory}/{name}")
-                });
+        // The path buffer follows the completed view, rather than losing its
+        // original credit at a String projection or being cloned per branch.
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
+        let (mut view, path) = match conflict {
+            MergeConflict::File(file_id) => {
+                let path = self
+                    .conflict_path(file_id, None, accounting, cancellation)
+                    .await?;
+                let view = self
+                    .file_conflict_view(
+                        file_id,
+                        path.as_ref().map(|path| path.value.as_str()),
+                        contents,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                (view, path)
             }
-            cancellation.check()?;
-            return Ok(view);
+            MergeConflict::Binding {
+                directory_id,
+                ref name,
+            } => {
+                let path = self
+                    .conflict_path(directory_id, Some(name), accounting, cancellation)
+                    .await?;
+                (binding_conflict_view(self, conflict), path)
+            }
         };
-        self.file_conflict_view(file_id, contents, accounting, cancellation)
-            .await
+        cancellation.check()?;
+        let (allocation, bytes) = if let Some(path) = path {
+            view.path = Some(path.value);
+            (path.allocation, path.bytes)
+        } else {
+            (accounting.claim_owned(0, 0)?, 0)
+        };
+        let view = Owned::new(view, allocation, bytes);
+        scope.keep();
+        Ok(view)
     }
 
     /// The driver-ready view of a conflict on one file identity's record.
     async fn file_conflict_view(
         &self,
         file_id: FileId,
+        path: Option<&str>,
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
-        let path = self.conflict_path(file_id, cancellation).await?;
         let records = self
             .conflict_records(file_id, accounting, cancellation)
             .await?;
@@ -137,14 +162,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .zip(theirs)
             .map(|((base, ours), theirs)| (base, ours, theirs))
         else {
-            if let Some(text) = path.as_deref()
+            if let Some(text) = path
                 && let Some(replaced) = self
                     .replaced_file(file_id, text, records, accounting, cancellation)
                     .await?
                 && let Some(view) = self
                     .regular_conflict_view(
                         file_id,
-                        path.clone(),
                         replaced.records,
                         contents,
                         accounting,
@@ -156,7 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             }
             return Ok(crate::ConflictView {
                 key: ConflictKey::File(file_id),
-                path,
+                path: None,
                 kind: ConflictKind::Record,
                 base: fallback(self.base.id, base),
                 ours: fallback(self.target_head.id, ours),
@@ -169,7 +193,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Ok(record_conflict_view(
                 self,
                 file_id,
-                path,
+                None,
                 ConflictKind::HardLink,
             ));
         }
@@ -177,7 +201,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             && let Some(view) = self
                 .regular_conflict_view(
                     file_id,
-                    path.clone(),
                     [base_record, ours_record, theirs_record],
                     contents,
                     accounting,
@@ -191,14 +214,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             || base_record.metadata != theirs_record.metadata
         {
             if contents == ConflictContents::Files {
-                let mut view = record_conflict_view(self, file_id, path, ConflictKind::Metadata);
+                let mut view = record_conflict_view(self, file_id, None, ConflictKind::Metadata);
                 view.key = ConflictKey::Metadata(file_id);
                 return Ok(view);
             }
             return self
                 .metadata_conflict_view(
                     file_id,
-                    path,
                     [base_record, ours_record, theirs_record],
                     cancellation,
                 )
@@ -207,7 +229,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         if let Some(view) = self
             .regular_conflict_view(
                 file_id,
-                path.clone(),
                 [base_record, ours_record, theirs_record],
                 contents,
                 accounting,
@@ -222,7 +243,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             FileKind::SymbolicLink => ConflictKind::SymbolicLink,
             _ => ConflictKind::Special,
         };
-        Ok(record_conflict_view(self, file_id, path, kind))
+        Ok(record_conflict_view(self, file_id, None, kind))
     }
 
     /// The original identity's records, shared by projection and resolution.
@@ -257,7 +278,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     async fn metadata_conflict_view(
         &self,
         file_id: FileId,
-        path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
         cancellation: &CancellationToken,
     ) -> Result<crate::ConflictView, WorkspaceError> {
@@ -265,7 +285,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let [base, ours, theirs] = records;
         Ok(crate::ConflictView {
             key: ConflictKey::Metadata(file_id),
-            path,
+            path: None,
             kind: ConflictKind::Metadata,
             base: ConflictValue::Metadata(
                 volume
@@ -291,18 +311,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn conflict_path(
         &self,
         file_id: FileId,
+        child: Option<&LogicalName>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<String>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+    ) -> Result<Option<Owned<String>>, WorkspaceError> {
         let mut path = self
             .target_head
             .workspace
-            .first_path_at_with_accounting(
-                self.target_head.id,
-                file_id,
-                &mut accounting,
-                cancellation,
-            )
+            .first_path_at_with_accounting(self.target_head.id, file_id, accounting, cancellation)
             .await?;
         if path.is_none() {
             path = self
@@ -311,26 +327,37 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .first_path_at_with_accounting(
                     self.source_head.id,
                     file_id,
-                    &mut accounting,
+                    accounting,
                     cancellation,
                 )
                 .await?;
         }
-        let Some(path) = path else {
+        let Some(mut path) = path else {
             return Ok(None);
         };
+        if let Some(name) = child {
+            path = NamespacePath::child_from_owned(
+                path,
+                name,
+                self.target_head.workspace.volume.config.limits,
+                accounting,
+                cancellation,
+            )?;
+        }
         let text = path
             .value
-            .unicode_text_with_accounting(&mut accounting, cancellation);
-        path.retire(&mut accounting)?;
-        text.map(|(text, _allocation)| Some(text))
-            .map_err(Into::into)
+            .unicode_text_with_accounting(accounting, cancellation);
+        path.retire(accounting)?;
+        text.map(|(text, allocation)| {
+            let bytes = crate::foundation::usize_to_u64(text.capacity());
+            Some(Owned::new(text, allocation, bytes))
+        })
+        .map_err(Into::into)
     }
 
     async fn regular_conflict_view(
         &self,
         file_id: FileId,
-        path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
@@ -350,7 +377,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
         let mut text_values: [Option<ConflictValue>; 3] = std::array::from_fn(|_| None);
         let reference = || {
-            let mut view = record_conflict_view(self, file_id, path.clone(), ConflictKind::Binary);
+            let mut view = record_conflict_view(self, file_id, None, ConflictKind::Binary);
             [view.base, view.ours, view.theirs] =
                 std::array::from_fn(|index| ConflictValue::Record {
                     generation: [self.base.id, self.target_head.id, self.source_head.id][index],
@@ -397,7 +424,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             };
             return Ok(Some(crate::ConflictView {
                 key: ConflictKey::File(file_id),
-                path,
+                path: None,
                 kind: ConflictKind::Text,
                 base,
                 ours,
@@ -425,7 +452,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         };
         Ok(Some(crate::ConflictView {
             key: ConflictKey::File(file_id),
-            path,
+            path: None,
             kind,
             base,
             ours,

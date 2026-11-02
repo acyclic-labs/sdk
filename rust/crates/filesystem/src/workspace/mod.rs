@@ -102,8 +102,8 @@ pub use join_directory::{
     MergeDirectorySection,
 };
 use join_helpers::{
-    binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,
-    namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
+    binding_conflict_view, conflict_file_id, kernel_conflict, namespace_path_text,
+    record_conflict_view, resolution_matches_conflict, side_resolution,
 };
 pub use join_preview::{JoinCleanStep, JoinConflictEntry, JoinContent, JoinPathEntry, JoinPreview};
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};

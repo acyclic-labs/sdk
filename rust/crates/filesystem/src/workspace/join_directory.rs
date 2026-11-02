@@ -277,7 +277,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .limits
                 .maximum_component_bytes,
         )?;
-        let view = self.preview.describe_conflict_file(conflict).await?;
+        let rendered = self.preview.describe_conflict_file(conflict).await?;
+        let view = &rendered.value;
         if &view.key != key {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -305,9 +306,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     .map_err(WorkspaceError::engine)?
                     .to_owned(),
             }
-            .resolve(&view)
+            .resolve(view)
         } else {
-            decode_resolution(&bytes, &view)
+            decode_resolution(&bytes, view)
         }
     }
 
@@ -454,23 +455,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 next.conflicts_complete = true;
                 break;
             };
-            let view = self
+            let rendered = self
                 .preview
                 .describe_conflict_file(row.value().clone())
                 .await?;
+            let view = &rendered.value;
             let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {
                 use crate::MergeDriver;
                 let resolution = crate::DefaultTextMergeDriver
-                    .resolve(&view)
+                    .resolve(view)
                     .map_err(|_| WorkspaceError::InvalidMergeResolution)?;
                 let text = match resolution {
                     MergeResolution::Text(text) => text,
                     MergeResolution::Select(side) => {
                         let value = match side {
-                            ConflictSide::Base => view.base,
-                            ConflictSide::Ours => view.ours,
-                            ConflictSide::Theirs => view.theirs,
+                            ConflictSide::Base => rendered.value.base,
+                            ConflictSide::Ours => rendered.value.ours,
+                            ConflictSide::Theirs => rendered.value.theirs,
                         };
                         let ConflictValue::Text(text) = value else {
                             return Err(WorkspaceError::InvalidMergeResolution);
@@ -498,7 +500,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     json(&MergeConflictFile {
                         version: 1,
                         kind,
-                        conflict: view,
+                        conflict: rendered.value,
                     })?,
                 )
             };
