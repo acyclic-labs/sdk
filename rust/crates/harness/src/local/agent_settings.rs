@@ -35,14 +35,20 @@ pub(super) struct Volumes<'a> {
 /// Imports resolve in the home over the seed; `sys/` only in the seed.
 struct Tree<'a> {
     volumes: &'a Volumes<'a>,
-    source: &'a Arc<Source>,
+    pin: &'a Pin,
 }
 
-/// One settings admission's original read authority and immutable stack.
-/// This is a source reference, not a committed model epoch.
-pub(super) struct Source {
+/// One settings read's original authority and immutable generation.
+struct Pin {
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
+}
+
+/// Retained provenance for agent and provider settings. Hook loading only
+/// needs the read pin, without this allocation, encoding or hash.
+/// This source reference is not a committed model epoch.
+pub(super) struct Source {
+    pin: Pin,
     stack: [u8; 32],
     generation_label: String,
 }
@@ -54,8 +60,8 @@ pub(super) struct ProviderSettings {
     pub(super) stack: [u8; 32],
 }
 
-impl Source {
-    async fn new(volumes: &Volumes<'_>) -> Result<Arc<Self>> {
+impl Pin {
+    async fn new(volumes: &Volumes<'_>) -> Result<Self> {
         let read = ContentGrant::verify_directory_read(
             volumes.verifier,
             volumes.signed,
@@ -68,15 +74,21 @@ impl Source {
             &volumes.home.storage_name(&mut None)?,
         )?;
         let generation = volumes.files.resolve(&workspace, None).await?.generation;
-        let generation_label = serde_json::to_string(&generation)
+        Ok(Self { read, generation })
+    }
+}
+
+impl Source {
+    async fn new(volumes: &Volumes<'_>) -> Result<Arc<Self>> {
+        let pin = Pin::new(volumes).await?;
+        let generation_label = serde_json::to_string(&pin.generation)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let stack = crate::layers::stack_digest([
             (crate::layers::SEED, crate::seed::digest().as_slice()),
             (crate::layers::HOME, generation_label.as_bytes()),
         ]);
         Ok(Arc::new(Self {
-            read,
-            generation,
+            pin,
             stack,
             generation_label,
         }))
@@ -98,7 +110,7 @@ impl Source {
         }
         let tree = Tree {
             volumes,
-            source: self,
+            pin: &self.pin,
         };
         let home = tree.home(path).await?;
         let seed_generation = blake3::Hash::from_bytes(*crate::seed::digest()).to_hex();
@@ -142,9 +154,9 @@ impl Tree<'_> {
             .files
             .read_private_path_indexed(
                 self.volumes.home,
-                &self.source.read,
+                &self.pin.read,
                 path,
-                Some(&self.source.generation),
+                Some(&self.pin.generation),
                 self.volumes.maximum_bytes,
                 ContentAccess::default(),
             )
@@ -197,7 +209,7 @@ pub(super) async fn admit(
     let source = Source::new(volumes).await?;
     let tree = Tree {
         volumes,
-        source: &source,
+        pin: &source.pin,
     };
     let seed = Layer {
         name: "seed",
@@ -206,7 +218,7 @@ pub(super) async fn admit(
     };
     let home = tree.entry(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], &tree, started, resolve, compaction)
+        return settle(&[seed], volumes, &source, started, resolve, compaction)
             .await
             .map_err(Refused::seed);
     };
@@ -218,17 +230,25 @@ pub(super) async fn admit(
             bytes: Some(&bytes),
         },
     ];
-    let (settings, status, error) =
-        match settle(&layers, &tree, started.clone(), resolve, compaction).await {
-            Ok(settings) => (settings, AdmissionStatus::Applied, None),
-            Err(Refused(status, error)) => (
-                settle(&layers[..1], &tree, started, resolve, compaction)
-                    .await
-                    .map_err(Refused::seed)?,
-                status,
-                Some(error),
-            ),
-        };
+    let (settings, status, error) = match settle(
+        &layers,
+        volumes,
+        &source,
+        started.clone(),
+        resolve,
+        compaction,
+    )
+    .await
+    {
+        Ok(settings) => (settings, AdmissionStatus::Applied, None),
+        Err(Refused(status, error)) => (
+            settle(&layers[..1], volumes, &source, started, resolve, compaction)
+                .await
+                .map_err(Refused::seed)?,
+            status,
+            Some(error),
+        ),
+    };
     record(
         volumes,
         agent,
@@ -297,11 +317,8 @@ pub(super) async fn plugins(
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
-    let source = Source::new(volumes).await?;
-    let tree = Tree {
-        volumes,
-        source: &source,
-    };
+    let pin = Pin::new(volumes).await?;
+    let tree = Tree { volumes, pin: &pin };
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -362,7 +379,8 @@ impl From<Error> for Refused {
 
 async fn settle(
     layers: &[Layer<'_>],
-    tree: &Tree<'_>,
+    volumes: &Volumes<'_>,
+    source: &Arc<Source>,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
     compaction: (
@@ -370,12 +388,16 @@ async fn settle(
         &Option<crate::context::CompactionPolicy>,
     ),
 ) -> std::result::Result<Settings, Refused> {
+    let tree = Tree {
+        volumes,
+        pin: &source.pin,
+    };
     let selection = format!("{}/{}", started.0.provider, started.0.name);
     let invalid = |error: String| Refused(AdmissionStatus::Invalid, error);
     let (value, links) = config::compose(
         config::AGENT,
         layers,
-        tree,
+        &tree,
         serde_json::json!({ "model": selection }),
     )
     .await
@@ -457,7 +479,7 @@ async fn settle(
         model,
         sampling: settings.sampling,
         links,
-        source: Arc::clone(tree.source),
+        source: Arc::clone(source),
     })
 }
 
@@ -522,7 +544,7 @@ mod tests {
         let original_source = selected.source;
         let original = Tree {
             volumes: &volumes,
-            source: &original_source,
+            pin: &original_source.pin,
         };
         let tools: Vec<serde_json::Value> =
             serde_json::from_slice(crate::seed::file("sys/native/openai/tools.json").unwrap())
@@ -569,7 +591,7 @@ mod tests {
         let current_source = Source::new(&volumes).await?;
         let current = Tree {
             volumes: &volumes,
-            source: &current_source,
+            pin: &current_source.pin,
         };
         let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
         assert!(disabled.names.is_empty());
