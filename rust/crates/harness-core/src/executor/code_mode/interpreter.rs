@@ -10,10 +10,29 @@ use tokio::sync::{mpsc, oneshot};
 pub(crate) const MEMORY_BYTES: usize = 1024 * 1024 * 1024;
 pub(super) const INTERRUPT_BUDGET: u64 = 1_000_000_000;
 
-struct Reply(Option<acyclic_stream::OwnedBytes>);
+enum Reply {
+    Data(Option<acyclic_stream::OwnedBytes>),
+    DispatcherClosed,
+    ProducerDropped,
+}
 impl<'js> rquickjs::IntoJs<'js> for Reply {
     fn into_js(self, ctx: &rquickjs::Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        let Some(bytes) = self.0 else {
+        let bytes = match self {
+            Self::Data(bytes) => bytes,
+            Self::DispatcherClosed => {
+                return Err(rquickjs::Exception::throw_message(
+                    ctx,
+                    "JavaScript dispatcher closed before submission",
+                ));
+            }
+            Self::ProducerDropped => {
+                return Err(rquickjs::Exception::throw_message(
+                    ctx,
+                    "JavaScript reply producer dropped before settlement",
+                ));
+            }
+        };
+        let Some(bytes) = bytes else {
             return Ok(rquickjs::Value::new_undefined(ctx.clone()));
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| rquickjs::Error::Unknown)?;
@@ -106,13 +125,13 @@ pub(super) async fn run(
                                 }),
                                 None => Request::Log { arguments, reply },
                             };
-                            send.send(request)
-                                .await
-                                .map_err(|_| rquickjs::Error::Unknown)?;
-                            receive
-                                .await
-                                .map(Reply)
-                                .map_err(|_| rquickjs::Error::Unknown)
+                            if send.send(request).await.is_err() {
+                                return Ok(Reply::DispatcherClosed);
+                            }
+                            Ok::<_, rquickjs::Error>(match receive.await {
+                                Ok(bytes) => Reply::Data(bytes),
+                                Err(_) => Reply::ProducerDropped,
+                            })
                         }
                     },
                 ),
@@ -634,35 +653,50 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
+        let tool = crate::tools::catalog()
+            .find(|tool| tool.name == "code")
+            .unwrap()
+            .bind()
+            .unwrap();
+        let definitions: acyclic_stream::OwnedBytes =
+            serde_json::to_vec(&vec![tool.definition]).unwrap().into();
         for code in [
             "await tools.code({code:'1'})",
             "export default tools.code({code:'1'})",
             "await console.log('message')",
         ] {
-            let tool = crate::tools::catalog()
-                .find(|tool| tool.name == "code")
-                .unwrap()
-                .bind()
-                .unwrap();
-            let definitions = serde_json::to_vec(&vec![tool.definition]).unwrap().into();
-            let (send, mut receive) = tokio::sync::mpsc::channel(1);
-            let (result, ()) = tokio::join!(
-                acyclic_native_runtime::blocking_future(super::run(
-                    code.into(),
-                    definitions,
-                    send,
-                    tokio_util::sync::CancellationToken::new(),
-                    4096,
-                    super::super::allocator::EngineAllocator::new(None),
-                    super::INTERRUPT_BUDGET,
-                )),
-                async move {
-                    let call = receive.recv().await.expect("engine submitted its call");
-                    drop(receive);
-                    drop(call);
+            for submitted in [false, true] {
+                let (send, receive) = tokio::sync::mpsc::channel(1);
+                let mut receive = Some(receive);
+                if !submitted {
+                    drop(receive.take());
                 }
-            );
-            assert!(result.unwrap().is_err());
+                let (result, ()) = tokio::join!(
+                    acyclic_native_runtime::blocking_future(super::run(
+                        code.into(),
+                        definitions.clone(),
+                        send,
+                        tokio_util::sync::CancellationToken::new(),
+                        4096,
+                        super::super::allocator::EngineAllocator::new(None),
+                        super::INTERRUPT_BUDGET,
+                    )),
+                    async move {
+                        if let Some(mut receive) = receive {
+                            let call = receive.recv().await.expect("engine submitted its call");
+                            drop(receive);
+                            drop(call);
+                        }
+                    }
+                );
+                let error = result.unwrap().unwrap_err();
+                let expected = if submitted {
+                    "JavaScript reply producer dropped before settlement"
+                } else {
+                    "JavaScript dispatcher closed before submission"
+                };
+                assert!(error.contains(expected), "{error}");
+            }
         }
     }
 
