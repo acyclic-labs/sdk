@@ -134,7 +134,14 @@ pub(super) async fn admit(
                 Some(error),
             ),
         };
-    record(volumes, agent, (config::AGENT, &version), (status, error), clock).await?;
+    record(
+        volumes,
+        agent,
+        (config::AGENT, &version),
+        (status, error),
+        clock,
+    )
+    .await?;
     Ok(settings)
 }
 
@@ -171,7 +178,7 @@ async fn record(
     };
     let bytes =
         serde_json::to_vec(&admission).map_err(|error| Error::Invalid(error.to_string()))?;
-    let record = format!("live/agents/{agent}/admissions/{version}.json");
+    let record = format!("live/agents/{agent}/admissions/{path}/{version}.json");
     volumes
         .files
         .put_content(
@@ -190,7 +197,7 @@ async fn record(
             "admission",
             volumes.maximum_bytes,
             &crate::IdempotencyKey::new(format!(
-                "admission:{agent}:{version}:{}",
+                "admission:{agent}:{path}:{version}:{}",
                 blake3::hash(&bytes)
             ))?,
             None,
@@ -208,7 +215,7 @@ pub(super) async fn plugins(
     volumes: &Volumes<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
-) -> Result<Vec<crate::hooks::HookRule>> {
+) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
     let tree = Tree::new(volumes)?;
     let enabler = agent.to_string();
@@ -217,9 +224,8 @@ pub(super) async fn plugins(
         generation: "",
         bytes: crate::seed::file(MANIFEST),
     };
-    let seeded = |error: Error| {
-        Error::Invalid(format!("the seed's plugins are not admissible: {error}"))
-    };
+    let seeded =
+        |error: Error| Error::Invalid(format!("the seed's plugins are not admissible: {error}"));
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
@@ -234,7 +240,10 @@ pub(super) async fn plugins(
     let (rules, outcome) = match load(&tree, &layers, &enabler).await {
         Ok(enabled) => (enabled.rules, (AdmissionStatus::Applied, None)),
         Err(error) => (
-            load(&tree, &layers[..1], &enabler).await.map_err(seeded)?.rules,
+            load(&tree, &layers[..1], &enabler)
+                .await
+                .map_err(seeded)?
+                .rules,
             (AdmissionStatus::Invalid, Some(error.to_string())),
         ),
     };

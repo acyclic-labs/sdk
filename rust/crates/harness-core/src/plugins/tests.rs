@@ -35,7 +35,8 @@ async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule() -> Result<()>
     )
     .await?;
     assert_eq!(enabled.names, ["guard"]);
-    let [rule] = enabled.rules.as_slice() else {
+    let rules: Vec<HookRule> = serde_json::from_slice(&serde_json::to_vec(&enabled.rules)?)?;
+    let [rule] = rules.as_slice() else {
         panic!("one rule: {enabled:?}");
     };
     assert_eq!(rule.on, HookEvent::PreToolUse);
@@ -57,8 +58,6 @@ async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule() -> Result<()>
             }),
         }
     );
-    // The rules are valid input for the one runner.
-    crate::hooks::Hooks::default().add_rules(enabled.rules)?;
     Ok(())
 }
 
@@ -72,7 +71,8 @@ async fn settings_in_plugins_ts_replace_the_defaults() -> Result<()> {
         ],
     )
     .await?;
-    let HookRun::Plugin { config, .. } = &enabled.rules[0].hooks[0].run else {
+    let rules: Vec<HookRule> = serde_json::from_slice(&serde_json::to_vec(&enabled.rules)?)?;
+    let HookRun::Plugin { config, .. } = &rules[0].hooks[0].run else {
         panic!("a plugin hook");
     };
     assert_eq!(config, r#"{"force":true}"#);
@@ -86,7 +86,42 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
     for (files, reason) in [
         (vec![], "does not exist"),
         (
-            vec![("plugins/p/plugin.ts", r#"export default { name: "q", description: "d" };"#)],
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                ("plugins/p/hooks/before-tool.sh", "exit 0"),
+                ("plugins/p/hooks/before-tool.ps1", " "),
+            ],
+            "hook command",
+        ),
+        (
+            vec![
+                (
+                    "plugins/p/plugin.ts",
+                    r#"export default { name: "p", description: "d", matcher: { tool: { command: "[" } } };"#,
+                ),
+                ("plugins/p/hooks/before-tool.sh", "exit 0"),
+            ],
+            "plugin hook matcher",
+        ),
+        (
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                ("plugins/p/hooks/before-tool.sh", "  "),
+            ],
+            "hook command",
+        ),
+        (
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                ("plugins/p/hooks/before-tool.sh", "exit 0\0"),
+            ],
+            "hook command",
+        ),
+        (
+            vec![(
+                "plugins/p/plugin.ts",
+                r#"export default { name: "q", description: "d" };"#,
+            )],
             "names",
         ),
         (
@@ -97,11 +132,17 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
             "requires r",
         ),
         (
-            vec![("plugins/p/plugin.ts", manifest), ("plugins/p/hooks/before-tool.ts", "")],
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                ("plugins/p/hooks/before-tool.ts", ""),
+            ],
             "TypeScript hooks",
         ),
         (
-            vec![("plugins/p/plugin.ts", manifest), ("plugins/p/hooks/before-spawn.sh", "")],
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                ("plugins/p/hooks/before-spawn.sh", ""),
+            ],
             "does not judge spawn",
         ),
         (
