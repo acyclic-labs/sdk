@@ -6,7 +6,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmOpened, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm } from "../src/contract.js";
+import { ensureStreamWasm, wireAppendRequest } from "../src/contract.js";
 import { openWasmCursor } from "../src/wasm-records.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
@@ -68,7 +68,7 @@ const worker = (value: import("../src/index.js").JsonValue): { readonly worker: 
 describe("website Stream contract", () => {
   test("record and cleanup failures with equal primitive values remain distinct", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("close/causes", [new Uint8Array([1])]);
+    await provider.append("close/causes", [new Uint8Array([1])], { idempotencyKey: key("close/causes") });
     const source = provider.follow("close/causes", { from: 0n });
     await source.opened;
     const close = source.close.bind(source);
@@ -83,7 +83,7 @@ describe("website Stream contract", () => {
 
   test("close preserves an undefined original cursor cleanup failure", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("close/undefined", [new Uint8Array([1])]);
+    await provider.append("close/undefined", [new Uint8Array([1])], { idempotencyKey: key("close/undefined") });
     const source = provider.follow("close/undefined", { from: 1n });
     await source.opened;
     const close = source.close.bind(source);
@@ -97,7 +97,7 @@ describe("website Stream contract", () => {
 
   test("early facade close retains failure disposing its original WASM cursor", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("close/cleanup", [new Uint8Array([1])]);
+    await provider.append("close/cleanup", [new Uint8Array([1])], { idempotencyKey: key("close/cleanup") });
     const source = provider.follow("close/cleanup", { from: 1n });
     await source.opened;
     const cleanup = new Error("original cursor cleanup failed");
@@ -604,7 +604,7 @@ describe("website Stream contract", () => {
   test("closed Rust follow handles end before or during a pending read", async () => {
     await ensureStreamWasm();
     const wasm = new WasmStream();
-    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
+    await wasm.dispatch("append", wireAppendRequest("events", [new Uint8Array([1])], { idempotencyKey: key("closed-follow-seed") }));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
     const closed = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
     await closed.close();
@@ -618,7 +618,7 @@ describe("website Stream contract", () => {
   test("Rust cursor ownership refusal preserves the original pending follow", async () => {
     await ensureStreamWasm();
     const wasm = new WasmStream();
-    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "owner", records: [new Uint8Array([1])] })));
+    await wasm.dispatch("append", wireAppendRequest("owner", [new Uint8Array([1])], { idempotencyKey: key("pending-owner-seed") }));
     const request = wasm.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "owner", from: 1n })));
     let cursor: WasmOpened | undefined;
     let pulling: Promise<Uint8Array | null> | undefined;
@@ -628,7 +628,7 @@ describe("website Stream contract", () => {
       cursor = opened;
       pulling = cursor.next();
       await expect(cursor.next()).rejects.toMatchObject({ code: "unavailable" });
-      await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "owner", records: [new Uint8Array([2])] })));
+      await wasm.dispatch("append", wireAppendRequest("owner", [new Uint8Array([2])], { idempotencyKey: key("pending-owner-delivery") }));
       expect(await pulling).toBeInstanceOf(Uint8Array);
       cursor.close();
       expect(await cursor.next()).toBeNull();
