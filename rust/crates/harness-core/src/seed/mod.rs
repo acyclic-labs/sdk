@@ -28,11 +28,20 @@ pub(crate) const GOOGLE_PROFILE: &str = include_str!("../profile/native/google.m
 /// Where the seed's skills live in its tree.
 pub const SKILLS: &str = "skills";
 
+macro_rules! seed_file {
+    ($path:expr) => {
+        seed_file!($path, $path)
+    };
+    ($path:expr, $source:expr) => {
+        ($path, include_bytes!($source))
+    };
+}
+
 macro_rules! skill {
     ($name:literal) => {
-        (
+        seed_file!(
             concat!("skills/", $name, "/SKILL.md"),
-            include_bytes!(concat!("../skills/", $name, "/SKILL.md")),
+            concat!("../skills/", $name, "/SKILL.md")
         )
     };
 }
@@ -40,32 +49,34 @@ macro_rules! skill {
 /// Every embedded seed file by its path in the tree, sorted by path.
 const FILES: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
-    ("agent.ts", include_bytes!("agent.ts")),
-    (
-        "plugins/compaction/hooks/after-usage.ts",
-        include_bytes!("plugins/compaction/hooks/after-usage.ts"),
-    ),
-    (
-        "plugins/compaction/plugin.ts",
-        include_bytes!("plugins/compaction/plugin.ts"),
-    ),
-    (
-        "plugins/spawn/plugin.ts",
-        include_bytes!("plugins/spawn/plugin.ts"),
-    ),
-    (
-        "plugins/spawn/spawn.ts",
-        include_bytes!("plugins/spawn/spawn.ts"),
-    ),
+    seed_file!("agent.ts"),
+    seed_file!("plugins.ts"),
+    seed_file!("plugins/approvals/modes/ask.ts"),
+    seed_file!("plugins/approvals/modes/model.ts"),
+    seed_file!("plugins/approvals/modes/parent.ts"),
+    seed_file!("plugins/approvals/plugin.ts"),
+    seed_file!("plugins/compaction/hooks/after-usage.ts"),
+    seed_file!("plugins/compaction/plugin.ts"),
+    seed_file!("plugins/spawn/plugin.ts"),
+    seed_file!("plugins/spawn/spawn.ts"),
+    seed_file!("plugins/spawn/topologies/blackboard.md"),
+    seed_file!("plugins/spawn/topologies/debate-ring.md"),
+    seed_file!("plugins/spawn/topologies/hierarchy.md"),
+    seed_file!("plugins/spawn/topologies/market.md"),
+    seed_file!("plugins/spawn/topologies/mesh.md"),
+    seed_file!("plugins/spawn/topologies/pipeline.md"),
+    seed_file!("plugins/spawn/topologies/search-derived.md"),
+    seed_file!("plugins/spawn/topologies/service.md"),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
     skill!("debugging"),
     skill!("fresh-context-review"),
+    skill!("swarm-topology"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
     ("sys/context-backstop.md", CONTEXT_BACKSTOP.as_bytes()),
-    ("sys/kernel.md", include_bytes!("kernel.md")),
+    seed_file!("sys/kernel.md", "kernel.md"),
     (
         "sys/native/anthropic/profile.md",
         ANTHROPIC_PROFILE.as_bytes(),
@@ -78,38 +89,14 @@ const FILES: &[(&str, &[u8])] = &[
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
-    (
-        "templates/advisor/AGENT.md",
-        include_bytes!("templates/advisor/AGENT.md"),
-    ),
-    (
-        "templates/advisor/agent.ts",
-        include_bytes!("templates/advisor/agent.ts"),
-    ),
-    (
-        "templates/orchestrator/AGENT.md",
-        include_bytes!("templates/orchestrator/AGENT.md"),
-    ),
-    (
-        "templates/orchestrator/agent.ts",
-        include_bytes!("templates/orchestrator/agent.ts"),
-    ),
-    (
-        "templates/reviewer/AGENT.md",
-        include_bytes!("templates/reviewer/AGENT.md"),
-    ),
-    (
-        "templates/reviewer/agent.ts",
-        include_bytes!("templates/reviewer/agent.ts"),
-    ),
-    (
-        "templates/worker/AGENT.md",
-        include_bytes!("templates/worker/AGENT.md"),
-    ),
-    (
-        "templates/worker/agent.ts",
-        include_bytes!("templates/worker/agent.ts"),
-    ),
+    seed_file!("templates/advisor/AGENT.md"),
+    seed_file!("templates/advisor/agent.ts"),
+    seed_file!("templates/orchestrator/AGENT.md"),
+    seed_file!("templates/orchestrator/agent.ts"),
+    seed_file!("templates/reviewer/AGENT.md"),
+    seed_file!("templates/reviewer/agent.ts"),
+    seed_file!("templates/worker/AGENT.md"),
+    seed_file!("templates/worker/agent.ts"),
 ];
 
 /// Every seed file by its path in the tree, sorted by path: the embedded
