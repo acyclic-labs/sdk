@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
+import { fuzz as fuzzContractJson } from "./contract-targets.fuzz.mjs";
 
 test("contract command refusals retain original native diagnostics and terminal metadata", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-refusal-"));
@@ -103,6 +104,14 @@ test("contract outputs retire at their selected last consumer without rerunning 
     process.env.NODE_OPTIONS = `--import=${pathToFileURL(producer).href}`;
     const captured = runContractTarget(root, process.execPath);
     const original = parse(captured);
+    const bytes = Buffer.from(captured);
+    assert.equal(fuzzContractJson(bytes), true);
+    for (const at of [0, 1, Math.floor(bytes.length / 2), bytes.length - 1]) {
+      const mutation = Buffer.from(bytes);
+      mutation[at] ^= 255;
+      fuzzContractJson(mutation);
+      fuzzContractJson(bytes.subarray(0, at));
+    }
     const consumers = [
       [0, undefined], [0, "left"], [0, "right"], [0, "left"],
       [1, "left"], [1, undefined],
@@ -143,7 +152,18 @@ test("contract outputs retire at their selected last consumer without rerunning 
 
     writeFileSync(producer, 'console.log("{malformed");\n');
     const malformed = contractTargetOutputs(root, [process.execPath], [[0, "left"]]);
-    assert.throws(() => malformed(0, "left"), /STEP_FAILED contract-payload: malformed bundle.*recovery:/);
+    let originalCause;
+    JSON.parse = (...args) => {
+      try { return parse(...args); }
+      catch (error) { originalCause = error; throw error; }
+    };
+    assert.throws(() => malformed(0, "left"), error => {
+      assert.ok(originalCause instanceof SyntaxError);
+      assert.equal(error.cause, originalCause);
+      assert.match(error.message, /STEP_FAILED contract-payload: malformed bundle.*recovery:/);
+      return true;
+    });
+    JSON.parse = parse;
     writeFileSync(producer, 'console.log(JSON.stringify("scalar"));\n');
     const scalar = contractTargetOutputs(root, [process.execPath], [[0, "left"]]);
     assert.throws(() => scalar(0, "left"), /STEP_FAILED contract-payload: missing left; recovery:/);

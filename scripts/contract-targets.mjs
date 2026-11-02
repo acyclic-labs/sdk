@@ -3,6 +3,13 @@ import { join } from "node:path";
 
 const identity = target => JSON.stringify(target);
 
+export function parseContractJson(text, context) {
+  try { return JSON.parse(text); }
+  catch (cause) {
+    throw new Error(`STEP_FAILED ${context}; recovery: bun scripts/generate-contracts.mjs check`, { cause });
+  }
+}
+
 export function captureContractCommand(root, executable, args, phase) {
   const result = spawnSync(executable, args, {
     cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
@@ -44,7 +51,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report.rustc_error = String(error);
     saveProgress();
   }
-  const metadata = JSON.parse(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]));
+  const metadata = parseContractJson(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]), `contract-metadata: malformed output from ${cargo}`);
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */
   const requested = new Map();
@@ -75,7 +82,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   report.phase = "artifact-discovery";
   saveProgress();
   for (const line of output.split(/\r?\n/).filter(line => line.startsWith("{"))) {
-    const message = JSON.parse(line);
+    const message = parseContractJson(line, `contract-artifact: malformed output from ${cargo}`);
     if (message.reason !== "compiler-artifact") continue;
     const selected = message.target.kind.some(kind => requested.has(identity([message.package_id, kind, message.target.name])));
     report.artifacts.push({ package_id: message.package_id, name: message.target.name, kinds: message.target.kind, features: message.features, fresh: message.fresh, executable: message.executable, requested: selected });
@@ -120,8 +127,7 @@ export function contractTargetOutputs(root, executables, consumers) {
     if (payload === undefined) value = output.stdout;
     else {
       if (!Object.hasOwn(output, "payloads")) {
-        try { output.payloads = JSON.parse(output.stdout); }
-        catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle from ${executables[slot]}; recovery: bun scripts/generate-contracts.mjs check`); }
+        output.payloads = parseContractJson(output.stdout, `contract-payload: malformed bundle from ${executables[slot]}`);
         if (!counts.has(undefined)) delete output.stdout;
         // No selected renderer owns an unrequested bundle member.
         if (output.payloads && typeof output.payloads === "object") {

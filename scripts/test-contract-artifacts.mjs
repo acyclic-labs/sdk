@@ -54,7 +54,7 @@ test("compiler artifact discovery rejects identity substitution and partial comp
     emit([...artifacts, artifacts[0]]);
     assert.throws(build, /duplicate Rust contract artifact/);
     put("artifacts.jsonl", "{not JSON\n");
-    assert.throws(build, SyntaxError);
+    assert.throws(build, error => error.cause instanceof SyntaxError && /STEP_FAILED contract-artifact:/.test(error.message));
     put("build", 'console.log(JSON.stringify({reason:"compiler-message",message:{rendered:"fixture compiler diagnostic"}})); process.exit(7);');
     assert.throws(build, error => {
       assert.match(error.message, /STEP_FAILED contract-build:.*failed with status 7/);
