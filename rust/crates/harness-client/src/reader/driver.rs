@@ -451,7 +451,7 @@ pub(super) fn fetched(record: Record) -> Fetched {
     }
 }
 
-async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
+pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
     let result = match op {
         Op::Read {
             stream,
