@@ -80,7 +80,8 @@ test("a child merge needs its committed branch result after settlement", () => {
   // whole-case time requirement. No historical case is requalified here.
   for (const { events: original } of mergeResults) {
     const expected = original.find(event => event.tool_name === "wait").tool_response.settled[0].answer;
-    const check = events => requireTools(events, ["spawn", "wait", "fs"], expected, true);
+    const workspace = original[0].cwd;
+    const check = events => requireTools(events, ["spawn", "wait", "fs"], expected, workspace);
     check(original);
     for (const mutate of [
       (events, merge) => { events.splice(events.indexOf(merge), 1); },
@@ -90,6 +91,7 @@ test("a child merge needs its committed branch result after settlement", () => {
         event.tool_response?.result?.Filesystem?.Data?.kind === "diff").tool_response); },
       (_, merge) => { merge.tool_response.result.Committed.message = "merge agents/other"; },
       (_, merge) => { merge.tool_response.result.Committed.message = "rebase agents/worker"; },
+      (_, merge) => { merge.cwd += "/child"; },
       (events, merge) => {
         events.splice(events.indexOf(merge), 1);
         events.splice(1, 0, merge);

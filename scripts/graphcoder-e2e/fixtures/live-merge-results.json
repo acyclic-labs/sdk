@@ -14,7 +14,8 @@
           "tool_response": {
             "agent": "harness/agents/2938e0b38b2340bd94e13a2574f43c25/children/a8c8191f009d81a71d8bed421d7f4284",
             "name": "worker"
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -35,7 +36,8 @@
                 "phase": "idle"
               }
             ]
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -57,7 +59,8 @@
                 "phase": "idle"
               }
             ]
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -79,7 +82,8 @@
                 }
               }
             }
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -213,7 +217,8 @@
                 }
               }
             }
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/4/fork-merge/workspace"
         }
       ]
     },
@@ -231,7 +236,8 @@
           "tool_response": {
             "agent": "harness/agents/81a5f3166ff34061a6df6ecb1c8ee2b3/children/6dc146e20f800b8fd7c66e703cdde49e",
             "name": "worker"
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -252,7 +258,8 @@
                 "phase": "idle"
               }
             ]
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -274,7 +281,8 @@
                 }
               }
             }
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
         },
         {
           "hook_event_name": "PostToolUse",
@@ -408,7 +416,8 @@
                 }
               }
             }
-          }
+          },
+          "cwd": "/home/var/live-cause-artifact-065154f442/live-effects-noble-scratch/graphcoder-live-4BolpP/5/fork-merge/workspace"
         }
       ]
     }
@@ -416,7 +425,7 @@
   "provenance": {
     "compiled_source": "065154f442c1f195813dc8b315e957ace5f32aa6",
     "consumer_revision": "c90f7519cc8a904a13af9559a9e4e584d3985364",
-    "format": "PostToolUse field projection, original fork-merge samples 4 and 5; only spawn/wait/fs events retained, no event values synthesized; original whole cases failed their time requirement",
+    "format": "PostToolUse field projection, original fork-merge samples 4 and 5; only spawn/wait/fs events retained, no event values synthesized; original whole cases failed their time requirement; original cwd retained for parent workspace admission",
     "matrix_sha256": "24cf6224c4086c6c0b9fcc5f368378ed080e22beafc8ba9e5810280b22cca444"
   }
 }

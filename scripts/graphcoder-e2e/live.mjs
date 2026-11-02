@@ -30,7 +30,7 @@ export function answer(result, format) {
   return line;
 }
 
-export function requireTools(hooks, names, expectedChildResult, mergeChild = false) {
+export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
   const remaining = new Set(names);
   let child, childName, consumed = false, merged = false;
   for (const hook of hooks) {
@@ -56,7 +56,8 @@ export function requireTools(hooks, names, expectedChildResult, mergeChild = fal
       assert.equal(settled.phase, "idle", "child did not settle successfully");
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
       consumed = true;
-    } else if (mergeChild && consumed && typeof childName === "string" && hook.tool_name === "fs"
+    } else if (mergeWorkspace !== undefined && consumed && typeof childName === "string"
+      && hook.tool_name === "fs" && hook.cwd === mergeWorkspace
       && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
       // The filesystem generates this message from its completed join operand.
       merged = true;
@@ -64,7 +65,8 @@ export function requireTools(hooks, names, expectedChildResult, mergeChild = fal
   }
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
   if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
-  if (mergeChild) assert.ok(merged, `step=admit committed merge of the settled child's branch; recovery=${recovery}`);
+  if (mergeWorkspace !== undefined) assert.ok(merged,
+    `step=admit committed merge of the settled child's branch in its parent workspace; recovery=${recovery}`);
 }
 
 export async function runCase(binary, login, root, name, signal) {
@@ -146,7 +148,7 @@ export async function runCase(binary, login, root, name, signal) {
         step = "assert child fork and merged parent bytes";
         const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "child.txt"), marker);
-        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, true);
+        requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, workspace);
       } else assert.fail(`unknown case ${name}`);
     } });
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
