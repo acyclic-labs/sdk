@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "task": "Return the total quantity of the four ledger entries.",
+  "quantities": [
+    13,
+    21,
+    8,
+    5
+  ]
+}

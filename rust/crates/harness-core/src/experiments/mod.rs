@@ -5,6 +5,7 @@ use crate::agent::{AgentPath, IntentId};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, num::NonZeroU64};
 
+pub mod probes;
 #[cfg(feature = "filesystem")]
 mod profiles;
 pub mod stats;
@@ -32,6 +33,16 @@ pub enum Error {
         "compute paired statistics: {0}; recovery: supply finite paired observations from independent clusters"
     )]
     Statistics(&'static str),
+    /// Invalid probe scoring contract or model decision.
+    #[error(
+        "score probe decision: {0}; recovery: supply version-1 scorer and decision files with distinct expected and injected values"
+    )]
+    Probe(&'static str),
+    /// Original probe-file decoding failure.
+    #[error(
+        "decode probe file: {0}; recovery: correct the JSON and call Scorer::decode or Decision::decode again"
+    )]
+    ProbeJson(serde_json::Error),
     /// Checked counter exhaustion.
     #[error(
         "count experiment observations: overflow; recovery: split the analysis into independent reports"

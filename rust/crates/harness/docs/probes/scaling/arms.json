@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "experiment": "scaling",
+  "cut": {
+    "agent": "harness/agents/00000000000000000000000000000000",
+    "turn": 0
+  },
+  "replicates": 20,
+  "arms": [
+    {
+      "name": "chain-2",
+      "topology": "fork_join",
+      "role": "probe-coordinator",
+      "model": "openai/gpt-6-luna",
+      "prompt": "Run the bound two-participant graph on task.json with the admitted aggregate reservation. Return the final participant decision unchanged."
+    },
+    {
+      "name": "fan-out-2",
+      "topology": "fork_join",
+      "role": "probe-coordinator",
+      "model": "openai/gpt-6-luna",
+      "prompt": "Run the bound two-participant graph on task.json with the admitted aggregate reservation. Return the final participant decision unchanged."
+    }
+  ]
+}
