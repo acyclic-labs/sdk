@@ -87,8 +87,15 @@ pub enum AccountingOperationClass {
 }
 
 /// One authenticated authority fact.
+///
+/// Retains the authority selected by the original proven page. A generation
+/// can be published and retained by distinct authorities; neither its root nor
+/// its volume identifies the authority that produced this fact. Logical file
+/// bytes do not establish physical allocation custody or deduplication savings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountingFact {
+    /// Original authority whose hash chain authenticated this record.
+    pub authority_id: AuthorityId,
     /// Dense sequence within the authority.
     pub sequence: Sequence,
     /// Stable retry identity.
