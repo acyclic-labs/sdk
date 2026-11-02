@@ -51,7 +51,11 @@ impl NamespacePath {
     }
 
     /// Parses borrowed Unicode text directly into the destination profile.
-    pub(crate) fn from_text_in_profile(
+    ///
+    /// Validates portable spelling and destination encoding before allocating
+    /// the canonical names, without retaining an intermediate portable string.
+    /// Use [`Self::parse_in_profile`] to supply work accounting and cancellation.
+    pub fn from_text_in_profile(
         path: &str,
         profile: FilesystemProfile,
         limits: VolumeLimits,

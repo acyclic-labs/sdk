@@ -244,9 +244,7 @@ pub(in crate::bindings) fn encode_namespace_path(path: &NamespacePath) -> Native
 }
 
 pub(in crate::bindings) fn native_path(path: &str, config: VolumeConfig) -> Result<NamespacePath> {
-    let portable = PortablePath::parse(path, config.limits).map_err(napi_error)?;
-    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
-        .map_err(napi_error)
+    NamespacePath::from_text_in_profile(path, config.profile, config.limits).map_err(napi_error)
 }
 
 pub(in crate::bindings) fn native_name(name: &str, config: VolumeConfig) -> Result<LogicalName> {

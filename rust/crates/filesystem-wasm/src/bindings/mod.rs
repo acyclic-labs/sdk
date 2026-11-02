@@ -94,7 +94,6 @@ use acyclic_fs::model::{
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
     VolumeLimits,
 };
-use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
