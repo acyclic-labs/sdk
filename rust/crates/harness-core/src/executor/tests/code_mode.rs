@@ -862,12 +862,48 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     executor
         .tools
         .register((crate::tool::files::read()?, None), &mut None, None)?;
-    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536)
-        .await?
-        .with_approval_policy(approval_policy)?;
+    let filesystem = acyclic_fs::Fs::memory();
+    let storage = crate::filesystem::MemoryHarnessStorage::from_providers(
+        crate::AgentId::new(),
+        65536,
+        filesystem.clone(),
+        Arc::new(acyclic_stream::MemoryStream::default()),
+    )
+    .await?
+    .with_approval_policy(approval_policy)?;
     let journal = storage.journal();
     let operation = OperationId::new();
-    let content = storage.content_bindings();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let mut content = storage.content_bindings();
+    let host =
+        crate::filesystem::FilesystemHost::new(filesystem, content.volume.provider(), Some(&io))?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        host,
+        &storage.verifier(),
+        storage.owner_scope(),
+        65536,
+        Some(&io),
+    )?;
+    reader.supports_native_directory_list(&content.volume, &work)?;
+    let unrelated = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    assert_eq!(
+        reader
+            .supports_native_directory_list(&content.volume, &unrelated)
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized,
+    );
+    content.reader = reader;
     let scope = RuntimeScope::new(
         Capabilities::new([
             "tool:call:code".into(),
@@ -889,13 +925,6 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     executor = executor
         .with_tool_authority(scope, policy)?
         .with_task_context(&task, operation)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work)?;
     let execution = StockExecution {
         io: Some(&io),
         ..StockExecution::ordinary(&executor)
