@@ -176,6 +176,184 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
     not(target_arch = "wasm32")
 ))]
 #[test]
+fn response_collection_retires_unpublished_calls_and_metadata() -> Result<()> {
+    let mut stock = uncompacted_executor(
+        Model::new("generated".into(), "collection-custody".into(), "1".into())?,
+        Arc::new(ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    stock.limits.render_bytes = 64;
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::new(),
+        input: ModelContent::Text(String::new()),
+        selected_context: None,
+    };
+    // Generated operands exercise the original ownership ledger, not a provider fixture.
+    let arguments = json!({"value": "argument"});
+    let metadata = json!({"completion": "retained"});
+    for native in [false, true] {
+        for reject_part in [false, true] {
+            let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                let history = stock_string_copy("existing history", Some(io))?;
+                let history_pointer = history.as_ptr();
+                let mut prior = Vec::new();
+                stock_vec_push(
+                    &mut prior,
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text(history),
+                    },
+                    Some(io),
+                )?;
+                let mut events = Vec::new();
+                stock_vec_push(
+                    &mut events,
+                    ModelEvent::Content {
+                        delta: stock_string_copy("first", Some(io))?,
+                    },
+                    Some(io),
+                )?;
+                for value in [&arguments, &metadata] {
+                    stock_vec_push(
+                        &mut events,
+                        ModelEvent::Completed {
+                            metadata: crate::model::clone_value(value, Some(io))?,
+                        },
+                        Some(io),
+                    )?;
+                }
+                stock_vec_push(
+                    &mut events,
+                    ModelEvent::ToolCall(crate::model::ToolCall::new(
+                        stock_string_copy("call", Some(io))?,
+                        stock_string_copy("tool", Some(io))?,
+                        crate::model::clone_value(&arguments, Some(io))?,
+                    )),
+                    Some(io),
+                )?;
+                let incoming = stock_string_copy(
+                    if reject_part {
+                        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    } else {
+                        "ok"
+                    },
+                    Some(io),
+                )?;
+                let incoming_pointer = incoming.as_ptr();
+                stock_vec_push(
+                    &mut events,
+                    ModelEvent::TextPart {
+                        text: incoming,
+                        native: None,
+                    },
+                    Some(io),
+                )?;
+                stock_vec_push(
+                    &mut events,
+                    ModelEvent::Reasoning {
+                        delta: stock_string_copy("unconsumed suffix", Some(io))?,
+                    },
+                    Some(io),
+                )?;
+                let result = execution.collect_step_events(&input, 0, events, &mut prior);
+                if reject_part {
+                    assert_eq!(
+                        result.err().map(|error| error.code()),
+                        Some(crate::wire::ErrorCode::Invalid)
+                    );
+                    assert_eq!(prior.len(), 2);
+                } else {
+                    let result = result?;
+                    assert_eq!(result.text, "first");
+                    assert_eq!(result.metadata, metadata);
+                    assert_eq!(result.calls.len(), 1);
+                    assert_eq!(result.calls[0].1, 1);
+                    assert_eq!(result.calls[0].0.call_id, "call");
+                    assert_eq!(result.calls[0].0.name, "tool");
+                    assert_eq!(result.calls[0].0.arguments, arguments);
+                    assert!(result.parts);
+                    assert_eq!(prior.len(), 3);
+                    let ModelContent::Part(ModelContentPart::Text { text, .. }) = &prior[2].content
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(text.as_ptr(), incoming_pointer);
+                    stock_retire_text(result.text, Some(io))?;
+                    stock_retire_event(
+                        ModelEvent::Completed {
+                            metadata: result.metadata,
+                        },
+                        Some(io),
+                    )?;
+                    for (call, _) in stock_into_iter(result.calls, Some(io))? {
+                        stock_retire_event(
+                            ModelEvent::ToolCall(crate::model::ToolCall::new(
+                                call.call_id,
+                                call.name,
+                                call.arguments,
+                            )),
+                            Some(io),
+                        )?;
+                    }
+                }
+                let ModelContent::Text(history) = &prior[0].content else {
+                    unreachable!()
+                };
+                assert_eq!(history, "existing history");
+                assert_eq!(history.as_ptr(), history_pointer);
+                let ModelContent::Part(ModelContentPart::ToolCall(call)) = &prior[1].content else {
+                    unreachable!()
+                };
+                assert_eq!(call.arguments, arguments);
+                // Only the published history remains funded after either outcome.
+                let history_bytes = prior.iter().try_fold(
+                    (prior.capacity() * std::mem::size_of::<ModelMessage>()) as u64,
+                    |bytes, message| {
+                        crate::core::owned_sum([bytes, message.content.retained_payload_bytes()?])
+                    },
+                )?;
+                assert_eq!(io.owned_bytes()?, history_bytes);
+                for message in stock_into_iter(prior, Some(io))? {
+                    match message.content {
+                        ModelContent::Text(text) => stock_retire_text(text, Some(io))?,
+                        ModelContent::Part(ModelContentPart::ToolCall(call)) => {
+                            stock_retire_event(ModelEvent::ToolCall(call), Some(io))?;
+                        }
+                        ModelContent::Part(ModelContentPart::Text { text, native }) => {
+                            stock_retire_event(ModelEvent::TextPart { text, native }, Some(io))?;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                assert_eq!(io.owned_bytes()?, 0);
+                Ok::<_, Error>(())
+            })
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+            observed.0?;
+            assert_eq!(observed.2, 0);
+            if native {
+                assert_eq!(
+                    observed.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[test]
 fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload() -> Result<()> {
     let mut stock = uncompacted_executor(
         Model::new("generated".into(), "part-admission".into(), "1".into())?,
@@ -185,7 +363,7 @@ fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload(
     );
     stock.limits.render_bytes = 4;
     for native in [false, true] {
-        for text in ["ok", "too long"] {
+        for (text, reject_storage) in [("ok", false), ("too long", false), ("ok", true)] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
                 let execution = StockExecution {
                     io: Some(io),
@@ -207,14 +385,27 @@ fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload(
                 let incoming = stock_string_copy(text, Some(io))?;
                 let incoming_bytes = incoming.capacity() as u64;
                 let incoming_pointer = incoming.as_ptr();
+                let pressure = if reject_storage {
+                    assert_eq!(messages.len(), messages.capacity());
+                    Some(io.reserve_decode(io.remaining()?.peak_allocation_bytes)?)
+                } else {
+                    None
+                };
                 let result = execution.append_assistant_part(
                     &mut messages,
                     ModelContentPart::Text {
                         text: incoming,
                         native: None,
                     },
+                    Some(io),
                 );
-                if text.len() <= 4 {
+                drop(pressure);
+                if reject_storage {
+                    assert!(result.is_err());
+                    assert_eq!(messages.len(), 1);
+                    assert_eq!(messages.capacity(), old_capacity);
+                    assert_eq!(io.owned_bytes()?, baseline);
+                } else if text.len() <= 4 {
                     result?;
                     assert_eq!(messages.len(), 2);
                     let ModelContent::Part(ModelContentPart::Text { text, .. }) =

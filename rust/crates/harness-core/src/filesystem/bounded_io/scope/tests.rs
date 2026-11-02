@@ -127,13 +127,16 @@ fn scope_transfer_preserves_parent_and_sibling_custody_on_one_ledger() -> Result
         local.retain_owned(101)?;
         assert_eq!(parent.owned_bytes()?, 41);
         assert_eq!(sibling.owned_bytes()?, 73);
-        scope.finish(89)?;
+        assert!(scope.finish_into(None, 101).is_err());
+        assert_eq!(local.owned_bytes()?, 101);
+        scope.finish_into(Some(&sibling), 89)?;
         assert_eq!(local.owned_bytes()?, 0);
-        assert_eq!(parent.owned_bytes()?, 130);
+        assert_eq!(parent.owned_bytes()?, 41);
+        assert_eq!(sibling.owned_bytes()?, 162);
     }
     drop(sibling);
-    assert_eq!(parent.owned_bytes()?, 130);
-    parent.release(130)?;
+    assert_eq!(parent.owned_bytes()?, 41);
+    parent.release(41)?;
     assert_eq!(parent.owned_bytes()?, 0);
     assert_eq!(
         parent.remaining()?.peak_allocation_bytes,

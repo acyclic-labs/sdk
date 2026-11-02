@@ -31,8 +31,18 @@ impl<'a> PreparationScope<'a> {
     /// Release scratch and transfer only the inventoried output. Admission
     /// already happened on this ledger; transfer never allocates a second copy.
     pub(crate) fn finish(&self, retained: u64) -> Result<()> {
-        let (Some(original), Some(local)) = (self.original, &self.local) else {
-            return Ok(());
+        self.finish_into(self.original, retained)
+    }
+
+    /// Publish into another owner on the same original ledger, after that
+    /// owner's fallible storage admission and before its infallible insertion.
+    pub(crate) fn finish_into(&self, target: Option<&PreparationIo>, retained: u64) -> Result<()> {
+        let (original, local) = match (target, &self.local) {
+            (Some(target), Some(local)) => (target, local),
+            (None, None) => return Ok(()),
+            (Some(io), None) | (None, Some(io)) => {
+                return Err(io.invalid("preparation scope owner is absent"));
+            }
         };
         // Keep custody in this scope through every fallible check. A detached
         // temporary guard would release the output too early if cancellation
