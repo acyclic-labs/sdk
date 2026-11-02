@@ -77,7 +77,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         } else {
             None
         };
-        let targets = ordered.as_ref().map_or(targets, |(_, ids)| ids.as_slice());
+        let targets = ordered.as_ref().map_or(targets, |ids| ids.value.as_slice());
         let mut position = 0;
         while position < targets.len() {
             work.accounting()
