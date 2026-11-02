@@ -125,11 +125,7 @@ impl CapturePolicy {
         for prefix in &self.excluded_prefixes {
             hasher.update(&(prefix.depth() as u64).to_le_bytes());
             for component in prefix.components() {
-                hasher.update(&[match component.encoding() {
-                    NameEncoding::Utf8 => 1,
-                    NameEncoding::PosixBytes => 2,
-                    NameEncoding::WindowsUtf16Le => 3,
-                }]);
+                hasher.update(&[component.encoding().tag()]);
                 hasher.update(&(component.as_bytes().len() as u64).to_le_bytes());
                 hasher.update(component.as_bytes());
             }
