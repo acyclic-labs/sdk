@@ -203,13 +203,10 @@ pub(super) struct Counters {
 
 impl Counters {
     pub(super) fn capture(requests: &RequestLedger, durability: &DurabilityQuery) -> Self {
-        // Both allocation cuts keep this snapshot's own cloning outside the
-        // diagnostic interval, including the handler-entry prefix.
+        // Both allocation cuts exclude this observer boundary, including the
+        // handler-entry prefix. Outcome totals borrow the original cohort.
         let allocations_before = acyclic_test_support::current_allocations();
-        let native_attempts = durability.as_ref().and_then(|query| {
-            let snapshot = query.snapshot();
-            (!snapshot.overflowed).then_some([snapshot.ok, snapshot.err, snapshot.incomplete])
-        });
+        let native_attempts = durability.as_ref().and_then(|query| query.outcome_counts());
         Self {
             requests: requests.requests(),
             allocations: allocations_before

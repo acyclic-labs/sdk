@@ -905,6 +905,19 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
     let last = ready(query.changed())??;
     assert_eq!((last.ok, last.err, last.incomplete), (1, 1, 1));
     assert_eq!(last.latency_ns.iter().sum::<u64>(), 3);
+    let mut counts = None;
+    let copied = acyclic_test_support::measure(|| {
+        counts = query.outcome_counts();
+    });
+    assert_eq!(counts, Some([1, 1, 1]));
+    assert_eq!(copied.count_total, 0);
+    assert_eq!(copied.bytes_total, 0);
+    // The original owned projection is the concrete extra-copy negative.
+    let owned = acyclic_test_support::measure(|| {
+        std::hint::black_box(query.snapshot());
+    });
+    assert!(owned.count_total > copied.count_total);
+    assert!(owned.bytes_total >= u64::try_from(last.latency_ns.len() * size_of::<u64>())?);
     // Negative schedule: a child retains the span after its producer future is
     // abandoned. The owner, rather than the last tracing handle, must notify.
     let (retained, abandoned) = tracing::dispatcher::with_default(&dispatch, || {
@@ -948,6 +961,8 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
         ready(unrelated.changed())?,
         Err(acyclic_observability::QueryError)
     );
+    drop(closed);
+    assert_eq!(query.outcome_counts(), Some([1, 1, 2]));
     Ok(())
 }
 
