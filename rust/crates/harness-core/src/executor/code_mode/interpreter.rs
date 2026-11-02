@@ -48,6 +48,15 @@ pub(super) async fn run(
             const text = String, slice = Function.prototype.call.bind(String.prototype.slice);
             return value => slice(text(value), 0, 2048);
         })()"#).ok();
+        let describe_error = |error| {
+            let value = match CaughtError::from_error(&ctx, error) {
+                CaughtError::Error(error) => return error.to_string().chars().take(2048).collect(),
+                CaughtError::Exception(error) => error.into_value(),
+                CaughtError::Value(value) => value,
+            };
+            diagnostic.as_ref().and_then(|format| format.call::<_, String>((value,)).ok())
+                .unwrap_or_else(|| "JavaScript exception or interrupt".into())
+        };
         let program = async {
             // No libc, loader, OS modules, environment, timers or I/O are
             // installed. Remove ambient time/randomness to make receipt replay
@@ -128,15 +137,7 @@ pub(super) async fn run(
             // Encoding can execute user getters/toJSON, including more tool calls.
             let json = result.and_then(|result| ctx.json_stringify(result));
             // Format exceptions before draining: their toString may also call tools.
-            let json = json.map_err(|error| {
-                let value = match CaughtError::from_error(&ctx, error) {
-                    CaughtError::Error(error) => return error.to_string().chars().take(2048).collect(),
-                    CaughtError::Exception(error) => error.into_value(),
-                    CaughtError::Value(value) => value,
-                };
-                diagnostic.as_ref().and_then(|format| format.call::<_, String>((value,)).ok())
-                    .unwrap_or_else(|| "JavaScript exception or interrupt".into())
-            });
+            let json = json.map_err(&describe_error);
             // Fire-and-forget calls, including encoding calls, retire first.
             let drained: Promise = protect.call((drain.call::<_, Promise>(())?,))?;
             drained.into_future::<()>().await?;
@@ -147,19 +148,11 @@ pub(super) async fn run(
             let Some(json) = json else { return Ok(Ok(Value::Null)); };
             let json = json.to_cstring()?;
             if json.len() > maximum {
-                return Ok(Ok(serde_json::json!({"truncated": true, "bytes": json.len()})));
+                return Ok(Err("JavaScript result exceeds admitted output".into()));
             }
             serde_json::from_slice(json.as_str().as_bytes()).map(Ok).map_err(|_| rquickjs::Error::Unknown)
         }.await;
-        program.unwrap_or_else(|error| Err({
-            let value = match CaughtError::from_error(&ctx, error) {
-                CaughtError::Error(error) => return Err(error.to_string().chars().take(2048).collect()),
-                CaughtError::Exception(error) => error.into_value(),
-                CaughtError::Value(value) => value,
-            };
-            diagnostic.as_ref().and_then(|format| format.call::<_, String>((value,)).ok())
-                .unwrap_or_else(|| "JavaScript exception or interrupt".into())
-        }))
+        program.map_err(describe_error).and_then(std::convert::identity)
     });
     let execution = async {
         futures::pin_mut!(execution);

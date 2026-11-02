@@ -88,8 +88,8 @@ call identities. Log values follow JSON encoding, including its errors for cycle
 and BigInt. No formatting or retained console buffer is added.
 Logs stay in files without accumulating in the result or being omitted by a
 count limit. Each result uses the caller's admitted per-part render budget;
-oversized final values become `{ truncated: true, bytes }`. Input, history and
-other results retain their own per-part allowances. The whole request passes
+oversized final values return `{ error: "JavaScript result exceeds admitted output" }`.
+Input, history and other results retain their own per-part allowances. The whole request passes
 ordinary verified token admission, without an additional aggregate JSON limit.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
