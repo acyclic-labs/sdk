@@ -1,4 +1,5 @@
 import { HttpStreamProvider } from "./http.js";
+import { Opened } from "./opened.js";
 import { StreamError, type StreamEnvironment, type StreamProvider } from "./types.js";
 
 type ProviderSelection = {
@@ -124,10 +125,12 @@ export class DefaultStreamProvider implements StreamProvider {
   }
   read(path: string, options: Parameters<StreamProvider["read"]>[1]) {
     const authored = structuredClone(options);
-    return this.readAfterSelection(path, authored);
-  }
-  private async *readAfterSelection(path: string, options: Parameters<StreamProvider["read"]>[1]) {
-    yield* (await this.provider()).read(path, options);
+    return Opened.defer(async signal => {
+      const provider = await this.acquireProvider(signal);
+      signal.throwIfAborted();
+      if (provider === undefined) throw new Error("stream provider selection was cancelled");
+      return provider.read(path, authored);
+    });
   }
   follow(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
     const authored = {
@@ -136,12 +139,12 @@ export class DefaultStreamProvider implements StreamProvider {
       ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
-    return this.followAfterSelection(path, authored);
-  }
-  private async *followAfterSelection(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
-    const provider = await this.acquireProvider(options.signal);
-    if (provider === undefined || options.signal?.aborted) return;
-    yield* provider.follow(path, options);
+    return Opened.defer(async signal => {
+      const provider = await this.acquireProvider(signal);
+      signal.throwIfAborted();
+      if (provider === undefined) throw new Error("stream provider selection was cancelled");
+      return provider.follow(path, { ...authored, signal });
+    }, authored.signal);
   }
   childrenPage(request: Parameters<StreamProvider["childrenPage"]>[0]) {
     const authored = structuredClone(request);

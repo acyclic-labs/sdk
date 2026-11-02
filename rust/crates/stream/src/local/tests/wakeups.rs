@@ -185,7 +185,7 @@ async fn a_follow_at_its_tail_is_a_reported_wait_until_its_record_arrives()
         .follow(crate::FollowRequest::new(path.clone(), 1))
         .map_ok(crate::records_only)
         .await?;
-    probe(follow.as_mut());
+    probe(std::pin::Pin::new(&mut follow));
     assert_eq!(report()?.matches("waiting: stream-follow ").count(), 1);
     append(&provider, path).await?;
     assert!(matches!(follow.next().await, Some(Ok(_))));

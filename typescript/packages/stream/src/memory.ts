@@ -1,18 +1,19 @@
-import { checkedReadSequence, projectRecord } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ReadResponseSchema, TailResponseSchema, FollowRequestSchema,
+  TailResponseSchema, FollowRequestSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
+import type { Opened } from "./opened.js";
+import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
-  EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
+  FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
   IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
   StreamProvider, ChildrenPage, ChildrenPageRequest, StreamFailureCode,
 } from "./types.js";
@@ -45,14 +46,6 @@ class RustStreamProvider implements StreamProvider {
       const message = error instanceof Error ? error.message : String(error);
       throw new StreamError("invalid_response", `Rust ${operation} response is invalid: ${message}`);
     }
-  }
-
-  async #read(request: Uint8Array, path: string): Promise<readonly EncodedRecord[]> {
-    try {
-      const values = await (await this.#inner).read(request);
-      return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value))
-        .map(record => projectRecord(record, path)));
-    } catch (error) { throw streamError(error, "read"); }
   }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
@@ -89,43 +82,30 @@ class RustStreamProvider implements StreamProvider {
     return this.#project<ForkReceipt>("fork", request);
   }
 
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const { from, limit, key } = structuredClone(options);
-    await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
-    const request = wireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
-    let next = from;
-    for (const value of await this.#read(request, path)) { next = checkedReadSequence(value, next, key) + 1n; yield value; }
+  read(path: string, options: ReadOptions): Opened {
+    const authored = structuredClone(options);
+    return this.#records("read", path, authored);
   }
 
-  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    const { from, signal } = options;
-    const filter = options.filter === undefined ? undefined : structuredClone(options.filter);
-    await validateWireRequest({ kind: "follow", path, from });
-    if (signal?.aborted) return;
-    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from, whenAbsent: wireWhenAbsent(options.whenAbsent),
-      ...(filter === undefined ? {} : { filter }),
-    }));
-    let handle: Awaited<ReturnType<WasmStream["open_follow"]>>;
-    try { handle = await (await this.#inner).open_follow(request); }
-    catch (error) { throw streamError(error, "follow"); }
-    const close = () => handle.close();
-    signal?.addEventListener("abort", close, { once: true });
-    try {
-      while (!signal?.aborted) {
-        let bytes: Uint8Array | null;
-        try { bytes = await handle.next(); }
-        catch (error) { throw streamError(error, "follow"); }
-        if (bytes === null || signal?.aborted) return;
-        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield projectRecord(decoded, path);
-      }
-    } finally {
-      signal?.removeEventListener("abort", close);
-      handle.close();
-      handle.free();
-    }
+  follow(path: string, options: FollowOptions): Opened {
+    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    return this.#records("follow", path, authored, options.signal);
   }
 
-
+  #records(operation: "read" | "follow", path: string, options: ReadOptions | FollowOptions, signal?: AbortSignal): Opened {
+    return wasmRecords(async signal => {
+      const input = operation === "read"
+        ? await validateWireRequest({ kind: "read", path, ...(options as ReadOptions) })
+        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
+          toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: options.from,
+            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
+            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
+          })));
+      const inner = await this.#inner;
+      signal.throwIfAborted();
+      return operation === "read" ? inner.read(input) : inner.open_follow(input);
+    }, path, operation === "read" ? options as ReadOptions : undefined, signal);
+  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");

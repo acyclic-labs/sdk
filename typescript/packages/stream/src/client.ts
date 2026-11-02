@@ -1,10 +1,11 @@
 import { DefaultStreamProvider } from "./default.js";
+import { Opened } from "./opened.js";
 import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
-  IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
+  IdempotencyKey, IdempotencyObservation, ReadOptions, Sequence, StreamEnvironment,
   StreamProvider, ProviderCommitRequest,
 } from "./types.js";
 import { StreamError, commitId, compareStreamPaths } from "./types.js";
@@ -203,27 +204,25 @@ export class Stream<Value = Uint8Array> {
     const value = await this.provider.fork(this.path, destination, authored);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
   }
-  read(options: ReadOptions): AsyncIterable<Record<Value>> {
+  read(options: ReadOptions): Opened<Value> {
     const authored = structuredClone(options);
-    return this.readAfterCapture(authored);
+    return Opened.defer(async () => {
+      validateSequenceValue(authored.from);
+      positiveInteger(authored.limit, "limit");
+      return this.provider.read(this.path, authored);
+    }).map(item => ({ ...item, value: this.codec.decode(item.value) }));
   }
-  private async *readAfterCapture(options: ReadOptions): AsyncIterable<Record<Value>> {
-    validateSequenceValue(options.from);
-    positiveInteger(options.limit, "limit");
-    for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
-  }
-  follow(options: FollowOptions): AsyncIterable<Record<Value>> {
+  follow(options: FollowOptions): Opened<Value> {
     const authored = {
       from: options.from,
       ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
       ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
-    return this.followAfterCapture(authored);
-  }
-  private async *followAfterCapture(options: FollowOptions): AsyncIterable<Record<Value>> {
-    validateSequenceValue(options.from);
-    for await (const item of this.provider.follow(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
+    return Opened.defer(async signal => {
+      validateSequenceValue(authored.from);
+      return this.provider.follow(this.path, { ...authored, signal });
+    }, authored.signal).map(item => ({ ...item, value: this.codec.decode(item.value) }));
   }
 }
 

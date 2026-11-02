@@ -658,11 +658,27 @@ impl Client {
         subscription: wire::SessionSubscription,
         acknowledge: bool,
     ) -> Result<BoxProviderStream<'static, Result<Frame, StreamError>>, StreamError> {
+        self.subscribe_opened_with_ack(subscription, acknowledge)
+            .await
+            .map(|(_, records)| records)
+    }
+    pub(crate) async fn subscribe_opened_with_ack(
+        &self,
+        subscription: wire::SessionSubscription,
+        acknowledge: bool,
+    ) -> Result<
+        (
+            wire::SessionOpened,
+            BoxProviderStream<'static, Result<Frame, StreamError>>,
+        ),
+        StreamError,
+    > {
         let (kind, resume, filter, credential) = subscription_parts(subscription)?;
-        Ok(super::runtime::boxed(
-            self.open_subscription(kind, resume, acknowledge, true, filter, credential)
-                .await?,
-        ))
+        let mut source = self
+            .open_subscription(kind, resume, acknowledge, true, filter, credential)
+            .await?;
+        let opened = source.opened.take().ok_or(StreamError::InvalidResponse)?;
+        Ok((opened, source.records))
     }
 
     async fn open_subscription(

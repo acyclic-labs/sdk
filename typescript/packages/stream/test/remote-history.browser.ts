@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, TailRequestSchema, TailResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import type { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { readFrames } from "./wasm-frames.js";
 
 // Advance only the request's timer clock while delivering real server bytes.
 // No wall-clock delay, polling, replacement provider or second frame schema.
@@ -61,9 +62,9 @@ async function transfer<T>(operation: () => Promise<T>, gap: number, chunk: numb
 }
 
 export async function verifyHistoryTimeoutPolicy(stream: WasmStream) {
-  const read = () => stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, {
+  const read = () => readFrames(stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, {
     path: "browser/events", from: 0n, limit: 2,
-  })));
+  }))));
   const received = async (gap: number, chunk: number, broken: boolean) => {
     const result = await transfer(read, gap, chunk, broken);
     const records = result.value?.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);

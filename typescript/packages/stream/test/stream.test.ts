@@ -7,6 +7,7 @@ import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
+import { openWasmCursor } from "../src/wasm-records.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
@@ -85,13 +86,26 @@ describe("website Stream contract", () => {
       .toEqual({ parent: "seek", after: "seek/a", limit: 1 });
   });
 
-  test("opens the local provider without exposing provider setup", async () => {
+  test("retains the original selected cut through typed reads and quiet follows", async () => {
     const stream = StreamClient.memory().json("runs/memory", answer);
-    await stream.append({ answer: 42 }, { idempotencyKey: key("stream.test-70") });
+    const first = await stream.append({ answer: 42 }, { idempotencyKey: key("stream.test-70") });
+    if (!first.ok) throw new Error("initial append conflicted");
+    const opened = stream.read({ from: 0n, limit: 2 });
+    expect((await opened.opened).snapshot).toMatchObject(first.revision);
+    expect((await opened.opened).selection).toMatchObject({ from: 0n, end: 1n });
+    const second = await stream.append({ answer: 43 }, { idempotencyKey: key("stream.test-selected-later") });
+    if (!second.ok) throw new Error("later append conflicted");
     const records = [];
-    for await (const record of stream.read({ from: 0n, limit: 1 })) records.push(record);
+    for await (const record of opened) records.push(record);
     expect(records).toHaveLength(1);
     expect(records[0]?.value).toEqual({ answer: 42 });
+    const empty = stream.read({ from: 2n, limit: 1 });
+    expect((await empty.opened).snapshot).toMatchObject(second.revision);
+    expect((await empty.next()).done).toBe(true);
+    const quiet = stream.follow({ from: 2n });
+    expect((await quiet.opened).snapshot).toMatchObject(second.revision);
+    await quiet.close();
+    expect((await quiet.next()).done).toBe(true);
   });
 
   test("local streams do not issue unused hosted access tokens", async () => {
@@ -527,12 +541,12 @@ describe("website Stream contract", () => {
     const wasm = new WasmStream();
     await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
-    const closed = await wasm.open_follow(request);
-    closed.close();
+    const closed = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
+    await closed.close();
     expect(await closed.next()).toBeNull();
-    const pending = await wasm.open_follow(request);
+    const pending = await openWasmCursor(async () => wasm.open_follow(request), new AbortController().signal);
     const next = pending.next();
-    pending.close();
+    await pending.close();
     expect(await next).toBeNull();
   });
 

@@ -1,11 +1,12 @@
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
+import type { Opened } from "./opened.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
-import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
+import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
@@ -50,8 +51,8 @@ export class HttpStreamProvider implements StreamProvider {
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
-  read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    return observedIterable(this.#observer, "stream", "read", this.#sessions.read(path, options, this.#maximum));
+  read(path: string, options: ReadOptions): Opened {
+    return this.#sessions.read(path, options, this.#maximum).through(records => observedIterable(this.#observer, "stream", "read", records));
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     await this.#sessions.registerCredential(slot, credential);
@@ -60,10 +61,9 @@ export class HttpStreamProvider implements StreamProvider {
     const authored = structuredClone(follow);
     yield* this.#sessions.followData(authored, options);
   }
-  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
+  follow(path: string, options: FollowOptions): Opened {
     const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
-    await validateWireRequest({ kind: "follow", path, from: authored.from });
-    yield* this.#sessions.follow(path, authored);
+    return this.#sessions.follow(path, authored);
   }
 
 

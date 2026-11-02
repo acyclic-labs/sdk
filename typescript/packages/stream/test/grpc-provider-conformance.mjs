@@ -18,6 +18,7 @@ if (installed && grpcUrl.href === new URL("../dist/grpc.js", import.meta.url).hr
 const { createStreamGrpcClient, GrpcStreamProvider } = await import(grpcUrl.href);
 const { idempotencyKey, commitId, StreamError } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream")).href : new URL("../dist/types.js", import.meta.url).href);
 const { ensureStreamWasm } = await import(new URL("dist/contract.js", packageUrl).href);
+const { openWasmCursor } = await import(new URL("dist/wasm-records.js", packageUrl).href);
 const { WasmStream } = await import(new URL("generated/wasm/acyclic_stream_wasm.js", packageUrl).href);
 const { Codec, ReadResponseSchema, RecordBatchSchema, FollowRequestSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
 const sessionWire = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/session/proto")).href : new URL("../generated/proto/stream/v1/session_pb.js", import.meta.url).href);
@@ -233,9 +234,7 @@ async function* sessionRecords(subscription, signal) {
     } finally { if (signal.aborted) state.cancelled++; }
     return;
   }
-  const handle = await memory.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: subscription.resume.next })));
-  const close = () => handle.close();
-  signal.addEventListener("abort", close, { once: true });
+  const handle = await openWasmCursor(async () => memory.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: subscription.resume.next }))), signal);
   try {
     while (!signal.aborted) {
       const bytes = await handle.next();
@@ -243,7 +242,7 @@ async function* sessionRecords(subscription, signal) {
       const response = fromBinary(ReadResponseSchema, bytes);
       for (const record of fromBinary(RecordBatchSchema, response.data).records) yield { record };
     }
-  } finally { signal.removeEventListener("abort", close); handle.close(); handle.free(); }
+  } finally { await handle.close(); }
 }
 function createAdapter() { return connectNodeAdapter({ routes(router) {
   router.service(sessionWire.StreamSessionService, { session(requests, context) {
@@ -288,7 +287,17 @@ function createAdapter() { return connectNodeAdapter({ routes(router) {
         if (method.localName === "read") {
           // Regroup into one compressed batch followed by plain single-record frames.
           let records;
-          try { records = (await memory.read(toBinary(method.input, request))).flatMap(bytes => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, bytes).data).records); }
+          try {
+            const cursor = await openWasmCursor(async () => memory.read(toBinary(method.input, request)), context.signal);
+            records = [];
+            try {
+              for (;;) {
+                const bytes = await cursor.next();
+                if (bytes === null) break;
+                records.push(...fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, bytes).data).records);
+              }
+            } finally { await cursor.close(); }
+          }
           catch (error) { throw canonicalError(error); }
           const half = Math.ceil(records.length / 2);
           if (half > 0) yield readFrame(records.slice(0, half), true);

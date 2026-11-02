@@ -120,26 +120,20 @@ impl WasmSession {
             .encode_to_vec())
     }
 
-    /// Opens a finite read through the shared pool; each pull returns one Record.
+    /// Opens a finite read through the shared pool, returning its selected receipt
+    /// before the original cursor's encoded record frames.
     /// The native read owns the pinned end, revision floor and terminal refusal.
-    pub fn read(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
-        use futures::TryStreamExt as _;
+    pub fn read(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
         let request =
             wire_codec::read_from_wire(decode::<wire::ReadRequest>(input)?).map_err(js_error)?;
         let path = request.path.clone();
         let client = self.client.clone();
         let acknowledge = self.acknowledge;
-        let source =
-            futures::stream::once(async move { client.read_with_ack(request, acknowledge).await })
-                .try_flatten()
-                .map(move |item| {
-                    item.map(|record| wire_codec::record_wire(record, Some(&path)).encode_to_vec())
-                })
-                .boxed_local();
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(source, StreamError::Unavailable)),
-        })
+        Ok(WasmProviderRequest::new(async move {
+            let records = client.read_with_ack(request, acknowledge).await.map_err(js_error)?;
+            Ok(JsValue::from(WasmOpened::records(records, path)))
+        }))
     }
 
     /// Opens explicit application decisions through the same session pool.
@@ -163,21 +157,17 @@ impl WasmSession {
 
     /// Opens a filtered subscription using its selected credential slot.
     /// Rust owns validation, credit, watermarks and recovery.
-    pub fn subscribe(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
-        use futures::TryStreamExt;
+    pub fn subscribe(&self, input: &[u8]) -> Result<WasmProviderRequest, JsValue> {
         check_command_size(input)?;
         let subscription = decode::<wire::SessionSubscription>(input)?;
         let client = self.client.clone();
         let acknowledge = self.acknowledge;
-        let stream = futures::stream::once(async move {
-            client.subscribe_with_ack(subscription, acknowledge).await
-        })
-        .try_flatten()
-        .map(|item| item.map(|frame| frame.wire().encode_to_vec()))
-        .boxed_local();
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(stream, StreamError::Unavailable)),
-        })
+        Ok(WasmProviderRequest::new(async move {
+            WasmOpened::subscription(client, subscription, acknowledge)
+                .await
+                .map(JsValue::from)
+                .map_err(js_error)
+        }))
     }
 }
 

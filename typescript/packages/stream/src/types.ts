@@ -47,10 +47,6 @@ declare const streamIdentityBrand: unique symbol;
 export type Sequence = WireRecord["sequence"];
 /** A committed position of one authority incarnation; never a stream offset. */
 export type Revision = PublicWire<WireRevision>;
-/** A stream tail and the applied revision the host served it at, when it tracks revisions. */
-export interface TailResult { readonly tail: Sequence; readonly applied?: Revision }
-/** One read page and the applied revision the host served it at, when it tracks revisions. */
-export interface ReadResult { readonly records: readonly EncodedRecord[]; readonly applied?: Revision }
 /** Opaque stable 32-byte commit identity. */
 export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId" };
 /** Opaque non-empty caller retry identity, bounded by the canonical Stream contract. */
@@ -162,8 +158,8 @@ export interface StreamProvider {
   tail(path: string): Promise<Sequence>;
   append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
-  read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
-  follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
+  read(path: string, options: ReadOptions): import("./opened.js").Opened;
+  follow(path: string, options: FollowOptions): import("./opened.js").Opened;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;

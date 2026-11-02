@@ -147,14 +147,7 @@ pub(super) fn record_frames(
     + 'static,
     path: acyclic_stream::StreamPath,
 ) -> FollowFrames {
-    records
-        .map(move |record| {
-            record.map(|record| {
-                wire_codec::read_response_wire(vec![wire_codec::record_wire(record, Some(&path))])
-                    .encode_to_vec()
-            })
-        })
-        .boxed()
+    wire_codec::record_frames(records, path).boxed()
 }
 
 pub(super) async fn children_page(
