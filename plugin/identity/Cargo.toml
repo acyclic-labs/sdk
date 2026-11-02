@@ -13,6 +13,7 @@ acyclic-harness-core = { path = "../../rust/crates/harness-core", version = "=0.
 acyclic-auth = { path = "../../rust/crates/auth", version = "=0.2.0", features = ["client"] }
 acyclic-native-runtime = { path = "../../rust/crates/native-runtime", version = "=0.2.0" }
 base64 = "0.23.1"
+clap.workspace = true
 futures.workspace = true
 reqwest.workspace = true
 ring = "0.17.14"

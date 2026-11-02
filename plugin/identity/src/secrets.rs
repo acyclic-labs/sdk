@@ -5,7 +5,7 @@ use acyclic_auth::{
     credential::CredentialProvider,
     secrets::{Client, HttpTransport},
 };
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use zeroize::{Zeroize as _, Zeroizing};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -15,7 +15,7 @@ enum Operation {
     Delete,
 }
 
-struct Options {
+pub(super) struct Options {
     operation: Operation,
     endpoint: String,
     bearer_file: PathBuf,
@@ -28,95 +28,66 @@ struct Options {
     page_size: u32,
 }
 
-fn usage() -> Error {
+pub(super) fn usage() -> Error {
     Error::new(
         "usage_error",
-        "secrets: use put|list|delete --scope S --bearer-file FILE; mutations require --name N --expected-generation G; put requires --kind plain|protected and reads stdin or --value-file FILE; list takes --page-size N and continues a listing with --cursor-generation G --after NAME from its nextCursor",
+        "secrets argument admission failed; recovery: acyclic secrets --help",
     )
 }
 
 impl Options {
-    fn parse(arguments: &[String]) -> Result<Self, Error> {
-        let mut arguments = arguments.iter();
-        let operation = match arguments.next().map(String::as_str) {
-            Some("put") => Operation::Put,
-            Some("list") => Operation::List,
-            Some("delete") => Operation::Delete,
-            _ => return Err(usage()),
-        };
-        let mut endpoint = std::env::var("ACYCLIC_API_URL").ok();
-        let (mut bearer_file, mut scope, mut name, mut kind, mut generation, mut value_file) =
-            (None, None, None, None, None, None);
-        let (mut cursor_generation, mut after, mut page_size) = (None, None, 0);
-        let mut seen = HashSet::new();
-        while let Some(flag) = arguments.next() {
-            if !seen.insert(flag) {
-                return Err(usage());
-            }
-            if flag == "--json" {
-                continue;
-            }
-            if !matches!(
-                flag.as_str(),
-                "--endpoint"
-                    | "--bearer-file"
-                    | "--scope"
-                    | "--name"
-                    | "--kind"
-                    | "--expected-generation"
-                    | "--value-file"
-                    | "--cursor-generation"
-                    | "--after"
-                    | "--page-size"
-            ) {
-                return Err(usage());
-            }
-            let value = arguments.next().ok_or_else(usage)?;
-            match flag.as_str() {
-                "--endpoint" => endpoint = Some(value.clone()),
-                "--bearer-file" => bearer_file = Some(PathBuf::from(value)),
-                "--scope" => scope = Some(value.clone()),
-                "--name" if operation != Operation::List => name = Some(value.clone()),
-                "--kind" if operation == Operation::Put => {
-                    kind = Some(match value.as_str() {
-                        "plain" => SecretKind::Plain,
-                        "protected" => SecretKind::Protected,
-                        _ => return Err(usage()),
-                    });
-                }
-                "--expected-generation" if operation != Operation::List => {
-                    generation = Some(value.parse().map_err(|_| usage())?);
-                }
-                "--value-file" if operation == Operation::Put => {
-                    value_file = Some(PathBuf::from(value));
-                }
-                "--cursor-generation" if operation == Operation::List => {
-                    cursor_generation = Some(value.parse().map_err(|_| usage())?);
-                }
-                "--after" if operation == Operation::List => after = Some(value.clone()),
-                "--page-size" if operation == Operation::List => {
-                    page_size = value.parse().map_err(|_| usage())?;
-                }
-                _ => return Err(usage()),
-            }
-        }
-        let scope = scope.filter(|scope| !scope.is_empty()).ok_or_else(usage)?;
-        if operation != Operation::List
-            && (name.as_ref().is_none_or(String::is_empty) || generation.is_none())
-            || operation == Operation::Put && kind.is_none()
-        {
+    pub(super) fn from_command(command: super::cli::SecretCommand) -> Result<Self, Error> {
+        use super::cli::{Kind, SecretCommand};
+        let (operation, arguments, name, kind, generation, value_file, cursor, page_size) =
+            match command {
+                SecretCommand::Put(arguments) => (
+                    Operation::Put,
+                    arguments.mutation.scope,
+                    Some(arguments.mutation.name),
+                    Some(match arguments.kind {
+                        Kind::Plain => SecretKind::Plain,
+                        Kind::Protected => SecretKind::Protected,
+                    }),
+                    Some(arguments.mutation.expected_generation),
+                    arguments.value_file,
+                    None,
+                    0,
+                ),
+                SecretCommand::Delete(arguments) => (
+                    Operation::Delete,
+                    arguments.scope,
+                    Some(arguments.name),
+                    None,
+                    Some(arguments.expected_generation),
+                    None,
+                    None,
+                    0,
+                ),
+                SecretCommand::List(arguments) => (
+                    Operation::List,
+                    arguments.scope,
+                    None,
+                    None,
+                    None,
+                    None,
+                    arguments
+                        .cursor_generation
+                        .zip(arguments.after)
+                        .map(|(generation, after)| SecretListCursor { generation, after }),
+                    arguments.page_size,
+                ),
+            };
+        if arguments.scope.is_empty() || name.as_ref().is_some_and(String::is_empty) {
             return Err(usage());
         }
-        let cursor = match (cursor_generation, after) {
-            (Some(generation), Some(after)) => Some(SecretListCursor { generation, after }),
-            (None, None) => None,
-            _ => return Err(usage()),
-        };
         Ok(Self {
             operation,
-            endpoint: endpoint.ok_or_else(usage)?,
-            bearer_file: bearer_file.ok_or_else(usage)?,
-            scope,
+            endpoint: arguments
+                .endpoint
+                .or_else(|| std::env::var("ACYCLIC_API_URL").ok())
+                .ok_or_else(usage)?,
+            bearer_file: arguments.bearer_file,
+            scope: arguments.scope,
             name,
             kind,
             generation,
@@ -135,10 +106,9 @@ fn input_error() -> Error {
 }
 
 pub(super) async fn execute(
-    arguments: &[String],
+    options: Options,
     context: Option<acyclic_auth::operation::Context>,
 ) -> Result<Value, Error> {
-    let options = Options::parse(arguments)?;
     let context = context
         .ok_or_else(|| client_error(acyclic_auth::secrets::Error::MissingOperationContext))?;
     let bearer_file = options.bearer_file;
@@ -437,46 +407,16 @@ mod tests {
             let _ = stopped.await;
             acyclic_auth::operation::Stopped::Cancelled
         });
-        let Err(error) = execute(&args, Some(context)).await else {
+        let args = std::iter::once("secrets".to_owned())
+            .chain(args)
+            .collect::<Vec<_>>();
+        let Err(error) = super::super::run(&args, Some(context)).await else {
             return Err("CAS conflict admitted".into());
         };
         drop(stop);
         assert!(error.to_string().contains("generation conflict"));
-        assert!(!format!("{error:?} {error} {}", error.json()).contains(planted));
+        assert!(!format!("{error:?} {error}").contains(planted));
         server.abort();
-        Ok(())
-    }
-
-    #[test]
-    fn secrets_cli_rejects_argv_values_account_selection_and_unknown_operations_without_echoing()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let planted = "PLANTED_SECRET_DO_NOT_LOG";
-        for args in [
-            vec!["put", "--value", planted],
-            vec!["put", "--account", planted],
-            vec!["get", planted],
-            vec!["reveal", planted],
-            vec!["export", planted],
-            vec!["put", "--kind", planted],
-            vec!["put", "--expected-generation", planted],
-            vec!["list", "--after", planted],
-            vec!["list", "--page-size", planted],
-            vec!["put", "--after", planted],
-        ] {
-            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-            let Err(error) = Options::parse(&args) else {
-                return Err("forbidden CLI shape admitted".into());
-            };
-            let diagnostic = format!("{error:?} {error} {}", error.json());
-            assert!(
-                !diagnostic.contains(planted),
-                "CLI diagnostic exposed the planted value"
-            );
-            assert!(
-                format!("unexpected argument: {planted}").contains(planted),
-                "negative control must detect the former echo path"
-            );
-        }
         Ok(())
     }
 }

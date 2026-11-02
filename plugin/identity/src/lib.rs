@@ -2,6 +2,7 @@
 //! Customer identity commands, independent of the local workspace service.
 
 mod agent;
+mod cli;
 mod mcp;
 mod secrets;
 
@@ -32,21 +33,12 @@ pub fn interrupt_context() -> acyclic_auth::operation::Context {
     })
 }
 
+pub use cli::command;
+
 /// Whether a command is handled by the customer identity service.
 #[must_use]
 pub fn is_command(command: &str) -> bool {
-    matches!(
-        command,
-        "login"
-            | "logout"
-            | "signup"
-            | "whoami"
-            | "orgs"
-            | "refresh"
-            | "bearer"
-            | "identity-mcp"
-            | "secrets"
-    )
+    cli::is_command(command)
 }
 
 #[derive(Debug)]
@@ -962,80 +954,43 @@ impl Drop for BearerOutputCleanup<'_> {
 }
 
 struct Options {
-    command: String,
+    command: &'static str,
     json: bool,
     endpoint: String,
     credentials: PathBuf,
-    agent: bool,
     org: Option<String>,
     output: Option<PathBuf>,
 }
 
 impl Options {
-    fn parse(arguments: &[String]) -> Result<Self, Error> {
-        let mut arguments = arguments.iter();
-        let command = arguments
-            .next()
-            .ok_or_else(|| Error::new("usage_error", "missing command"))?
-            .clone();
-        let mut endpoint = std::env::var("ACYCLIC_API_URL").ok();
-        let mut credentials = std::env::var_os("ACYCLIC_IDENTITY_FILE").map(PathBuf::from);
-        let mut json = false;
-        let mut agent = false;
-        let mut org = None;
-        let mut output = None;
-        while let Some(argument) = arguments.next() {
-            match argument.as_str() {
-                "--json" => json = true,
-                "--agent" if command == "signup" => agent = true,
-                "--org" if command == "bearer" => {
-                    org = Some(
-                        arguments
-                            .next()
-                            .ok_or_else(|| Error::new("usage_error", "--org needs a value"))?
-                            .clone(),
-                    );
-                }
-                "--output" if command == "bearer" => {
-                    output =
-                        Some(PathBuf::from(arguments.next().ok_or_else(|| {
-                            Error::new("usage_error", "--output needs a value")
-                        })?));
-                }
-                "--endpoint" => {
-                    endpoint = Some(
-                        arguments
-                            .next()
-                            .ok_or_else(|| Error::new("usage_error", "--endpoint needs a value"))?
-                            .clone(),
-                    );
-                }
-                "--credentials" => {
-                    credentials = Some(PathBuf::from(arguments.next().ok_or_else(|| {
-                        Error::new("usage_error", "--credentials needs a value")
-                    })?));
-                }
-                _ => {
+    fn from_command(command: cli::Command) -> Result<Self, Error> {
+        let (command, arguments, org, output) = match command {
+            cli::Command::Login(arguments) => ("login", arguments, None, None),
+            cli::Command::Logout(arguments) => ("logout", arguments, None, None),
+            cli::Command::Whoami(arguments) => ("whoami", arguments, None, None),
+            cli::Command::Orgs(arguments) => ("orgs", arguments, None, None),
+            cli::Command::Refresh(arguments) => ("refresh", arguments, None, None),
+            cli::Command::IdentityMcp(arguments) => ("identity-mcp", arguments, None, None),
+            cli::Command::Signup(arguments) => ("signup", arguments.identity, None, None),
+            cli::Command::Bearer(arguments) => {
+                if arguments.org.is_empty() {
                     return Err(Error::new(
                         "usage_error",
-                        format!("unexpected argument: {argument}"),
+                        "bearer requires a nonempty --org; recovery: acyclic bearer --help",
                     ));
                 }
+                (
+                    "bearer",
+                    arguments.identity,
+                    Some(arguments.org),
+                    Some(arguments.output),
+                )
             }
-        }
-        if command == "signup" && !agent {
-            return Err(Error::new(
-                "usage_error",
-                "signup requires --agent; use login for browser approval",
-            ));
-        }
-        if command == "bearer" && (org.as_ref().is_none_or(String::is_empty) || output.is_none()) {
-            return Err(Error::new(
-                "usage_error",
-                "bearer requires --org ID and --output NEW_FILE",
-            ));
-        }
-        let credentials = credentials
+            cli::Command::Secrets(_) => return Err(secrets::usage()),
+        };
+        let credentials = arguments
+            .credentials
+            .or_else(|| std::env::var_os("ACYCLIC_IDENTITY_FILE").map(PathBuf::from))
             .or_else(|| {
                 std::env::var_os("USERPROFILE")
                     .or_else(|| std::env::var_os("HOME"))
@@ -1047,18 +1002,20 @@ impl Options {
                     "set --credentials or ACYCLIC_IDENTITY_FILE",
                 )
             })?;
-        let endpoint = endpoint.ok_or_else(|| {
-            Error::new(
-                "configuration_error",
-                "set --endpoint or ACYCLIC_API_URL to the public Edge origin",
-            )
-        })?;
+        let endpoint = arguments
+            .endpoint
+            .or_else(|| std::env::var("ACYCLIC_API_URL").ok())
+            .ok_or_else(|| {
+                Error::new(
+                    "configuration_error",
+                    "set --endpoint or ACYCLIC_API_URL to the public Edge origin",
+                )
+            })?;
         Ok(Self {
             command,
-            json,
+            json: arguments.json,
             endpoint,
             credentials,
-            agent,
             org,
             output,
         })
@@ -1079,14 +1036,35 @@ pub fn run(
     context: Option<acyclic_auth::operation::Context>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
     Box::pin(async move {
-        if arguments
-            .first()
-            .is_some_and(|command| command == "identity-mcp")
-        {
-            return mcp::serve(arguments).await;
-        }
         let json_output = arguments.iter().any(|argument| argument == "--json");
-        let result = execute(arguments, context).await;
+        let result = match cli::parse(arguments) {
+            Ok(command) => {
+                if matches!(&command, cli::Command::IdentityMcp(_)) {
+                    return mcp::serve(Options::from_command(command).map_err(io::Error::other)?)
+                        .await;
+                }
+                execute(command, context).await
+            }
+            Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
+                error.print()?;
+                return Ok(());
+            }
+            Err(error) => Err(
+                if arguments
+                    .first()
+                    .is_some_and(|command| command == "secrets")
+                {
+                    secrets::usage()
+                } else {
+                    Error::new(
+                        "usage_error",
+                        format!(
+                            "identity argument admission failed: {error}; recovery: acyclic --help"
+                        ),
+                    )
+                },
+            ),
+        };
         match result {
             Ok(value) => {
                 println!("{}", serde_json::to_string_pretty(&value)?);
@@ -1103,18 +1081,20 @@ pub fn run(
 }
 
 async fn execute(
-    arguments: &[String],
+    command: cli::Command,
     context: Option<acyclic_auth::operation::Context>,
 ) -> Result<Value, Error> {
-    if let Some((command, rest)) = arguments.split_first()
-        && command == "secrets"
-    {
-        return secrets::execute(rest, context).await;
+    if let cli::Command::Secrets(arguments) = command {
+        return secrets::execute(
+            secrets::Options::from_command(arguments.operation)?,
+            context,
+        )
+        .await;
     }
-    let options = Options::parse(arguments)?;
+    let options = Options::from_command(command)?;
     let identity = Identity::new(&options.endpoint)?;
     let store = Store::open_native(&options.credentials).await?;
-    match options.command.as_str() {
+    match options.command {
         "login" => {
             let mut device = identity.device_code("cli", &store).await?;
             if options.json {
@@ -1148,7 +1128,7 @@ async fn execute(
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
         "refresh" => identity.refresh_stored(&store).await,
-        "signup" if options.agent => identity.signup(&store).await,
+        "signup" => identity.signup(&store).await,
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
         "logout" => identity.logout(&store).await,

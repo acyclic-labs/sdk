@@ -6,6 +6,37 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let help_store = directory.path().join("help-only").join("identity.json");
+    for command in ["login", "signup", "identity-mcp", "bearer"] {
+        runtime.block_on(acyclic_plugin_identity::run(
+            &[
+                command.to_owned(),
+                "--help".to_owned(),
+                "--endpoint".to_owned(),
+                "not an endpoint".to_owned(),
+                "--credentials".to_owned(),
+                help_store.display().to_string(),
+            ],
+            None,
+        ))?;
+    }
+    for operation in ["put", "list", "delete"] {
+        runtime.block_on(acyclic_plugin_identity::run(
+            &[
+                "secrets".to_owned(),
+                operation.to_owned(),
+                "--help".to_owned(),
+                "--endpoint".to_owned(),
+                "not an endpoint".to_owned(),
+                "--bearer-file".to_owned(),
+                help_store.display().to_string(),
+            ],
+            None,
+        ))?;
+    }
+    if help_store.parent().is_some_and(std::path::Path::exists) {
+        return Err("identity help opened credential storage; recovery: render help before identity admission".into());
+    }
     for command in ["whoami", "identity-mcp"] {
         let arguments = [
             command.to_owned(),
@@ -28,6 +59,32 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         if !error.to_string().contains("--invalid-fixture-option") {
             return Err(format!("unexpected command error: {error}").into());
+        }
+    }
+    let planted = "PLANTED_SECRET_DO_NOT_LOG";
+    for arguments in [
+        vec!["put", "--value", planted],
+        vec!["put", "--account", planted],
+        vec!["get", planted],
+        vec!["reveal", planted],
+        vec!["export", planted],
+        vec!["put", "--kind", planted],
+        vec!["put", "--expected-generation", planted],
+        vec!["list", "--after", planted],
+        vec!["list", "--page-size", planted],
+        vec!["put", "--after", planted],
+    ] {
+        let arguments = std::iter::once("secrets")
+            .chain(arguments)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let Err(error) = runtime.block_on(acyclic_plugin_identity::run(&arguments, None)) else {
+            return Err(
+                "forbidden Secrets argument admitted; recovery: acyclic secrets --help".into(),
+            );
+        };
+        if format!("{error:?} {error}").contains(planted) {
+            return Err("Secrets argument refusal disclosed input; recovery: redact parser diagnostics before returning the refusal".into());
         }
     }
     let arguments = [

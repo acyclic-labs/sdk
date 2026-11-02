@@ -9,11 +9,13 @@ cargo-fuzz = true
 
 [features]
 proto-descriptors = ["dep:acyclic-proto-build"]
+identity-cli = ["dep:acyclic-plugin-identity"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
 
 [dependencies]
+acyclic-plugin-identity = { path = "../../plugin/identity", optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
@@ -24,6 +26,14 @@ serde_json = { version = "1", optional = true }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "identity_cli"
+required-features = ["identity-cli"]
+path = "fuzz_targets/identity_cli.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "git_argv"

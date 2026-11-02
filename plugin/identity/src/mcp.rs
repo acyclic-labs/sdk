@@ -280,8 +280,7 @@ impl ToolProvider for Identities {
     }
 }
 
-pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
-    let options = Options::parse(arguments).map_err(io::Error::other)?;
+pub(super) async fn serve(options: Options) -> Result<(), io::Error> {
     let server = Arc::new(tokio::sync::Mutex::new(
         Server::new(options).map_err(io::Error::other)?,
     ));
@@ -329,11 +328,10 @@ mod tests {
 
     fn server(path: PathBuf) -> Server {
         Server::new(Options {
-            command: "identity-mcp".to_owned(),
+            command: "identity-mcp",
             json: true,
             endpoint: "https://example.test".to_owned(),
             credentials: path,
-            agent: false,
             org: None,
             output: None,
         })
