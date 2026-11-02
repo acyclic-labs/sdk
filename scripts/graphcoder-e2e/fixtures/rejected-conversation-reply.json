@@ -1,0 +1,14 @@
+{
+  "source": "611cd6aecb235de6f4f026942380765c09779b20",
+  "platform": "linux",
+  "case": "child-result",
+  "sample": 2,
+  "origin": "Original GraphCoder Codex-login functional matrix, selected native stdout; no regeneration",
+  "matrix_sha256": "5fad8e36ecd8c3e6c634386b2349a27fab30e9321340497de7d3660d651bdfe8",
+  "stdout_sha256": "40e24aacbef411bc8ba54b99ecbe910a8cf435a849f28642691fe13705c6d971",
+  "capture": {
+    "stdout": "{\"id\":\"spawn\",\"inbox\":1,\"text\":\"SPA\u0412NED\"}\n",
+    "code": null,
+    "signal": "SIGKILL"
+  }
+}

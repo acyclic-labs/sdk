@@ -14,7 +14,8 @@ export function failureReport(error) {
     report.assertion = { operator: error.operator,
       actual: inspect(error.actual, operandFormat), expected: inspect(error.expected, operandFormat) };
   }
-  if (error instanceof Error && error.cause !== undefined) report.cause = inspect(error.cause, operandFormat);
+  const cause = error instanceof AggregateError ? error.errors : error instanceof Error ? error.cause : undefined;
+  if (cause !== undefined) report.cause = inspect(cause, operandFormat);
   return report;
 }
 
