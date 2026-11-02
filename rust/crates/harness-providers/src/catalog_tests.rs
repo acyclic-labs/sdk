@@ -146,7 +146,10 @@ fn public_catalogue_preserves_model_facts_without_credential_resolution_or_discl
     ));
     let protected = serde_json::to_value(registry.catalog()).expect("owner catalogue");
     assert!(protected["openai"].get("headers").is_some());
-    for member in registry.model_catalog() {
+    for member in registry
+        .model_catalog_providers(None)
+        .flat_map(|provider| registry.model_catalog_models(provider, None).unwrap())
+    {
         let value = serde_json::to_value(member).expect("public model");
         assert_eq!(value["provider"], member.provider);
         assert_eq!(value["model"], member.model);
@@ -167,6 +170,65 @@ fn public_catalogue_preserves_model_facts_without_credential_resolution_or_discl
     }
     assert!(registry.model_catalog_entry("openai", "absent").is_none());
     assert!(registry.model_catalog_entry("absent", "gpt-5").is_none());
+    let mut empty = registry.catalog()["openai"].as_ref().clone();
+    empty.models.clear();
+    for provider in ["aaa-empty", "aab-empty", "aac-empty"] {
+        registry.register(provider.into(), empty.clone())?;
+    }
+    // Provider credit includes empty directories. A flattened model cursor
+    // would hide these entries and cross them before returning a single row.
+    assert_eq!(
+        registry
+            .model_catalog_providers(None)
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["aaa-empty", "aab-empty"]
+    );
+    assert_eq!(
+        registry.model_catalog_providers(Some("aab-empty")).next(),
+        Some("aac-empty")
+    );
+    assert!(
+        registry
+            .model_catalog_models("aaa-empty", None)
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(registry.model_catalog_models("absent", None).is_none());
+    let mut endpoint = registry.catalog()["openai"].as_ref().clone();
+    let specification = endpoint.models["gpt-5"].clone();
+    for model in ["paged/1", "paged/3"] {
+        endpoint.models.insert(model.into(), specification.clone());
+    }
+    registry.register("openai".into(), endpoint)?;
+    let resumed = registry
+        .model_catalog_models("openai", Some("paged/2"))
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(resumed.model, "paged/3");
+    assert!(std::ptr::eq(
+        resumed.specification,
+        &registry.catalog()["openai"].models["paged/3"]
+    ));
+    assert!(
+        registry
+            .model_catalog_models("openai", Some("\u{10ffff}"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let allocations = acyclic_test_support::measure(|| {
+        std::hint::black_box(registry.model_catalog_providers(Some("aab-empty")).next());
+        std::hint::black_box(
+            registry
+                .model_catalog_models("openai", Some("paged/2"))
+                .unwrap()
+                .next(),
+        );
+    });
+    assert_eq!((allocations.count_total, allocations.bytes_total), (0, 0));
     assert_eq!(reads.load(Ordering::Relaxed), 1);
     assert!(transport.sent.lock().expect("fixture").is_empty());
     Ok(())

@@ -87,20 +87,45 @@ impl Registry {
     }
 
     /// Borrows protected endpoint configuration. Guest-visible discovery uses
-    /// [`Self::model_catalog`] instead; authentication and headers stay here.
+    /// [`Self::model_catalog_providers`] and [`Self::model_catalog_models`]
+    /// instead; authentication and headers stay here.
     pub fn catalog(&self) -> &BTreeMap<String, Arc<ProviderSpec>> {
         &self.providers
     }
 
-    /// Lazily borrows public model facts in provider/name order. Advancing the
-    /// cursor visits only its next member; it neither resolves credentials nor
-    /// builds a whole-catalogue collection. The consumer supplies page credit.
-    pub fn model_catalog(&self) -> impl Iterator<Item = crate::CatalogModel<'_>> {
-        self.providers.iter().flat_map(|(provider, endpoint)| {
-            endpoint.models.iter().map(move |(model, specification)| {
-                crate::CatalogModel::new(provider, model, endpoint, specification)
-            })
-        })
+    /// Public provider names strictly after `after`, in key order. Empty
+    /// providers remain visible, so a bounded page never scans past them to
+    /// find a model. The consumer supplies page credit with `Iterator::take`.
+    /// Seeking uses the original ordered map; advancing allocates nothing.
+    pub fn model_catalog_providers<'a>(
+        &'a self,
+        after: Option<&str>,
+    ) -> impl Iterator<Item = &'a str> + use<'a> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.providers
+            .range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded))
+            .map(|(provider, _)| provider.as_str())
+    }
+
+    /// Public model facts for one provider, strictly after `after`. A missing
+    /// provider is distinct from an empty directory. Both cursor levels borrow
+    /// the same immutable catalogue; retain that registry for page continuity.
+    /// No credential admission, endpoint serialization or sibling-provider scan.
+    pub fn model_catalog_models<'a>(
+        &'a self,
+        provider: &str,
+        after: Option<&str>,
+    ) -> Option<impl Iterator<Item = crate::CatalogModel<'a>> + use<'a>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let (provider, endpoint) = self.providers.get_key_value(provider)?;
+        Some(
+            endpoint
+                .models
+                .range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded))
+                .map(move |(model, specification)| {
+                    crate::CatalogModel::new(provider, model, endpoint, specification)
+                }),
+        )
     }
 
     /// Looks up one public member without credential admission or I/O. Both
