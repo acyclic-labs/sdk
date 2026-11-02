@@ -12,6 +12,9 @@ use crate::{
 /// The common agent instruction, shared by every host: the seed `AGENT.md`.
 pub(crate) const AGENT_PROMPT: &str = include_str!("AGENT.md");
 
+/// The kernel backstop and its read-only explanation share these exact bytes.
+pub(crate) const CONTEXT_BACKSTOP: &str = include_str!("context-backstop.md");
+
 /// Exact lab-trained tool declarations, by family: `sys/native/<family>/tools.json`.
 pub(crate) const ANTHROPIC_TOOLS: &str = include_str!("../tools/native/anthropic.json");
 pub(crate) const OPENAI_TOOLS: &str = include_str!("../tools/native/openai.json");
@@ -44,6 +47,7 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("fresh-context-review"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
+    ("sys/context-backstop.md", CONTEXT_BACKSTOP.as_bytes()),
     ("sys/kernel.md", include_bytes!("kernel.md")),
     (
         "sys/native/anthropic/profile.md",
