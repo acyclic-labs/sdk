@@ -852,9 +852,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .working_directory(&fixture.workspace)
             .unwrap();
         if !changed_model {
-            let mut preset = acyclic_harness::preset::Preset::graphcoder();
-            preset.tools.remove(0);
-            config = config.preset(&preset);
+            config = config.without_default_tools();
         }
         assert_eq!(
             embedded::answer(config, "parity", "hello").await.unwrap(),
@@ -867,9 +865,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         } else {
             assert_eq!(actual["model"], cli["model"]);
             assert_ne!(actual["tools"], cli["tools"]);
-            assert_eq!(
-                actual["tools"].as_array().unwrap().len() + 1,
-                cli["tools"].as_array().unwrap().len()
+            assert!(
+                actual["tools"].as_array().unwrap().len() < cli["tools"].as_array().unwrap().len()
             );
         }
         assert!(!same_contract(cli, &actual), "{actual}");

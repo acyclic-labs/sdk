@@ -143,12 +143,10 @@ pub struct StockExecutors {
 }
 
 impl Preset {
-    /// This preset's stock turns over `model` served by `provider`, with
-    /// `tools` (the host's registry of this preset's tools) under `limits`,
-    /// `compaction` and `context`. The preset's agent tools apply; a host
-    /// that runs children adds role profiles with
-    /// [`StockExecutors::with_profiles`]. `limits` bounds execution capacity. The turn admission is the host's: pass the
-    /// result to the turn host that carries it.
+    /// Stock turns over the host's model and registry, with standard agent
+    /// tools bound to each turn's effects. A host with a narrower selection
+    /// applies [`StockExecutors::with_agent_tools`]. Child admission uses
+    /// [`StockExecutors::with_profiles`].
     #[must_use]
     pub fn executors(
         &self,
@@ -157,57 +155,31 @@ impl Preset {
         (limits, compaction): (Limits, CompactionPolicy),
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
-        StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools)
+        let mut executors = StockExecutors::new(model, tools, (limits, compaction), context);
+        executors.agent_tools = crate::tools::AGENT_TOOLS.map(String::from).into();
+        executors
     }
 
-    /// This preset's tools, the one construction every host takes them from:
-    /// the catalog tools it selects that the host can back (the volume tools
-    /// and filesystem commands always; each workspace tool only when
-    /// `workspace` admits its name),
-    /// then the host's own `tools`. Its agent tools are bound
-    /// per turn by [`Self::executors`].
+    /// The standard catalog tools the host can back, followed by its custom
+    /// `tools`. Agent tools bind per turn through [`Self::executors`].
     ///
     /// # Errors
-    /// When the preset names an unknown tool, or two tools share a name.
+    /// When two tools share a name or a catalog binding fails.
     pub fn tools(
         &self,
         workspace: impl Fn(&str) -> bool,
         tools: Vec<crate::tool::Tool>,
     ) -> Result<ToolRegistry> {
-        let mut registry = ToolRegistry::default();
-        crate::tools::bind_defaults(
-            &mut registry,
-            &mut Vec::new(),
-            None,
-            &self.tools,
-            true,
-            workspace,
-        )?;
-        for tool in tools {
-            registry.register((tool, None), &mut None, None)?;
-        }
-        Ok(registry)
+        crate::tools::registry(&crate::tools::default_names(), workspace, tools)
     }
 
-    /// The call grant of every tool in `tools` and of this preset's agent
+    /// The call grant of every tool in `tools` and of the standard agent
     /// tools, which bind per turn outside the registry.
     ///
     /// # Errors
     /// When a definition of `tools` cannot be produced.
     pub fn tool_grants(&self, tools: &ToolRegistry) -> Result<Vec<String>> {
-        let agent_tools = self
-            .tools
-            .iter()
-            .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
-            .cloned();
-        Ok(tools
-            .definitions(None)?
-            .into_iter()
-            .map(|definition| definition.name)
-            .chain(agent_tools)
-            .map(|name| crate::contract::capability::tool_call(&name))
-            .collect())
+        crate::tools::call_grants(tools, crate::tools::AGENT_TOOLS)
     }
 }
 

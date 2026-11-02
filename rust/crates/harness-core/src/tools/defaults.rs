@@ -1,12 +1,55 @@
-use crate::{Result, runtime::RuntimeScope, tool::ToolRegistry};
+use crate::{Result, tool::ToolRegistry};
 
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
+    registry(&names(), |_| true, Vec::new())
+}
+
+/// Builds the host's registry from its admitted catalog selection and custom
+/// tools. Agent tools bind later, to the original turn effects.
+pub fn registry(
+    names: &[String],
+    workspace: impl Fn(&str) -> bool,
+    tools: Vec<crate::tool::Tool>,
+) -> Result<ToolRegistry> {
+    if let Some(unknown) = names.iter().find(|name| {
+        !super::catalog().any(|spec| spec.name == name.as_str())
+            && !super::AGENT_TOOLS.contains(&name.as_str())
+    }) {
+        return Err(crate::Error::Invalid(format!("unknown tool {unknown}")));
+    }
     let mut registry = ToolRegistry::default();
-    bind_defaults(&mut registry, &mut Vec::new(), None, &names(), true, |_| {
-        true
-    })?;
+    for spec in super::catalog() {
+        if !names.iter().any(|name| name == spec.name) {
+            continue;
+        }
+        if spec.binding == super::ToolBinding::Workspace && !workspace(spec.name) {
+            continue;
+        }
+        registry.register((spec.bind()?, None), &mut None, None)?;
+    }
+    for tool in tools {
+        registry.register((tool, None), &mut None, None)?;
+    }
     Ok(registry)
+}
+
+/// Call grants for the same registered tools and selected per-turn agent tools.
+pub fn call_grants<'a>(
+    registry: &ToolRegistry,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<String>> {
+    Ok(registry
+        .definitions(None)?
+        .into_iter()
+        .map(|definition| crate::contract::capability::tool_call(&definition.name))
+        .chain(
+            names
+                .into_iter()
+                .filter(|name| super::AGENT_TOOLS.contains(name))
+                .map(crate::contract::capability::tool_call),
+        )
+        .collect())
 }
 
 /// Names of every standard tool: the catalog's, in order, then the agent tools.
@@ -17,46 +60,4 @@ pub fn names() -> Vec<String> {
         .chain(super::AGENT_TOOLS)
         .map(str::to_owned)
         .collect()
-}
-
-/// Binds the catalog tools `names` selects that the task's resources can
-/// back. Agent tool names are bound per turn by [`super::bind_agent_tools`];
-/// any other name is refused.
-#[doc(hidden)]
-pub fn bind_defaults(
-    registry: &mut ToolRegistry,
-    grants: &mut Vec<String>,
-    bound: Option<&RuntimeScope>,
-    names: &[String],
-    volume: bool,
-    workspace: impl Fn(&str) -> bool,
-) -> Result<()> {
-    if let Some(unknown) = names.iter().find(|name| {
-        !super::catalog().any(|spec| spec.name == name.as_str())
-            && !super::AGENT_TOOLS.contains(&name.as_str())
-    }) {
-        return Err(crate::Error::Invalid(format!("unknown tool {unknown}")));
-    }
-    for spec in super::catalog() {
-        if !names.iter().any(|name| name == spec.name) {
-            continue;
-        }
-        let available = match spec.binding {
-            super::ToolBinding::Volume => volume,
-            super::ToolBinding::Workspace => workspace(spec.name),
-            super::ToolBinding::Filesystem => volume || workspace(spec.name),
-        };
-        if !available {
-            continue;
-        }
-        let capability = spec.capability();
-        if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
-            continue;
-        }
-        registry.register((spec.bind()?, None), &mut None, None)?;
-        if bound.is_none() && !grants.contains(&capability) {
-            grants.push(capability);
-        }
-    }
-    Ok(())
 }

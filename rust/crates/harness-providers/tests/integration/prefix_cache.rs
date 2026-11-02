@@ -195,9 +195,10 @@ fn executors(
     model: Arc<acyclic_harness_providers::ResolvedModel>,
     extra: &[&str],
 ) -> TestResult<Arc<dyn TurnExecutors>> {
-    let mut preset = acyclic_harness::preset::Preset::graphcoder();
-    preset.tools = ["code", "spawn"].map(String::from).to_vec();
-    let tools = preset.tools(
+    let preset = acyclic_harness::preset::Preset::graphcoder();
+    let selected = ["code", "spawn"].map(String::from);
+    let tools = acyclic_harness::tools::registry(
+        &selected,
         |_| false,
         extra
             .iter()
@@ -205,7 +206,8 @@ fn executors(
             .collect(),
     )?;
     let limits = Limits::default();
-    let mut grants = preset.tool_grants(&tools)?;
+    let mut grants =
+        acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
     grants.push(capability::MODEL_GENERATE.into());
     grants.push(capability::INTERACTION_ROUTE.into());
     let bindings = Bindings {
@@ -228,6 +230,7 @@ fn executors(
                 ),
                 Arc::new(Tasks(bindings)),
             )
+            .with_agent_tools(&selected)
             .with_profiles(profiles()?),
     ))
 }
