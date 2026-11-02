@@ -164,7 +164,7 @@ where
                 bytes,
                 media_type,
                 "execution.json",
-                super::MAXIMUM_PAYLOAD_BYTES,
+                Some(super::MAXIMUM_PAYLOAD_BYTES),
                 &key,
                 payload_class(&path),
                 io,

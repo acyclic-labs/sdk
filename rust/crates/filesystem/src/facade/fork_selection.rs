@@ -335,7 +335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     async fn select_fork_file_table(
         &self,
         root: &GenerationRoot,
-        mut overrides: Owned<Vec<FileRecord>>,
+        overrides: Owned<Vec<FileRecord>>,
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,

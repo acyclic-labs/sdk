@@ -246,7 +246,6 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        1024,
         &mut None,
     )?;
     // A real user upload can choose an internal-looking string. Routing keys
@@ -319,7 +318,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&committed_io),
