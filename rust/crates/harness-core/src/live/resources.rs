@@ -21,11 +21,17 @@ pub const VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Source<'a> {
+    /// Original authorized account's opaque bytes, without UTF-8 conversion.
     pub account: &'a [u8],
+    /// Stream selected by the original read; may inherit from another origin.
     pub stream: &'a str,
+    /// Producer stream retained by the immutable record, before fork inheritance.
     pub origin: &'a str,
+    /// Original zero-based stream position, not a journal or inbox cursor.
     pub sequence: u64,
+    /// Original publication identity, borrowed without hashing the value again.
     pub commit_id: &'a [u8; 32],
+    /// Original authority observation, never a fresh projection timestamp.
     pub committed_at_micros: u64,
 }
 
@@ -46,14 +52,17 @@ impl<'a> Source<'a> {
 /// Projection refusal retains missing evidence rather than creating a zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// The original usage, cache or placement layout cannot be interpreted.
     #[error(
         "resource source version is unsupported; recovery: supply the original producer's current layout"
     )]
     Version,
+    /// A logical value length cannot fit the public byte counter.
     #[error(
         "resource byte count cannot be represented; recovery: preserve the original source with unknown byte coverage"
     )]
     ByteCount,
+    /// Preserve the shared price/accounting authority's typed refusal.
     #[error(transparent)]
     Price(#[from] ModelPriceError),
 }
@@ -64,8 +73,11 @@ pub enum Error {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheCall<'a> {
+    /// Resource file layout, independent of the retained usage-file layout.
     pub version: u32,
+    /// Original committed usage source selected by the authorized read.
     pub source: Source<'a>,
+    /// Original dispatch, token conventions, prefix policy and selected price.
     pub call: ModelUsageProjection<'a>,
     /// Signed nano-units in the call's explicitly selected currency.
     pub cache_savings_nano_units: Option<i128>,
@@ -101,14 +113,19 @@ impl<'a> CacheCall<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheResidency<'a> {
+    /// Resource file layout, independent of the residency estimate's layout.
     pub version: u32,
+    /// Original committed estimate source, not a later machine lookup.
     pub source: Source<'a>,
+    /// Original domain, exact prefix key, observed write/hit and expiry evidence.
     pub estimate: &'a crate::executor::ModelCacheResidency,
     /// Unknown without a comparable original query coordinate.
     pub estimated_resident: Option<bool>,
 }
 
 impl<'a> CacheResidency<'a> {
+    /// Compare only the supplied original domain/coordinate; no clock is read.
+    /// Missing or foreign coordinates preserve unknown residency.
     pub fn project(
         source: Source<'a>,
         estimate: &'a crate::executor::ModelCacheResidency,
@@ -132,16 +149,23 @@ impl<'a> CacheResidency<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sharing<'a> {
+    /// Resource file layout.
     pub version: u32,
+    /// Original publication plus the independently selected inherited stream.
     pub source: Source<'a>,
+    /// The immutable record's origin differs from the selected stream.
     pub inherited: bool,
     /// Exact original record value bytes; framing and physical work are uncovered.
     pub logical_value_bytes: u64,
+    /// Unknown without original allocation-custody evidence.
     pub physical_shared_bytes: Option<u64>,
+    /// Unknown without original allocation-custody evidence.
     pub physical_copied_bytes: Option<u64>,
 }
 
 impl<'a> Sharing<'a> {
+    /// Borrow the original record identity and length without parsing, hashing
+    /// or copying its value. Inheritance alone supplies no physical byte count.
     pub fn project(
         account: &'a AccountId,
         selected: &'a StreamPath,
@@ -164,11 +188,17 @@ impl<'a> Sharing<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Counters<'a> {
+    /// Resource file layout, independent of the retained accounting layouts.
     pub version: u32,
+    /// Original selected aggregate's publication and cut.
     pub source: Source<'a>,
+    /// Existing accounting totals; each unknown count remains explicit.
     pub model: Option<&'a ModelUsageTotals>,
+    /// Original filesystem operation work when its producer supplies coverage.
+    /// Peak allocation is a peak, never an additive subtree byte total.
     #[cfg(feature = "filesystem")]
     pub work: Option<&'a acyclic_fs::WorkCounters>,
+    /// Original authenticated Machine interval receipt, without inferred cost.
     #[cfg(feature = "machines")]
     pub machine: Option<&'a acyclic_machines::UsageReceipt>,
 }
@@ -198,18 +228,28 @@ impl<'a> Counters<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Placement<'a> {
+    /// Resource file layout, independent of the original binding layout.
     pub version: u32,
+    /// Original settled binding's publication, not the current configuration.
     pub source: Source<'a>,
+    /// Original provider-scoped machine, target and fork identity.
     pub binding: &'a crate::machines::MachineBinding,
+    /// Original physical host identity; absent from a logical binding alone.
     pub host: Option<&'a str>,
+    /// Original admitted region, unknown without its placement producer.
     pub region: Option<&'a str>,
+    /// Original NUMA placement, unknown without its placement producer.
     pub numa: Option<u32>,
+    /// Original core placement, unknown without its placement producer.
     pub core: Option<u32>,
+    /// Original executor placement, unknown without its placement producer.
     pub executor_shard: Option<&'a str>,
 }
 
 #[cfg(feature = "machines")]
 impl<'a> Placement<'a> {
+    /// Retain a current-layout logical binding without a provider discovery
+    /// read. Its opaque reference cannot authorize physical placement claims.
     pub fn project(
         source: Source<'a>,
         binding: &'a crate::machines::MachineBinding,

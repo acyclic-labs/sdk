@@ -717,7 +717,7 @@ mod tests {
                     output: Some(units[index]),
                     ..Default::default()
                 });
-                row.dispatch.step = index as u64;
+                row.dispatch.step = u32::try_from(index).unwrap();
                 row.completed = completed[index];
                 row
             });
