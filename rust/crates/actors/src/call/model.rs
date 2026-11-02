@@ -63,9 +63,11 @@ struct Model {
 impl Model {
     fn new(fault: Fault, result: Outcome) -> Self {
         let root = StreamPath::new("caller").expect("root");
+        let call = CallPath::new(&root, "c1").expect("call");
+        let journal = Journal::new(call.log());
         Self {
             provider: MemoryStream::default(),
-            call: CallPath::new(&root, "c1").expect("call"),
+            call,
             fence: StreamPath::new("executor/sessions/1/ended").expect("fence"),
             fault,
             request: false,
@@ -76,7 +78,7 @@ impl Model {
             ended: false,
             retry: None,
             result,
-            journal: Journal::default(),
+            journal,
             terminals: 0,
             accepted: false,
             expected: None,
@@ -434,7 +436,7 @@ async fn terminal_sessions() -> Result<(), String> {
                 let mut model =
                     Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
                 model.requested = false;
-                let mut journal = Journal::default();
+                let mut journal = Journal::new(model.call.log());
                 if accepted {
                     model.step(Hop::Executor).await?;
                     for record in model.records(model.call.log(), 0).await? {
@@ -558,7 +560,7 @@ async fn terminal_reasons() -> Result<(), String> {
                 let mut model =
                     Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
                 model.requested = false;
-                let mut journal = Journal::default();
+                let mut journal = Journal::new(model.call.log());
                 if accepted {
                     model.step(Hop::Executor).await?;
                     for record in model.records(model.call.log(), 0).await? {
@@ -612,7 +614,7 @@ async fn terminal_reasons() -> Result<(), String> {
                             )
                             .await?
                     );
-                    let mut reader = Journal::default();
+                    let mut reader = Journal::new(sibling.log());
                     for record in model.records(sibling.log(), 0).await? {
                         assert_eq!(
                             reader.apply(&record).map_err(|error| error.to_string())?,
@@ -808,7 +810,52 @@ async fn source_bound_claims() -> Result<(), String> {
     assert_eq!(original.len(), 3);
     assert_eq!(other.len(), 3);
     assert_eq!(original[2].commit_id, other[2].commit_id);
-    let mut journal = Journal::default();
+    let child = CallPath::new(&StreamPath::new("child").map_err(|e| e.to_string())?, "c1")
+        .map_err(|e| e.to_string())?;
+    let grandchild = CallPath::new(
+        &StreamPath::new("grandchild").map_err(|e| e.to_string())?,
+        "c1",
+    )
+    .map_err(|e| e.to_string())?;
+    for (source, destination) in [(model.call.clone(), child.clone()), (child, grandchild)] {
+        assert!(
+            model
+                .publish(Commit {
+                    conditions: Vec::new(),
+                    mutations: vec![CommitMutation::Fork {
+                        source: source.log().clone(),
+                        destination: destination.log().clone(),
+                        at_tail: 3,
+                        exclude: Vec::new(),
+                        records: Vec::new(),
+                    }],
+                })
+                .await?
+        );
+        let inherited = model.records(destination.log(), 0).await?;
+        assert_eq!(inherited, original);
+        let mut branch = Journal::new(destination.log());
+        let unchanged = branch.clone();
+        super::codec_fuzz::check_record(&inherited[0], &branch);
+        assert!(branch.apply(&inherited[0]).is_err());
+        assert_eq!(branch, unchanged, "copied prefix supplied a branch hold");
+        // Negative control lets the first copied record choose the source,
+        // exposing the parent's accepted hold as the branch's live work.
+        let mut unbound = Journal::new(&inherited[0].origin);
+        for record in &inherited {
+            unbound.apply(record).map_err(|e| e.to_string())?;
+        }
+        assert!(unbound.accepted().is_some());
+        assert!(unbound.hold().is_some());
+    }
+    let mut journal = Journal::new(model.call.log());
+    let unstarted = journal.clone();
+    super::codec_fuzz::check_record(&other[0], &journal);
+    assert!(journal.apply(&other[0]).is_err());
+    assert_eq!(
+        journal, unstarted,
+        "foreign first record chose the reader's source"
+    );
     for record in &original[..2] {
         journal.apply(record).map_err(|e| e.to_string())?;
     }
@@ -843,7 +890,7 @@ async fn source_bound_claims() -> Result<(), String> {
     // Negative control discards the retained source binding. Both acceptance
     // heads still carry the same genuine commit, so the original recovery
     // guards alone would end the sibling whose own session is still live.
-    journal.origin = Some(sibling.log().clone());
+    journal.origin = sibling.log().clone();
     let wrong = journal
         .recover(&sibling, "lost")
         .map_err(|e| e.to_string())?

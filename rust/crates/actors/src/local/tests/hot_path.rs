@@ -129,7 +129,7 @@ async fn call_hold_publication() -> TestResult {
             at_least: Default::default(),
         })
         .await?;
-    let mut journal = crate::call::Journal::default();
+    let mut journal = crate::call::Journal::new(call.log());
     while let Some(record) = records.try_next().await? {
         assert_eq!(Some(record.commit_id), snapshot.anchor);
         journal.apply(&record)?;
@@ -143,7 +143,7 @@ async fn call_hold_publication() -> TestResult {
         "request created or refunded funding"
     );
     // A hold from a separate commit is not the request's admitted funding.
-    let mut reader = crate::call::Journal::default();
+    let mut reader = crate::call::Journal::new(call.log());
     let mut records = provider
         .read(ReadRequest {
             path: call.log().clone(),
@@ -665,7 +665,7 @@ async fn physical_loss(fail_at: usize) -> TestResult {
                 at_least: Default::default(),
             })
             .await?;
-        let mut journal = crate::call::Journal::default();
+        let mut journal = crate::call::Journal::new(call.log());
         while let Some(record) = records.try_next().await? {
             assert_eq!(Some(record.commit_id), snapshot.anchor);
             journal.apply(&record)?;
@@ -701,7 +701,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
         call: &CallPath,
         tail: u32,
     ) -> Result<Journal, Box<dyn std::error::Error>> {
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(call.log());
         let mut records = provider
             .read(ReadRequest {
                 path: call.log().clone(),

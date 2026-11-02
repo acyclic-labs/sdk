@@ -65,6 +65,42 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         agent: None,
         account: &account,
     };
+    // Different terminals in one real commit share their sequence and commit
+    // identity. The selected path cannot stand in for the record's source.
+    let provider = Arc::new(MemoryStream::default());
+    let call = CallPath::new(&scope, "first").map_err(export_error)?;
+    let sibling = CallPath::new(&scope, "second").map_err(export_error)?;
+    let mut joined = call.cancel("first").map_err(export_error)?;
+    let other = sibling
+        .cancel("longer sibling reason")
+        .map_err(export_error)?;
+    joined.conditions.extend(other.conditions);
+    joined.mutations.extend(other.mutations);
+    publish(&provider, joined).await?;
+    let original = at(&provider, call.log(), 0).await?;
+    let mut foreign = at(&provider, sibling.log(), 0).await?;
+    assert_eq!(original.commit_id, foreign.commit_id);
+    assert_eq!(original.sequence, foreign.sequence);
+    assert_ne!(original.origin, foreign.origin);
+    let mut journal = Journal::new(call.log());
+    journal.apply(&original).map_err(export_error)?;
+    let row = project(source(), &journal, &call, call.log(), &original)?;
+    assert_eq!(text(&row, "source_origin"), original.origin.as_str());
+    assert_eq!(
+        number(&row, "logical_value_bytes"),
+        original.value.len() as u64
+    );
+    assert!(project(source(), &journal, &call, call.log(), &foreign).is_err());
+    // Negative control loses the original source evidence. The remaining
+    // position/commit checks then misattribute the sibling's actual bytes.
+    // Projection cannot authenticate a caller that fabricates this evidence.
+    foreign.origin = original.origin.clone();
+    let mislabeled = project(source(), &journal, &call, call.log(), &foreign)?;
+    assert_eq!(
+        number(&mislabeled, "logical_value_bytes"),
+        foreign.value.len() as u64
+    );
+    assert_ne!(original.value.len(), foreign.value.len());
     for accepted in [false, true] {
         let provider = Arc::new(MemoryStream::default());
         let call = CallPath::new(&scope, "cancel").map_err(export_error)?;
@@ -92,7 +128,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             .await?;
         }
         publish(&provider, call.cancel("stop").map_err(export_error)?).await?;
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(call.log());
         let last = if accepted { 3 } else { 0 };
         for sequence in 0..=last {
             journal
@@ -172,7 +208,16 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             )
             .is_err()
         );
-        assert!(project(source(), &Journal::default(), &call, call.log(), &record).is_err());
+        assert!(
+            project(
+                source(),
+                &Journal::new(call.log()),
+                &call,
+                call.log(),
+                &record
+            )
+            .is_err()
+        );
         #[cfg(feature = "provenance-export")]
         {
             let mut encoded = Vec::new();
@@ -217,7 +262,7 @@ async fn original_session_loss_requires_the_call_terminal() -> Result<()> {
             .map_err(export_error)?,
         )
         .await?;
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(call.log());
         journal
             .apply(&at(&provider, call.log(), 0).await?)
             .map_err(export_error)?;
@@ -299,7 +344,7 @@ async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<
                 call.settle(None, &outcome).map_err(export_error)?,
             )
             .await?;
-            let mut journal = Journal::default();
+            let mut journal = Journal::new(call.log());
             for sequence in 0..2 {
                 journal
                     .apply(&at(&provider, call.log(), sequence).await?)

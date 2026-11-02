@@ -425,7 +425,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         };
         let mut ended: Option<acyclic_stream::FollowStream> = None;
         let mut output = super::output::Output::new(context);
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(call.log());
         loop {
             if closed_at.is_some_and(|tail| journal.next() >= tail) {
                 // The original producer ended without a terminal in its cut.

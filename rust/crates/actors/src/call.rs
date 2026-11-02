@@ -494,9 +494,9 @@ impl From<ReceiptRef<'_>> for Receipt {
 /// A reader's fold of one original journal, applied record by record in order.
 /// Inherited records retain their original append destination; they cannot
 /// authorize recovery or label receipts for another call.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Journal {
-    origin: Option<StreamPath>,
+    origin: StreamPath,
     request: Option<Committed>,
     hold: Option<crate::escrow::Escrow>,
     accepted: Option<Accepted>,
@@ -507,6 +507,22 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Read one call at its original destination. Bind before applying any
+    /// records so a copied prefix cannot choose another call's identity.
+    #[must_use]
+    pub fn new(log: &StreamPath) -> Self {
+        Self {
+            origin: log.clone(),
+            request: None,
+            hold: None,
+            accepted: None,
+            acceptance: None,
+            terminal: None,
+            outcome: None,
+            next: 0,
+        }
+    }
+
     /// Applies the journal's next record and returns it as the caller reads
     /// it: a cancel after acceptance reads as `indeterminate`.
     ///
@@ -520,11 +536,7 @@ impl Journal {
         if self.outcome.is_some() {
             return Err(Error::Malformed("call record after its terminal"));
         }
-        if self
-            .origin
-            .as_ref()
-            .is_some_and(|origin| origin != &record.origin)
-        {
+        if self.origin != record.origin {
             return Err(Error::Malformed("record belongs to another call journal"));
         }
         let first = self.next == u64::from(self.request.is_some()) + u64::from(self.hold.is_some());
@@ -589,9 +601,6 @@ impl Journal {
                 Entry::Terminal(outcome)
             }
         };
-        if self.origin.is_none() {
-            self.origin = Some(record.origin.clone());
-        }
         self.next += 1;
         Ok(entry)
     }
@@ -612,7 +621,7 @@ impl Journal {
         let Some(accepted) = &self.accepted else {
             return Ok(None);
         };
-        if self.origin.as_ref() != Some(call.log()) {
+        if &self.origin != call.log() {
             return Err(Error::Malformed("recovery belongs to another call journal"));
         }
         let fence = accepted
@@ -652,7 +661,7 @@ impl Journal {
     /// a cancellation terminal in isolation and lose its acceptance context.
     #[must_use]
     pub fn receipt_ref<'a>(&'a self, log: &'a StreamPath) -> Option<ReceiptRef<'a>> {
-        if self.origin.as_ref() != Some(log) {
+        if &self.origin != log {
             return None;
         }
         let outcome = self.outcome.as_ref()?;

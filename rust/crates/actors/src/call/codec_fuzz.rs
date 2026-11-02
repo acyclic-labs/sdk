@@ -34,6 +34,8 @@ pub fn check(input: &[u8]) {
         });
     }
     let headers = RecordHeaders::new(Vec::new(), attributes).expect("distinct sorted attributes");
+    let origin = StreamPath::new("generated/call").expect("generated path");
+    let reader = Journal::new(&origin);
     check_record(
         &Record {
             sequence: u64::from(tag & 32 != 0),
@@ -41,9 +43,9 @@ pub fn check(input: &[u8]) {
             commit_id: CommitId::from_bytes([1; 32]),
             committed_at_micros: 0,
             headers,
-            origin: StreamPath::new("generated/call").expect("generated path"),
+            origin,
         },
-        &Journal::default(),
+        &reader,
     );
 }
 

@@ -288,7 +288,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         })
                         .await?,
                 );
-                let mut journal = Journal::default();
+                let mut journal = Journal::new(path.log());
                 let (terminal, outcome) = loop {
                     let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
                     if let Entry::Terminal(outcome) = journal.apply(&record)? {

@@ -63,6 +63,7 @@ pub fn project(
         return Err(refuse("has a foreign caller"));
     }
     if selected != receipt.log
+        || &record.origin != receipt.log
         || record.sequence != receipt.terminal.sequence
         || record.commit_id != receipt.terminal.commit_id
     {
