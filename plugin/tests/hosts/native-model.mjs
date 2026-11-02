@@ -143,7 +143,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    }
   }
  }
- assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
+ assert.ok(typeof text==='string'&&text===answer,'native answer missing');
  return builtinPlugins;
 }
 

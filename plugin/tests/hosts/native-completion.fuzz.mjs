@@ -4,6 +4,20 @@ import {assertNativeCompletion} from './native-model.mjs';
 import {assertCodexPairTools} from './native-pairs.mjs';
 
 const namespace=JSON.parse(readFileSync(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8')).tool;
+const answers=JSON.parse(readFileSync(new URL('./fixtures/native-completion.json',import.meta.url),'utf8')).records;
+
+// Change only the authoritative answer of an original successful capture.
+// The same production admission must reject every byte difference.
+export function checkAnswer(record,answer) {
+ const events=record.stdout.trim().split('\n').map(JSON.parse);
+ for(const event of events) {
+  if(record.host==='codex'&&event.type==='item.completed'&&event.item?.type==='agent_message')event.item.text=answer;
+  if(record.host==='claude-code'&&event.type==='result')event.result=answer;
+ }
+ const changed={...record,stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'};
+ if(answer===record.answer)assertNativeCompletion(record.host,changed,record.answer);
+ else assert.throws(()=>assertNativeCompletion(record.host,changed,record.answer),/native answer missing/);
+}
 
 // Seeds are the retained real native output, never an invented provider reply.
 export const seeds=['native-completion.json','native-pair-initialization.json',
@@ -46,6 +60,7 @@ export function fuzz(data) {
  const event=JSON.parse(lines[index]),fields=paths(event);
  let replacement;
  const bytes=input.subarray(3).toString('utf8');
+ checkAnswer(answers[(input[0]??0)%answers.length],bytes);
  try {replacement=JSON.parse(bytes);}catch {replacement=bytes;}
  lines[index]=JSON.stringify(replace(event,fields[(input[2]??0)%fields.length],replacement));
  check(record,lines.join('\n'));

@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
 import {assertCodexPairTools} from './native-pairs.mjs';
+import {checkAnswer} from './native-completion.fuzz.mjs';
 
 test('Codex pair admission requires original declarations rather than namespace prose',async()=> {
  const {tool}=JSON.parse(await readFile(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8'));
@@ -67,6 +68,7 @@ test('Claude failed tool results survive a later successful parent terminal', as
 const {records}=JSON.parse(await readFile(new URL('./fixtures/native-completion.json',import.meta.url),'utf8'));
 for(const record of records)test(`${record.host} requires its original successful native terminal`,()=>{
  assertNativeCompletion(record.host,record,record.answer);
+ for(const answer of [record.answer,record.answer+'0','0'+record.answer,record.answer+'\n'])checkAnswer(record,answer);
  const events=record.stdout.trim().split('\n').map(line=>({line,event:JSON.parse(line)}));
  // Corrupt a retained original event before its successful terminal. Malformed
  // JSON and non-record values must keep the same typed failure/recovery path.
@@ -97,8 +99,12 @@ for(const record of records)test(`${record.host} requires its original successfu
 
 test('Codex tool failure survives a successful parent answer and process exit',async()=>{
  const record=JSON.parse(await readFile(new URL('./fixtures/native-codex-tool-terminals.json',import.meta.url),'utf8'));
+ // This failed workflow's original final answer includes an explanation after
+ // its marker. Use those exact captured bytes to isolate tool-error custody;
+ // the marker alone must still fail the journey's exact-answer admission.
+ const answer=record.events.findLast(event=>event.type==='item.completed'&&event.item?.type==='agent_message').item.text;
  const result=events=>({...record,stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
- const refused=events=>assert.throws(()=>assertNativeCompletion('codex',result(events),record.answer),error=>{
+ const refused=events=>assert.throws(()=>assertNativeCompletion('codex',result(events),answer),error=>{
   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
   assert.match(error.message,/step=validate native codex completion:.*recovery=node --test/);
   return true;
@@ -109,7 +115,8 @@ test('Codex tool failure survives a successful parent answer and process exit',a
  const failures=record.events.filter(event=>event.item?.type==='command_execution'&&event.item.exit_code!==0);
  assert.equal(failures.length,2);
  const success=record.events.filter(event=>!failures.includes(event));
- assertNativeCompletion('codex',result(success),record.answer);
+ assertNativeCompletion('codex',result(success),answer);
+ assert.throws(()=>assertNativeCompletion('codex',result(success),record.answer),/native answer missing/);
  for(const failure of failures) {
   // Removing the other failure isolates the original merge and finish joins.
   const isolated=record.events.filter(event=>!failures.includes(event)||event===failure);
