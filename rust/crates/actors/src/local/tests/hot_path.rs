@@ -46,6 +46,7 @@ impl acyclic_stream::PersistenceCut for PhysicalCut {
 /// the joined publication with the independently durable split shape.
 #[tokio::test]
 async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
+    escrow_debit_histories()?;
     resident_work().await?;
     borrowed_read_guards().await?;
     observation_work().await?;
@@ -75,11 +76,48 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         let before = provider.requests();
         let value = Bytes::from(vec![7; 128]);
         let retained_value = value.clone();
+        assert!(matches!(
+            binding.transaction(|state| state.debit_escrow(1)),
+            Err(Error::Escrow(crate::escrow::Error::Missing))
+        ));
         binding.transaction(|state| {
+            state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
+            state.debit_escrow(2)?;
             state.put("value".into(), value);
             state.append_journal(0, vec![Bytes::from_static(b"journal")])?;
             state.alarm(Some(42))
         })?;
+        assert!(matches!(
+            binding.transaction(|state| {
+                state.debit_escrow(1)?;
+                state.append_journal(1, vec![Bytes::from_static(b"discarded-debit")])?;
+                Err::<(), _>(Error::Invalid("discard escrow candidate"))
+            }),
+            Err(Error::Invalid("discard escrow candidate"))
+        ));
+        assert!(matches!(
+            binding.transaction(|state| state.debit_escrow(4)),
+            Err(Error::Escrow(crate::escrow::Error::Exhausted))
+        ));
+        assert!(matches!(
+            binding.apply(crate::guest::ActorStateCommit {
+                writes: vec![
+                    crate::guest::ActorMetadataWrite {
+                        key: "forged-before-escrow".into(),
+                        value: Bytes::from_static(b"refuse the whole candidate"),
+                    },
+                    crate::guest::ActorMetadataWrite {
+                        key: crate::escrow::KEY.into(),
+                        value: crate::escrow::Escrow::new(None).encode(),
+                    },
+                ],
+                journal_from: "1".into(),
+                journal: Vec::new(),
+                alarm: crate::guest::ActorStateAlarm::Keep,
+            }),
+            Err(Error::Escrow(crate::escrow::Error::GuestWrite))
+        ));
+        assert!(binding.get("forged-before-escrow")?.is_none());
         assert!(binding.read_journal(0, 1).await?.is_empty());
         let mut update = transition(7, AlarmChange::Keep);
         update.checkpoint.bytes = Bytes::from(vec![7; 128]);
@@ -121,10 +159,9 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         let state = snapshot.state().ok_or("missing joined state")?;
         assert_eq!(
             state
-                .metadata()
-                .next()
+                .metadata
+                .get("value")
                 .ok_or("missing joined value")?
-                .1
                 .as_ptr(),
             retained_value.as_ptr(),
             "receipt retention must not decode the authored bytes again"
@@ -139,6 +176,7 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
             provider,
             async {
                 binding.transaction(|state| {
+                    assert_eq!(state.escrow()?.remaining(), Some(3));
                     assert_eq!(state.get("value").map(Bytes::len), Some(128));
                     Ok(())
                 })?;
@@ -158,6 +196,7 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         // checkpoint necessarily spends two provider writes.
         let before = provider.requests();
         binding.transaction(|state| {
+            state.debit_escrow(1)?;
             state.put("value".into(), Bytes::from(vec![8; 128]));
             Ok(())
         })?;
@@ -180,6 +219,32 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
             [3, 3, 3],
             "split publication adds two durable frames"
         );
+        // The original fork carries bytes but cannot duplicate their funding.
+        // Even a new placement in that fork cannot spend the parent's balance.
+        let parent_cut = store.load(&address).await?;
+        let child = actor("escrow-branch")?;
+        let mut fork = PreparedPublish::foreign(key("hot/escrow-fork")?);
+        for effect in store.fork(
+            &parent_cut,
+            &child,
+            parent_cut
+                .state()
+                .ok_or("missing parent state")?
+                .subscriptions()
+                .clone(),
+        )? {
+            fork.join(effect)?;
+        }
+        store.submit(fork).await?;
+        let child_cut = store.load(&child).await?;
+        let placed = store
+            .claim(&child_cut, 2, key("hot/escrow-branch-claim")?)
+            .await?;
+        let mut child_binding = store.bind_state(placed, 2)?;
+        assert!(matches!(
+            child_binding.transaction(|state| state.debit_escrow(1)),
+            Err(Error::Escrow(crate::escrow::Error::ForeignBranch))
+        ));
     }
     let store = Store::new(
         Arc::new(LocalStream::open(directory.path(), Default::default()).await?),
@@ -193,8 +258,19 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         Some([8].as_slice())
     );
     assert_eq!(
-        state.metadata().next().map(|(_, value)| value.as_ref()),
+        state.metadata.get("value").map(Bytes::as_ref),
         Some([8; 128].as_slice())
+    );
+    assert_eq!(
+        crate::escrow::Escrow::decode(
+            state
+                .metadata
+                .get(crate::escrow::KEY)
+                .ok_or("missing recovered escrow")?
+        )?
+        .remaining(),
+        Some(2),
+        "committed spend must survive physical reopen"
     );
     assert_eq!(state.alarm().pending(), Some(42));
     let binding = store.bind_state(snapshot, 1)?;
@@ -204,7 +280,50 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     );
     alarm_replacement().await?;
     alarm_publication_wakes().await?;
-    physical_loss().await?;
+    futures::try_join!(physical_loss(0), physical_loss(1), physical_loss(2))?;
+    Ok(())
+}
+
+fn escrow_debit_histories() -> TestResult {
+    use crate::escrow::{Error as EscrowError, Escrow};
+    // Generated spend histories exercise conservation and atomic refusal,
+    // including the former zero-capacity refusal and genuinely unbounded use.
+    for initial in [None, Some(0), Some(1), Some(u64::MAX)] {
+        let mut escrow = Escrow::new(initial);
+        let mut spent = 0_u128;
+        for index in 0_u64..64 {
+            let units = match index % 4 {
+                0 => 0,
+                1 => index,
+                2 => u64::MAX,
+                _ => 1,
+            };
+            let before = escrow.encode();
+            match escrow.debit(units) {
+                Ok(()) => spent += u128::from(units),
+                Err(error) => {
+                    assert_eq!(error, EscrowError::Exhausted);
+                    assert_eq!(escrow.encode(), before, "refusal changed original funding");
+                }
+            }
+            assert_eq!(Escrow::decode(&escrow.encode())?, escrow);
+            match initial {
+                None => assert_eq!(escrow.remaining(), None),
+                Some(initial) => assert_eq!(
+                    u128::from(escrow.remaining().ok_or("finite became unbounded")?) + spent,
+                    u128::from(initial),
+                    "debit created or refunded units"
+                ),
+            }
+        }
+        let encoded = escrow.encode();
+        for prefix in 0..encoded.len() {
+            assert!(Escrow::decode(&encoded[..prefix]).is_err());
+        }
+        let mut extended = encoded.to_vec();
+        extended.push(0);
+        assert!(Escrow::decode(&extended).is_err());
+    }
     Ok(())
 }
 
@@ -279,56 +398,67 @@ async fn observation_work() -> TestResult {
     Ok(())
 }
 
-async fn physical_loss() -> TestResult {
-    for fail_at in 0..3 {
-        let directory = tempfile::tempdir()?;
-        let address = actor("power-loss")?;
-        let physical = Arc::new(PhysicalCut::new(Some(fail_at)));
-        {
-            let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
-            let store = Store::new(provider.clone(), state_root()?);
-            place(&store, &address).await?;
-            provider.cut_persistence(physical.clone());
-            let mut binding = store.bind_state(store.load(&address).await?, 1)?;
-            binding.transaction(|state| {
-                state.put("value".into(), Bytes::from_static(b"durable"));
-                state.append_journal(0, vec![Bytes::from_static(b"durable")])?;
-                state.alarm(Some(42))
-            })?;
-            let prepared = binding.prepare_publish(
-                &record(0),
-                None,
-                transition(7, AlarmChange::Keep),
-                key("loss/publication")?,
-            )?;
-            assert!(matches!(
-                store.submit(prepared).await,
-                Err(Error::Unknown { .. })
-            ));
-            assert_eq!(physical.crashes.load(Ordering::SeqCst), 1);
-        }
-        let store = Store::new(
-            Arc::new(LocalStream::open(directory.path(), Default::default()).await?),
-            state_root()?,
-        );
-        let snapshot = store.load(&address).await?;
-        let state = snapshot.state().ok_or("missing recovered actor")?;
-        let applied = u64::from(fail_at == 2);
-        assert_eq!(state.cursor("inbox"), Some(applied));
-        assert_eq!(state.journal_tail(), applied);
-        assert_eq!(state.metadata().count(), usize::try_from(applied)?);
-        assert_eq!(state.checkpoint().is_some(), applied != 0);
-        assert_eq!(state.alarm().pending(), (applied != 0).then_some(42));
-        let binding = store.bind_state(snapshot, 1)?;
-        assert_eq!(
-            binding.read_journal(0, 1).await?.len(),
-            usize::try_from(applied)?
-        );
+async fn physical_loss(fail_at: usize) -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let address = actor("power-loss")?;
+    let physical = Arc::new(PhysicalCut::new(Some(fail_at)));
+    {
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let store = Store::new(provider.clone(), state_root()?);
+        place(&store, &address).await?;
+        provider.cut_persistence(physical.clone());
+        let mut binding = store.bind_state(store.load(&address).await?, 1)?;
+        binding.transaction(|state| {
+            state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
+            state.debit_escrow(2)?;
+            state.put("value".into(), Bytes::from_static(b"durable"));
+            state.append_journal(0, vec![Bytes::from_static(b"durable")])?;
+            state.alarm(Some(42))
+        })?;
+        let prepared = binding.prepare_publish(
+            &record(0),
+            None,
+            transition(7, AlarmChange::Keep),
+            key("loss/publication")?,
+        )?;
+        assert!(matches!(
+            store.submit(prepared).await,
+            Err(Error::Unknown { .. })
+        ));
+        assert_eq!(physical.crashes.load(Ordering::SeqCst), 1);
     }
+    let store = Store::new(
+        Arc::new(LocalStream::open(directory.path(), Default::default()).await?),
+        state_root()?,
+    );
+    let snapshot = store.load(&address).await?;
+    let state = snapshot.state().ok_or("missing recovered actor")?;
+    let applied = u64::from(fail_at == 2);
+    assert_eq!(state.cursor("inbox"), Some(applied));
+    assert_eq!(state.journal_tail(), applied);
+    assert_eq!(state.metadata().count(), usize::try_from(applied)? * 2);
+    let escrow = state
+        .metadata
+        .get(crate::escrow::KEY)
+        .map(|record| crate::escrow::Escrow::decode(record))
+        .transpose()?;
+    assert_eq!(
+        escrow.map(crate::escrow::Escrow::remaining),
+        (applied != 0).then_some(Some(3)),
+        "uncertain acknowledgement cannot split spend from its consumed input"
+    );
+    assert_eq!(state.checkpoint().is_some(), applied != 0);
+    assert_eq!(state.alarm().pending(), (applied != 0).then_some(42));
+    let binding = store.bind_state(snapshot, 1)?;
+    assert_eq!(
+        binding.read_journal(0, 1).await?.len(),
+        usize::try_from(applied)?
+    );
     Ok(())
 }
 
 async fn resident_work() -> TestResult {
+    let mut debit_work = None;
     for population in [1_usize, 100_000] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(provider.clone(), state_root()?);
@@ -339,7 +469,7 @@ async fn resident_work() -> TestResult {
             for index in 0..population {
                 state.put(format!("key-{index:06}"), Bytes::from_static(b"untouched"));
             }
-            Ok(())
+            state.fund_escrow(crate::escrow::Escrow::new(Some(2)))
         })?;
         // This oracle measures resident transactions, including pending work.
         // Publication and recovery are checked separately on persisted state;
@@ -372,6 +502,7 @@ async fn resident_work() -> TestResult {
                             state.get("key-000000").map(Bytes::as_ref),
                             Some(b"untouched".as_slice())
                         );
+                        assert_eq!(state.escrow()?.remaining(), Some(2));
                         Ok(())
                     })
                     .unwrap();
@@ -396,14 +527,27 @@ async fn resident_work() -> TestResult {
                     .unwrap();
             });
             assert_eq!(
-                put.count_total, 2,
-                "only the touched key and undo storage allocate"
+                put.count_total, 1,
+                "an existing key needs only undo storage, never a key clone"
+            );
+            let debit = acyclic_test_support::measure(|| {
+                binding.transaction(|state| state.debit_escrow(1)).unwrap();
+            });
+            let work = (debit.count_total, debit.bytes_total);
+            if let Some(expected) = debit_work {
+                assert_eq!(work, expected, "debit work grew with unrelated metadata");
+            } else {
+                debit_work = Some(work);
+            }
+            println!(
+                "escrow_metadata={population} debit_allocations={} debit_bytes={}",
+                debit.count_total, debit.bytes_total
             );
         }
         rollback(&mut binding, staged_tail)?;
         binding.transaction(|state| {
             assert_eq!(state.journal_tail(), staged_tail);
-            assert_eq!(state.entries().len(), population);
+            assert_eq!(state.entries().len(), population + 1);
             Ok(())
         })?;
         assert_eq!(provider.requests().since(before).data(), 0);

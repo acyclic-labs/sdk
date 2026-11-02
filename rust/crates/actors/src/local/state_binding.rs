@@ -17,15 +17,55 @@ pub struct ActorStateTransaction<'a> {
     journal_tail: u64,
     journal_len: usize,
     accepted: bool,
+    branch: Option<acyclic_stream::CommitId>,
 }
 impl ActorStateTransaction<'_> {
+    /// Read the one balance at this original actor cut. Missing funding refuses;
+    /// it never inherits an unbounded fallback from another agent or branch.
+    pub fn escrow(&self) -> Result<crate::escrow::Escrow, Error> {
+        Ok(crate::escrow::Escrow::decode(
+            self.get(crate::escrow::KEY)
+                .ok_or(crate::escrow::Error::Missing)?,
+        )?
+        .require_branch(self.branch)?)
+    }
+    /// Stage funding supplied by the original admitting host. This grants no
+    /// execution or allocation authority. Publish it with the original funding
+    /// debit/creation; an existing balance cannot be reset, including at zero.
+    pub fn fund_escrow(&mut self, funding: crate::escrow::Escrow) -> Result<(), Error> {
+        if self.get(crate::escrow::KEY).is_some() {
+            return Err(crate::escrow::Error::AlreadyFunded.into());
+        }
+        self.put(
+            crate::escrow::KEY.into(),
+            funding.in_branch(self.branch).encode(),
+        );
+        Ok(())
+    }
+    /// Stage a debit in this actor's existing transaction. Join it through
+    /// ActorStateBinding::prepare_publish to the original consumed input;
+    /// neither a preparatory flush nor an independent write is required.
+    pub fn debit_escrow(&mut self, units: u64) -> Result<(), Error> {
+        let mut escrow = self.escrow()?;
+        escrow.debit(units)?;
+        if units != 0 && escrow.remaining().is_some() {
+            self.put(crate::escrow::KEY.into(), escrow.encode());
+        }
+        Ok(())
+    }
     /// Read this transaction's own writes and its original committed cut.
     pub fn get(&self, key: &str) -> Option<&Bytes> {
         self.state.metadata.get(key)
     }
     /// Stage metadata; only a successful publication confirms durability.
     pub fn put(&mut self, key: String, value: Bytes) {
-        let previous = self.state.metadata.insert(key.clone(), value);
+        let previous = match self.state.metadata.get_mut(&key) {
+            Some(previous) => Some(std::mem::replace(previous, value)),
+            None => {
+                self.state.metadata.insert(key.clone(), value);
+                None
+            }
+        };
         self.undo.push((key, previous));
     }
     /// Enumerate this actor's metadata in canonical key order.
@@ -160,7 +200,8 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     }
 
     /// Apply the public JavaScript projection's values through the SAME native
-    /// transaction path. The packet supplies no actor, epoch, stream or key.
+    /// transaction path. The packet supplies no actor, epoch, stream or
+    /// publication identity; its metadata keys remain actor-local.
     /// The host then calls flush once under its retained invocation identity.
     pub fn apply(&mut self, commit: crate::guest::ActorStateCommit) -> Result<(), Error> {
         let from = decimal(&commit.journal_from)?;
@@ -169,6 +210,9 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 return Err(Error::Conflict);
             }
             for write in commit.writes {
+                if write.key == crate::escrow::KEY {
+                    return Err(crate::escrow::Error::GuestWrite.into());
+                }
                 state.put(write.key, write.value);
             }
             if !commit.journal.is_empty() {
@@ -202,11 +246,13 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if self.fenced {
             return Err(Error::Conflict);
         }
+        let branch = self.snapshot.placement_branch();
         let state = self.snapshot.state.as_mut().ok_or(Error::Conflict)?;
         if state.paused {
             return Err(Error::Paused);
         }
         let mut transaction = ActorStateTransaction {
+            branch,
             alarm: state.alarm.clone(),
             journal_tail: state.journal_tail,
             journal_len: self.journal.len(),

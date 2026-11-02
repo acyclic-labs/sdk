@@ -35,6 +35,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             return Ok(snapshot);
         }
         let state = State {
+            placement_branch: None,
             metadata: BTreeMap::new(),
             journal_tail: 0,
             epoch: 0,

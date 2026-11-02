@@ -1026,7 +1026,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             path: inbox.clone(),
         }],
         mutation: CommitMutation::Append {
-            path: inbox,
+            path: inbox.clone(),
             records: vec![Bytes::from_static(b"emit").into()],
         },
     })?;
@@ -1044,11 +1044,111 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert!(records(&*provider, "out/paused").await?.is_empty());
+    // Control must resume an inherited pause before dispatch can claim. An
+    // inherited epoch (including zero) still cannot publish directly.
+    let cut = store.load(&address).await?;
+    let child = actor("paused-child-zero")?;
+    let mut fork = PreparedPublish::foreign(key("paused-child-zero")?);
+    for effect in store.fork(
+        &cut,
+        &child,
+        cut.state()
+            .ok_or("missing paused parent")?
+            .subscriptions()
+            .clone(),
+    )? {
+        fork.join(effect)?;
+    }
+    store.submit(fork).await?;
+    let inherited = store.load(&child).await?;
+    assert!(matches!(
+        store
+            .set_paused(&inherited, 0, false, key("parent-resume-zero")?)
+            .await,
+        Err(Error::Conflict)
+    ));
+    runtime.pause(&child, false).await?;
+    let resumed = store.load(&child).await?;
+    assert_eq!(
+        resumed.tail,
+        inherited.tail + 1,
+        "claim and resume must share one publication"
+    );
+    assert_eq!(resumed.state().map(State::epoch), Some(1));
+    assert_eq!(resumed.state().map(State::paused), Some(false));
+    assert_eq!(
+        store.load(&address).await?.state().map(State::paused),
+        Some(true)
+    );
+    assert!(runtime.release(&child));
     runtime.pause(&address, false).await?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(
         records(&*provider, "out/paused").await?,
         vec![Bytes::from_static(b"r0")]
+    );
+    runtime.pause(&address, true).await?;
+    let cut = store.load(&address).await?;
+    let parent_epoch = cut.state().ok_or("missing paused parent")?.epoch();
+    let child = actor("paused-child-placed")?;
+    let mut fork = PreparedPublish::foreign(key("paused-child-placed")?);
+    for effect in store.fork(
+        &cut,
+        &child,
+        cut.state()
+            .ok_or("missing paused parent")?
+            .subscriptions()
+            .clone(),
+    )? {
+        fork.join(effect)?;
+    }
+    store.submit(fork).await?;
+    let inherited = store.load(&child).await?;
+    assert!(matches!(
+        store
+            .set_paused(
+                &inherited,
+                parent_epoch,
+                false,
+                key("parent-resume-placed")?
+            )
+            .await,
+        Err(Error::Conflict)
+    ));
+    provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: vec![CommitMutation::Append {
+                path: inbox,
+                records: vec![Bytes::from_static(b"emit").into()],
+            }],
+            idempotency_key: key("paused-child-input")?,
+        })
+        .await?;
+    runtime.pause(&child, false).await?;
+    let resumed = store.load(&child).await?;
+    assert_eq!(
+        resumed.tail,
+        inherited.tail + 1,
+        "claim and resume must share one publication"
+    );
+    runtime.drain_actor(&child).await?;
+    let child_state = store.load(&child).await?;
+    assert_eq!(
+        child_state.state().map(State::epoch),
+        Some(parent_epoch + 1)
+    );
+    assert_eq!(
+        child_state.state().and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    let parent = store.load(&address).await?;
+    assert_eq!(parent.state().map(State::epoch), Some(parent_epoch));
+    assert_eq!(parent.state().map(State::paused), Some(true));
+    assert_eq!(
+        parent.state().and_then(|state| state.cursor("inbox")),
+        Some(1)
     );
     Ok(())
 }
