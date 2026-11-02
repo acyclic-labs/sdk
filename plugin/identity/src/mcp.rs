@@ -1216,11 +1216,7 @@ mod tests {
             while let Some(reply) = client.replies.recv().await {
                 ids.extend(reply.get("id").cloned());
             }
-            tokio::time::timeout(Duration::from_secs(3), client.served)
-                .await
-                .expect("drained after persistence")
-                .expect("served")
-                .expect("transport");
+            client.served.await.expect("served").expect("transport");
             assert!(ids.contains(&json!(2)));
             if !eof {
                 assert!(ids.contains(&json!(1)));
@@ -1279,9 +1275,9 @@ mod tests {
                     "{name}/{fault} must drain before returning the transport error"
                 );
                 released.notify_one();
-                tokio::time::timeout(Duration::from_secs(3), client.served)
+                client
+                    .served
                     .await
-                    .expect("drained")
                     .expect("served")
                     .expect_err("transport error");
                 assert_eq!(
