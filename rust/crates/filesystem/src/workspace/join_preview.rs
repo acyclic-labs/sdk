@@ -18,6 +18,18 @@ impl JoinConflictEntry {
     }
 }
 
+/// One selected path retaining its original backing independently of the preview.
+pub struct JoinPathEntry {
+    path: Retained<NamespacePath>,
+}
+
+impl JoinPathEntry {
+    /// The first authenticated alias, preserving the original name encodings.
+    pub fn value(&self) -> &NamespacePath {
+        &self.path.value
+    }
+}
+
 /// A read-only projection of a join's pinned endpoints. Clean paths and raw
 /// conflicts advance independently, without publishing either workspace.
 /// Rows retain their original backing if they outlive the preview. A refused
@@ -151,6 +163,45 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     /// The original immutable source, target and base, retained for selection.
     pub fn plan(&mut self) -> &JoinPlan<A, O> {
         &self.owner.borrow().0.plan
+    }
+
+    /// Reconstructs one identity's first alias from the selected pinned side.
+    /// Uses the preview's cumulative work and cancellation without advancing
+    /// either cursor. A refused or withdrawn lookup is terminal.
+    pub async fn file_path(
+        &mut self,
+        file_id: FileId,
+        side: ConflictSide,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<JoinPathEntry>>, WorkspaceError> {
+        let (state, mut accounting) = self.owner.borrow();
+        let result = async {
+            if state.failed {
+                return Err(FsError::InvalidDiff.into());
+            }
+            state.failed = true;
+            accounting.check()?;
+            let plan = &state.plan;
+            let (workspace, generation) = match side {
+                ConflictSide::Base => (&plan.base_workspace, plan.base.id),
+                ConflictSide::Ours => (&plan.target_head.workspace, plan.target_head.id),
+                ConflictSide::Theirs => (&plan.source_head.workspace, plan.source_head.id),
+            };
+            let cancellation = accounting.cancellation();
+            let path = workspace
+                .first_path_at_with_accounting(generation, file_id, &mut accounting, cancellation)
+                .await?
+                .map(|path| {
+                    Retained::from_owned(path, &mut accounting).map(|path| JoinPathEntry { path })
+                })
+                .transpose()?;
+            state.failed = false;
+            Ok(path)
+        }
+        .await;
+        let work = accounting.spent();
+        result
+            .map(|value| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
     }
 
     /// Reads one selected side's exact record under this preview's original

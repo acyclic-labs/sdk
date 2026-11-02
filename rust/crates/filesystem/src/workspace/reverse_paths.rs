@@ -1,5 +1,43 @@
 use super::*;
 
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    pub(super) async fn first_path_at_with_accounting(
+        &self,
+        generation: GenerationId,
+        file_id: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<crate::kernel::Owned<NamespacePath>>, WorkspaceError> {
+        let mut accounting = accounting.allocation_scope()?;
+        let result = async {
+            let checkout = self
+                .open_checkout(
+                    GenerationSelector::Exact(generation),
+                    CheckoutMode::read_only_pinned(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let result = super::namespace_view::NamespaceView {
+                objects: self.volume.fs.objects(),
+                config: self.volume.config(),
+                root: checkout.value.root(),
+            }
+            .first_path(file_id, &mut accounting, cancellation)
+            .await;
+            let retired = checkout.retire(&mut accounting);
+            result
+                .and_then(|path| retired.map(|()| path))
+                .map_err(Into::into)
+        }
+        .await;
+        if result.is_ok() {
+            accounting.keep();
+        }
+        result
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
     /// Finds paths for one stable file identity under supplied work limits.
     pub async fn paths_for_file_id(

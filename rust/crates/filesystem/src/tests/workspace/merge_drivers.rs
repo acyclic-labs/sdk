@@ -356,6 +356,7 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
     assert_eq!(pages.conflict_count(), 3);
     assert_eq!(pages.plan().target_head(), plan.target_head());
     let mut conflict_rows = Vec::new();
+    let mut selected_paths = Vec::new();
     loop {
         let peeked = pages.peek_conflict().map_err(|failure| failure.error)?;
         let expected = peeked.value.cloned();
@@ -391,6 +392,30 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?
                 .value;
+            let file_id =
+                record
+                    .as_ref()
+                    .map(|record| record.file_id)
+                    .or_else(|| match row.value() {
+                        crate::MergeConflict::File(id) => Some(*id),
+                        crate::MergeConflict::Binding { .. } => None,
+                    });
+            if let Some(file_id) = file_id {
+                let before = pages.work();
+                let path = pages
+                    .file_path(file_id, side)
+                    .await
+                    .map_err(|failure| failure.error)?;
+                assert!(path.work.items_examined > before.items_examined);
+                assert_eq!(path.value.is_some(), record.is_some());
+                if let Some(path) = path.value {
+                    assert!(matches!(
+                        namespace_path_text(path.value())?.as_str(),
+                        "/shared" | "/deleted" | "/added"
+                    ));
+                    selected_paths.push(path);
+                }
+            }
         }
         match row.value() {
             crate::MergeConflict::File(id) => {
@@ -479,7 +504,14 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         row.value(), crate::MergeConflict::Binding { name, .. }
             if name.as_bytes() == b"added"
     )));
-    drop((clean, conflict_rows));
+    assert_eq!(selected_paths.len(), 7);
+    for path in &selected_paths {
+        assert!(matches!(
+            namespace_path_text(path.value())?.as_str(),
+            "/shared" | "/deleted" | "/added"
+        ));
+    }
+    drop((clean, conflict_rows, selected_paths));
 
     // Output admission may suspend after peek. That cached identity cannot
     // bypass cancellation when the encoder later attempts to consume it.
@@ -529,6 +561,55 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
     ));
     assert!(selected_pages.next_clean().await.is_err());
     drop((selected_pages, selected));
+
+    let calibration_plan = unbounded!(agent.join_into(&main), plan())?;
+    let calibration = calibration_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| failure.error)?;
+    let preparation_items = calibration.work.items_examined;
+    drop(calibration);
+    let bounded_plan = unbounded!(agent.join_into(&main), plan())?;
+    let mut bounded_pages = bounded_plan
+        .preview_pages(
+            options,
+            WorkBudget {
+                items_examined: preparation_items,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    assert!(
+        bounded_pages
+            .file_path(root_record.file_id, crate::ConflictSide::Ours)
+            .await
+            .is_err(),
+        "selected path minted another item allowance"
+    );
+    assert!(bounded_pages.next_clean().await.is_err());
+    drop(bounded_pages);
+
+    let path_plan = unbounded!(agent.join_into(&main), plan())?;
+    let path_cancel = CancellationToken::new();
+    let mut path_pages = path_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &path_cancel)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let root_id = root_record.file_id;
+    path_cancel.cancel();
+    assert!(matches!(
+        path_pages
+            .file_path(root_id, crate::ConflictSide::Ours)
+            .await
+            .map_err(|failure| failure.error),
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert!(path_pages.next_clean().await.is_err());
+    drop(path_pages);
 
     let refused_plan = unbounded!(agent.join_into(&main), plan())?;
     assert!(
