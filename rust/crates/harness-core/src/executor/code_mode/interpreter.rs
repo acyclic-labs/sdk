@@ -228,11 +228,7 @@ mod tests {
             "1".into(),
             &mut None,
         )?;
-        let host = Arc::new(FilesystemHost::new(
-            acyclic_fs::Fs::memory(),
-            &provider,
-            None,
-        )?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
         let volume = VolumeRef::new(
             provider,
             "files".into(),
