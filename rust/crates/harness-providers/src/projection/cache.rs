@@ -134,11 +134,15 @@ pub(crate) fn encode(
         breakpoint: None,
     }));
     let count = body.messages.len();
-    let marked = body.messages.iter().enumerate().map(|(index, message)| Marked {
-        message,
-        last: (index + 1 == count).then_some(count as u64),
-        writer: &writer,
-    });
+    let marked = body
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| Marked {
+            message,
+            last: (index + 1 == count).then_some(count as u64),
+            writer: &writer,
+        });
     acyclic_model_render::render(&body.header()?, marked, &body.tail()?, &mut &writer)
         .map_err(|_| crate::invalid("model request encoding failed"))?;
     let output = writer.0.into_inner();

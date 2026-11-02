@@ -47,7 +47,8 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
             "generation codec preserves the resolved model"
         );
     } else {
-        let generation: serde_json::Value = serde_json::from_slice(&body.encode().unwrap()).unwrap();
+        let generation: serde_json::Value =
+            serde_json::from_slice(&body.encode().unwrap()).unwrap();
         assert_eq!(
             generation["model"], name,
             "generation codec preserves the resolved model"

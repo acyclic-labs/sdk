@@ -135,7 +135,11 @@ impl<'a> Request<'a> {
         };
         let mut fields = Fields::default();
         if let Some(tools) = values.remove("tools") {
-            assert_eq!(tools, serde_json::json!([]), "fixture tools are typed declarations");
+            assert_eq!(
+                tools,
+                serde_json::json!([]),
+                "fixture tools are typed declarations"
+            );
             let empty = acyclic_model_render::ToolDeclarations::<Value>::new(family, Vec::new());
             fields.set_tools(family, &empty.unwrap()).unwrap();
         }
