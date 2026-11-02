@@ -37,3 +37,33 @@ fn first_pull_does_not_collect_history_or_wait_for_source_eof() {
     assert_eq!(futures::executor::block_on(cursor.next()), Ok(None));
     assert_eq!(polled.get(), 1);
 }
+
+#[test]
+fn failed_pull_ownership_is_not_eof_and_close_drops_the_original_source() {
+    let retained = Rc::new(());
+    let source = futures::stream::once({
+        let retained = Rc::clone(&retained);
+        async move {
+            drop(retained);
+            Ok::<_, &str>(1)
+        }
+    })
+    .boxed_local();
+    let cursor = PullCursor::new(source, "original ownership unavailable");
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _owner = cursor.stream.lock().unwrap();
+        panic!("original pull owner failed");
+    }));
+    assert!(failure.is_err());
+    assert_eq!(
+        futures::executor::block_on(cursor.next()),
+        Err("original ownership unavailable")
+    );
+    assert_eq!(Rc::strong_count(&retained), 2, "source was never polled");
+    cursor.close();
+    assert_eq!(Rc::strong_count(&retained), 1, "close drops the same source");
+    assert_eq!(
+        futures::executor::block_on(cursor.next()),
+        Err("original ownership unavailable")
+    );
+}

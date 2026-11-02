@@ -22,7 +22,12 @@ impl<T, E: Clone> PullCursor<T, E> {
     }
     /// Pulls one value; close interrupts the pending source poll.
     pub async fn next(&self) -> Result<Option<T>, E> {
-        let Some(mut stream) = self.stream.lock().ok().and_then(|mut slot| slot.take()) else {
+        let Some(mut stream) = self
+            .stream
+            .lock()
+            .map_err(|_| self.unavailable.clone())?
+            .take()
+        else {
             return Ok(None);
         };
         let mut cancellation = self.cancel.subscribe();
@@ -50,7 +55,13 @@ impl<T, E: Clone> PullCursor<T, E> {
     /// Stops the original source, including an outstanding `next`.
     pub fn close(&self) {
         self.cancel.send_replace(true);
-        let stream = self.stream.lock().ok().and_then(|mut slot| slot.take());
+        // A failed owner forbids further pulls, but close still disposes the
+        // retained source. Recover the guard only for destruction, never EOF.
+        let stream = self
+            .stream
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         drop(stream);
     }
 }
