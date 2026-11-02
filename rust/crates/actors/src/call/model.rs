@@ -9,7 +9,8 @@
 //! outcome a reader observes, once present, must never change. Cancellation
 //! commits in its one step or finds the call already ended, and the call is
 //! settled right after it (it never waits). Independent controls remove
-//! settlement guards, session guards or the original retry identity.
+//! settlement guards, session guards or the original retry identity, or
+//! incorrectly fence cancellation behind the executor's ended session.
 use super::*;
 use acyclic_stream::{
     CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
@@ -35,6 +36,7 @@ enum Fault {
     Fence,
     Retry,
     Producer,
+    Cancel,
 }
 
 struct Model {
@@ -203,10 +205,15 @@ impl Model {
                 }
             }
             Hop::Cancel => {
-                let commit = self
+                let mut commit = self
                     .call
                     .cancel("stop")
                     .map_err(|error| error.to_string())?;
+                if self.fault == Fault::Cancel {
+                    commit.conditions.push(CommitCondition::Absent {
+                        path: self.fence.clone(),
+                    });
+                }
                 let commit = self.guard(commit);
                 if self.publish(commit).await? && self.expected.is_none() {
                     self.expected = Some(if self.accepted {
@@ -325,8 +332,8 @@ impl Model {
             (Some(before), None) => return Err(format!("outcome {before:?} was withdrawn")),
             _ => self.observed = outcome,
         }
-        if hop == Hop::Cancel && self.observed.is_none() {
-            return Err("a cancel left the call open".into());
+        if hop == Hop::Cancel && self.terminals != 1 {
+            return Err("cancel did not retain exactly one terminal record".into());
         }
         Ok(())
     }
@@ -427,6 +434,17 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     ] {
         assert!(explore(fault).await? > 0);
     }
+    // A virtual fence outcome alone must not satisfy cancellation's durable
+    // terminal guarantee. Wrongly tying cancel to the executor's session
+    // refuses this commit even though that virtual outcome is already known.
+    let mut model = Model::new(Fault::Cancel, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+    for hop in [Hop::Request, Hop::Executor, Hop::Fence] {
+        model.step(hop).await?;
+    }
+    assert_eq!(
+        model.step(Hop::Cancel).await.unwrap_err(),
+        "cancel did not retain exactly one terminal record"
+    );
     // Select each terminal kind independently of the schedule. Acceptance,
     // multiple chunks, settlement and a later replay/cancel/fence all use the
     // same generated entry point as arbitrary fuzz inputs.
