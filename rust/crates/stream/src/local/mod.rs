@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]
-use crate::OwnedBytes as Bytes;
+use crate::{ForkRequest, OwnedBytes as Bytes};
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
@@ -42,10 +42,9 @@ use crate::WriteRequest;
 use crate::journal::{decode_command, replay};
 use crate::obs;
 use crate::{
-    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits,
-    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
-    SystemUnixMillisClock, UnixMillisClock,
+    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, CommittedEnvelope, IdempotencyKey,
+    IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest, RecordStream,
+    StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";

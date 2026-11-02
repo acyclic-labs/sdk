@@ -486,7 +486,7 @@ impl Pool {
                 }
             }
             Some(Body::Closed(closed)) => {
-                let error = Self::closed(route, id, &closed);
+                let error = Self::closed(route, &closed);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.
                     self.flush_watermark(id)?;
@@ -634,7 +634,7 @@ impl Pool {
         Ok(())
     }
     /// End a route with the server's status after its earlier records.
-    fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {
+    fn closed(route: &mut Route, closed: &wire::SessionClosed) -> Option<StreamError> {
         // Only an opened bounded follow or actor socket ends cleanly (a socket
         // after its final frame); anywhere else "end" is a protocol error, and
         // a checked follow never ends unconfirmed.
