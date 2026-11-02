@@ -88,8 +88,12 @@ pub async fn check(bytes: &[u8]) -> Result<(), StreamError> {
         ReadKeySeek::range(vec![key], vec![end], before),
     ] {
         let model = expected(&entries, &seek, from);
-        let actual = selected(&provider, &source, seek, from, page).await?;
-        agrees(&actual, &model)?;
+        match selected(&provider, &source, seek, from, page).await {
+            Err(StreamError::OutOfRange) if from > tail => {}
+            Ok(actual) if from <= tail => agrees(&actual, &model)?,
+            Err(error) => return Err(error),
+            Ok(_) => return Err(StreamError::InvalidResponse),
+        }
     }
 
     let start = tail + 1 + u64::from(byte(6) % 4);
@@ -132,6 +136,10 @@ mod tests {
     #[tokio::test]
     async fn generated_selectors_match_entries_and_detect_wrong_order_bounds_and_cursor()
     -> Result<(), StreamError> {
+        check(include_bytes!(
+            "../../../fuzz/corpus/read_selectors/86cc8858b5e66e4e58f47518391a4cda39453134"
+        ))
+        .await?;
         for mask in 0..32 {
             for observed in [0, 1] {
                 check(&[mask, 3, 7, 0, 8, 1, 3, observed]).await?;
