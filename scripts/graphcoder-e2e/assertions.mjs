@@ -28,6 +28,17 @@ export function subset(actual, expected) {
   return actual === expected;
 }
 
+// Both provider records and PostToolUse carry the original ToolResult value.
+// A completed call may still be a refusal; only explicit case expectations
+// admit one, regardless of the enclosing process's successful exit.
+export function toolOutcome(value, expectedErrors, recovery, caseId) {
+  const error = value && typeof value === "object" ? value.error
+    : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
+  if (error !== undefined && error !== null) assert.ok(
+    expectedErrors?.some(text => JSON.stringify(error).includes(text)),
+    `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+}
+
 export function toolResults(records) {
   const results = [];
   for (const { body } of records) {
@@ -71,9 +82,6 @@ export function requests(test, records) {
     }), `step=assert exact file version; original file identity missing ${JSON.stringify(expected)}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${test.id}`);
   }
   for (const text of test.assert.tool_contains ?? []) assert.ok(outputs.some(value => JSON.stringify(value).includes(text)), `actual tool result missing ${text}`);
-  for (const value of outputs) {
-    const error = value && typeof value === "object" ? value.error
-      : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : null;
-    if (error) assert.ok((test.assert.tool_errors ?? []).some(text => JSON.stringify(error).includes(text)), `unexpected tool error ${JSON.stringify(error)}`);
-  }
+  for (const value of outputs) toolOutcome(value, test.assert.tool_errors,
+    "node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL", test.id);
 }

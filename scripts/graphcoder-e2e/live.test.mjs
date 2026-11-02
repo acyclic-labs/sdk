@@ -21,7 +21,20 @@ test("live oracle uses the shipping text and committed JSONL contracts", () => {
 test("model prose and pre-tool events cannot prove a completed native tool", () => {
   assert.throws(() => requireTools([], ["shell"]));
   assert.throws(() => requireTools([{ hook_event_name: "PreToolUse", tool_name: "shell" }], ["shell"]));
-  requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell" }], ["shell"]);
+  // SDK hook envelopes are internal contract controls, not external captures.
+  requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response: { text: "done" } }], ["shell"]);
+  assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell" }], ["shell"]), /admit completed shell result/);
+  assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response: null }], ["shell"]), /admit completed shell result/);
+  for (const tool_response of [{ error: "denied" }, { error: "" }, { error: false },
+    "tool executor rejected the admitted call (conflict): workspace generation changed"]) {
+    assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "shell", tool_response }], ["shell"]), /unexpected tool error/);
+  }
+  // Even a later successful call cannot erase an earlier failure or a failed
+  // auxiliary tool that the required-tool list did not mention.
+  assert.throws(() => requireTools([
+    { hook_event_name: "PostToolUse", tool_name: "fs", tool_response: { error: "merge failed" } },
+    { hook_event_name: "PostToolUse", tool_name: "shell", tool_response: { text: "done" } },
+  ], ["shell"]), /merge failed/);
   assert.throws(() => requireTools([{ hook_event_name: "PostToolUse", tool_name: "spawn" }], ["spawn", "wait"]));
 });
 
@@ -43,6 +56,7 @@ test("collaboration requires the spawned child's exact settled public result", (
     events => { events[1].tool_response.settled = []; },
     events => { events[1].tool_response.settled[0].phase = "failed"; },
     events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
+    events => { events[1].tool_response.error = "wait failed"; },
   ]) {
     const events = hooks();
     mutate(events);
