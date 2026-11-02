@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtempSync, open as fsOpen, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +214,26 @@ test("a write that fails with a chunk queued rejects the pending waiter; the que
   assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
 });
 
+test("transcript withdrawal ends active and late spool waits with the original cause", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "e2e-transcript-loss-"));
+  for (const alreadyClosed of [false, true]) await t.test(alreadyClosed ? "retained close" : "active close", async () => {
+    const transcript = createWriteStream(join(directory, `${alreadyClosed}.jsonl`));
+    const closed = once(transcript, "close");
+    if (alreadyClosed) { transcript.destroy(); await closed; }
+    const source = new PassThrough();
+    const events = new Spool(source, new Promise(() => {}), { transcript });
+    const waiting = assert.rejects(events.next(() => false), error => error.kind === "spool" && error.detail.code === "ERR_STREAM_PREMATURE_CLOSE");
+    if (!alreadyClosed) { transcript.destroy(); await closed; }
+    // The original close is the finite boundary: no process exit or timer
+    // may supply a substitute failure when transcript ownership is lost.
+    await finished(transcript, { readable: false, cleanup: true }).catch(() => {});
+    assert.equal(events.ended?.kind, "spool");
+    await waiting;
+    await assert.rejects(events.next(() => true), error => error === events.ended);
+    await assert.rejects(events.history(), error => error === events.ended);
+    source.end();
+  });
+});
 test("a source closed without ending still ends the spool and its transcript", async () => {
   const source = new PassThrough();
   let close; const closed = new Promise(resolve => { close = resolve; });

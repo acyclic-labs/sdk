@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { close, closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync, write, writev } from "node:fs";
 import { tmpdir } from "node:os";
-import { Writable } from "node:stream";
+import { finished, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import assert from "node:assert/strict";
 import { isAbsolute, join } from "node:path";
@@ -416,7 +416,12 @@ export class Spool {
     this.#key = key; this.#unique = unique;
     if (typeof transcript === "string") { this.#path = transcript; this.#file = createWriteStream(transcript); }
     else { this.#file = transcript; this.#path = typeof transcript?.path === "string" ? transcript.path : undefined; }
-    this.#file?.on("error", error => this.#break(error));
+    if (this.#file) {
+      const cleanup = finished(this.#file, { readable: false }, error => {
+        cleanup();
+        if (error) this.#break(error);
+      });
+    }
     const decoder = new StringDecoder("utf8");
     let partial = "";
     const lines = (text, done) => {

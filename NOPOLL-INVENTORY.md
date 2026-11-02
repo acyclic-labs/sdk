@@ -5117,3 +5117,11 @@ The live acceptance driver switched to public child settlement in #1940 and no l
 Area cleanup removes the obsolete cursor, decoder, read pump, watcher lifecycle and their historical source dispositions. No replacement wait, timer, watcher or event mechanism is introduced. Runtime acceptance costs remain unchanged because the retired waiter had no caller; its private tests no longer create file watchers or read buffers. Existing captured-host and real-recorder controls remain the qualification path.
 
 Windows x64, Node 24.4.1: the three retained public-settlement, committed-merge and real completed-tool recorder controls passed (3/3, 737.8537 ms total). The live driver also passes its syntax check. No new fixture or execution path is introduced.
+
+### Transcript withdrawal retains the original terminal
+
+The active JSONL spool observes its original transcript through Node's `finished` primitive. A transcript destroyed without a write error now terminates active and late spool observations with the original `ERR_STREAM_PREMATURE_CLOSE`, wrapped in the existing typed `SpoolEnded` cause. Original write failures still latch that same failure for event and history consumers; the queued source chunk is released only after the spool becomes terminal.
+
+Area cleanup replaces the separate persistent error listener with the standard completion observer and removes its listeners at completion. No extra transcript, descriptor, read, payload copy, process, task, timer, request or durability barrier is required. The one completion registration adds a fixed number of lifecycle listeners; exact allocation bytes are unmeasured. Event decoding and per-waiter comparison work are unchanged; this is not a whole-observer residency or constant-time broadcast claim.
+
+Windows x64, Node 24.4.1: the retained history, write-error, queued-chunk and source-close controls plus actual file-stream withdrawal passed (9/9 including subcontrols, 119.5465 ms total). The new control covers both active and already closed original file streams. Restoring only the old error listener makes that same control fail at original stream completion, without a timer, substitute process terminal or hang. Corrected source bytes were restored unconditionally.
