@@ -892,10 +892,10 @@ mod tests {
         }
 
         async fn reply(&mut self) -> Value {
-            tokio::time::timeout(Duration::from_secs(3), self.replies.recv())
+            self.replies
+                .recv()
                 .await
-                .expect("reply in time")
-                .expect("reply")
+                .expect("identity transport closed before its reply")
         }
     }
 

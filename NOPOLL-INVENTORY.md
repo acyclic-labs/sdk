@@ -1,5 +1,28 @@
 # Polling and timed-wait inventory
 
+Identity reply observation successor:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:894` | Three-second reply readiness timeout | Await the existing reply channel. Its sole sender belongs to the original transport Writer; writer exit closes it and fails a missing-reply assertion. | Source complete; unqualified |
+
+The existing identity transport controls retain their exact initialization,
+tool-list, invalid-argument, ping and cancellation reply assertions. Replies
+published before observation remain queued. The same writer's EOF, error or
+unwind drops the sole sender, so a missing reply fails on channel closure without
+waiting for an elapsed-time refusal. Existing broken-output and EOF controls
+remain; no new mock or serving path is added. Suppressing a write and dropping
+its producer is the source-loss negative; unexpected or reordered replies fail
+the original exact reply assertions. These controls remain unexecuted here.
+
+Per reply, channel receives stay one and readiness timers change from one to
+zero. Production work, tasks, channels, syscalls, round trips, durability
+barriers, allocations and payload copies are unchanged. Observation dequeues
+one visible reply without scanning request history or agents; JSON processing
+remains proportional to the original frame. Native counts and event latency
+remain unmeasured. Other test readiness deadlines and the admission retry loop
+remain open below.
+
 Identity timer observer successor:
 
 | Source at preceding census | Kind | Replacement and terminal | Status |
