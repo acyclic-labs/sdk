@@ -49,10 +49,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 self.refresh_source(identity.channel_id);
                 return Ok(());
             }
-            Ok(Event::Record(record)) => {
+            Ok(event @ (Event::Record(_) | Event::Indexed { .. })) => {
+                let (record, next) = match event {
+                    Event::Indexed { record, next } => (record, Some(next)),
+                    Event::Record(record) => (record, None),
+                    _ => return Err(StreamError::Unavailable),
+                };
                 match Frame::from_record(
                     &identity,
                     record,
+                    next,
                     channel.followed.as_ref(),
                     channel.latest,
                 ) {

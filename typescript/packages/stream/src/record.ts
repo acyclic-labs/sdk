@@ -2,13 +2,41 @@ import { StreamLimit, type Record as WireRecord } from "../generated/proto/strea
 import { StreamError, commitId, type EncodedRecord, type ReadKeySeek } from "./types.js";
 import { validatePathValue } from "./contract.js";
 
-/** Preserve dense reads and validate sparse indexed results at every transport. */
-export function checkedReadSequence(record: Pick<EncodedRecord, "sequence" | "keys">, next: bigint, key?: ReadKeySeek): bigint {
-  if (key === undefined ? record.sequence !== next : record.sequence < next || record.sequence >= key.before
-    || !record.keys.some(value => value.length === key.key.length && value.every((byte, index) => byte === key.key[index]))) {
-    throw new StreamError("invalid_response", "read response violates its cursor or indexed key");
+/** Lexical byte order, as the Rust key index orders keys. */
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] !== right[index]) return left[index]! - right[index]!;
   }
-  return record.sequence;
+  return left.length - right.length;
+}
+
+/** Admits each read result at its place in the read, at every transport: dense
+ * for positional reads; for indexed reads the same rule as Rust's
+ * `ReadKeySeek::advance`, carrying the continuation read after each record. */
+export class ReadCursor {
+  #from: bigint;
+  #key: ReadKeySeek | undefined;
+  constructor(from: bigint, key?: ReadKeySeek) { this.#from = from; this.#key = key; }
+  admit(record: Pick<EncodedRecord, "sequence" | "keys">): bigint {
+    const key = this.#key;
+    const invalid = () => new StreamError("invalid_response", "read response violates its cursor or indexed key");
+    if (key === undefined) {
+      if (record.sequence !== this.#from) throw invalid();
+      this.#from += 1n;
+      return record.sequence;
+    }
+    const end = key.end;
+    const selected = end === undefined
+      ? record.keys.find(value => compareBytes(value, key.key) === 0)
+      : record.keys
+        .filter(value => compareBytes(value, end) < 0 && (compareBytes(value, key.key) > 0
+          || (compareBytes(value, key.key) === 0 && record.sequence >= this.#from)))
+        .sort(compareBytes)[0];
+    if (selected === undefined || record.sequence >= key.before || (end === undefined && record.sequence < this.#from)) throw invalid();
+    if (key.order === "latest_first") this.#key = { ...key, before: record.sequence };
+    else { this.#key = { ...key, key: selected }; this.#from = record.sequence + 1n; }
+    return record.sequence;
+  }
 }
 
 /** Preserve the canonical origin: only the followed path may be elided. */

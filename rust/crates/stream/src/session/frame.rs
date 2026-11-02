@@ -16,9 +16,11 @@ pub struct Frame {
 impl Frame {
     /// Freeze the provider's publicly mutable value at the one session boundary.
     /// Only this constructor pairs a record with its canonical encoded item.
+    /// The cursor after it is `next`, or by default its sequence plus one.
     pub(super) fn from_record(
         identity: &wire::SessionChannel,
         record: Record,
+        next: Option<u64>,
         followed: Option<&StreamPath>,
         latest: bool,
     ) -> Result<(Self, Option<bytes::Bytes>), StreamError> {
@@ -31,10 +33,13 @@ impl Frame {
             return Err(StreamError::LimitExceeded);
         }
         crate::changes::validate(&record.value, &record.headers)?;
-        let next = record
-            .sequence
-            .checked_add(1)
-            .ok_or(StreamError::OutOfRange)?;
+        let next = match next {
+            Some(next) => next,
+            None => record
+                .sequence
+                .checked_add(1)
+                .ok_or(StreamError::OutOfRange)?,
+        };
         let (item, key) = if latest {
             let [key] = record.headers.keys() else {
                 return Err(StreamError::InvalidArgument);

@@ -1,5 +1,5 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
-import { checkedReadSequence } from "./record.js";
+import { ReadCursor } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
@@ -209,10 +209,11 @@ export class GrpcStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "follow", path, from: authored.from });
     yield* this.#sessions.follow(path, authored);
   }
-  async *#frames(operation: string, path: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
+  async *#frames(operation: string, path: string, frames: AsyncIterable<wire.ReadResponse>, from: bigint,
     remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[], key?: import("./types.js").ReadKeySeek): AsyncIterable<EncodedRecord> {
     // The first frame carries the read's applied revision; it must prove the minimum sent.
     let minimum = atLeast;
+    const cursor = new ReadCursor(from, key);
     try {
       for await (const response of frames) {
         if (signal?.aborted) return;
@@ -220,11 +221,7 @@ export class GrpcStreamProvider implements StreamProvider {
         else this.#sessions.observe(response.applied);
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const records = values.map(value => {
-          const record = checkedRecord(value, checkedReadSequence(value, next, key), path);
-          next = record.sequence + 1n;
-          return record;
-        });
+        const records = values.map(value => checkedRecord(value, cursor.admit(value), path));
         if (remaining !== undefined) remaining -= records.length;
         for (const record of records) {
           if (signal?.aborted) return;

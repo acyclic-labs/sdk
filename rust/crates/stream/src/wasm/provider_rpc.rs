@@ -165,13 +165,15 @@ impl InjectedStream {
                     .map_err(|_| StreamError::InvalidArgument)?,
             )?
             .key
+            .map(|key| (key, from))
         } else {
             None
         };
         let path = path.clone();
-        Ok(
-            futures::stream::try_unfold((cursor, from), move |(mut cursor, next)| {
-                let (seek, path) = (seek.clone(), path.clone());
+        Ok(futures::stream::try_unfold(
+            (cursor, from, seek),
+            move |(mut cursor, next, mut seek)| {
+                let path = path.clone();
                 async move {
                     let Some(frame) = cursor.next().await? else {
                         return if read {
@@ -189,23 +191,21 @@ impl InjectedStream {
                                 return Err(StreamError::InvalidResponse);
                             };
                             let record = wire_codec::record(record, Some(&path))?;
-                            if record.sequence < next
-                                || (read && seek.is_none() && record.sequence != next)
-                                || seek.as_ref().is_some_and(|key| {
-                                    record.sequence >= key.before
-                                        || !record
-                                            .headers
-                                            .keys()
-                                            .iter()
-                                            .any(|value| value == &key.key)
-                                })
-                            {
-                                return Err(StreamError::InvalidResponse);
+                            // An indexed read's cursor counts its results.
+                            let after = match &mut seek {
+                                Some((key, from)) => {
+                                    key.advance(from, record.sequence, record.headers.keys())?;
+                                    next
+                                }
+                                None if record.sequence < next
+                                    || (read && record.sequence != next) =>
+                                {
+                                    return Err(StreamError::InvalidResponse);
+                                }
+                                None => record.sequence,
                             }
-                            let after = record
-                                .sequence
-                                .checked_add(1)
-                                .ok_or(StreamError::OutOfRange)?;
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?;
                             if data.after.as_ref().is_none_or(|cursor| {
                                 cursor.next != after || !cursor.opaque.is_empty()
                             }) {
@@ -245,11 +245,11 @@ impl InjectedStream {
                         }
                         _ => return Err(StreamError::InvalidResponse),
                     };
-                    Ok(Some((update, (cursor, after))))
+                    Ok(Some((update, (cursor, after, seek))))
                 }
-            })
-            .boxed_local(),
+            },
         )
+        .boxed_local())
     }
 }
 #[async_trait::async_trait(?Send)]

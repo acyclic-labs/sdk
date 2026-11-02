@@ -65,7 +65,7 @@ try {
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3], ["applied", 4]]);
   assertFields("ReadRequest", [["path", 1], ["from", 2], ["limit", 3], ["at_least", 4], ["key", 5]]);
-  assertFields("ReadKeySeek", [["key", 1], ["before", 2]]);
+  assertFields("ReadKeySeek", [["key", 1], ["before", 2], ["end", 3], ["order", 4]]);
   assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["applied", 6]]);
   assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);
   assertFields("RecordBatch", [["records", 1]]);

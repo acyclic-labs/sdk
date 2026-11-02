@@ -1,4 +1,4 @@
-import { checkedReadSequence } from "./record.js";
+import { ReadCursor } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
@@ -187,7 +187,7 @@ export class NativeStreamProvider implements StreamProvider {
     await validateWireRequest(request);
     let cursor: GeneratedNative.NativeStreamFollow | undefined;
     let release: (() => void) | undefined;
-    let next = request.from;
+    const admitted = new ReadCursor(request.from, request.key);
     let count = 0;
     try {
       release = this.credential?.retain();
@@ -204,8 +204,7 @@ export class NativeStreamProvider implements StreamProvider {
         catch (error) { throw invalidResponse("read", error); }
         for (const decoded of readResponseRecords(response)) {
           if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-          const record = checkedRecord(decoded, checkedReadSequence(decoded, next, request.key), path);
-          next = record.sequence + 1n;
+          const record = checkedRecord(decoded, admitted.admit(decoded), path);
           yield record;
         }
       }

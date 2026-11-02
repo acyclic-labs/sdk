@@ -21,6 +21,7 @@
     "child-status-records-share-the-page-cut-with-missing-stream-none",
     "child-status-values-headers-and-framing-obey-the-page-byte-bound",
     "records-name-the-appending-stream-through-nested-forks",
-    "commit-effects-skip-soft-effects-and-spend-keys"
+    "commit-effects-skip-soft-effects-and-spend-keys",
+    "indexed-latest-first-keys-key-ranges-follows-beyond-the-tail-and-children-pages"
   ]
 }

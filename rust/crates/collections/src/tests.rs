@@ -213,6 +213,43 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                                 prop_assert_eq!(work.claims, claims);
                             }
                         }
+                        for (first, last) in [(0, 7), (key, key + 1), (2, 5), (5, 2)] {
+                            for (from, before) in
+                                [(0, 32), (sequence, 32), (sequence, sequence + 1)]
+                            {
+                                let range = KeyedRange {
+                                    first: first.to_be_bytes(),
+                                    last: last.to_be_bytes(),
+                                    from,
+                                    before,
+                                };
+                                let mut selected = expected.iter().filter(|((k, s), _)| {
+                                    first <= *k
+                                        && *k <= last
+                                        && *s < before
+                                        && (*k > first || *s >= from)
+                                });
+                                for (descending, expected) in [
+                                    (false, selected.clone().next()),
+                                    (true, selected.next_back()),
+                                ] {
+                                    let actual = history
+                                        .entry(&range, descending, &mut work)
+                                        .map_err(TestCaseError::fail)?
+                                        .map(|entry| {
+                                            (
+                                                u64::from_be_bytes(*entry.key),
+                                                entry.sequence,
+                                                *entry.value,
+                                            )
+                                        });
+                                    prop_assert_eq!(
+                                        actual,
+                                        expected.map(|((k, s), v)| (*k, *s, *v))
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 drop(histories);

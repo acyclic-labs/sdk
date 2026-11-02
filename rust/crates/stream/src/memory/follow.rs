@@ -41,9 +41,6 @@ impl MemoryStream {
         } else {
             StreamError::NotFound
         })?;
-        if cursor.position() > path.tail {
-            return Err(StreamError::OutOfRange);
-        }
         if let Some(anchor) = anchor {
             cursor.check_anchor(path, *anchor).await?;
         }

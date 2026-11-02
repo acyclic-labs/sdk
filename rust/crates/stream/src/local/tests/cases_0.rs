@@ -1024,27 +1024,3 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
     }
     Ok(())
 }
-
-#[tokio::test]
-async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn std::error::Error>>
-{
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let path = StreamPath::new("follow/range")?;
-    provider
-        .append(AppendRequest {
-            path: path.clone(),
-            records: vec![(Bytes::from_static(b"record")).into()],
-            if_tail: None,
-            idempotency_key: crate::IdempotencyKey::unique(),
-        })
-        .await?;
-    assert!(matches!(
-        provider
-            .follow(crate::FollowRequest::new(path, 2))
-            .map_ok(crate::records_only)
-            .await,
-        Err(StreamError::OutOfRange)
-    ));
-    Ok(())
-}

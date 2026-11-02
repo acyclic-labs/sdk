@@ -597,11 +597,11 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         if !self.filter.matches(&record.headers) {
             return Err(StreamError::AccessDenied);
         }
-        self.next = record
-            .sequence
-            .checked_add(1)
-            .ok_or(StreamError::OutOfRange)?;
-        Ok(Event::Record(record))
+        self.next = self.next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+        Ok(Event::Indexed {
+            record,
+            next: self.next,
+        })
     }
 }
 

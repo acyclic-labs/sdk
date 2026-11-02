@@ -437,10 +437,10 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
             ..request.clone()
         },
         ReadRequest {
-            key: Some(crate::ReadKeySeek {
-                key: vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into(),
-                before: 2,
-            }),
+            key: Some(crate::ReadKeySeek::exact(
+                vec![0_u8; crate::MAX_RECORD_KEY_BYTES + 1],
+                2,
+            )),
             ..request
         },
     ] {

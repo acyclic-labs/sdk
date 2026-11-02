@@ -1,4 +1,4 @@
-import { checkedReadSequence, projectRecord } from "./record.js";
+import { ReadCursor, projectRecord } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -93,8 +93,8 @@ class RustStreamProvider implements StreamProvider {
     const { from, limit, key } = structuredClone(options);
     await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
     const request = wireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
-    let next = from;
-    for (const value of await this.#read(request, path)) { next = checkedReadSequence(value, next, key) + 1n; yield value; }
+    const cursor = new ReadCursor(from, key);
+    for (const value of await this.#read(request, path)) { cursor.admit(value); yield value; }
   }
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {

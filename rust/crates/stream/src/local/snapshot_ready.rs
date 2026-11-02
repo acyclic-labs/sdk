@@ -1,5 +1,4 @@
 #![cfg(all(feature = "local", not(loom)))]
-use futures::TryFutureExt as _;
 
 use crate::*;
 use futures::{
@@ -189,34 +188,13 @@ fn compare<T: Send + Debug + Eq + 'static>(
     (elapsed.get()[0], elapsed.get()[1])
 }
 
-async fn prepare<P: StreamProvider>(
-    old: &P,
-    candidate: &P,
-    baseline: &BaselineProvider,
-) -> ReadyPair {
+async fn prepare<P: StreamProvider>(candidate: &P, baseline: &BaselineProvider) -> ReadyPair {
     let path = StreamPath::new("root").unwrap();
-    // Compare exact errors as well as all record bytes/metadata and observer order.
-    let errors = [old, candidate].map(|provider| {
-        provider
-            .follow(crate::FollowRequest::new(path.clone(), COUNT as u64 + 1))
-            .map_ok(crate::records_only)
-    });
-    let [old_error, candidate_error] = errors;
-    assert_eq!(old_error.await.err(), Some(StreamError::OutOfRange));
-    assert_eq!(candidate_error.await.err(), Some(StreamError::OutOfRange));
-    {
-        ReadyPair::Records(
-            records(baseline.clone()).await,
-            candidate
-                .follow(crate::FollowRequest::new(
-                    StreamPath::new("root").unwrap(),
-                    0,
-                ))
-                .map_ok(crate::records_only)
-                .await
-                .unwrap(),
-        )
-    }
+    let candidate = candidate.follow(crate::FollowRequest::new(path, 0));
+    ReadyPair::Records(
+        records(baseline.clone()).await,
+        crate::records_only(candidate.await.unwrap()),
+    )
 }
 
 enum ReadyPair {
@@ -245,7 +223,7 @@ fn sample<P: StreamProvider>(
     let mut before = Vec::with_capacity(31);
     let mut after = Vec::with_capacity(31);
     for _ in 0..31 {
-        let ready = runtime.block_on(prepare(old, candidate, baseline));
+        let ready = runtime.block_on(prepare(candidate, baseline));
         // Ready polling is measured outside the executor's cooperative budget.
         let (old, candidate) = ready.measure(negative, label);
         before.push(old);

@@ -4,6 +4,7 @@ mod absence;
 mod atomic;
 mod backend;
 pub(crate) mod key_seek;
+mod selectors;
 mod soft;
 mod views;
 #[path = "conformance"]
@@ -44,6 +45,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     views::verify(provider).await?;
     key_seek::verify(provider).await?;
     soft::verify(provider).await?;
+    selectors::verify(provider).await?;
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;

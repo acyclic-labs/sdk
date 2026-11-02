@@ -78,10 +78,7 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
                     path: append.path.clone(),
                     from: append.start,
                     limit: 1,
-                    key: Some(crate::ReadKeySeek {
-                        key: key.clone(),
-                        before: append.end,
-                    }),
+                    key: Some(crate::ReadKeySeek::exact(key.clone(), append.end)),
                     at_least: Default::default(),
                 })
                 .await?

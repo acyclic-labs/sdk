@@ -226,10 +226,9 @@ pub struct ForkRequest {
 /// for the minimum revision or observing storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadRequest {
-    /// Optional exact indexed key. Results are ascending matches in
-    /// `[from, min(key.before, tail at open))`, bounded by `limit` matches.
-    /// EOF proves no further match in that pinned interval. A full page resumes
-    /// at the last returned sequence plus one with the same exclusive bound.
+    /// Optional indexed selector; see [`ReadKeySeek`]. `limit` counts
+    /// matches, and EOF proves no further match in the pinned interval.
+    /// [`ReadKeySeek::advance`] turns a returned record into the continuation.
     pub key: Option<ReadKeySeek>,
     /// Stream path.
     pub path: StreamPath,
@@ -264,19 +263,137 @@ impl ValidatedReadRequest {
     }
 }
 
-/// A bounded historical lookup over opaque record header keys.
+/// Order of an indexed read.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadOrder {
+    /// Ascending `(key, sequence)` order.
+    #[default]
+    Ascending,
+    /// Descending sequence order under one exact key: the first result is
+    /// the latest record with that key, found by one indexed lookup.
+    LatestFirst,
+}
+
+impl ReadOrder {
+    pub(crate) fn from_wire(value: i32) -> Result<Self, StreamError> {
+        match value {
+            0 => Ok(Self::Ascending),
+            1 => Ok(Self::LatestFirst),
+            _ => Err(StreamError::InvalidArgument),
+        }
+    }
+    pub(crate) fn to_wire(self) -> i32 {
+        match self {
+            Self::Ascending => 0,
+            Self::LatestFirst => 1,
+        }
+    }
+}
+
+/// A bounded historical lookup over opaque record header keys, through the
+/// per-stream key index; no read is proportional to stream length.
+///
+/// - Exact key (`end: None`): records carrying `key` with sequences in
+///   `[from, min(before, tail at open))`, in `order`.
+/// - Key range (`end: Some`): index entries `(k, sequence)` with
+///   `key <= k < end`, `sequence < min(before, tail at open)`, and
+///   `(k, sequence) >= (key, from)`, ascending in `(k, sequence)` order. A
+///   record carrying several keys in the range appears once per such key.
+///   Ranges are ascending only.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadKeySeek {
-    /// Exact bytes, without interpreting the record payload.
+    /// Exact key, or the inclusive first key of a range. Bytes are compared
+    /// lexically, without interpreting the record payload.
     pub key: Bytes,
+    /// Exclusive last key of a range; `None` selects `key` alone.
+    pub end: Option<Bytes>,
     /// Exclusive sequence bound; later appends cannot enter this read.
     pub before: u64,
+    /// Result order.
+    pub order: ReadOrder,
 }
 
 impl ReadKeySeek {
+    /// Ascending matches of one exact key before `before`.
+    pub fn exact(key: impl Into<Bytes>, before: u64) -> Self {
+        Self {
+            key: key.into(),
+            end: None,
+            before,
+            order: ReadOrder::Ascending,
+        }
+    }
+
+    /// Matches of one exact key before `before`, latest first.
+    pub fn latest(key: impl Into<Bytes>, before: u64) -> Self {
+        Self {
+            order: ReadOrder::LatestFirst,
+            ..Self::exact(key, before)
+        }
+    }
+
+    /// Ascending index entries for every key in `[key, end)` before `before`.
+    pub fn range(key: impl Into<Bytes>, end: impl Into<Bytes>, before: u64) -> Self {
+        Self {
+            end: Some(end.into()),
+            ..Self::exact(key, before)
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
-        if self.key.len() > crate::MAX_RECORD_KEY_BYTES {
+        if self.key.len() > crate::MAX_RECORD_KEY_BYTES
+            || self
+                .end
+                .as_ref()
+                .is_some_and(|end| end.len() > crate::MAX_RECORD_KEY_BYTES)
+        {
             return Err(StreamError::LimitExceeded);
+        }
+        if self.end.is_some() && self.order == ReadOrder::LatestFirst {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    /// Checks one returned record against this read at cursor `from`, then
+    /// advances both to the continuation read after it. Every provider and
+    /// every client that checks indexed results shares this one rule.
+    pub fn advance<K: AsRef<[u8]>>(
+        &mut self,
+        from: &mut u64,
+        sequence: u64,
+        keys: &[K],
+    ) -> Result<(), StreamError> {
+        let selected = match &self.end {
+            None => keys
+                .iter()
+                .any(|key| key.as_ref() == self.key.as_ref())
+                .then_some(None),
+            Some(end) => keys
+                .iter()
+                .map(AsRef::as_ref)
+                .filter(|key| {
+                    *key < end.as_ref()
+                        && (*key > self.key.as_ref()
+                            || (*key == self.key.as_ref() && sequence >= *from))
+                })
+                .min()
+                .map(Some),
+        };
+        let Some(selected) = selected else {
+            return Err(StreamError::InvalidResponse);
+        };
+        if sequence >= self.before || (self.end.is_none() && sequence < *from) {
+            return Err(StreamError::InvalidResponse);
+        }
+        if let Some(key) = selected.filter(|key| *key != self.key.as_ref()) {
+            self.key = Bytes::copy_from_slice(key);
+        }
+        match self.order {
+            ReadOrder::Ascending => {
+                *from = sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
+            }
+            ReadOrder::LatestFirst => self.before = sequence,
         }
         Ok(())
     }

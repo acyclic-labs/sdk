@@ -21,6 +21,8 @@ pub struct ApplicationDelivery {
     before: Option<wire::SessionFrame>,
     sequence: u64,
     generation: u64,
+    /// The indexed read's continuation after this record.
+    read: Option<(wire::ReadKeySeek, u64)>,
     progress: Arc<Progress>,
     removed: Arc<signal::Signal<u64>>,
     id: u64,
@@ -85,7 +87,28 @@ impl ApplicationSubscription {
             _ => return Err(StreamError::InvalidResponse),
         };
         let mut checkpoint = self.checkpoint()?;
-        if let Some(after) = after {
+        let read = match (&mut checkpoint.kind, &frame.wire().body) {
+            (
+                Some(Kind::Follow(follow)),
+                Some(Body::Data(wire::SessionData {
+                    item: Some(Item::Record(record)),
+                    ..
+                })),
+            ) if follow.key.is_some() => {
+                let mut from = checkpoint.resume.as_ref().map_or(0, |resume| resume.next);
+                let mut key = wire_codec::read_key_from_wire(follow.key.take())?
+                    .ok_or(StreamError::InvalidResponse)?;
+                key.advance(&mut from, record.sequence, &record.keys)?;
+                Some((
+                    wire_codec::read_key_to_wire(&Some(key)).ok_or(StreamError::Unavailable)?,
+                    from,
+                ))
+            }
+            _ => None,
+        };
+        if let Some(read) = &read {
+            continue_read(&mut checkpoint, read);
+        } else if let Some(after) = after {
             checkpoint.resume = Some(after);
             if let Some(Kind::Follow(follow)) = &mut checkpoint.kind {
                 follow.preceding_commit_id = if follow.delivery == wire::SessionDelivery::All as i32
@@ -105,6 +128,7 @@ impl ApplicationSubscription {
             before,
             sequence,
             generation,
+            read,
             credit: Some(credit),
             progress: Arc::clone(&self.cursor.progress),
             removed: Arc::clone(&self.cursor.client.pool.removed),
@@ -117,10 +141,14 @@ impl ApplicationSubscription {
     /// absent from it. Store the proposed frame's cursor with the consumer's
     /// effects atomically, then commit its handle; this accessor alone supplies
     /// no durability. Contiguous ALL checkpoints retain their preceding commit
-    /// fence; indexed reads retain their sparse sequence and exact key instead.
+    /// fence; indexed reads are their continuation read instead.
     pub fn checkpoint(&self) -> Result<wire::SessionSubscription, StreamError> {
         let position = self.cursor.progress.subscription()?;
         let mut subscription = self.subscription.clone();
+        if let Some(read) = self.cursor.progress.read()? {
+            continue_read(&mut subscription, &read);
+            return Ok(subscription);
+        }
         subscription.resume = Some(wire::SessionCursor {
             next: position.next,
             opaque: position.opaque.into(),
@@ -189,6 +217,10 @@ impl ApplicationDelivery {
                 self.frame.wire(),
             )
         })();
+        let result = match (result, self.read.take()) {
+            (Ok(true), Some(read)) => self.progress.continue_read(read).map(|()| true),
+            (result, _) => result,
+        };
         if result.is_ok() {
             drop(self.credit.take());
             if let Some(completion) = self.completion.take() {
@@ -203,6 +235,19 @@ impl ApplicationDelivery {
     pub fn discard(self) -> Result<bool, StreamError> {
         self.commit()
     }
+}
+
+/// Rewrites a keyed subscription as the read that continues after a record.
+fn continue_read(subscription: &mut wire::SessionSubscription, read: &(wire::ReadKeySeek, u64)) {
+    let (key, from) = read;
+    if let Some(Kind::Follow(follow)) = &mut subscription.kind {
+        follow.until = key.before;
+        follow.key = Some(key.clone());
+    }
+    subscription.resume = Some(wire::SessionCursor {
+        next: *from,
+        opaque: Bytes::new(),
+    });
 }
 
 impl Drop for ApplicationDelivery {
