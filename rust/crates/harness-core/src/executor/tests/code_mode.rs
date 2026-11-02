@@ -395,7 +395,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             _,
             _,
             json::CodecOperation,
-        >(|| (), |()| io.encode(&larger, u64::MAX, false));
+        >(|| (), |()| io.encode(&larger, None, false));
         let redundant = redundant?;
         assert_ne!(
             codec.into_iter().chain(extra_codec).collect::<Vec<_>>(),
