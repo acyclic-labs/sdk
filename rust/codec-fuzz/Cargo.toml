@@ -161,3 +161,10 @@ bench = false
 [[example]]
 name = "object_schedules"
 required-features = ["storage-schedules"]
+
+[[bin]]
+name = "config_evaluation"
+path = "fuzz_targets/config_evaluation.rs"
+test = false
+doc = false
+bench = false

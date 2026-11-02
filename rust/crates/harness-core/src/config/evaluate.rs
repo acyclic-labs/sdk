@@ -56,6 +56,17 @@ pub async fn evaluate(
     base: &Value,
     surface: Surface,
 ) -> Result<Evaluated> {
+    evaluate_cached(path, source, tree, base, surface, cache()).await
+}
+
+async fn evaluate_cached(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+    cache: &Mutex<HashMap<[u8; 32], Outcome>>,
+) -> Result<Evaluated> {
     let invalid = |reason: String| Error::Invalid(format!("{path}: {reason}"));
     let modules = closure(path, source, tree).await?.map_err(invalid)?;
     let mut digest = blake3::Hasher::new_derive_key(VERSION);
@@ -72,7 +83,6 @@ pub async fn evaluate(
     key.update(&[u8::from(surface == Surface::Data)]);
     key.update(&base);
     let key: [u8; 32] = key.finalize().into();
-    let cache = cache();
     let cached = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -427,3 +437,7 @@ fn run(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod model;
