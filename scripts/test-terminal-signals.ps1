@@ -44,12 +44,65 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint exit);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int kind);
     [DllImport("kernel32.dll")] static extern bool SetStdHandle(int kind,IntPtr handle);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForMultipleObjects(uint count,IntPtr[] handles,bool all,uint milliseconds);
     static void Require(bool ok,string name) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(),name); }
+
+    sealed class Publication : IDisposable {
+        readonly AutoResetEvent changed=new AutoResetEvent(false);
+        readonly FileSystemWatcher watcher;
+        readonly object sync=new object();
+        Exception failure;
+        bool disposed;
+
+        public Publication(string report,string recovery) {
+            try {
+                watcher=new FileSystemWatcher(Path.GetDirectoryName(report),Path.GetFileNameWithoutExtension(report)+".*");
+                watcher.NotifyFilter=NotifyFilters.FileName;
+                watcher.Created+=(sender,args)=>Notify(null);
+                watcher.Renamed+=(sender,args)=>Notify(null);
+                watcher.Error+=(sender,args)=>Notify(args.GetException());
+                watcher.EnableRaisingEvents=true;
+            } catch(Exception error) {
+                watcher?.Dispose(); changed.Dispose();
+                throw new IOException("publication watcher initialization failed"+recovery,error);
+            }
+        }
+        void Notify(Exception error) {
+            lock(sync) {
+                if(disposed) return;
+                if(error!=null) failure=error;
+                changed.Set();
+            }
+        }
+        public void Await(string path,IntPtr child,Stopwatch timer,string recovery) {
+            string step="publication "+Path.GetFileName(path);
+            var handles=new[]{child,changed.SafeWaitHandle.DangerousGetHandle()};
+            for(;;) {
+                lock(sync) { if(failure!=null) throw new IOException(step+" watcher failed"+recovery,failure); }
+                if(File.Exists(path)) return;
+                long remaining=1500-timer.ElapsedMilliseconds;
+                if(remaining<=0) throw new TimeoutException(step+" deadline"+recovery);
+                uint result=WaitForMultipleObjects(2,handles,false,(uint)remaining);
+                if(result==0) {
+                    if(File.Exists(path)) return;
+                    throw new EndOfStreamException(step+" producer exited"+recovery);
+                }
+                if(result==1) continue;
+                if(result==258) throw new TimeoutException(step+" deadline"+recovery);
+                throw new Win32Exception(Marshal.GetLastWin32Error(),step+" wait failed"+recovery);
+            }
+        }
+        public void Dispose() {
+            watcher.Dispose();
+            lock(sync) { disposed=true; changed.Dispose(); }
+        }
+    }
 
     public static void Run(string binary,string scenario,string report) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null,close=null;
         var draining=new ManualResetEvent(scenario!="blocked");
+        string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario "+scenario;
         try {
             Require(CreatePipe(out ir,out iw,IntPtr.Zero,0),"input pipe");
             Require(CreatePipe(out orr,out ow,IntPtr.Zero,0),"output pipe");
@@ -82,63 +135,36 @@ public static class TerminalSignalConPty {
                 return;
             }
             if(scenario=="input-close") {
-                string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario input-close";
                 Require(WaitForSingleObject(process.process,1500)==0,"input close child deadline"+recovery);
                 uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"input close child exit"+recovery);
                 Require(File.Exists(report),"native input close acknowledgement"+recovery);
                 Console.WriteLine(File.ReadAllText(report));
                 return;
             }
+            using var publications=new Publication(report,recovery);
             var timer=Stopwatch.StartNew();
             string inputReady=Path.ChangeExtension(report,"input-ready");
-            while(!File.Exists(inputReady)&&timer.ElapsedMilliseconds<1500) {
-                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before input fixture");
-                Thread.Sleep(1);
-            }
-            Require(File.Exists(inputReady),"native input setup deadline");
+            publications.Await(inputReady,process.process,timer,recovery);
             byte[] fixture=Encoding.ASCII.GetBytes(string.Concat(System.Linq.Enumerable.Repeat("0123456789",10)));
             uint written;
             Require(WriteFile(iw,fixture,(uint)fixture.Length,out written,IntPtr.Zero)&&written==fixture.Length,"native input fixture write");
             string probeReady=Path.ChangeExtension(report,"probe-ready");
-            while(!File.Exists(probeReady)&&timer.ElapsedMilliseconds<1500) {
-                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before negotiation");
-                Thread.Sleep(1);
-            }
-            Require(File.Exists(probeReady),"negotiation setup deadline");
+            publications.Await(probeReady,process.process,timer,recovery);
             byte[] replies=Encoding.ASCII.GetBytes("\x1b[?1004;2$y\x1b[?2004;2$y\x1b[?2027;2$y\x1b[?1049;2$y\x1b[?9;2$y\x1b[?1000;2$y\x1b[?1001;2$y\x1b[?1002;2$y\x1b[?1003;2$y\x1b[?1005;2$y\x1b[?1006;2$y\x1b[?1015;2$y\x1b[?1016;2$y\x1b[?62;1c");
             Require(WriteFile(iw,replies,(uint)replies.Length,out written,IntPtr.Zero)&&written==replies.Length,"negotiation fixture write");
             foreach(int count in new[]{32,64}) {
                 string wheelReady=Path.ChangeExtension(report,"wheel"+count+"-ready");
-                while(!File.Exists(wheelReady)&&timer.ElapsedMilliseconds<1500) {
-                    if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before wheel fixture");
-                    Thread.Sleep(1);
-                }
-                Require(File.Exists(wheelReady),"physical wheel fixture ready");
+                publications.Await(wheelReady,process.process,timer,recovery);
                 var packet=new StringBuilder();
                 for(int index=0;index<count;index++) packet.Append(index%3==0?"\x1b[<65;2;1M":"\x1b[<64;2;1M");
                 byte[] wheels=Encoding.ASCII.GetBytes(packet.ToString());
                 Require(WriteFile(iw,wheels,(uint)wheels.Length,out written,IntPtr.Zero)&&written==wheels.Length,"physical wheel packet write");
                 string done=Path.ChangeExtension(report,"wheel"+count+"-done");
-                while(!File.Exists(done)&&timer.ElapsedMilliseconds<1500) {
-                    if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited during wheel fixture");
-                    Thread.Sleep(1);
-                }
-                Require(File.Exists(done),"physical wheel count acknowledgement");
+                publications.Await(done,process.process,timer,recovery);
                 Console.WriteLine("ConPTY "+scenario+": "+File.ReadAllText(done));
             }
             string ready=Path.ChangeExtension(report,"ready");
-            while(!File.Exists(ready)&&timer.ElapsedMilliseconds<1500) {
-                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before terminal setup");
-                Thread.Sleep(1);
-            }
-            if(!File.Exists(ready)) {
-                draining.Set();
-                WaitForSingleObject(process.process,500);
-                string logPath=Path.ChangeExtension(report,"output");
-                string log="no output";
-                if(File.Exists(logPath)) using(var read=new StreamReader(new FileStream(logPath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) log=read.ReadToEnd();
-                throw new Exception("terminal setup deadline: "+log.Substring(Math.Max(0,log.Length-1400)));
-            }
+            publications.Await(ready,process.process,timer,recovery);
             if(scenario=="blocked") {
                 draining.Set();
                 File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");
