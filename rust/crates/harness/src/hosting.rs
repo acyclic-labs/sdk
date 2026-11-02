@@ -798,15 +798,23 @@ where
                 id,
                 brief,
                 role,
+                profile_snapshot,
             }
             | AgentCommand::Fork {
                 parent,
                 id,
                 brief,
                 role,
+                profile_snapshot,
                 ..
             } => {
                 let parent = self.within_tree(parent)?;
+                if profile_snapshot.is_some() && *profile_snapshot != self.bound.profile_snapshot()
+                {
+                    return Err(Error::Conflict(
+                        "admit spawn profile snapshot: host roles differ; recovery: re-admit Population against the host's Profiles snapshot",
+                    ));
+                }
                 if !self.platform.runs_children() {
                     return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
                 }

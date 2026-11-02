@@ -210,6 +210,10 @@ pub enum AgentCommand {
         brief: ModelContent,
         /// The child's role; the parent's role must admit it.
         role: String,
+        /// If set, require this exact whole-role snapshot before any spawn IO.
+        /// Omitted means no snapshot precondition.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile_snapshot: Option<[u8; 32]>,
     },
     /// Fork the conversation and project generations saved at a prior turn.
     Fork {
@@ -226,6 +230,10 @@ pub enum AgentCommand {
         /// The child's role; the parent's role must admit it, and it must
         /// inherit context, since a fresh-context role selects no history.
         role: String,
+        /// If set, require this exact whole-role snapshot before any fork IO.
+        /// Omitted means no snapshot precondition.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile_snapshot: Option<[u8; 32]>,
     },
     /// Discover only one bounded page of direct children.
     Children {

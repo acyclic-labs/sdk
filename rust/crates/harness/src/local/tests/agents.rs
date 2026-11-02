@@ -1219,6 +1219,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             id: crate::agent::IntentId::try_from("isolated-write").map_err(agent)?,
             brief: ModelContent::Text("write child seed".into()),
             role: "worker".into(),
+            profile_snapshot: None,
         })
         .await?
     else {
@@ -1430,6 +1431,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         id: crate::agent::IntentId::try_from("large").map_err(agent)?,
         brief: crate::model::ModelContent::Text(brief.clone()),
         role: "worker".into(),
+        profile_snapshot: None,
     };
     let AgentReply::Spawned { agent: child, .. } = connection.execute(&spawn).await? else {
         return Err(Error::Invalid("spawn was not delivered".into()));
@@ -2166,6 +2168,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
             at: 0,
             brief: crate::model::ModelContent::Text("continue the first turn".into()),
             role: "worker".into(),
+            profile_snapshot: None,
         })
         .await?
     else {

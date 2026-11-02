@@ -92,7 +92,7 @@ impl std::fmt::Debug for Error {
 
 /// Runs every admitted arm from the same saved cut. `in_flight` is explicit
 /// user credit, bounding active follows and futures rather than population size.
-/// The host must use the exact immutable role snapshot used for admission.
+/// Each fork requires the host's exact immutable role snapshot from admission.
 ///
 /// Dropping the stream releases follows, but does not archive already committed
 /// agents. Resume the identical population to recover the same fork intents.
@@ -129,6 +129,7 @@ async fn execute(
         at: trial.file.cut.turn,
         brief: ModelContent::Text(trial.arm.prompt.clone()),
         role: trial.arm.role.clone(),
+        profile_snapshot: Some(population.profile_snapshot()),
     };
     let prepared =
         PreparedCommand::new(&command).map_err(|error| Error::Prepare(error.to_string()))?;

@@ -234,13 +234,13 @@ pub enum SpawnContext {
 }
 
 /// The role profile an agent was adopted with, pinned for its lifetime. A
-/// role change is a new fork with another pin, never an edit of this one.
+/// policy change requires a newly admitted root, never an edit of this agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentProfilePin {
     /// Role file identity.
     pub role: String,
-    /// Digest of the role file the agent was adopted under.
+    /// Digest pinning this role within the complete admitted profile snapshot.
     pub digest: [u8; 32],
     /// Conversation the role selects.
     pub context: SpawnContext,
@@ -248,6 +248,9 @@ pub struct AgentProfilePin {
 
 /// A host's admitted role profiles, shared by every turn.
 pub trait SpawnProfiles: acyclic_stream::ProviderPlatform {
+    /// Immutable identity covering all roles and their descendant policies.
+    /// Child admission and turns must refuse pins from another snapshot.
+    fn snapshot(&self) -> [u8; 32];
     /// The pin of a `role` child of `parent`, after `parent`'s role admits
     /// it. Refusals are tool failures the model can act on.
     fn child(&self, parent: &AgentProfilePin, role: &str) -> crate::Result<AgentProfilePin>;
