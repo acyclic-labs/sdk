@@ -655,6 +655,71 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         2,
         "schema projection dispatched model work"
     );
+    // Mutate only the real export's saved continuation. A refused resume must
+    // leave its input identity unused, even if model dispatch would race exit.
+    let checkpoint = std::fs::read(&cursor).unwrap();
+    for (field, value) in [("input", u64::MAX), ("after", 1)] {
+        let mut invalid: Value = serde_json::from_slice(&checkpoint).unwrap();
+        invalid["execution"]["position"][field] = json!(value);
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        std::fs::write(&cursor, &bytes).unwrap();
+        let refused = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--operation",
+                "jsonl",
+                "--output-format",
+                "jsonl",
+                "--event-cursor",
+                cursor.to_str().unwrap(),
+                "exec",
+                "unadmitted prompt",
+            ],
+            "",
+        )
+        .await;
+        assert!(!refused.status.success());
+        let failure: Value = serde_json::from_str(
+            String::from_utf8_lossy(&refused.stdout)
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(failure["kind"], "error");
+        assert_eq!(failure["step"], "execute");
+        assert_eq!(std::fs::read(&cursor).unwrap(), bytes);
+        assert_eq!(model.generated(), 2, "refused resume dispatched model work");
+    }
+    std::fs::write(&cursor, &checkpoint).unwrap();
+    let admitted = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--operation",
+            "jsonl",
+            "--output-format",
+            "jsonl",
+            "--event-cursor",
+            cursor.to_str().unwrap(),
+            "exec",
+            "admitted after cursor correction",
+        ],
+        "",
+    )
+    .await;
+    let lines = succeeded(&admitted)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.last().unwrap()["kind"], "completed");
+    assert_eq!(lines.last().unwrap()["success"], true);
+    assert_eq!(
+        model.generated(),
+        3,
+        "corrected cursor did not admit its input"
+    );
     model.close().await;
 }
 

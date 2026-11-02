@@ -13,6 +13,9 @@ Select the same session when resuming, using its original connection and
 `--agent` selection where needed. Keep the operation, prompt bytes and input IDs
 unchanged. The cursor is bound to its operation, selected agent and followed
 resources; applying it to a different selection fails before input dispatch.
+The original execution query also checks its saved input and journal position
+before dispatching a positional task. A refused position leaves the input
+identity unused; correct the cursor before submitting that task.
 
 ## Input and completion
 
