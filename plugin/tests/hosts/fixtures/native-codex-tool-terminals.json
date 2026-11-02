@@ -1,0 +1,130 @@
+{
+  "provenance": "Original pinned Codex output field projection. Command arguments and tool payloads omitted; selected fields unchanged. A successful parent terminal follows failed shell items.",
+  "host": "codex",
+  "host_version": "0.164.0",
+  "source": "3d111c45197ceeea00670e4b7002944a2bd36454",
+  "capture_sha256": "a114bdf492f10aa89e7c4a7a859ea3394954fe6d18fe7fa77c4d3d502c258819",
+  "stdout_sha256": "f4747f9fdc481e61d6db161f18b6fdeda2716994d43adc8ad169ac0a7f225688",
+  "item_fields": [
+    "id",
+    "type",
+    "status",
+    "exit_code",
+    "error",
+    "text"
+  ],
+  "code": 0,
+  "stderr": "",
+  "answer": "NATIVE_PLUGIN_MODEL_DONE",
+  "events": [
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "I\u2019ll run the requested parent command first, then use the installed Acyclic coordination tools in the specified spawn/wait/merge/resume/wait/finish/archive order."
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_2",
+        "type": "mcp_tool_call",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_3",
+        "type": "mcp_tool_call",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_5",
+        "type": "agent_message",
+        "text": "The child completed with the required marker, and the merge command reported a committed merge. The shell process is still open after printing that result, so I\u2019m checking for its exit before proceeding."
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_4",
+        "type": "command_execution",
+        "status": "failed",
+        "exit_code": 130
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_6",
+        "type": "mcp_tool_call",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_7",
+        "type": "mcp_tool_call",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_8",
+        "type": "command_execution",
+        "status": "failed",
+        "exit_code": 130
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_9",
+        "type": "mcp_tool_call",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_10",
+        "type": "agent_message",
+        "text": "NATIVE_PLUGIN_MODEL_DONE\n\nThe child returned both required markers, the merge and finish commands reported committed changes, and `native-child` was archived. The merge and finish shell processes did not exit after reporting their commits, so I interrupted them; each therefore ended with exit code 130."
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 265721,
+        "cached_input_tokens": 253440,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1317,
+        "reasoning_output_tokens": 242
+      }
+    }
+  ]
+}
