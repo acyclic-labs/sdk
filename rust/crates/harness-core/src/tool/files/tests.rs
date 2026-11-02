@@ -1,6 +1,9 @@
 use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod effective;
+
 #[test]
 fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let file = crate::tool::tests::file(b"exact")?;

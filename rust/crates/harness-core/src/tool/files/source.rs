@@ -1,5 +1,30 @@
 use super::*;
 
+/// One decoded or provider-selected source, kept with its original funding.
+pub(super) struct ReadSource {
+    pub source: Option<FileReadSource>,
+    pub custody: crate::NativeCustody,
+}
+
+impl ReadSource {
+    pub fn decode(
+        context: &ToolContext,
+        path: &str,
+        version: Option<&str>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Self> {
+        let (source, custody) = match version {
+            Some(version) => {
+                let (source, custody) =
+                    super::version::decode_tool_version(Some(context), path, version, work)?;
+                (Some(source), custody)
+            }
+            None => (None, None),
+        };
+        Ok(Self { source, custody })
+    }
+}
+
 /// Immutable identity retained by a read. A bounded authored selection does not
 /// claim a whole-file content digest.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

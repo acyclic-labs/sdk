@@ -900,14 +900,20 @@ impl ToolContext {
     /// layer's own pinned file; other paths are returned unchanged. A home
     /// file holding only `off: true` hides the seed's. A composed settings
     /// file reads as its highest module; its value is the evaluated fold.
+    /// The caller must retain the returned selection and its original metadata
+    /// funding through the read, rather than select the layer's head again.
     pub(crate) async fn effective_tool_path<'a>(
         &self,
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<std::borrow::Cow<'a, str>> {
+    ) -> Result<(
+        std::borrow::Cow<'a, str>,
+        Option<crate::conversation::FilePathSelection>,
+        u64,
+    )> {
         use crate::layers::{WHY_SUFFIX, is_off, layered};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
-            return Ok(std::borrow::Cow::Borrowed(path));
+            return Ok((std::borrow::Cow::Borrowed(path), None, 0));
         };
         let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
         if relative.ends_with(WHY_SUFFIX) {
@@ -916,11 +922,11 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let seed = format!("{SEED_PATH}{relative}");
+        let seed = || std::borrow::Cow::Owned(format!("{SEED_PATH}{relative}"));
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed(), None, 0))
             } else {
                 Err(missing())
             };
@@ -932,22 +938,26 @@ impl ToolContext {
             length: 32,
         };
         let held = |result: Result<_>| match result {
-            Ok((selected, bytes, _)) => Ok(Some((selected, bytes))),
+            Ok(selected) => Ok(Some(selected)),
             Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         };
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let Some((selected, bytes)) = mine else {
+        let Some((selected, bytes, retained)) = mine else {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed(), None, 0))
             } else {
                 Err(missing())
             };
         };
         if selected.byte_length <= probe.length && is_off(&bytes) {
+            #[cfg(feature = "filesystem")]
+            let _custody = io.map(|io| io.guard_owned(retained)).transpose()?;
+            drop(bytes);
+            drop(selected);
             return Err(missing());
         }
-        Ok(home.into())
+        Ok((home.into(), Some(selected), retained))
     }
 
     /// Checks original directory authority for the selected mounted path.
