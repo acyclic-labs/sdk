@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { executionSucceeded, fileBytes, fileRead, jsonlReply, messageReply, requests } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, fileRead, jsonlReply, messageReply, requests, toolOutcome } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
@@ -15,6 +15,7 @@ const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-executi
 const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
 const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
 const codeFailure = JSON.parse(readFileSync(new URL("./fixtures/live-code-failure.json", import.meta.url), "utf8")).event;
+const nestedFailures = JSON.parse(readFileSync(new URL("./fixtures/live-nested-settlement-failure.json", import.meta.url), "utf8")).cases;
 const committedReply = JSON.parse(captured["jsonl-reopen"].stdout);
 import { answer, requireTools, runCase } from "./live.mjs";
 
@@ -30,6 +31,15 @@ test("completed code calls cannot erase the original VM refusal", () => {
   delete opaqueValue.tool_response.version;
   delete opaqueValue.tool_response.context;
   requireTools([opaqueValue], ["code"]);
+});
+
+test("completed wait retains the original failed descendant settlement", () => {
+  for (const { event } of nestedFailures) {
+    assert.throws(() => requireTools([event], ["wait"]), /conflict: volume alias names another binding/);
+    toolOutcome(event.tool_response, ["volume alias names another binding"], "inspect original child settlement");
+    // A selected program value is data, not a native wait-result envelope.
+    toolOutcome({ version: 2, context: [], output: { value: event.tool_response } });
+  }
 });
 
 test("file reads retain the original authored or content source", () => {
@@ -237,6 +247,8 @@ test("collaboration requires the spawned child's exact settled public result", (
     const [spawn, wait] = original;
     const child = spawn.tool_response.agent, expected = wait.tool_response.settled[0].answer;
     requireTools(original, ["spawn", "wait"], expected);
+    assert.throws(() => requireTools(original, ["spawn", "wait"], expected, undefined, 2),
+      /different child set|different child reference/);
     for (const mutate of [
       events => events.pop(),
       events => { events[1].hook_event_name = "PreToolUse"; },

@@ -1,0 +1,77 @@
+{
+  "source": "f2a8def7d7411353485c847bc1f8a85b4a0a6162",
+  "platform": "linux",
+  "attribution": "Original completed native wait results from two real-provider nested worker/leaf journeys. Parent answers do not replace these failed descendant settlements.",
+  "cases": [
+    {
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "original_result_sha256": "3e9508f5072305ba0b7349f2012b8d46df6f4fdebff0ee944b537c43a2acff08",
+      "event": {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "wait",
+        "tool_input": {
+          "agents": [
+            "harness/agents/ef61ca390cd64882bbc7b85cb2e9febd/children/54b0863e2dc8f53bf94f1788513067ba/children/08397cab67dd5df67e4ad387a88be80d"
+          ]
+        },
+        "tool_use_id": "09f14a6763552fd04685ed7185a1444e316916607acc754e6a70999ddd21d92f",
+        "session_id": null,
+        "tool_response": {
+          "running": [],
+          "settled": [
+            {
+              "agent": "harness/agents/ef61ca390cd64882bbc7b85cb2e9febd/children/54b0863e2dc8f53bf94f1788513067ba/children/08397cab67dd5df67e4ad387a88be80d",
+              "answer": null,
+              "name": "harness/agents/ef61ca390cd64882bbc7b85cb2e9febd/children/54b0863e2dc8f53bf94f1788513067ba/children/08397cab67dd5df67e4ad387a88be80d",
+              "phase": {
+                "done": {
+                  "outcome": {
+                    "failed": {
+                      "message": "conflict: volume alias names another binding"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "original_result_sha256": "690afc57bb6f35919e718bbf715ca8488cad897752aaba5c77cd488de6e45fd0",
+      "event": {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "wait",
+        "tool_input": {
+          "agents": [
+            "harness/agents/3c66715ac62a43cab70fe63e509fbf2e/children/302f549e8d42c2fa17893ef02e31934a/children/134b3b216edce03025b789d99c26a76b"
+          ]
+        },
+        "tool_use_id": "f89c7902013bc7951c697df9c9aa5981efc171f674e631c91b8cfa9d49c0eb14",
+        "session_id": null,
+        "tool_response": {
+          "running": [],
+          "settled": [
+            {
+              "agent": "harness/agents/3c66715ac62a43cab70fe63e509fbf2e/children/302f549e8d42c2fa17893ef02e31934a/children/134b3b216edce03025b789d99c26a76b",
+              "answer": null,
+              "name": "harness/agents/3c66715ac62a43cab70fe63e509fbf2e/children/302f549e8d42c2fa17893ef02e31934a/children/134b3b216edce03025b789d99c26a76b",
+              "phase": {
+                "done": {
+                  "outcome": {
+                    "failed": {
+                      "message": "conflict: volume alias names another binding"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
