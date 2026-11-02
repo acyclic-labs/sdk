@@ -55,24 +55,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let ids = sorted_changed_file_ids(file_ids, &mut accounting)?;
-        self.namespace_records_with_accounting(
-            &ids.0,
-            maximum_entries,
-            &mut accounting,
-            &cancellation,
-        )
-        .await?
-        .0
-        .records
-        .into_iter()
-        .map(|(file_id, records)| {
-            records
-                .into_iter()
-                .map(|(path, _)| namespace_path_text(&path))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|paths| (file_id, paths))
-        })
-        .collect()
+        let search = self
+            .namespace_records_with_accounting(
+                &ids.0,
+                maximum_entries,
+                &mut accounting,
+                &cancellation,
+            )
+            .await;
+        let bytes = workspace_vec_bytes(&ids.0);
+        reverse_drop(ids, bytes, &mut accounting)?;
+        search?
+            .0
+            .records
+            .into_iter()
+            .map(|(file_id, records)| {
+                records
+                    .into_iter()
+                    .map(|(path, _)| namespace_path_text(&path))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|paths| (file_id, paths))
+            })
+            .collect()
     }
 
     pub(super) async fn namespace_records_with_accounting(

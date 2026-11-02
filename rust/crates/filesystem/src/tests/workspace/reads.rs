@@ -3,6 +3,8 @@ use super::*;
 #[tokio::test]
 async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    reverse_selection_cost_and_custody()?;
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("read-shapes"))?;
     let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
@@ -54,7 +56,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let directory_id = unbounded!(workspace, stat("/tree"))?.file_id;
     let missing_id = FileId::from_bytes([0xff; 16]);
     let paths = exact
-        .paths_for_file_ids([file_id, directory_id, missing_id], 32)
+        .paths_for_file_ids([missing_id, file_id, directory_id, file_id], 32)
         .await?;
     assert_eq!(
         paths.get(&file_id),
@@ -114,6 +116,121 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         unbounded!(workspace, read("/tree/a", 16))?,
         OwnedBytes::from_static(b"changed")
     );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
+    use crate::kernel::KernelAccounting;
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    let cancel = CancellationToken::new();
+    let mut counts = Vec::new();
+    for population in [1_u64, 100_000] {
+        let bound = acyclic_collections::FixedIndex::<(), RetainedAllocation, 16>::insertion_bound(
+            population,
+        )
+        .ok_or(crate::WorkError::Overflow)?;
+        let budget = WorkBudget {
+            items_examined: 430 * 2 * population + 4,
+            bytes_copied: 16 * population,
+            allocation_operations: 2 * population + 4,
+            peak_allocation_bytes: bound.allocation_bytes + 16 * population + 65_536,
+            ..crate::performance::BOUNDARY_BUDGET
+        };
+        let original =
+            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let mut accounting = KernelAccounting::native(&original, &cancel);
+        let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
+        let baseline = original.live_allocation_bytes();
+        let before = accounting.spent();
+        let ids = sorted_changed_file_ids(
+            (1..=population).rev().flat_map(|ordinal| {
+                let id = FileId::from_bytes(u128::from(ordinal).to_be_bytes());
+                [id, id]
+            }),
+            &mut accounting,
+        )?;
+        let spent = accounting.spent();
+        assert_eq!(ids.0.len() as u64, population);
+        for (ordinal, id) in ids.0.iter().enumerate() {
+            assert_eq!(id.into_bytes(), (ordinal as u128 + 1).to_be_bytes());
+        }
+        assert!(spent.items_examined - before.items_examined <= budget.items_examined);
+        assert_eq!(spent.bytes_copied - before.bytes_copied, 16 * population);
+        counts.push((
+            spent.items_examined - before.items_examined,
+            spent.bytes_copied - before.bytes_copied,
+        ));
+        let bytes = workspace_vec_bytes(&ids.0);
+        reverse_drop(ids, bytes, &mut accounting)?;
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        drop(prior);
+    }
+    eprintln!("reverse identity input=[1,100000] examinations/copy-bytes={counts:?}");
+
+    // Every bit participates in the original full-key order, including zero.
+    let mut input: Vec<_> = (0..128)
+        .rev()
+        .map(|bit| FileId::from_bytes((1_u128 << bit).to_be_bytes()))
+        .collect();
+    input.extend([FileId::from_bytes([0; 16]); 2]);
+    let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
+    let ids = sorted_changed_file_ids(input, &mut accounting)?;
+    assert_eq!(ids.0.len(), 129);
+    assert_eq!(ids.0[0], FileId::from_bytes([0; 16]));
+    assert!(ids.0.windows(2).all(|pair| pair[0] < pair[1]));
+    let bytes = workspace_vec_bytes(&ids.0);
+    reverse_drop(ids, bytes, &mut accounting)?;
+
+    let input = [3_u128, 1, 2, 1].map(|id| FileId::from_bytes(id.to_be_bytes()));
+    let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
+    let ids = sorted_changed_file_ids(input, &mut accounting)?;
+    let spent = accounting.spent();
+    let bytes = workspace_vec_bytes(&ids.0);
+    reverse_drop(ids, bytes, &mut accounting)?;
+    let budgets = (0..spent.items_examined)
+        .map(|items_examined| WorkBudget {
+            items_examined,
+            ..crate::performance::BOUNDARY_BUDGET
+        })
+        .chain([
+            WorkBudget {
+                bytes_copied: spent.bytes_copied - 1,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+            WorkBudget {
+                allocation_operations: 1,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+        ]);
+    for budget in budgets {
+        for native in [false, true] {
+            let original = crate::NativeMaterializationWork::new(budget, &cancel)
+                .map_err(|(error, _)| error)?;
+            let mut accounting = if native {
+                KernelAccounting::native(&original, &cancel)
+            } else {
+                KernelAccounting::standalone(budget, &cancel)
+            };
+            // Prior independent credit stays live while this call exhausts
+            // the remaining allowance, including its original ledger owner.
+            let prior = RetainedAllocation::claim(29, 0, &mut accounting)?;
+            let live = |accounting: &KernelAccounting<'_>| match accounting {
+                KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+                KernelAccounting::BorrowedStandalone { allocations, .. } => {
+                    allocations.live_bytes()
+                }
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+            };
+            let baseline = live(&accounting);
+            assert!(sorted_changed_file_ids(input, &mut accounting).is_err());
+            assert_eq!(live(&accounting), baseline);
+            drop(prior);
+        }
+    }
+    cancel.cancel();
+    let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
+    assert!(sorted_changed_file_ids([], &mut accounting).is_err());
     Ok(())
 }
 
