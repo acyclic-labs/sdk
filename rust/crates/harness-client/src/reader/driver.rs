@@ -706,25 +706,21 @@ mod tests {
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
             reader.cache.observe_tail(&path, u64::MAX - 1);
             reader.set_follows([path.clone()]);
+            let records = acyclic_stream::records_only(
+                provider
+                    .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                    .await
+                    .unwrap(),
+            )
+            .map_cursor(|_| {
+                Box::pin(futures::stream::iter([
+                    Ok(row(u64::MAX - 1)),
+                    Ok(row(u64::MAX)),
+                ]))
+            });
             let mut driver = Driver::new(Arc::new(provider));
             driver
-                .opened(
-                    path.clone(),
-                    u64::MAX - 1,
-                    u64::MAX - 1,
-                    acyclic_stream::records_only(
-                        provider
-                            .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
-                            .await
-                            .unwrap(),
-                    )
-                    .map_cursor(|_| {
-                        Box::pin(futures::stream::iter([
-                            Ok(row(u64::MAX - 1)),
-                            Ok(row(u64::MAX)),
-                        ]))
-                    }),
-                )
+                .opened(path.clone(), u64::MAX - 1, u64::MAX - 1, records)
                 .unwrap();
             let mut cx = Context::from_waker(futures::task::noop_waker_ref());
             driver.drain(&mut reader, 1, &mut cx);
