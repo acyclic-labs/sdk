@@ -328,20 +328,14 @@ columns! {
 
 impl<'a> Row<'a> {
     #[cfg(feature = "research")]
-    fn stream(
-        agent: Option<&str>,
-        account: &acyclic_auth::addressing::AccountId,
-        selected: &'a acyclic_stream::StreamPath,
-        record: &acyclic_stream::Record,
-        kind: &str,
-    ) -> Self {
+    fn stream(agent: Option<&str>, source: crate::live::resources::Source<'a>, kind: &str) -> Self {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-        let mut row = Self::base(None, record.sequence, selected.as_str(), kind);
+        let mut row = Self::base(None, source.sequence, source.stream, kind);
         row.agent_path = agent.map(str::to_owned);
-        row.source_account = Some(URL_SAFE_NO_PAD.encode(account.as_bytes()));
-        row.source_origin = Some(record.origin.as_str().into());
-        row.source_commit_id = Some(digest(*record.commit_id.as_bytes()));
-        row.source_committed_at_micros = Some(record.committed_at_micros);
+        row.source_account = Some(URL_SAFE_NO_PAD.encode(source.account));
+        row.source_origin = Some(source.origin.into());
+        row.source_commit_id = Some(digest(*source.commit_id));
+        row.source_committed_at_micros = Some(source.committed_at_micros);
         row
     }
 

@@ -212,6 +212,12 @@ Equal-length or equal-valued independent records retain different identities.
 record values remain known zero. RDF retains the same identity and coverage
 without attesting a new content producer.
 
+Live resource files and this offline edge use the same
+`live::resources::Sharing` projection over the original record. The shared
+`Source` carrier retains the authorized account, selected path and original
+envelope before encoding. No payload is reparsed, and physical coverage is
+neither derived from inheritance nor filled with zero.
+
 The projection retains one row and does not copy, hash or decode record values.
 It encodes account and commit once, formats two endpoint tuples and copies
 metadata into the existing Arrow columns. Borrowing dynamic source paths removes
