@@ -155,7 +155,7 @@ mod tests {
     }
     use acyclic_stream::wire;
     #[test]
-    fn long_full_metadata_paths_cannot_hide_behind_an_allowed_truncated_key() {
+    fn volume_changes_subtree_checks_lossless_paths_and_appender_identity() {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
         let components = vec!["component"; 130];
         let text = components.join("/");
@@ -351,6 +351,15 @@ mod tests {
             &capability,
         )
         .unwrap();
+        let selected = super::super::subtree::Selection::new(volume, &full, config).unwrap();
+        let outside = NamespacePath::from_text_in_profile(
+            &format!("/{}/outside", text.rsplit_once('/').unwrap().0),
+            config.profile,
+            config.limits,
+        )
+        .unwrap();
+        let outside = super::super::subtree::Selection::new(volume, &outside, config).unwrap();
+        assert!(outside.filter().matches(&record.headers));
         // Inherited records retain the ancestor appender while authorization
         // still applies to the executing volume's resources.
         for appender in [volume, VolumeId::from_bytes([14; 16])] {
@@ -384,6 +393,28 @@ mod tests {
             assert_eq!(projected.commit_id, record.commit_id);
             let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
             assert_eq!(changes.context.as_ref(), context.as_ref());
+            let project_selected = |selected| {
+                project(
+                    record.clone(),
+                    Projection {
+                        volume,
+                        scope: [0; 16],
+                        config,
+                        trie: &allowing,
+                        authorization: &authorization,
+                        selected: Some(selected),
+                    },
+                )
+                .unwrap()
+            };
+            let FollowUpdate::Record(selected_record) = project_selected(&selected) else {
+                panic!("selected full path was skipped");
+            };
+            assert_eq!(selected_record, projected);
+            assert!(matches!(
+                project_selected(&outside),
+                FollowUpdate::Progress { next: 4, preceding } if preceding == record.commit_id
+            ));
         }
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();

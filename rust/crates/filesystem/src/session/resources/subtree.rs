@@ -103,7 +103,7 @@ mod tests {
                     super::super::metadata::canonical_resource(volume, &path, config).unwrap();
                 let key = crate::publication_changes::entry::key(&path, config);
                 let headers = acyclic_stream::RecordHeaders::new(
-                    vec![bytes::Bytes::copy_from_slice(key.slice())],
+                    vec![bytes::Bytes::copy_from_slice(key.slice()).into()],
                     vec![],
                 )
                 .unwrap();
@@ -120,7 +120,7 @@ mod tests {
             let selected = Selection::new(volume, &selected_path, config).unwrap();
             let key = crate::publication_changes::entry::key(&outside_path, config);
             let headers = acyclic_stream::RecordHeaders::new(
-                vec![bytes::Bytes::copy_from_slice(key.slice())],
+                vec![bytes::Bytes::copy_from_slice(key.slice()).into()],
                 vec![],
             )
             .unwrap();
@@ -179,10 +179,12 @@ mod tests {
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    Ok::<_, crate::WorkspaceError>(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    })
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        },
+                    )
                 },
             )
             .await
