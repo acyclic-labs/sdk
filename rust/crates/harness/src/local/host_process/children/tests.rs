@@ -89,17 +89,12 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
         let mut events = captured.split_inclusive(|byte| *byte == b'\n');
         let start = events.next().ok_or("captured start absent")?;
         let preview = events.next().ok_or("captured preview absent")?;
-        for recovered in [true, false] {
-            let session = if recovered {
-                "exit-output"
-            } else {
-                "lost-preview"
-            };
-            let (mut sessions, _) = children(host, cwd, session)?;
+        let (mut sessions, _) = children(host, cwd, "exit-output")?;
+        for (reference, recovered) in [("recovered", true), ("stale", false)] {
             let (mut running, view) = claim(
                 &mut sessions,
                 cwd,
-                "captured",
+                reference,
                 SessionAction::Spawn {
                     prompt: "captured reply".into(),
                 },
@@ -128,15 +123,15 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             writer.write_all(&captured[..boundary])?;
             writer.write_all(&corrupted)?;
             writer.write_all(&captured[boundary..])?;
-            sessions.children.insert("captured".into(), running);
-            sessions.ready.push("captured");
+            sessions.children.insert(reference.into(), running);
+            sessions.ready.push(reference);
             // Small scratch pages force both real output passes to spend all
             // their credit while the captured terminal is still unread.
             let mut page = [0; 8];
             sessions.pump_output(&mut page)?;
-            assert!(sessions.children.contains_key("captured"));
+            assert!(sessions.children.contains_key(reference));
             assert!(
-                sessions.children["captured"].answer.outcome.is_none(),
+                sessions.children[reference].answer.outcome.is_none(),
                 "terminal remains unread after the full passes"
             );
             assert_eq!(
@@ -147,14 +142,14 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
-                ["captured"],
+                [reference],
                 "actual output must schedule exactly its next bounded pass"
             );
             sessions.pump_output(&mut page)?;
-            assert!(!sessions.children.contains_key("captured"));
+            assert!(!sessions.children.contains_key(reference));
             assert!(sessions.ready.queue().keys.is_empty());
             let completed = sessions
-                .wait("captured")?
+                .wait(reference)?
                 .ok_or("captured child is still running")?;
             if recovered {
                 assert_eq!(

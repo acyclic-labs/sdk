@@ -33,8 +33,6 @@ pub use tools::serve;
 const EVENT_LIMIT: usize = 65_536;
 /// The saved log's line where framing or decoding dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -669,12 +667,7 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
-            let decoded = line.ok().and_then(|line| {
-                serde_json::from_str::<Value>(&line)
-                    .ok()
-                    .map(|event| (line, event))
-            });
-            let Some((line, event)) = decoded else {
+            let Some((line, event)) = answer::decode(line) else {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.

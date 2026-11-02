@@ -1,5 +1,17 @@
-//! Completion from the native host's original turn terminal.
-use super::{ANSWER_LIMIT, Outcome, Value};
+//! Native event decoding and completion from the host's original turn terminal.
+use super::{Outcome, Value};
+
+/// Byte bound of a retained answer.
+pub(super) const ANSWER_LIMIT: usize = 4096;
+
+/// A lost frame and malformed JSON share the same omission boundary.
+pub(super) fn decode(line: std::io::Result<String>) -> Option<(String, Value)> {
+    line.ok().and_then(|line| {
+        serde_json::from_str::<Value>(&line)
+            .ok()
+            .map(|event| (line, event))
+    })
+}
 
 /// A preview is not a completed reply. Native hosts can also report a failed
 /// turn before exiting successfully; their original terminal owns the outcome.

@@ -30,3 +30,10 @@ path = "fuzz_targets/native_staging_selection.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_reply"
+path = "fuzz_targets/native_reply.rs"
+test = false
+doc = false
+bench = false
