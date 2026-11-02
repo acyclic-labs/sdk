@@ -105,13 +105,15 @@ impl CredentialIo {
         Ok(text.to_owned())
     }
 
-    pub fn bytes(&mut self, bytes: Vec<u8>) -> Result<bytes::Bytes> {
+    pub fn json_body(&mut self, value: &impl serde::Serialize) -> Result<bytes::Bytes> {
+        let bytes = acyclic_auth::operation::ProtectedBytes::from_json(value)
+            .map_err(|_| crate::invalid("Codex refresh encoding failed"))?;
         match &mut self.custody {
             Some(custody) => {
                 let payload = custody.split_off(bytes.capacity() as u64)?;
                 crate::http::owned_bytes::owned(bytes, payload)
             }
-            None => Ok(bytes.into()),
+            None => Ok(bytes.into_bytes()),
         }
     }
 }

@@ -278,6 +278,58 @@ proptest! {
     }
 
     #[test]
+    fn refresh_request_bytes_survive_transport_ownership_without_a_temporary_token_graph(
+        text in ".{0,128}", force in any::<bool>(),
+    ) {
+        let refresh = format!("refresh-{text}");
+        let reason = if force { "unauthorized" } else { "proactive_expiry" };
+        // Restore the original producer as the same-input byte and allocation negative.
+        let mut original = None;
+        let before = acyclic_test_support::measure(|| {
+            original = Some(Bytes::from(serde_json::to_vec(&json!({
+                "grant_type":"refresh_token", "client_id":CLIENT_ID,
+                "refresh_token":refresh, "refresh_reason":reason,
+            })).unwrap()));
+        });
+        let original = original.unwrap();
+        let request = RefreshRequest {
+            client_id: CLIENT_ID,
+            grant_type: "refresh_token",
+            refresh_reason: reason,
+            refresh_token: &refresh,
+        };
+        let mut io = CredentialIo::new(None).unwrap();
+        let mut direct = None;
+        let after = acyclic_test_support::measure(|| {
+            direct = Some(io.json_body(&request).unwrap());
+        });
+        let direct = direct.unwrap();
+        prop_assert_eq!(direct.as_ref(), original.as_ref());
+        prop_assert!(after.count_total < before.count_total,
+            "restoring the temporary graph must fail the direct allocation count");
+
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        ).unwrap();
+        let baseline = work.live_allocation_bytes();
+        let body = {
+            let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+            let mut io = CredentialIo::new(Some(&mut custody)).unwrap();
+            io.graph(refresh.len() as u64 * 6 + 1024, 32).unwrap();
+            io.json_body(&request).unwrap()
+        };
+        prop_assert_eq!(body.as_ref(), original.as_ref());
+        prop_assert!(work.live_allocation_bytes() > baseline);
+        let retained = body.slice(..);
+        drop(body);
+        prop_assert_eq!(retained.as_ref(), original.as_ref());
+        prop_assert!(work.live_allocation_bytes() > baseline);
+        drop(retained);
+        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+
+    #[test]
     fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
         prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
     }

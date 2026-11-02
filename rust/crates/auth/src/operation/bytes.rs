@@ -92,6 +92,14 @@ impl<C> AsRef<[u8]> for ProtectedBytes<C> {
     }
 }
 
+impl<C> ProtectedBytes<C> {
+    /// Original backing capacity, for transferring its existing allocation credit.
+    /// This does not admit capacity or change payload ownership.
+    pub fn capacity(&self) -> usize {
+        self.bytes.capacity()
+    }
+}
+
 struct JsonWriter(Zeroizing<Vec<u8>>);
 
 impl std::io::Write for JsonWriter {

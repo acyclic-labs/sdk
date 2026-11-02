@@ -19,6 +19,15 @@ use credential_io::CredentialIo;
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 
+// Match the original JSON object's sorted keys without allocating that object.
+#[derive(serde::Serialize)]
+struct RefreshRequest<'a> {
+    client_id: &'static str,
+    grant_type: &'static str,
+    refresh_reason: &'static str,
+    refresh_token: &'a str,
+}
+
 /// Native-only reuse of an existing Codex CLI ChatGPT login.
 /// Refreshes serialize in memory and defer to concurrent CLI writes.
 /// File reads, parsing and publication use the shared native I/O service.
@@ -247,9 +256,16 @@ impl CodexLogin {
             let request = HttpRequest {
                 url: "https://auth.openai.com/oauth/token".into(),
                 headers: BTreeMap::new(),
-                body: io.bytes(serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,
-                    "refresh_token":refresh,"refresh_reason":if force {"unauthorized"} else {"proactive_expiry"}}))
-                    .map_err(|_| invalid("Codex refresh encoding failed"))?)?,
+                body: io.json_body(&RefreshRequest {
+                    client_id: CLIENT_ID,
+                    grant_type: "refresh_token",
+                    refresh_reason: if force {
+                        "unauthorized"
+                    } else {
+                        "proactive_expiry"
+                    },
+                    refresh_token: refresh,
+                })?,
             };
             let response = RefreshFailure::share(
                 async {
