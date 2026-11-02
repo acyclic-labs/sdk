@@ -36,6 +36,9 @@ impl Visibility {
         tail_stream: Option<&crate::RelativePath>,
     ) -> Result<crate::ChildrenPage, StreamError> {
         let capability = self.authorization.current()?;
+        let filter = std::cell::LazyCell::new(|| {
+            crate::FollowFilter::authorized(wire::SessionFilter::default(), &capability)
+        });
         let mut children = Vec::with_capacity(page.children.len());
         for mut child in page.children {
             if !self.permits(&*capability, "streams/list", &child.path)? {
@@ -45,11 +48,8 @@ impl Visibility {
                 let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
                 if self.permits(&*capability, "streams/follow", &target)? {
                     if let Some(record) = child.tail_record.take() {
-                        child.tail_record = crate::FollowFilter::authorized(
-                            wire::SessionFilter::default(),
-                            &capability,
-                        )?
-                        .project(record)?;
+                        child.tail_record =
+                            filter.as_ref().map_err(Clone::clone)?.project(record)?;
                         if child.tail_record.is_none() {
                             child.tail = None;
                         }

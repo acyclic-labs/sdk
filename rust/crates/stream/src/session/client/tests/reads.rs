@@ -575,7 +575,15 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     let original = direct.children.as_ref().ok_or("missing page")?;
     assert_eq!(original.children[0].tail, Some(2));
     assert_eq!(original.children[3].tail, Some(0));
-    for (follow, predicate) in [(false, false), (true, true), (true, false)] {
+    let tails = original
+        .children
+        .iter()
+        .filter(|child| child.tail_record.is_some())
+        .count();
+    assert!(tails > 1, "repeated filter construction must be observable");
+    let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
+    let mut construction = acyclic_test_support::AllocationInfo::default();
+    for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
         let credential = acyclic_auth::testing::root(|block| {
             let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
             key.grants = GrantSet {
@@ -602,6 +610,28 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                 });
             }
         });
+        let authority = crate::session::testing::authority();
+        let mut slots = crate::session::testing::slots();
+        authority.register(
+            &mut slots,
+            1,
+            &credential,
+            crate::session::Limits::default().channels,
+        )?;
+        let (_, visibility) = authority
+            .bind_list(&slots, 1, Some(&StreamPath::new("tree")?), 1)
+            .map_err(|_| "page admission failed")?;
+        if follow && predicate {
+            let capability = visibility.authorization.current()?;
+            let mut built = None;
+            construction = acyclic_test_support::measure(|| {
+                built = Some(crate::FollowFilter::authorized(
+                    Default::default(),
+                    &capability,
+                ));
+            });
+            built.ok_or("missing measured filter")??;
+        }
         client.register_credential(1, credential.into())?;
         let mut expected = original.clone();
         for child in &mut expected.children {
@@ -610,11 +640,40 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                 child.tail_record = None;
             }
         }
+        let selected = original.clone();
+        let tail_stream = request
+            .children
+            .as_ref()
+            .and_then(|page| page.tail_stream.as_ref());
+        let mut projected = None;
+        costs[usize::from(follow)][usize::from(predicate)] = acyclic_test_support::measure(|| {
+            projected = Some(visibility.page(selected, tail_stream));
+        });
+        assert_eq!(projected.ok_or("missing measured page")??, expected);
         assert_eq!(client.children_page(page("tree", 10)?, 1).await?, expected);
         let view = client.heads(request.clone(), 1).await?;
         assert_eq!(view.snapshot, direct.snapshot);
         assert_eq!(view.children, Some(expected));
     }
+    assert!(construction.count_total > 0);
+    // The unfiltered real page accounts for all path and reply work. The pin
+    // adds exactly one independently measured construction, even with two tails.
+    assert_eq!(
+        costs[1][1].count_total,
+        costs[1][0].count_total + construction.count_total
+    );
+    assert_eq!(
+        costs[1][1].bytes_total,
+        costs[1][0].bytes_total + construction.bytes_total
+    );
+    // A pin with no permitted follow must never construct a record filter.
+    assert_eq!(costs[0][1].count_total, costs[0][0].count_total);
+    assert_eq!(costs[0][1].bytes_total, costs[0][0].bytes_total);
+    eprintln!(
+        "page tails={tails} filter allocations: per-tail={} shared={}; denied-follow extra=0",
+        tails as u64 * construction.count_total,
+        costs[1][1].count_total - costs[1][0].count_total,
+    );
     // The same Session still returns the unfiltered original cut and records.
     assert_eq!(client.heads(request, 0).await?, direct);
     Ok(())
