@@ -82,6 +82,12 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
         let mut earlier = work.vec_owned::<u8>(31)?;
         earlier.value.resize(31, 7);
         let marker = RetainedAllocation::claim(16, 1, &mut work.accounting())?;
+        let baseline = work
+            .accounting()
+            .standalone_parts()
+            .ok_or("not ordinary work")?
+            .0
+            .live_bytes();
         let result = if public {
             store
                 .read(object.object_id(), object.length(), &mut work)
@@ -141,6 +147,9 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
             live - capacity,
             "sealer backing must retire on the original caller ledger"
         );
+        if public {
+            assert_eq!(live - capacity, baseline, "opening scratch did not retire");
+        }
         drop(marker);
         assert_eq!(earlier.value, [7; 31]);
         earlier.retire(&mut work.accounting())?;

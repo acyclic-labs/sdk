@@ -81,23 +81,30 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
 fn accounting<'a>(
     context: &'a mut AuthorityWork<'_>,
 ) -> Result<KernelAccounting<'a>, ObjectStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = context.original {
-        return Ok(KernelAccounting::native(original, context.cancellation));
+    if !context.is_native() {
+        context.read_budget()?;
     }
-    Ok(KernelAccounting::standalone(
-        context.read_budget()?,
-        context.cancellation,
-    ))
+    let standing = context.read_observation.map_or(0, |(_, standing)| standing);
+    let mut accounting = context.accounting();
+    if let KernelAccounting::BorrowedStandalone { budget, .. } = &mut accounting {
+        budget.peak_allocation_bytes = budget
+            .peak_allocation_bytes
+            .checked_sub(standing)
+            .ok_or(WorkError::Overflow)?;
+    }
+    Ok(accounting)
 }
 macro_rules! operate {
-    ($context:ident, $work:ident, $body:expr) => {{
-        let (result, spent) = {
-            let mut $work = accounting($context)?;
-            let result = $body;
-            (result, $work.spent())
-        };
-        $context.record_completed(spent)?;
+    ($context:ident, $work:ident, $body:expr) => {{ operate!($context, $work, false, $body) }};
+    ($context:ident, $work:ident, $keep_output:expr, $body:expr) => {{
+        let mut accounting = accounting($context)?;
+        let mut $work = accounting
+            .allocation_scope()
+            .map_err(crate::async_storage::object_error)?;
+        let result = $body;
+        if $keep_output && result.is_ok() {
+            $work.keep();
+        }
         result.map_err(crate::async_storage::object_error)
     }};
 }
@@ -111,6 +118,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         let read = operate!(
             context,
             work,
+            true,
             self.fetch::<STORED>(id, maximum, &mut work)
                 .await
                 .map(|(read, _)| read)
@@ -131,6 +139,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         let (reads, allocation) = operate!(
             context,
             work,
+            true,
             self.fetch_batch::<STORED>(requests, &mut work).await
         )?;
         match allocation {
@@ -255,9 +264,6 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         scope: crate::PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        accounting(context)?
-            .check()
-            .map_err(crate::async_storage::object_error)?;
         // The stream entry is the commit: its volume retains the closure,
         // which also makes it durable, first.
         operate!(context, work, self.retain_scope(scope, &mut work).await)?;

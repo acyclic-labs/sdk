@@ -13,16 +13,12 @@ pub(super) fn retention(
     objects: &[ObjectId],
     work: &mut KernelAccounting<'_>,
 ) -> Result<RetentionRequest, crate::FsError> {
-    use crate::kernel::Owned;
-
-    let owned = Owned::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
-    let root = Retained::from_owned(owned, work)?;
+    let root = Retained::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
     let root = Retained {
         value: super::Epoch::root_from(epoch, root.value),
         allocation: root.allocation,
     };
-    let owned = Owned::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
-    let mut references = Retained::from_owned(owned, work)?;
+    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
     references.value.extend(objects.iter().copied().map(blob));
     Ok((root, references))
 }
