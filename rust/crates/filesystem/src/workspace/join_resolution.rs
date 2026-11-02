@@ -204,24 +204,38 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
     ) -> Result<Option<String>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        // The projection needs one spelling, irrespective of this identity's
-        // other hard links. The shared reverse traversal stops at that row.
-        let maximum = 1;
-        let mut paths = self
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut path = self
             .target_head
-            .paths_for_file_id(file_id, maximum, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        if paths.is_empty() {
-            paths = self
+            .workspace
+            .first_path_at_with_accounting(
+                self.target_head.id,
+                file_id,
+                &mut accounting,
+                &cancellation,
+            )
+            .await?;
+        if path.is_none() {
+            path = self
                 .source_head
-                .paths_for_file_id(file_id, maximum, WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(|failure| failure.error)?
-                .value;
+                .workspace
+                .first_path_at_with_accounting(
+                    self.source_head.id,
+                    file_id,
+                    &mut accounting,
+                    &cancellation,
+                )
+                .await?;
         }
-        Ok(paths.into_iter().next())
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let text = path
+            .value
+            .unicode_text_with_accounting(&mut accounting, &cancellation);
+        path.retire(&mut accounting)?;
+        text.map(|(text, _allocation)| Some(text))
+            .map_err(Into::into)
     }
 
     pub(super) async fn regular_conflict_view(
