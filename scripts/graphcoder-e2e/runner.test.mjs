@@ -346,18 +346,20 @@ test("real process captures preserve UTF-8 at every byte boundary", async t => {
   const child = processes.start(process.execPath, ["-e", "require('node:readline').createInterface({input:process.stdin}).on('line',line=>process.stdout.write(Buffer.from(line,'hex')))"]);
   const text = "hé λ 🙂", bytes = Buffer.from(text);
   const output = child.child.stdout.iterator({ destroyOnReturn: false });
+  const receive = async (output, remaining) => {
+    while (remaining > 0) {
+      const next = await output.next();
+      assert.equal(next.done, false, 'step=fragment-output; recovery=node --test --test-name-pattern "real process captures preserve UTF-8 at every byte boundary" scripts/graphcoder-e2e/runner.test.mjs');
+      remaining -= next.value.length;
+      assert.ok(remaining >= 0, "original child output exceeded the selected fragment");
+    }
+  };
   try {
     for (let cut = 0; cut <= bytes.length; cut++) for (const fragment of [bytes.subarray(0, cut), bytes.subarray(cut)]) {
       if (!fragment.length) continue;
-      let received = output.next();
+      const received = receive(output, fragment.length);
       child.child.stdin.write(fragment.toString("hex") + "\n");
-      for (let remaining = fragment.length; remaining > 0;) {
-        const next = await received;
-        assert.equal(next.done, false, "original child output ended before the selected fragment");
-        remaining -= next.value.length;
-        assert.ok(remaining >= 0, "original child output exceeded the selected fragment");
-        if (remaining) received = output.next();
-      }
+      await received;
     }
     const ended = output.next();
     child.child.stdin.end();
@@ -365,4 +367,11 @@ test("real process captures preserve UTF-8 at every byte boundary", async t => {
     assert.equal((await output.next()).done, true, "late reads retain original EOF");
     assert.equal((await child.closed).stdout, text.repeat(bytes.length + 1));
   } finally { await output.return(); }
+  // Original producer loss must fail the same fragment consumer without a timer.
+  const missing = processes.start(process.execPath, ["-e", "process.exit(3)"]);
+  const lost = missing.child.stdout.iterator({ destroyOnReturn: false });
+  try {
+    await assert.rejects(receive(lost, 1), error => error.code === "ERR_ASSERTION" && error.message.includes("step=fragment-output"));
+    assert.equal((await missing.closed).code, 3);
+  } finally { await lost.return(); }
 });
