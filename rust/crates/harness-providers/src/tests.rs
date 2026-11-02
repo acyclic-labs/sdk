@@ -355,6 +355,7 @@ pub(super) fn provider_with(
 ) -> ResolvedModel {
     ResolvedModel {
         credential_scope: None,
+        anonymous_scope: None,
         files: crate::files::Files::default(),
         estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
         model: Model {

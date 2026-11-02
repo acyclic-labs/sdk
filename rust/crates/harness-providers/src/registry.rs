@@ -175,10 +175,16 @@ impl Registry {
             ),
         )
         .map_err(|_| invalid("cannot encode selected provider identity"))?;
+        let revision = revision.finalize();
+        // Optional authentication explicitly admits this exact anonymous route.
+        // Reuse its existing domain-separated digest: no second configuration
+        // walk, and no fallback for unknown or refused credential ownership.
+        let anonymous_scope = (!authenticated && config.authentication == Authentication::Optional)
+            .then(|| *revision.as_bytes());
         let model = Model::new(
             provider.into(),
             name.into(),
-            format!("provider-v1:{}", revision.finalize().to_hex()),
+            format!("provider-v1:{}", revision.to_hex()),
         )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
@@ -192,6 +198,7 @@ impl Registry {
             thinking_levels,
             key,
             credential_scope,
+            anonymous_scope,
             transport,
             #[cfg(not(target_arch = "wasm32"))]
             codex_count: std::sync::Arc::default(),

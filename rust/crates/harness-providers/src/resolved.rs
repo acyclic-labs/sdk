@@ -23,6 +23,9 @@ pub struct ResolvedModel {
     pub(crate) thinking_levels: bool,
     pub(crate) key: Option<Arc<str>>,
     pub(crate) credential_scope: Option<[u8; 32]>,
+    /// Explicitly anonymous admission, pinned to the original selected route.
+    /// This is continuation ownership, never authentication authority.
+    pub(crate) anonymous_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
     pub(crate) transport: Arc<dyn HttpTransport>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -96,22 +99,24 @@ impl ResolvedModel {
             },
             |scope| Some(scope.as_slice()),
         );
-        let credential_scope = credential.map(|credential| {
-            let mut scope = blake3::Hasher::new();
-            scope.update(b"harness-reasoning-scope-v1\0");
-            if self.credential_scope.is_some() {
-                scope.update(b"protected-account\0");
-            }
-            for value in [
-                family.as_bytes(),
-                self.config.base_url.as_bytes(),
-                credential,
-            ] {
-                scope.update(&(value.len() as u64).to_be_bytes());
-                scope.update(value);
-            }
-            *scope.finalize().as_bytes()
-        });
+        let credential_scope = credential
+            .map(|credential| {
+                let mut scope = blake3::Hasher::new();
+                scope.update(b"harness-reasoning-scope-v1\0");
+                if self.credential_scope.is_some() {
+                    scope.update(b"protected-account\0");
+                }
+                for value in [
+                    family.as_bytes(),
+                    self.config.base_url.as_bytes(),
+                    credential,
+                ] {
+                    scope.update(&(value.len() as u64).to_be_bytes());
+                    scope.update(value);
+                }
+                *scope.finalize().as_bytes()
+            })
+            .or(self.anonymous_scope);
         acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
             model: self.model.name.clone(),
@@ -168,6 +173,7 @@ impl ModelProvider for ResolvedModel {
             thinking_levels: self.thinking_levels,
             key: self.key.clone(),
             credential_scope: self.credential_scope,
+            anonymous_scope: self.anonymous_scope,
             transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_count: Arc::clone(&self.codex_count),

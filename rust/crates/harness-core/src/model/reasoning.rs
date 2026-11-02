@@ -10,7 +10,7 @@ pub struct ReasoningBlock {
     /// Readable content verified by the origin adapter, when available.
     #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub text: Option<String>,
-    /// Provider family, model and credential ownership of the native payload.
+    /// Provider family, model and admitted ownership of the native payload.
     pub origin: ReasoningOrigin,
     /// Exact native continuation bytes; projection never edits this payload.
     pub continuity: Vec<u8>,
@@ -27,7 +27,9 @@ pub struct ReasoningOrigin {
     pub provider: String,
     /// Exact selected model that produced this block.
     pub model: String,
-    /// Nonsecret scope digest; None means ownership is unknown.
+    /// Nonsecret continuation-ownership digest: an authenticated account or an
+    /// explicitly admitted anonymous route. This grants no authentication
+    /// authority; None means ownership is unknown.
     #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     pub credential_scope: Option<[u8; 32]>,
 }
@@ -39,7 +41,7 @@ pub struct ReasoningOrigin {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativePart {
-    /// Provider family, model and credential ownership of the bytes.
+    /// Provider family, model and admitted ownership of the bytes.
     pub origin: ReasoningOrigin,
     /// Exact native part bytes; projection never edits them.
     pub continuity: Vec<u8>,

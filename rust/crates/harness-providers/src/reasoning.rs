@@ -18,7 +18,7 @@ pub enum ProjectedReasoning<'a> {
 }
 
 /// Whether native bytes from `origin` replay to `target`: only within the same
-/// known credential scope and family.
+/// known admitted scope and family.
 fn compatible(origin: &ReasoningOrigin, target: &ReasoningOrigin) -> bool {
     !origin.provider.trim().is_empty()
         && origin.provider == target.provider
@@ -37,7 +37,7 @@ pub fn project_native<'a>(
         .map(|native| native.continuity.as_slice())
 }
 
-/// Selects native continuity only within the same known credential scope and family.
+/// Selects native continuity only within the same known admitted scope and family.
 /// Native payload shape validation belongs to the target's typed encoder.
 pub fn project_reasoning<'a>(
     block: &'a ReasoningBlock,
