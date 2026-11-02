@@ -100,9 +100,9 @@ if (mode === 'echo') {
   const sinkFailure = new Error('original sink failure');
   const stdoutFailure = new Error('original accepted stdout sink failure');
   const inputGate = new PassThrough();
+  const inputClosed = once(inputGate, 'close');
   let writeStarted = false, settled = false, terminalCalls = 0;
-  let terminal, release;
-  const terminalSeen = new Promise(resolve => { terminal = resolve; });
+  let release;
   const acceptedWrite = new Promise(resolve => { release = resolve; });
   const failed = commandProcess(process.execPath, [script, 'join'], {
     ...options, input: inputGate,
@@ -113,12 +113,15 @@ if (mode === 'echo') {
       await acceptedWrite;
       throw stdoutFailure;
     },
-    onTerminal() { terminalCalls++; terminal(); },
+    onTerminal() { terminalCalls++; },
   }).then(result => { settled = true; return result; });
-  await terminalSeen;
-  assert.ok(writeStarted);
-  assert.equal(settled, false, 'the accepted write still owns completion');
-  release();
+  try {
+    // Refusal or original host exit closes command input. Use that physical
+    // event to release accepted work; do not depend on the callback we test.
+    await Promise.race([inputClosed, failed]);
+    assert.ok(writeStarted);
+    assert.equal(settled, false, 'the accepted write still owns completion');
+  } finally { release(); await failed; }
   const sinkResult = await failed;
   assert.ok(sinkResult.failures.some(failure => failure.error === sinkFailure));
   assert.ok(sinkResult.failures.some(failure => failure.error === stdoutFailure));
