@@ -118,9 +118,8 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             };
             let mut corrupted = if recovered { start } else { preview }.to_vec();
             corrupted[0] = if recovered { 0xff } else { b'!' };
-            writer.write_all(&captured[..boundary])?;
-            writer.write_all(&corrupted)?;
-            writer.write_all(&captured[boundary..])?;
+            let wire = [&captured[..boundary], &corrupted, &captured[boundary..]].concat();
+            writer.write_all(&wire)?;
             sessions.children.insert(reference.into(), running);
             sessions.ready.push(reference);
             // Small scratch pages force both real output passes to spend all
@@ -160,6 +159,14 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                     .ok_or("malformed native event retained a stale successful reply")?;
                 assert!(failure.contains("malformed JSON"), "{failure}");
             }
+            let file: crate::conversation::FileRef =
+                serde_json::from_value(completed["events"].clone())?;
+            assert_eq!(
+                file.descriptor().byte_length(),
+                wire.len() as u64,
+                "native event log replaced original malformed frame bytes"
+            );
+            file.descriptor().verify(&wire, &mut None)?;
             drop(writer);
         }
         Ok(())
