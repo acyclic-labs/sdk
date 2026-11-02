@@ -144,8 +144,8 @@ pub async fn page(
             step,
             call_id: Some(&call_id),
             include_started: false,
-            maximum_step_records: 3,
-            maximum: 1,
+            maximum_step_records: Some(3),
+            maximum: Some(1),
             select: &select,
         };
         let indexed = journal

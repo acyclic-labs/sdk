@@ -36,8 +36,6 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
-const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
-const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 
 #[derive(Clone, Copy)]
 pub(super) enum HostCaptureScope {
