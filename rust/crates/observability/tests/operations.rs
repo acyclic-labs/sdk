@@ -1111,23 +1111,52 @@ fn method_queries_preserve_the_complete_typed_key() {
 #[test]
 fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Slo, Snapshot};
+    use std::sync::Arc;
     let file = br#"{"version":1,"operation":"acyclic.test.operation","success_ppm":990000,"latency":{"maximum_ns":10,"target_ppm":990000}}"#;
     let mut slo: Slo = serde_json::from_slice(file)?;
     let metrics = Metrics::default();
     let mut live = metrics.query_slo(slo.clone())?;
-    assert_eq!(live.snapshot().verdict.success, None);
+    let initial = live.snapshot();
+    assert_eq!(initial.verdict.success, None);
+    let mut projected = None;
+    let shared_cost = acyclic_test_support::measure(|| {
+        projected = Some(live.snapshot());
+    });
+    let projected = projected.ok_or("missing SLO projection")?;
+    assert!(Arc::ptr_eq(&initial.slo, &projected.slo));
+    assert_eq!(
+        serde_json::to_value(&projected.slo)?,
+        serde_json::to_value(&slo)?
+    );
+    // The original deep copy adds one allocation per nonempty file label on
+    // top of the unchanged owned evidence snapshot.
+    let copied_cost = acyclic_test_support::measure(|| {
+        std::hint::black_box((live.snapshot(), (*projected.slo).clone()));
+    });
+    assert_eq!(copied_cost.count_total, shared_cost.count_total + 1);
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics.clone())));
     tracing::dispatcher::with_default(&dispatch, || operation(false));
-    assert_eq!(ready(live.changed())??.verdict.success, Some(true));
+    let completed = ready(live.changed())??;
+    assert_eq!(completed.verdict.success, Some(true));
+    assert!(Arc::ptr_eq(&initial.slo, &completed.slo));
+    assert_eq!(initial.verdict.success, None);
+    assert_eq!(initial.evidence.ok, 0);
     // Replacing the file selects its new operation; the previous operation's
     // successful cohort must not leak into the new file's view.
     let mut replacement = slo.clone();
     replacement.operation = "acyclic.test.unrelated".into();
+    let replacement = metrics.query_slo(replacement)?.snapshot();
+    assert_eq!(replacement.verdict.success, None);
+    assert!(!Arc::ptr_eq(&initial.slo, &replacement.slo));
+    drop(dispatch);
+    drop(metrics);
     assert_eq!(
-        metrics.query_slo(replacement)?.snapshot().verdict.success,
-        None
+        ready(live.changed())?,
+        Err(acyclic_observability::QueryError)
     );
+    drop(live);
+    assert_eq!(initial.slo.operation, slo.operation);
     let mut snapshot = Snapshot {
         operation: slo.operation.clone(),
         latency_ns: vec![0; 129],
