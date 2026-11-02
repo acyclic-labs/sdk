@@ -23,7 +23,12 @@ test("configured hook records the exact envelope and preserves allow, deny and a
       [fileURLToPath(new URL("./hook.mjs", import.meta.url)), join(root, "stop.jsonl"), "allow"],
       {}, JSON.stringify({ hook_event_name: "Stop" }));
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, undefined);
+    assert.equal(result.stdout, "", "recording must not alter the model's context");
+    const context = await processes.run(process.execPath,
+      [fileURLToPath(new URL("./hook.mjs", import.meta.url)), join(root, "context.jsonl"), "context"],
+      {}, JSON.stringify({ hook_event_name: "Stop" }));
+    assert.equal(context.code, 0, context.stderr);
+    assert.equal(JSON.parse(context.stdout).hookSpecificOutput.additionalContext, "HOOK_E2E_CONTEXT");
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });

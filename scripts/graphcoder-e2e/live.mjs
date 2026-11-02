@@ -73,7 +73,8 @@ export async function runCase(binary, login, root, name, signal) {
   const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   const settings = join(directory, "settings");
-  const hookFile = join(workspace, "hooks.jsonl");
+  // Keep host observations outside the guest's mutable project tree.
+  const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   let step = "prepare workspace and isolated settings", env, childHooks, begin;
@@ -105,9 +106,8 @@ export async function runCase(binary, login, root, name, signal) {
     // Reuse only the admitted login path after stripping provider keys.
     env.CODEX_HOME = login;
     const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
-    const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
     await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
-      PostToolUse: [{ hooks: [{ type: "command", command }] }],
+      PostToolUse: [{ hooks: [{ type: "command", command: process.execPath, args: [recorder, hookFile] }] }],
     } }));
   };
   try {
