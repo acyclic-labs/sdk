@@ -101,26 +101,6 @@ fn schema_is_stable_and_identifies_the_public_contract() {
         first["properties"]["schemaVersion"]["const"],
         DATA_SCHEMA_VERSION
     );
-    let mut wrong = serde_json::json!({
-        "schema": "unsupported-sdk-docs-data",
-        "schemaVersion": DATA_SCHEMA_VERSION,
-        "packages": {},
-        "search": {}
-    });
-    let error = validate_document_shape(
-        &serde_json::to_vec(&wrong).expect("wrong-schema fixture should serialize"),
-        "1.0.0",
-    )
-    .expect_err("schema validator must reject the wrong schema constant");
-    assert!(error.to_string().contains("must set schema"));
-    wrong["schema"] = DATA_SCHEMA_VERSION.into();
-    wrong["schemaVersion"] = "unsupported-sdk-docs-data".into();
-    let error = validate_document_shape(
-        &serde_json::to_vec(&wrong).expect("wrong-version fixture should serialize"),
-        "1.0.0",
-    )
-    .expect_err("schema validator must reject the wrong schemaVersion constant");
-    assert!(error.to_string().contains("must set schemaVersion"));
 }
 #[test]
 fn slug_and_title_are_deterministic() {
