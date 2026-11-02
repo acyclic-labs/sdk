@@ -71,7 +71,9 @@ fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
         .collect()
 }
 
-/// Executable of an exactly matching installed hook, for ownership and diagnostics.
+/// Executable of an owned installed hook, for ownership and diagnostics.
+/// Ownership follows the reserved command and metadata, independently of its
+/// permission selector, so editing a selector cannot leave an owned hook behind.
 /// Foreign groups, additional commands and split argument fields are rejected.
 #[must_use]
 pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
@@ -91,5 +93,15 @@ pub fn claude_hook_executable(event: &str, group: &Value) -> Option<String> {
         return None;
     }
     let hooks = claude_hooks(&executable);
-    (hooks.get(event)?.first()? == group).then_some(executable)
+    let expected = hooks.get(event)?.first()?.as_object()?;
+    let actual = group.as_object()?;
+    (actual.len() == expected.len()
+        && expected.iter().all(|(key, value)| {
+            if event == "PermissionRequest" && key == "matcher" {
+                actual.get(key).is_some_and(Value::is_string)
+            } else {
+                actual.get(key) == Some(value)
+            }
+        }))
+    .then_some(executable)
 }

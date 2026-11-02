@@ -122,16 +122,37 @@ fn failed_lifecycle_coordination_stops_without_changing_native_permissions() {
 #[test]
 fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_settings() -> Result<()> {
     let foreign = json!({"hooks":[{"type":"command","command":"foreign guard"}],"matcher":".*"});
-    let original = json!({"permissions":{"deny":["Read(secret)"]},"theme":"dark","hooks":{"PreToolUse":[foreign]}});
-    let mut document = original.clone();
+    let original = json!({"permissions":{"deny":["Read(secret)"]},"theme":"dark","hooks":{"PreToolUse":[foreign.clone()],"PermissionRequest":[foreign]}});
     let executable = std::env::temp_dir().join("a path").join(if cfg!(windows) {
         "acyclic.exe"
     } else {
         "acyclic"
     });
+    let mut document = original.clone();
+    let mut owned = acyclic_harness::host_hooks::claude_hooks(&executable.to_string_lossy())
+        .remove("PermissionRequest")
+        .ok_or("owned permission hook missing")?;
+    // Alter the policy selector while retaining the original owned command.
+    owned[0]["matcher"] = json!("mcp__plugin_acyclic_acyclic-sessions__.*");
+    document["hooks"]["PermissionRequest"]
+        .as_array_mut()
+        .ok_or("permission hooks missing")?
+        .extend(owned);
+    let mut removed = document.clone();
+    install::update_claude(&mut removed, &executable.to_string_lossy(), false)?;
+    assert_eq!(removed, original);
     for _ in 0..2 {
         install::update_claude(&mut document, &executable.to_string_lossy(), true)?;
     }
+    let permissions = document["hooks"]["PermissionRequest"]
+        .as_array()
+        .ok_or("permission hooks missing")?;
+    assert_eq!(permissions.len(), 2);
+    assert_eq!(permissions[0], original["hooks"]["PermissionRequest"][0]);
+    assert_eq!(
+        permissions[1]["matcher"],
+        "^mcp__plugin_acyclic_acyclic-sessions__spawn$"
+    );
     assert_eq!(
         document
             .pointer("/hooks/PreToolUse")
