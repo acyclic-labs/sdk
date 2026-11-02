@@ -266,8 +266,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// Durably pause or resume. Pause cancels the original active delivery and
-    /// waits for its cleanup before returning. Once admitted, the operation
+    /// Durably pause or resume. Pause closes admission, lets the original active
+    /// delivery finish and settle, then parks it. Once admitted, the operation
     /// outlives its waiter. Its input/unknown publication remains with the same
     /// slot. Resume reopens admission and wakes it.
     /// A changed state cut returns [`Error::Conflict`] without another attempt.
