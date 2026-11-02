@@ -130,39 +130,103 @@ mod committed {
     #[tokio::test]
     async fn resource_snapshot_replays_atomically_and_refuses_a_second_step()
     -> Result<(), Box<dyn std::error::Error>> {
-        let provider = MemoryStream::default();
+        use crate::agent::{AgentHandler, INBOX};
+        use acyclic_actors::{
+            addressing::ActorReference,
+            domain::ActorLimits,
+            guest::{Delivery, Handler, SubscriptionCuts, Trigger},
+        };
+        let provider = std::sync::Arc::new(MemoryStream::default());
+        let store = crate::agent::actor_store(&provider)?;
         let agent = AgentId::from_bytes([1; 16]);
-        let path = AgentPath::root(&agent);
-        let created =
-            crate::agent::create_root(&IntentId::try_from("root")?, adoption(agent.clone()))?;
-        assert!(matches!(
-            provider.commit(created.request).await?,
-            CommitOutcome::Committed(_)
-        ));
-        let placement = ObservedResourcePlacement::new(ResourcePlacement {
+        let placement = ResourcePlacement {
             actor: ResourceLocation {
                 core: Some(0),
                 ..ResourceLocation::default()
             },
             ..ResourcePlacement::default()
-        });
-        let prepared = crate::agent::machine::prepare_step(
-            &Conversation(Vec::new()),
-            &path,
-            None,
-            1,
-            Wake::Inbox {
-                sequence: 0,
-                record: InboxRecord::ForkAdopted(Box::new(adoption(agent.clone()))),
-            },
-            CancellationToken::new(),
-            Some(&placement),
-        )
-        .await?;
-        let step = prepared.step();
-        let request = lower(step, 1, delivery_key(&step.state, "record:0")?)?;
-        let state = step.state.clone();
-        let checkpoint = prepared.into_checkpoint();
+        };
+        let handler = AgentHandler::new(
+            store.clone(),
+            Conversation(Vec::new()),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        )?
+        .with_resource_placement(placement);
+        let within = ActorReference::new(b"account", b"agents", b"owner")?;
+        let created = handler.prepare_root(
+            &within,
+            &IntentId::try_from("root")?,
+            adoption(agent.clone()),
+        )?;
+        let path = created.child;
+        assert!(matches!(
+            provider.commit(created.request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let actor = AgentHandler::<MemoryStream, Conversation>::actor(&within, &agent)?;
+        let before = store.load(&actor).await?;
+        let before = store
+            .claim(&before, 1, crate::agent::intent_key("claim", &[])?)
+            .await?;
+        let state = before.state().ok_or("missing actor state")?;
+        let record = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.inbox()?,
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or("missing adoption record")?;
+        let trigger = Trigger::Record {
+            subscription: INBOX.into(),
+            sequence: 0,
+        };
+        let transition = handler
+            .on_record(
+                Delivery {
+                    actor: actor.clone(),
+                    epoch: state.epoch(),
+                    trigger: trigger.clone(),
+                    now_unix_ms: 1,
+                    record: Some(record.clone()),
+                    subscriptions: SubscriptionCuts::new(
+                        before.path().clone(),
+                        before
+                            .follow_request()
+                            .preceding
+                            .ok_or("missing original state anchor")?,
+                        state.subscriptions().clone(),
+                    ),
+                },
+                state.checkpoint(),
+                CancellationToken::new(),
+            )
+            .await?;
+        let request = store
+            .prepare_publish(
+                &before,
+                state.epoch(),
+                &trigger,
+                Some(&record),
+                transition,
+                crate::agent::intent_key("first-step", &[])?,
+            )?
+            .into_request()?;
+        let resource_path = resource_stream(&agent)?;
+        assert!(
+            !request
+                .conditions
+                .iter()
+                .any(|condition| matches!(condition,
+                    CommitCondition::Head { path, .. } | CommitCondition::Tail { path, .. }
+                    | CommitCondition::Absent { path } | CommitCondition::Present { path }
+                    if path == &resource_path
+                ))
+        );
         let CommitOutcome::Committed(first) = provider.commit(request.clone()).await? else {
             panic!("first step refused")
         };
@@ -170,51 +234,47 @@ mod committed {
             panic!("replay refused")
         };
         assert_eq!(first.commit_id, replay.commit_id);
+        let after = store.load(&actor).await?;
+        let committed = after.state().ok_or("missing committed actor state")?;
+        assert_eq!(committed.subscriptions()[INBOX].cursor, 1);
+        let checkpoint = committed
+            .checkpoint()
+            .ok_or("missing committed checkpoint")?;
         let rows = snapshots(&provider, &agent).await?;
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].state,
-            crate::agent::checkpoint::checkpoint_state(&checkpoint)?
+            crate::agent::checkpoint::checkpoint_state(checkpoint)?
                 .resources
                 .unwrap()
         );
         assert_eq!(rows[0].state.counters.step_commits, 1);
-        assert_eq!(rows[0].placement, Some(placement.fact()));
+        assert_eq!(rows[0].placement, Some(placement));
 
-        let next = crate::agent::machine::prepare_step(
-            &Conversation(Vec::new()),
-            &path,
-            Some(state),
-            1,
-            Wake::Alarm,
-            CancellationToken::new(),
-            Some(&placement),
-        )
-        .await?;
-        assert_eq!(next.step().resource_placement, None);
-        let next = lower(next.step(), 1, delivery_key(&next.step().state, "alarm:1")?)?;
-        assert!(matches!(
-            provider.commit(next.clone()).await?,
-            CommitOutcome::Committed(_)
-        ));
-        // With no conversation/status append on an idle alarm, this resource
-        // guard alone prevents a stale checkpoint from adding a second row.
-        assert_eq!(next.mutations.len(), 1);
-        let mut stale = next;
+        // The original actor condition alone rejects a stale publication. No
+        // resource-stream condition or extra read is needed for this guarantee.
+        let mut stale = request;
         stale.idempotency_key = crate::agent::intent_key("stale", &[])?;
+        stale.conditions.retain(|condition| {
+            matches!(condition,
+                CommitCondition::Head { path, .. } | CommitCondition::Tail { path, .. }
+                if path == before.path()
+            )
+        });
+        assert_eq!(stale.conditions.len(), 1);
         assert!(matches!(
             provider.commit(stale.clone()).await?,
             CommitOutcome::Conflict(_)
         ));
-        // Negative control: removing the original resource cut admits duplication.
-        stale.conditions.retain(|condition| !matches!(condition, CommitCondition::Tail { path, .. } if path == &resource_stream(&agent).unwrap()));
+        assert_eq!(snapshots(&provider, &agent).await?, rows);
+        // Negative control: removing that original fence admits the duplicate.
+        stale.conditions.clear();
         assert!(matches!(
             provider.commit(stale).await?,
             CommitOutcome::Committed(_)
         ));
-        let rows = snapshots(&provider, &agent).await?;
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1], rows[2]);
+        let duplicated = snapshots(&provider, &agent).await?;
+        assert_eq!(duplicated, vec![rows[0], rows[0]]);
 
         let mut malformed = rows[0];
         malformed.placement.as_mut().unwrap().actor.core = Some(1);

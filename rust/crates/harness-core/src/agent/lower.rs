@@ -174,17 +174,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
     if let Some(resources) = state.resources {
         let agent = state.path.id();
         let path = super::resources::resource_stream(&agent)?;
-        let prior = resources
-            .counters
-            .step_commits
-            .checked_sub(1)
-            .ok_or(Error::Record(
-                "agent resource snapshot has no committed step",
-            ))?;
-        builder.condition(CommitCondition::Tail {
-            path: path.clone(),
-            expected: prior,
-        });
+        // The actor checkpoint's original condition fences this append too.
         let snapshot = super::resources::AgentResourceSnapshot {
             version: 1,
             agent: agent.to_bytes(),
