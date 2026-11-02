@@ -583,10 +583,32 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
     let other = BrowserStream::open(&name(), BrowserStreamLimits::default())
         .await
         .expect("other");
-    assert_eq!(
+    // Foreign cuts must refuse before the cache lock or an IndexedDB refresh.
+    let _cache = other.inner.cache.lock().await;
+    let foreign = crate::RevisionCut::of(receipt.revision);
+    assert!(matches!(
+        other.wait_applied(&foreign).now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
+    assert!(matches!(
         other
-            .wait_applied(&crate::RevisionCut::of(receipt.revision))
-            .await,
-        Err(StreamError::RevisionForeign)
-    );
+            .read(ReadRequest {
+                path: StreamPath::new("events").expect("path"),
+                from: 1,
+                limit: 1,
+                key: None,
+                at_least: foreign.clone(),
+            })
+            .now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
+    assert!(matches!(
+        other
+            .follow(FollowRequest {
+                at_least: foreign,
+                ..FollowRequest::new(StreamPath::new("events").expect("path"), 1)
+            })
+            .now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
 }

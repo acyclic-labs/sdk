@@ -66,6 +66,46 @@ async fn publication_uses_only_required_sql_observations()
             Some(Err(StreamError::LimitExceeded))
         ));
     }
+    // Foreign cuts cannot be satisfied by SQL or a later local publication.
+    // Keep the real session held: a refresh or lock wait fails these controls.
+    let mut foreign = future.clone();
+    foreign.incarnation ^= 1;
+    let foreign = crate::RevisionCut::of(foreign);
+    assert!(matches!(
+        provider
+            .read(ReadRequest {
+                path: StreamPath::new("foreign")?,
+                from: 0,
+                limit: 1,
+                key: None,
+                at_least: foreign.clone(),
+            })
+            .now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
+    assert!(matches!(
+        provider
+            .follow(FollowRequest {
+                at_least: foreign.clone(),
+                ..FollowRequest::new(StreamPath::new("foreign")?, 0)
+            })
+            .now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
+    assert!(matches!(
+        provider
+            .heads(HeadsRequest {
+                retained: Default::default(),
+                durable_through: None,
+                projection: HeadProjection::History,
+                paths: [StreamPath::new("foreign")?].into(),
+                children: None,
+                limit: 1,
+                at_least: foreign,
+            })
+            .now_or_never(),
+        Some(Err(StreamError::RevisionForeign))
+    ));
     let original = AppendRequest {
         path: StreamPath::new("accepted")?,
         records: vec!["original".into()],
