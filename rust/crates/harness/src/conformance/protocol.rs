@@ -381,14 +381,16 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("children continuation skipped, repeated or activated a child".into());
         }
-        if !matches!(
-            call(endpoint, &children(1, credit - 1, None)?).await?,
-            Err(AgentControlFailure::Refused { code, .. })
-                if code == acyclic_harness_core::agent::Error::Stream(StreamError::Capacity).code()
-        ) {
-            return Err(
-                "insufficient child credit did not refuse before an empty continuation".into(),
-            );
+        for bytes in [1, credit - 1] {
+            if !matches!(
+                call(endpoint, &children(1, bytes, None)?).await?,
+                Err(AgentControlFailure::Refused { code, .. })
+                    if code == acyclic_harness_core::agent::Error::Stream(StreamError::Capacity).code()
+            ) {
+                return Err(
+                    "insufficient child credit did not refuse before an empty continuation".into(),
+                );
+            }
         }
         let outside = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]));
         let refused = call(
