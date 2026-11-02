@@ -25,6 +25,7 @@ impl StockExecution<'_> {
             )
             .await?,
         )?;
+        let events = stock_events_into_iter(retained.events, self.io)?;
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
@@ -38,7 +39,7 @@ impl StockExecution<'_> {
         }
         let mut results = Vec::new();
         let mut hook_context = Vec::new();
-        for event in stock_events_into_iter(retained.events, self.io)? {
+        for event in events {
             let event = event?;
             let (invocation, metadata, native) = match event {
                 ModelEvent::ReasoningBlock { block } => {

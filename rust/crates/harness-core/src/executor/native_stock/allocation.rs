@@ -194,6 +194,12 @@ pub(in crate::executor) struct StockEventIter<'a> {
     storage: StockVecIter<'a, ModelEvent>,
 }
 
+impl StockEventIter<'_> {
+    pub(in crate::executor) fn as_slice(&self) -> &[ModelEvent] {
+        self.storage.values.as_slice()
+    }
+}
+
 impl Iterator for StockEventIter<'_> {
     type Item = Result<ModelEvent>;
 

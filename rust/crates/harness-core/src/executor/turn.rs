@@ -149,13 +149,14 @@ impl StockExecution<'_> {
         model_events: Vec<ModelEvent>,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<CollectedStep> {
-        let completed_message = self.has_completed_message(&model_events)?;
+        let model_events = stock_events_into_iter(model_events, self.io)?;
+        let completed_message = self.has_completed_message(model_events.as_slice())?;
         let mut parts = false;
         let mut calls = Vec::new();
         let mut text = String::new();
         let mut completed = Value::Null;
-        for event in stock_into_iter(model_events, self.io)? {
-            match event {
+        for event in model_events {
+            match event? {
                 ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(
                         &mut text,
@@ -170,20 +171,22 @@ impl StockExecution<'_> {
                     stock_retire_text(text, self.io)?;
                     text = completed;
                 }
-                ModelEvent::ToolCall(crate::model::ToolCall {
-                    call_id,
-                    name,
-                    arguments,
-                    metadata,
-                    native,
-                }) => {
+                ModelEvent::ToolCall(call) => {
                     if self.single_request {
+                        stock_retire_event(ModelEvent::ToolCall(call), self.io)?;
                         return Err(stock_boundary(
                             self.io,
                             crate::wire::ErrorCode::Unauthorized,
                             "single inference request attempted a tool call",
                         ));
                     }
+                    let crate::model::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                        metadata,
+                        native,
+                    } = call;
                     let invocation = ToolInvocation::for_model_call(
                         input.operation_id,
                         step,
