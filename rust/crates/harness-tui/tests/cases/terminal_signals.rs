@@ -201,7 +201,7 @@ impl Drop for Process {
 }
 
 impl Process {
-    fn start(mode: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    fn start(mode: &str) -> io::Result<Self> {
         let pty = rustix_openpty::openpty(None, None)?;
         let master = File::from(pty.controller);
         fcntl_setfl(&master, fcntl_getfl(&master)? | OFlags::NONBLOCK)?;
@@ -397,10 +397,7 @@ fn readiness_retains_output_and_reports_original_child_exit()
         Ok(_) => return Err("child without a readiness producer was accepted".into()),
         Err(error) => error,
     };
-    assert_eq!(
-        error.downcast_ref::<io::Error>().map(io::Error::kind),
-        Some(io::ErrorKind::UnexpectedEof)
-    );
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     let mut process = Process::start("ready-exit")?;
     assert!(process.wait()?.success());
     process.until(|process| Ok(process.bytes.windows(5).any(|bytes| bytes == b"READY")))?;
