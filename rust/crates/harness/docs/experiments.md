@@ -76,6 +76,14 @@ or transfer the transcript. Producer/session loss returns the session adapter's
 typed error. The producer of each subsequent wake is the fork's own actor step,
 which commits status with its turn.
 
+This runner is a draft pending the shared lifecycle contract: an idle child
+still occupies its parent's open-child membership. In-flight credit bounds
+active observations, but does not reclaim that membership. Executing larger
+populations therefore needs a shared close operation with a release
+acknowledgment, preserving the original settlement for resume. Merely observing
+the child's archived status would not prove that its parent consumed the release.
+Do not launch populations through this adapter until that contract is available.
+
 ## Results and cost
 
 Keep raw completed rows, including the actual child identity and committed
