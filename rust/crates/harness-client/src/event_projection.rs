@@ -394,6 +394,7 @@ impl EventProjection {
 /// A finite cut of a newly opened set of follows. The registration watermark
 /// on each source fixes its target; later appends never extend the drain. Keep
 /// consuming and flushing ordinary deliveries until this cut is reached.
+/// Completed sources retire immediately; completion never scans the selection.
 #[derive(Debug)]
 pub struct EventDrain {
     sources: BTreeMap<String, (Option<u64>, u64)>,
@@ -431,12 +432,13 @@ impl EventDrain {
         if let Some(after) = after {
             *next = after.next;
         }
+        if target.is_some_and(|target| *next >= target) {
+            self.sources.remove(&delivery.resource);
+        }
     }
 
     /// Every selected source has delivered through its fixed opening cut.
     pub fn complete(&self) -> bool {
-        self.sources
-            .values()
-            .all(|(target, next)| target.is_some_and(|target| *next >= target))
+        self.sources.is_empty()
     }
 }

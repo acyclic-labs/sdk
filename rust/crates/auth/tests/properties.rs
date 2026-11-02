@@ -112,6 +112,21 @@ proptest! {
     #[test]
     fn opaque_keys_round_trip_without_collisions(a in prop::collection::vec(any::<u8>(),0..64), b in prop::collection::vec(any::<u8>(),0..64), bucket in prop::collection::vec(any::<u8>(),1..16), other_bucket in prop::collection::vec(any::<u8>(),1..16)) {
         let encoded = encode_component(&a);
+        let prefixed = || {
+            let mut name = String::with_capacity("objects:/".len() + encoded.len());
+            name.push_str("objects:/");
+            name
+        };
+        let (mut before, mut after) = (prefixed(), prefixed());
+        let (appended, [temporary, direct]) = acyclic_test_support::differential(
+            || { before.push_str(&encode_component(&a)); before },
+            || { append_component(&a, &mut after); after },
+        );
+        prop_assert_eq!(&appended["objects:/".len()..], encoded.as_str());
+        prop_assert_eq!(direct.count_total, 0);
+        if !a.is_empty() {
+            prop_assert!(temporary.count_total > 0);
+        }
         let ((exact, candidate), [decoded, borrowed]) = acyclic_test_support::differential(
             || {
                 let value = decode_component(std::hint::black_box(&encoded)).unwrap();
@@ -129,6 +144,7 @@ proptest! {
         if !a.is_empty() {
             prop_assert!(decoded.count_total > 0);
         }
+        prop_assert_eq!(objects_resource(&bucket,&a), format!("objects:/{}/{}", encode_component(&bucket), encoded));
         prop_assert_eq!(objects_resource(&bucket,&a)==objects_resource(&other_bucket,&b),bucket==other_bucket && a==b);
         prop_assert!(valid_resource(&objects_resource(&bucket,&a)));
     }

@@ -327,12 +327,13 @@ fn path_ranges(
         if index != 0 {
             key.push(b'/');
         }
-        let bytes =
-            acyclic_auth::decode_component(component).map_err(|_| StreamError::InvalidArgument)?;
-        if bytes.contains(&b'/') || bytes.contains(&0) {
-            return Err(StreamError::InvalidArgument);
+        for byte in acyclic_auth::component_bytes(component) {
+            let byte = byte.map_err(|_| StreamError::InvalidArgument)?;
+            if byte == b'/' || byte == 0 {
+                return Err(StreamError::InvalidArgument);
+            }
+            key.push(byte);
         }
-        key.extend_from_slice(&bytes);
     }
     if key.len() >= crate::MAX_RECORD_KEY_BYTES {
         key.truncate(crate::MAX_RECORD_KEY_BYTES);

@@ -248,7 +248,7 @@ impl ReadRequest {
     pub(crate) fn validate(self) -> Result<ValidatedReadRequest, StreamError> {
         crate::memory::validate_limit(self.limit)?;
         if let Some(key) = &self.key {
-            key.validate()?;
+            ReadKeySeek::validate_key(&key.key)?;
         }
         Ok(ValidatedReadRequest(self))
     }
@@ -274,8 +274,8 @@ pub struct ReadKeySeek {
 }
 
 impl ReadKeySeek {
-    pub(crate) fn validate(&self) -> Result<(), StreamError> {
-        if self.key.len() > crate::MAX_RECORD_KEY_BYTES {
+    pub(crate) fn validate_key(key: &[u8]) -> Result<(), StreamError> {
+        if key.len() > crate::MAX_RECORD_KEY_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         Ok(())

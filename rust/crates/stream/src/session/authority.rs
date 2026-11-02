@@ -549,7 +549,13 @@ impl Authority {
             .skip(usize::from(request.children.is_none()))
             .map(|path| ("streams/read", stream_resource(Some(path))))
             .collect();
-        binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
+        if visibility.is_some() {
+            // bind_list already derived this immutable filter. Recheck the
+            // complete binding, including every added read, under current trust.
+            self.authorize(slots, &binding, channels)?;
+        } else {
+            binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
+        }
         Ok((binding, authorization, visibility))
     }
 

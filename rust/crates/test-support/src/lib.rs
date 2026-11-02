@@ -133,7 +133,7 @@ pub fn current_allocations() -> Option<AllocationInfo> {
 }
 /// Compare independently initialized implementations, including their complete
 /// result/error/trace, and measure each without allocating measurement state.
-pub fn differential<T: Eq + std::fmt::Debug>(
+pub fn differential<T: PartialEq + std::fmt::Debug>(
     baseline: impl FnOnce() -> T,
     candidate: impl FnOnce() -> T,
 ) -> (T, [AllocationInfo; 2]) {

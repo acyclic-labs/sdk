@@ -1,4 +1,5 @@
 use crate::{StreamError, StreamPath};
+use std::borrow::Cow;
 
 /// Encodes a stream name as an injective canonical product resource.
 /// Callers obtain the path from the owning Stream parser before admission.
@@ -8,7 +9,7 @@ pub fn stream_resource(path: &str) -> String {
         if index != 0 {
             resource.push('/');
         }
-        resource.push_str(&acyclic_auth::encode_component(component.as_bytes()));
+        acyclic_auth::append_component(component.as_bytes(), &mut resource);
     }
     resource
 }
@@ -31,11 +32,7 @@ pub fn stream_resource_matches(resource: &str, path: &StreamPath) -> bool {
 pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
     envelope(resource)?;
     if let Some(encoded) = resource.strip_prefix("streams:/") {
-        if encoded.contains('%') {
-            decode_stream_path(encoded)?;
-        } else {
-            StreamPath::validate(encoded)?;
-        }
+        StreamPath::validate(&decode_stream_name(encoded)?)?;
     }
     Ok(())
 }
@@ -56,41 +53,122 @@ pub fn stream_path(resource: &str) -> Result<StreamPath, StreamError> {
     let encoded = resource
         .strip_prefix("streams:/")
         .ok_or(StreamError::Unsupported)?;
-    decode_stream_path(encoded)
+    StreamPath::new(decode_stream_name(encoded)?)
 }
 
-fn decode_stream_path(encoded: &str) -> Result<StreamPath, StreamError> {
-    let mut path = String::new();
-    for (index, component) in encoded.split('/').enumerate() {
-        let decoded =
-            acyclic_auth::decode_component(component).map_err(|_| StreamError::InvalidArgument)?;
-        // A slash inside a component cannot become a namespace separator.
-        if decoded.contains(&b'/') {
-            return Err(StreamError::InvalidPath);
-        }
-        if index != 0 {
-            path.push('/');
-        }
-        path.push_str(std::str::from_utf8(&decoded).map_err(|_| StreamError::InvalidPath)?);
+fn decode_stream_name(encoded: &str) -> Result<Cow<'_, str>, StreamError> {
+    if !encoded.contains('%') {
+        return Ok(Cow::Borrowed(encoded));
     }
-    StreamPath::new(path)
+    let mut path = Vec::new();
+    for (index, component) in encoded.split('/').enumerate() {
+        if index != 0 {
+            path.push(b'/');
+        }
+        for byte in acyclic_auth::component_bytes(component) {
+            let byte = byte.map_err(|_| StreamError::InvalidArgument)?;
+            // A slash inside a component cannot become a namespace separator.
+            if byte == b'/' {
+                return Err(StreamError::InvalidPath);
+            }
+            path.push(byte);
+        }
+    }
+    String::from_utf8(path)
+        .map(Cow::Owned)
+        .map_err(|_| StreamError::InvalidPath)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Original owned-component decoder is the independent allocation control.
+    fn temporary_stream_path(resource: &str) -> Result<StreamPath, StreamError> {
+        envelope(resource)?;
+        let encoded = resource
+            .strip_prefix("streams:/")
+            .ok_or(StreamError::Unsupported)?;
+        let mut path = String::new();
+        for (index, component) in encoded.split('/').enumerate() {
+            let decoded = acyclic_auth::decode_component(component)
+                .map_err(|_| StreamError::InvalidArgument)?;
+            if decoded.contains(&b'/') {
+                return Err(StreamError::InvalidPath);
+            }
+            if index != 0 {
+                path.push('/');
+            }
+            path.push_str(std::str::from_utf8(&decoded).map_err(|_| StreamError::InvalidPath)?);
+        }
+        StreamPath::new(path)
+    }
+
     #[test]
     fn resource_round_trip_preserves_reserved_names_and_literal_percent_bytes()
     -> Result<(), StreamError> {
         for path in [
             "events",
+            "reader/inherited-conversation",
             ".acyclic/fs/volume",
             "caf%C3%A9/release.v1",
             "literal%2F/key",
         ] {
             let resource = stream_resource(path);
+            // The original temporary-component composition is the independent
+            // ownership control; both must produce the identical resource.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (_, [temporary, composed]) = acyclic_test_support::differential(
+                    || {
+                        let mut resource = String::from("streams:/");
+                        for (index, component) in path.split('/').enumerate() {
+                            if index != 0 {
+                                resource.push('/');
+                            }
+                            resource
+                                .push_str(&acyclic_auth::encode_component(component.as_bytes()));
+                        }
+                        resource
+                    },
+                    || stream_resource(std::hint::black_box(path)),
+                );
+                assert!(composed.count_total < temporary.count_total);
+                eprintln!(
+                    "resource={path} allocations: temporary={} composed={}",
+                    temporary.count_total, composed.count_total
+                );
+                let (_, [temporary, direct]) = acyclic_test_support::differential(
+                    || temporary_stream_path(std::hint::black_box(&resource)),
+                    || stream_path(std::hint::black_box(&resource)),
+                );
+                assert!(direct.count_total < temporary.count_total);
+                eprintln!(
+                    "path={path} allocations: temporary={} direct={}",
+                    temporary.count_total, direct.count_total
+                );
+                if resource.contains('%') {
+                    let (_, [owned, borrowed]) = acyclic_test_support::differential(
+                        || stream_path(std::hint::black_box(&resource)).map(|_| ()),
+                        || validate_resource(std::hint::black_box(&resource)),
+                    );
+                    assert_eq!(borrowed.count_total + 1, owned.count_total);
+                    eprintln!(
+                        "validation={path} allocations: owned={} borrowed={}",
+                        owned.count_total, borrowed.count_total
+                    );
+                } else {
+                    // The canonical name already is the decoded name: only
+                    // the requested final StreamPath owner may allocate.
+                    assert_eq!(direct.count_total, 1);
+                    let work = acyclic_test_support::measure(|| {
+                        validate_resource(std::hint::black_box(&resource)).unwrap();
+                    });
+                    assert_eq!(work.count_total, 0);
+                }
+            }
             let decoded = stream_path(&resource)?;
+            validate_resource(&resource)?;
             assert_eq!(decoded.as_str(), path);
             assert!(stream_resource_matches(&resource, &decoded));
             assert!(!stream_resource_matches(
@@ -122,10 +200,28 @@ mod tests {
             "streams:/a/",
             "streams:/%2E%2E/b",
             "streams:/caf%C3%A9",
+            "streams:/%FF",
+            "streams:/%00",
+            "streams:/%2F/%gg",
+            "streams:/%FF/%gg",
             "streams:/",
             "fs:/volume",
         ] {
+            assert_eq!(stream_path(resource), temporary_stream_path(resource));
+            let validated = match temporary_stream_path(resource) {
+                Err(StreamError::Unsupported) => Ok(()),
+                result => result.map(|_| ()),
+            };
+            assert_eq!(validate_resource(resource), validated);
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
+            #[cfg(not(target_arch = "wasm32"))]
+            if !resource.contains('%') {
+                let work = acyclic_test_support::measure(|| {
+                    let _ = stream_path(std::hint::black_box(resource));
+                    let _ = validate_resource(std::hint::black_box(resource));
+                });
+                assert_eq!(work.count_total, 0);
+            }
             for path in ["events", "a/b", "a.b", "caf%C3%A9", "fs/volume"] {
                 assert!(!stream_resource_matches(
                     resource,

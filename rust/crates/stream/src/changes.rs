@@ -26,11 +26,17 @@ mod tests;
 #[cfg(test)]
 std::thread_local! {
     static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MARKER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn take_parsed_bytes() -> usize {
     PARSED_BYTES.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+pub(crate) fn take_marker_probes() -> usize {
+    MARKER_PROBES.with(|count| count.replace(0))
 }
 
 /// Borrowed path-local facts used by a provider's funded change producer.
@@ -57,34 +63,34 @@ pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
 const FORMAT: &[u8] = WRITER_FORMAT;
 const V1: &[u8] = b"changes/v1";
 
-fn marks(name: &str, value: &OwnedBytes) -> bool {
-    name == ATTRIBUTE && READER_FORMATS.contains(&value.as_ref())
+fn marker(headers: &RecordHeaders) -> Option<&OwnedBytes> {
+    headers
+        .attributes()
+        .iter()
+        .find(|attribute| {
+            #[cfg(test)]
+            MARKER_PROBES.with(|count| count.set(count.get() + 1));
+            attribute.name == ATTRIBUTE
+        })
+        .map(|attribute| attribute.value)
 }
 
 fn compact(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
+    marker(headers).is_some_and(|value| value.as_ref() == FORMAT)
 }
 
-pub(crate) fn unknown(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| attribute.name == ATTRIBUTE && !marks(attribute.name, attribute.value))
-}
-
-pub(crate) fn marked(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| marks(attribute.name, attribute.value))
+/// Classifies the reserved marker in one pass; an unknown claim is never opaque.
+pub(crate) fn reader_format(headers: &RecordHeaders) -> Result<Option<&[u8]>, StreamError> {
+    match marker(headers) {
+        None => Ok(None),
+        Some(value) if READER_FORMATS.contains(&value.as_ref()) => Ok(Some(value.as_ref())),
+        Some(_) => Err(StreamError::InvalidArgument),
+    }
 }
 
 /// Whether `headers` belong to a change record.
 pub fn is_changes(headers: &RecordHeaders) -> bool {
-    marked(headers)
+    reader_format(headers).is_ok_and(|format| format.is_some())
 }
 
 /// V2 derives its index from the compact value. V1 retains its original wire
@@ -290,10 +296,10 @@ fn parse_v1<'a>(
 
 fn parse_record<'a>(
     bytes: &'a [u8],
-    headers: &RecordHeaders,
+    format: Option<&[u8]>,
     visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
-    if compact(headers) {
+    if format == Some(FORMAT) {
         parse(bytes, visit)
     } else {
         parse_v1(bytes, visit)
@@ -363,28 +369,26 @@ fn parse<'a>(
 
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
-    let mut entries = Vec::new();
-    let context = parse(bytes, |key, operation, metadata| {
-        entries.push(wire::ChangeEntry {
-            key: bytes::Bytes::copy_from_slice(key),
-            operation: operation.into(),
-            metadata: bytes::Bytes::copy_from_slice(metadata),
-        });
-        Ok(())
-    })?;
-    Ok(wire::ChangeRecord {
-        context: bytes::Bytes::copy_from_slice(context),
-        entries,
-    })
+    decode_record(bytes, Some(FORMAT), 0)
 }
 
 pub(crate) fn decode(
     bytes: &[u8],
     headers: &RecordHeaders,
 ) -> Result<wire::ChangeRecord, StreamError> {
-    validate(bytes, headers)?;
-    let mut entries = Vec::new();
-    let context = parse_record(bytes, headers, |key, operation, metadata| {
+    let format = validated_format(bytes, headers)?;
+    // Only a fully validated typed index establishes the body's entry count.
+    let capacity = format.map_or(0, |_| headers.keys().len());
+    decode_record(bytes, format, capacity)
+}
+
+fn decode_record(
+    bytes: &[u8],
+    format: Option<&[u8]>,
+    capacity: usize,
+) -> Result<wire::ChangeRecord, StreamError> {
+    let mut entries = Vec::with_capacity(capacity);
+    let context = parse_record(bytes, format, |key, operation, metadata| {
         entries.push(wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(key),
             operation: operation.into(),
@@ -399,23 +403,26 @@ pub(crate) fn decode(
 }
 
 /// Rejects a change value whose keys differ from its in-memory headers, and
-/// any record claiming a change format other than this one.
+/// any record claiming a change format outside the supported readers.
 pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), StreamError> {
-    if !marked(headers) {
-        if headers
-            .attributes()
-            .iter()
-            .any(|attribute| attribute.name == ATTRIBUTE)
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        return Ok(());
+    validated_format(bytes, headers).map(|_| ())
+}
+
+// Keep the admitted marker borrowed through reader selection. Decoding still
+// validates the complete value and index before allocating any decoded entries.
+pub(crate) fn validated_format<'a>(
+    bytes: &[u8],
+    headers: &'a RecordHeaders,
+) -> Result<Option<&'a [u8]>, StreamError> {
+    let format = reader_format(headers)?;
+    if format.is_none() {
+        return Ok(None);
     }
     if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
         return Err(StreamError::LimitExceeded);
     }
     let mut expected = headers.keys().iter();
-    parse_record(bytes, headers, |key, _, _| {
+    parse_record(bytes, format, |key, _, _| {
         if expected
             .next()
             .is_none_or(|expected| expected.as_ref() != key)
@@ -427,7 +434,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
     if expected.next().is_some() {
         return Err(StreamError::InvalidArgument);
     }
-    Ok(())
+    Ok(format)
 }
 
 /// Headers for a record arriving from any wire or persisted form. A change
