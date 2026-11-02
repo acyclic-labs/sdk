@@ -175,7 +175,7 @@
         },
         "is_background": {
           "type": "boolean",
-          "description": "Return the call identity without awaiting its terminal result. Use the background-tasks skill to observe or cancel the call."
+          "description": "Request a non-awaited call. When the host admits it, retain the call identity and use the background-tasks skill to join or cancel it."
         },
         "delay_ms": {
           "type": "integer",
