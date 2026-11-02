@@ -146,7 +146,11 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
     }
     let mut out = Output(NTriplesSerializer::new().for_writer(writer));
     for row in 0..batch.data.num_rows() {
-        let path = required(batch, "agent_path", row)?;
+        let path = text(batch, "agent_path", row)?;
+        let scope = text(batch, "scope_path", row)?;
+        let owner = path
+            .or(scope)
+            .ok_or_else(|| export_error("PROV observation has no original owner"))?;
         let operation = text(batch, "operation_id", row)?;
         let stream = required(batch, "source_stream", row)?;
         let kind = required(batch, "kind", row)?;
@@ -158,11 +162,37 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
         let account = text(batch, "source_account", row)?;
         let origin = text(batch, "source_origin", row)?;
         let commit = text(batch, "source_commit_id", row)?;
-        let agent = out.agent(path, "agent")?;
+        let agent = path.map(|path| out.agent(path, "agent")).transpose()?;
+        let scope_identity = scope.map(|scope| {
+            id(
+                "scope-owner",
+                &[
+                    account.unwrap_or("").as_bytes(),
+                    scope.as_bytes(),
+                    owner.as_bytes(),
+                ],
+            )
+        });
+        let owner_key = scope_identity
+            .as_ref()
+            .map_or(owner.as_bytes(), |scope| scope.as_bytes());
+        // One session fence can settle many calls. Its source tuple identifies
+        // the shared cause, not each call's distinct resulting observation.
+        let call_identity = (batch.table == Table::Outcomes && kind == "call_receipt")
+            .then(|| -> Result<Id> {
+                Ok(id(
+                    "call-receipt-owner",
+                    &[owner_key, required(batch, "call_log", row)?.as_bytes()],
+                ))
+            })
+            .transpose()?;
         let observation = id(
             "observation",
             &[
-                path.as_bytes(),
+                // Known scope ownership cannot alias an older unknown scope.
+                call_identity
+                    .as_ref()
+                    .map_or(owner_key, |call| call.as_bytes()),
                 operation.unwrap_or("").as_bytes(),
                 stream.as_bytes(),
                 &sequence,
@@ -181,6 +211,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
         )?;
         out.text(&observation, "urn:acyclic:research:sourceStream", stream)?;
         out.text(&observation, "urn:acyclic:research:kind", kind)?;
+        if let Some(scope) = scope {
+            out.text(&observation, "urn:acyclic:research:scopePath", scope)?;
+        }
         out.unsigned(
             &observation,
             "urn:acyclic:research:sequence",
@@ -204,10 +237,12 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
             )?;
         }
         let turn = if let Some(operation) = operation {
-            let turn = id("turn", &[path.as_bytes(), operation.as_bytes()]);
+            let turn = id("turn", &[owner_key, operation.as_bytes()]);
             out.class(&turn, "http://www.w3.org/ns/prov#Activity")?;
             out.text(&turn, "urn:acyclic:research:operationId", operation)?;
-            out.relation(&turn, "http://www.w3.org/ns/prov#wasAssociatedWith", &agent)?;
+            if let Some(agent) = &agent {
+                out.relation(&turn, "http://www.w3.org/ns/prov#wasAssociatedWith", agent)?;
+            }
             Some(turn)
         } else {
             None
@@ -232,7 +267,7 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
             let call = id(
                 domain,
                 &[
-                    path.as_bytes(),
+                    owner_key,
                     operation.as_bytes(),
                     &step,
                     discriminator.as_bytes(),
@@ -243,7 +278,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
             if let Some(key) = text(batch, "replay_key", row)? {
                 out.text(&call, "urn:acyclic:research:replayKey", key)?;
             }
-            out.relation(&call, "http://www.w3.org/ns/prov#wasAssociatedWith", &agent)?;
+            if let Some(agent) = &agent {
+                out.relation(&call, "http://www.w3.org/ns/prov#wasAssociatedWith", agent)?;
+            }
             out.relation(
                 &call,
                 "urn:acyclic:research:partOf",
@@ -301,7 +338,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
                 out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
                 out.relation(
-                    &agent,
+                    agent
+                        .as_ref()
+                        .ok_or_else(|| export_error("PROV profile has no original agent"))?,
                     "http://www.w3.org/ns/prov#wasInfluencedBy",
                     &profile_id,
                 )?;
@@ -327,9 +366,35 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 }
             }
         }
-        if matches!(batch.table, Table::Agents | Table::Edges) {
+        if matches!(batch.table, Table::Agents | Table::Edges | Table::Outcomes) {
             if let Some(coverage) = text(batch, "coverage", row)? {
                 out.text(&observation, "urn:acyclic:research:coverage", coverage)?;
+            }
+        }
+        if batch.table == Table::Outcomes && kind == "call_receipt" {
+            for (field, predicate) in [
+                ("caller", "urn:acyclic:research:caller"),
+                ("call_log", "urn:acyclic:research:callLog"),
+                ("outcome", "urn:acyclic:research:outcome"),
+                ("request_commit_id", "urn:acyclic:research:requestCommitId"),
+                ("fence", "urn:acyclic:research:settlingFence"),
+            ] {
+                if let Some(value) = text(batch, field, row)? {
+                    out.text(&observation, predicate, value)?;
+                }
+            }
+            for (field, predicate) in [
+                ("request_sequence", "urn:acyclic:research:requestSequence"),
+                ("terminal_sequence", "urn:acyclic:research:terminalSequence"),
+                (
+                    "logical_value_bytes",
+                    "urn:acyclic:research:logicalValueBytes",
+                ),
+            ] {
+                let values = column::<UInt64Array>(batch, field)?;
+                if !values.is_null(row) {
+                    out.unsigned(&observation, predicate, values.value(row))?;
+                }
             }
         }
         if batch.table == Table::Edges {

@@ -56,6 +56,10 @@ pub mod stream_records;
 #[cfg(all(feature = "research", feature = "machines"))]
 pub mod placement;
 
+/// Caller-owned invocation receipts from the shared Actors call protocol.
+#[cfg(feature = "research")]
+pub mod calls;
+
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -109,7 +113,8 @@ impl Table {
         use DataType::{Boolean, Float64, Int64, UInt32, UInt64, Utf8};
         let mut fields = vec![
             Field::new("version", UInt32, false),
-            Field::new("agent_path", Utf8, false),
+            Field::new("agent_path", Utf8, true),
+            Field::new("scope_path", Utf8, true),
             Field::new("operation_id", Utf8, true),
             Field::new("source_stream", Utf8, false),
             Field::new("sequence", UInt64, false),
@@ -195,7 +200,18 @@ impl Table {
                 ("physical_shared_bytes", UInt64),
                 ("coverage", Utf8),
             ],
-            Self::Outcomes => vec![("artifact", Utf8)],
+            Self::Outcomes => vec![
+                ("artifact", Utf8),
+                ("caller", Utf8),
+                ("call_log", Utf8),
+                ("outcome", Utf8),
+                ("request_sequence", UInt64),
+                ("request_commit_id", Utf8),
+                ("terminal_sequence", UInt64),
+                ("fence", Utf8),
+                ("logical_value_bytes", UInt64),
+                ("coverage", Utf8),
+            ],
         };
         fields.extend(
             columns
@@ -237,7 +253,7 @@ macro_rules! columns {
         #[derive(Default)]
         struct Row<'a> {
             version: u32,
-            agent_path: String,
+            agent_path: Option<String>,
             operation_id: Option<String>,
             source_stream: &'a str,
             sequence: u64,
@@ -255,7 +271,7 @@ macro_rules! columns {
                 use arrow_array::*;
                 Ok(match name {
                     "version" => Arc::new(UInt32Array::from_iter_values(rows.iter().map(|row| row.version))),
-                    "agent_path" => Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.agent_path.as_str()))),
+                    "agent_path" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.agent_path.as_deref()))),
                     "operation_id" => Arc::new(StringArray::from_iter(rows.iter().map(|row| row.operation_id.as_deref()))),
                     "source_stream" => Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.source_stream))),
                     "sequence" => Arc::new(UInt64Array::from_iter_values(rows.iter().map(|row| row.sequence))),
@@ -279,7 +295,7 @@ columns! {
     UInt64Array: u64 => [inbox, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
         latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages,
         logical_value_bytes, physical_copied_bytes, physical_shared_bytes,
-        source_committed_at_micros, memory_bytes];
+        source_committed_at_micros, memory_bytes, request_sequence, terminal_sequence];
     Int64Array: i64 => [seed];
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
@@ -288,20 +304,22 @@ columns! {
         system_fingerprint, price_revision, currency, call_id, source, target, credential_scope,
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
         source_account, source_origin, source_commit_id, coverage,
-        machine, forked_from, physical_host, region]
+        machine, forked_from, physical_host, region, scope_path,
+        caller, call_log, outcome, request_commit_id, fence]
 }
 
 impl<'a> Row<'a> {
     #[cfg(feature = "research")]
     fn stream(
-        agent: &str,
+        agent: Option<&str>,
         account: &acyclic_auth::addressing::AccountId,
         selected: &'a acyclic_stream::StreamPath,
         record: &acyclic_stream::Record,
         kind: &str,
     ) -> Self {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-        let mut row = Self::new(agent, None, record.sequence, selected.as_str(), kind);
+        let mut row = Self::base(None, record.sequence, selected.as_str(), kind);
+        row.agent_path = agent.map(str::to_owned);
         row.source_account = Some(URL_SAFE_NO_PAD.encode(account.as_bytes()));
         row.source_origin = Some(record.origin.as_str().into());
         row.source_commit_id = Some(digest(*record.commit_id.as_bytes()));
@@ -316,9 +334,14 @@ impl<'a> Row<'a> {
         stream: &'a str,
         kind: &str,
     ) -> Self {
+        let mut row = Self::base(operation, sequence, stream, kind);
+        row.agent_path = Some(agent.into());
+        row
+    }
+
+    fn base(operation: Option<OperationId>, sequence: u64, stream: &'a str, kind: &str) -> Self {
         Self {
             version: 1,
-            agent_path: agent.into(),
             operation_id: operation.map(|id| id.to_string()),
             source_stream: stream,
             sequence,
