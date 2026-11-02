@@ -42,9 +42,12 @@ fn ready<F: Future>(future: F) -> Result<F::Output, std::io::Error> {
 }
 
 #[test]
-fn work_totals_replace_stale_values_before_original_terminal()
+fn producer_fields_replace_stale_values_before_original_terminal()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_observability::{Export, Outcome, WorkSummary};
+    use acyclic_observability::{
+        Export, Outcome, Publication, PublicationControl, PublicationData, PublicationPurpose,
+        WorkSummary,
+    };
     use std::{fmt, sync::Arc};
     use tokio::sync::Semaphore;
 
@@ -56,36 +59,52 @@ fn work_totals_replace_stale_values_before_original_terminal()
     }
     let debug = tracing::field::debug(NeverFormat);
     let overflow = u128::from(u64::MAX) + 1;
-    let unsupported: [&dyn tracing::field::Value; 7] = [
-        &false, &-1_i64, &1_i64, &0.0_f64, &overflow, &"unknown", &debug,
+    let updates: [(&dyn tracing::field::Value, Option<u64>); 8] = [
+        (&false, None),
+        (&-1_i64, None),
+        (&1_i64, None),
+        (&0_u64, Some(0)),
+        (&0.0_f64, None),
+        (&overflow, None),
+        (&"unknown", None),
+        (&debug, None),
     ];
     for detailed in [false, true] {
         let credit = Arc::new(Semaphore::new(1));
         let (export, mut records) = Export::channel(credit.clone(), detailed);
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
-        for invalid in unsupported {
+        for (invalid, work_value) in updates {
             for restore in [false, true] {
                 for abandon in [false, true] {
                     tracing::dispatcher::with_default(&dispatch, || {
                         // Creation and deferred records use the same projection.
                         let span = tracing::info_span!(
-                            "acyclic.test.work_totals",
+                            "acyclic.harness.executor.publication",
                             outcome = tracing::field::Empty,
                             work.items = invalid,
                             work.bytes = invalid,
                             work.durability = invalid,
+                            rpc = invalid,
+                            data = invalid,
+                            control = invalid,
                         );
                         let known = || {
                             span.record("work.items", 0_u64)
                                 .record("work.bytes", u64::MAX)
-                                .record("work.durability", 2_u64);
+                                .record("work.durability", 2_u64)
+                                .record("rpc", "tool-settlement")
+                                .record("data", "result-and-projection")
+                                .record("control", "conditional-journal-append");
                         };
                         known();
                         let cost = acyclic_test_support::measure(|| {
                             span.record("work.items", invalid)
                                 .record("work.bytes", invalid)
-                                .record("work.durability", invalid);
+                                .record("work.durability", invalid)
+                                .record("rpc", invalid)
+                                .record("data", invalid)
+                                .record("control", invalid);
                         });
                         assert_eq!(cost.count_total, 0, "invalidation allocated scratch");
                         if restore {
@@ -96,7 +115,7 @@ fn work_totals_replace_stale_values_before_original_terminal()
                             // The original terminal freezes both known and
                             // unknown evidence, despite retained span handles.
                             known();
-                            span.record("work.bytes", invalid);
+                            span.record("work.bytes", invalid).record("data", invalid);
                         }
                     });
                     let record = ready(records.recv())?.ok_or("original work terminal absent")?;
@@ -109,9 +128,26 @@ fn work_totals_replace_stale_values_before_original_terminal()
                                 durability: Some(2),
                             }
                         } else {
-                            WorkSummary::default()
+                            WorkSummary {
+                                items: work_value,
+                                bytes: work_value,
+                                durability: work_value,
+                            }
                         }),
                         "unsupported evidence retained a stale total"
+                    );
+                    assert_eq!(
+                        record.sample().publication,
+                        detailed.then_some(if restore {
+                            Publication {
+                                purpose: Some(PublicationPurpose::ToolSettlement),
+                                data: Some(PublicationData::ResultAndProjection),
+                                control: Some(PublicationControl::ConditionalJournalAppend),
+                            }
+                        } else {
+                            Publication::default()
+                        }),
+                        "unsupported evidence retained a stale publication classification"
                     );
                     assert_eq!(
                         record.sample().outcome,

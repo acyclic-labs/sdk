@@ -35,8 +35,10 @@ pub enum PublicationControl {
 }
 
 /// Optional, independent fields of `acyclic.harness.executor.publication`.
-/// Missing or unrecognized values remain unknown. These semantic declarations
-/// do not establish physical calls, publication range coverage or device drains.
+/// Missing, unrecognized or unsupported values remain unknown. A later invalid
+/// value clears that field rather than retaining an earlier classification.
+/// These semantic declarations do not establish physical calls, publication
+/// range coverage or device drains.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Publication {
     /// Original publication purpose.
@@ -80,5 +82,12 @@ impl Visit for Publication {
         }
     }
 
-    fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &Field, _: &dyn std::fmt::Debug) {
+        match field.name() {
+            "rpc" => self.purpose = None,
+            "data" => self.data = None,
+            "control" => self.control = None,
+            _ => {}
+        }
+    }
 }
