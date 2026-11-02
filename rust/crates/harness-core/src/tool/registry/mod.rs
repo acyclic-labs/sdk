@@ -24,7 +24,6 @@ enum ModelSelection {
 }
 
 impl ModelSelection {
-    #[cfg(feature = "filesystem")]
     fn owned_bytes(&self) -> u64 {
         match self {
             Self::Revision(revision) => revision.capacity() as u64,

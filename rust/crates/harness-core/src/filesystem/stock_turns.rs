@@ -132,8 +132,8 @@ pub struct StockExecutors {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
-    /// `tools` as the model's family sees them, bound on the first turn.
-    native: std::sync::OnceLock<ToolRegistry>,
+    /// The model family's native declarations, decoded on the first turn.
+    native: std::sync::OnceLock<Option<Arc<crate::tools::native::NativeTools>>>,
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
@@ -281,16 +281,19 @@ impl TurnExecutors for StockExecutors {
                 .provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .unwrap_or_else(|| Arc::clone(&self.provider));
-            let mut tools = match self.native.get() {
-                Some(tools) => tools.clone(),
+            let native = match self.native.get() {
+                Some(native) => native.clone(),
                 None => {
-                    let mut tools = self.tools.clone();
-                    if let Some(profile) = self.provider.native_tool_profile(&self.model)? {
-                        crate::tools::native::bind(&mut tools, profile)?;
-                    }
-                    self.native.get_or_init(|| tools).clone()
+                    let native = self
+                        .provider
+                        .native_tool_profile(&self.model)?
+                        .map(crate::tools::native::NativeTools::new)
+                        .transpose()?
+                        .map(Arc::new);
+                    self.native.get_or_init(|| native).clone()
                 }
             };
+            let mut tools = self.tools.clone();
             // The agent tools act for this turn: their effects commit with it.
             if let Some(effects) = &authority.effects
                 && !self.agent_tools.is_empty()
@@ -326,6 +329,11 @@ impl TurnExecutors for StockExecutors {
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
+            // Native declarations run the revisions the prepared manifest pins.
+            let executor = match &native {
+                Some(native) => executor.with_native_tools(native)?,
+                None => executor,
+            };
             let executor = match (&self.profiles, &agent.profile) {
                 (Some(profiles), Some(pin)) => {
                     executor.with_context_stage(Arc::new(crate::context::SourceStage::new(

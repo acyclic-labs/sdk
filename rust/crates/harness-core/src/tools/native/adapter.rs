@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub(super) struct Adapter {
-    pub(super) arguments: Arguments,
+    pub(super) arguments: Arc<Arguments>,
     pub(super) original: Arc<Tool>,
 }
 
