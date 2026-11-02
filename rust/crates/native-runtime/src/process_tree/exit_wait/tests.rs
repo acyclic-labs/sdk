@@ -1,6 +1,45 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    // Exercise the exported API on an actual direct child, not a ProcessTree
+    // or an alternate pidfd implementation. Its input EOF is also terminal.
+    let mut child = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "process_tree::exit_wait::tests::exit_wait_fixture",
+        ])
+        .env("ACYCLIC_TEST_EXIT_WAIT", "1")
+        .env("ACYCLIC_TEST_EXIT_STATUS", "gated")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let watch = crate::ChildExitWatch::open(&mut child)?.expect("live child");
+    let readiness_fd = watch.as_fd().as_raw_fd();
+    let early = watch.wait_until(Instant::now());
+    let still_running = child.try_wait()?;
+    child.stdin.take().unwrap().write_all(&[1])?;
+    let ready = watch.wait_until(Instant::now() + Duration::from_secs(2));
+    // Reap only through the original owner. The retained pidfd can still
+    // report this same exit after reaping, with no numeric PID lookup.
+    let status = child.wait()?;
+    ready?;
+    assert_eq!(early.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    assert!(still_running.is_none(), "deadline must not signal or reap");
+    assert!(readiness_fd >= 0);
+    assert_eq!(status.code(), Some(37));
+    watch.wait_until(Instant::now())?;
+    drop(watch);
+    assert!(crate::ChildExitWatch::open(&mut child)?.is_none());
+    assert_eq!(crate::wait_child_until(&mut child, Instant::now())?, status);
+    Ok(())
+}
+
 #[test]
 fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io::Result<()> {
     let mut tree = child("gated")?;

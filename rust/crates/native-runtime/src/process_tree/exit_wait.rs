@@ -2,6 +2,56 @@
 use super::*;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
+/// Readiness for one original child, without signal or reaping authority.
+///
+/// Opening observes a cached status before acquiring the pidfd. Once opened,
+/// the descriptor stays bound to that process even if its owner reaps it.
+/// Dropping this watch only closes its descriptor; it never stops the child.
+#[cfg(target_os = "linux")]
+pub struct ChildExitWatch(ExitWatch<'static>);
+
+#[cfg(target_os = "linux")]
+impl ChildExitWatch {
+    /// Opens the original child's exit event, or returns `None` if `Child`
+    /// already retains its status. The caller keeps ownership of the child.
+    pub fn open(child: &mut std::process::Child) -> io::Result<Option<Self>> {
+        if child.try_wait()?.is_some() {
+            return Ok(None);
+        }
+        let id = child.id();
+        Ok(Some(Self(open(id, None)?)))
+    }
+
+    /// Waits on this exact process's kernel exit event until the caller's
+    /// absolute deadline. Readiness already available wins at the deadline.
+    /// Returns `TimedOut` without terminating or reaping the process.
+    pub fn wait_until(&self, deadline: Instant) -> io::Result<()> {
+        wait_event(&self.0, deadline)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::os::fd::AsFd for ChildExitWatch {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.0.fd.as_ref().expect("opened exit descriptor").as_fd()
+    }
+}
+
+/// Waits for and reaps the caller's child without taking termination authority.
+/// An already retained status wins even at an expired deadline. Failure leaves
+/// the child and all responsibility for its termination with the caller.
+#[cfg(target_os = "linux")]
+pub fn wait_child_until(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> io::Result<ExitStatus> {
+    if let Some(watch) = ChildExitWatch::open(child)? {
+        watch.wait_until(deadline)?;
+    }
+    child.wait()
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -188,11 +238,20 @@ fn register_event(watch: &ExitWatch<'_>, id: libc::id_t, flags: u32) -> io::Resu
 
 #[cfg(target_os = "linux")]
 fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::Result<ExitStatus> {
+    match wait_event(watch, deadline) {
+        Ok(()) => platform::observe_exit_id(id, watch.meter)?
+            .ok_or_else(|| io::Error::other("process exit notification has no status")),
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            platform::observe_exit_id(id, watch.meter)?.ok_or(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_event(watch: &ExitWatch<'_>, deadline: Instant) -> io::Result<()> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return platform::observe_exit_id(id, watch.meter)?.ok_or_else(timeout);
-        }
         let mut ready = libc::pollfd {
             fd: watch.as_raw_fd(),
             events: libc::POLLIN,
@@ -219,8 +278,15 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
             if ready.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
                 return Err(io::Error::other("invalid process exit notification"));
             }
-            return platform::observe_exit_id(id, watch.meter)?
-                .ok_or_else(|| io::Error::other("process exit notification has no status"));
+            if ready.revents & libc::POLLIN == 0 {
+                return Err(io::Error::other(
+                    "process exit notification is not readable",
+                ));
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(timeout());
         }
     }
 }

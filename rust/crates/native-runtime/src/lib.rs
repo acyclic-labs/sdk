@@ -55,6 +55,8 @@ pub use windows::terminal;
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
+#[cfg(target_os = "linux")]
+pub use process_tree::{ChildExitWatch, wait_child_until};
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
     ControlledCapture, OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream,
