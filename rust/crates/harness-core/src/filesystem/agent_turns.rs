@@ -905,10 +905,9 @@ where
         )
         .await?
         .context;
-        let window = self
-            .limits
-            .history_turns
-            .map_or(0, |page| cut.tail.saturating_sub(page) / page.max(1) * page.max(1));
+        let window = self.limits.history_turns.map_or(0, |page| {
+            cut.tail.saturating_sub(page) / page.max(1) * page.max(1)
+        });
         let from = cut.checkpoint.map_or(window, |at| at.max(window));
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {

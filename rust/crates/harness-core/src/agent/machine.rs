@@ -559,26 +559,6 @@ pub async fn step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
-    Ok(prepare_step(
-        driver,
-        path,
-        state,
-        (cursor, now_unix_ms),
-        wake,
-        cancellation,
-    )
-    .await?
-    .step)
-}
-
-pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
-    driver: &T,
-    path: &AgentPath,
-    state: Option<AgentState>,
-    (cursor, now_unix_ms): (u64, u64),
-    wake: Wake,
-    cancellation: acyclic_actors::guest::CancellationToken,
-) -> Result<PreparedStep, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
     // Consuming a non-waking stream event never advances the model driver,
