@@ -25,16 +25,26 @@ export class TerminalFrames {
   dispose() { for (const handler of this.handlers) handler.dispose(); }
 }
 
-const failures = visible => [...visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)/g)];
-const expected = (failure, condition) => typeof condition?.task_failure === "string"
-  && condition.task_failure.length > 0 && failure[1].startsWith(condition.task_failure);
+// Query errors are rendered in the status row, outside the task transcript.
+export function queryFailure(visible) {
+  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
+  return /^(?:storage failure:|Usage query ended:)/.test(notice) ? notice : undefined;
+}
+function* failures(visible) {
+  for (const failure of visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)/g))
+    yield { text: failure[0], reason: failure[1], kind: "task_failure" };
+  const notice = queryFailure(visible);
+  if (notice) yield { text: notice, reason: notice, kind: "query_failure" };
+}
+const expected = (failure, condition) => typeof condition?.[failure.kind] === "string"
+  && condition[failure.kind].length > 0 && failure.reason.startsWith(condition[failure.kind]);
 export class FailureHistory {
   #handled = new Set();
   unexpected(visible, condition) {
-    return failures(visible).find(failure => !expected(failure, condition)
-      && !this.#handled.has(failure[0]))?.[0];
+    for (const failure of failures(visible)) if (!expected(failure, condition)
+      && !this.#handled.has(failure.text)) return failure.text;
   }
   accept(visible, condition) {
-    for (const failure of failures(visible)) if (expected(failure, condition)) this.#handled.add(failure[0]);
+    for (const failure of failures(visible)) if (expected(failure, condition)) this.#handled.add(failure.text);
   }
 }
