@@ -38,6 +38,9 @@ pub struct MergeDirectoryPlan {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MergeCleanFile {
+    /// Persisted format version; unsupported versions fail at decoding.
+    #[serde(deserialize_with = "merge_file_version")]
+    pub version: u8,
     /// Original portable path.
     pub path: String,
     /// Destination identity before the merge.
@@ -154,6 +157,7 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     // original conflict's semantic admission below.
     check_resolution_roundtrip(data);
     check_merge_file_roundtrip::<MergeDirectoryPlan>(data);
+    check_merge_file_roundtrip::<MergeCleanFile>(data);
     check_merge_file_roundtrip::<MergeConflictFile>(data);
     let Ok((conflict, bytes)) = serde_json::from_slice::<(crate::ConflictView, Vec<u8>)>(data)
     else {
@@ -185,6 +189,14 @@ fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes:
                 "unsupported merge file version accepted by the shipped decoder"
             );
         }
+        document
+            .as_object_mut()
+            .expect("merge file object")
+            .remove("version");
+        assert!(
+            serde_json::from_value::<T>(document).is_err(),
+            "unversioned merge file accepted by the shipped decoder"
+        );
     }
 }
 
@@ -420,6 +432,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     JoinCleanStep::Entry(entry) => {
                         let row = entry.value();
                         let file = MergeCleanFile {
+                            version: 1,
                             path: super::join_helpers::namespace_path_text_with_cancellation(
                                 &row.path,
                                 cancellation,

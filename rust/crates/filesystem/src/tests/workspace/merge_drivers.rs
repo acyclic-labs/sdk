@@ -149,7 +149,12 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .entries
         .first()
         .ok_or("clean descriptor missing")?;
-    let clean_path = format!("{root}/clean/{}", clean_entry.name.unicode_text()?);
+    let clean_name = value!(
+        clean_entry
+            .name
+            .unicode_text(WorkBudget::UNBOUNDED, &cancellation)
+    )?;
+    let clean_path = format!("{root}/clean/{clean_name}");
     let clean_bytes = unbounded!(pinned_staging, read(&clean_path, 16384))?;
     let mut clean_document: serde_json::Value = serde_json::from_slice(&clean_bytes)?;
     assert_eq!(
