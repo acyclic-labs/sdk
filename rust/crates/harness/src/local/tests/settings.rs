@@ -253,13 +253,21 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
 
 #[cfg(feature = "hooks")]
 #[tokio::test]
-async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let harness = open(directory.path()).await?;
-    write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
-    drop(harness);
-    let harness = open(directory.path()).await?;
-    assert!(harness.plugin_hooks.is_empty());
+async fn unreadable_settings_entries_refuse_before_seed_fallback_on_reopen() -> Result<()> {
+    for path in ["agent.ts/child.ts", "plugins.ts/child.ts"] {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let harness = open(directory.path()).await?;
+        write(&harness, path, "export default {}; ").await?;
+        drop(harness);
+        match open(directory.path()).await {
+            Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            }) => {}
+            Err(error) => panic!("{path}: original entry read refusal required: {error}"),
+            Ok(_) => panic!("{path}: unreadable settings became seed fallback"),
+        }
+    }
     Ok(())
 }
 

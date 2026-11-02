@@ -200,6 +200,44 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         acyclic_stream::OwnedBytes,
         Option<crate::OperationId>,
     )> {
+        if let Some(file) = self
+            .read_private_path_indexed_if_present(
+                volume,
+                grant,
+                path,
+                expected_generation,
+                maximum_bytes,
+                access,
+            )
+            .await?
+        {
+            return Ok(file);
+        }
+        let missing = match access.io {
+            Some(io) => io.sdk::<_, WorkspaceError>((Err(WorkspaceError::NotFound), Ok(()))),
+            None => Err(map_error(WorkspaceError::NotFound)),
+        };
+        missing.map_err(path_read_refusal)
+    }
+
+    /// Resolve an optional file through the same authenticated read path.
+    /// Only original path absence returns `None`; missing authority, source
+    /// loss, cancellation and failed accounting remain terminal errors.
+    pub async fn read_private_path_indexed_if_present(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<
+        Option<(
+            FileRef,
+            acyclic_stream::OwnedBytes,
+            Option<crate::OperationId>,
+        )>,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.require_private_directory(volume, grant, path, io)?;
@@ -229,7 +267,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await?
             };
-            return Box::pin(self.read_private_path_indexed(
+            return Box::pin(self.read_private_path_indexed_if_present(
                 volume,
                 grant,
                 path,
@@ -277,9 +315,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation(&generation, &requested.0, maximum_bytes, Some(io))
+        let bytes = read_generation_if_present(&generation, &requested.0, maximum_bytes, io)
             .await
             .map_err(path_read_refusal)?;
+        let Some(bytes) = bytes else {
+            super::super::access::require_current(&workspace, &view.0, io).await?;
+            if let Some((workspace, view)) = &data_access {
+                super::super::access::require_current(workspace, &view.0, io).await?;
+            }
+            grant.recheck(Some(io))?;
+            return Ok(None);
+        };
         let bytes_hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, bytes_hold);
         let staged = read_content_metadata(&generation, path, io).await?;
@@ -311,7 +357,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(hold) = bytes.1 {
             hold.into_retained()?;
         }
-        Ok((reference.0, bytes.0, publication))
+        Ok(Some((reference.0, bytes.0, publication)))
     }
 
     /// Reads at most `maximum` bytes from `offset` of the private file at

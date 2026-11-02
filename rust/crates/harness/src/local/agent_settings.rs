@@ -36,23 +36,10 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    // Only the selected settings entry may fall back to the seed on an
-    // invalid file. Enabled plugin files and imports retain their read errors.
-    async fn entry(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
-        match self.home(path).await {
-            Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::Invalid,
-                ..
-            }) => Ok(None),
-            result => result,
-        }
-    }
-
     async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
-        match self
-            .volumes
+        self.volumes
             .files
-            .read_private_path_indexed(
+            .read_private_path_indexed_if_present(
                 self.volumes.home,
                 &self.read,
                 path,
@@ -61,15 +48,7 @@ impl Tree<'_> {
                 ContentAccess::default(),
             )
             .await
-        {
-            Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes))),
-            Err(Error::NotFound(_))
-            | Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::NotFound,
-                ..
-            }) => Ok(None),
-            Err(error) => Err(error),
-        }
+            .map(|file| file.map(|(file, bytes, _)| (file.version().to_owned(), bytes)))
     }
 }
 
@@ -93,8 +72,8 @@ impl config::Tree for Tree<'_> {
 }
 
 /// The settings `agent.ts` selects over `started`, recording the home
-/// module's admission. An invalid or rejected home module leaves the seed's
-/// settings in force; the seed's own module must be admissible.
+/// module's admission. An invalid or rejected decoded home module leaves the
+/// seed's settings in force; source read failures remain terminal.
 pub(super) async fn admit(
     volumes: &Volumes<'_>,
     agent: AgentId,
@@ -112,7 +91,7 @@ pub(super) async fn admit(
         generation: "",
         bytes: crate::seed::file(config::AGENT),
     };
-    let home = tree.entry(config::AGENT).await?;
+    let home = tree.home(config::AGENT).await?;
     let Some((version, bytes)) = home else {
         return settle(&[seed], &tree, started, resolve, compaction)
             .await
@@ -219,8 +198,8 @@ async fn record(
 }
 
 /// The before-hook rules of the plugins `plugins.ts` enables, read as the
-/// session starts, recording the home module's admission. An invalid home
-/// `plugins.ts` leaves the seed's set in force.
+/// session starts, recording the home module's admission. An invalid decoded
+/// home `plugins.ts` leaves the seed's set in force; read failures are terminal.
 #[cfg(any(test, feature = "hooks"))]
 pub(super) async fn plugins(
     volumes: &Volumes<'_>,
@@ -241,7 +220,7 @@ pub(super) async fn plugins(
         }
         error => error,
     };
-    let Some((version, bytes)) = tree.entry(MANIFEST).await? else {
+    let Some((version, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
     let layers = [
@@ -500,6 +479,38 @@ mod tests {
                 (_, Ok(_)) => panic!("{prefix}: imported settings escaped their read boundary"),
             }
         }
+        harness
+            .files
+            .put_content(
+                &harness.scratch,
+                &write,
+                config::AGENT,
+                b"export default base => base;",
+                "text/typescript",
+                config::AGENT,
+                u64::MAX,
+                &crate::IdempotencyKey::new("settings-bound-control".to_owned())?,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        let bounded = Volumes {
+            maximum_bytes: 0,
+            ..volumes
+        };
+        let refused = admit(
+            &bounded,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            harness.clock.as_ref(),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
+            "the entry read bound became seed fallback"
+        );
         Ok(())
     }
 
@@ -550,7 +561,7 @@ mod tests {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
         let enabler = harness.root.to_string();
-        let (version, bytes) = original.entry(crate::plugins::MANIFEST).await?.unwrap();
+        let (version, bytes) = original.home(crate::plugins::MANIFEST).await?.unwrap();
         let layers = [Layer {
             name: "home",
             generation: &version,

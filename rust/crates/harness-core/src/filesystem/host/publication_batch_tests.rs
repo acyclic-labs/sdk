@@ -41,6 +41,110 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
 }
 
 #[tokio::test]
+async fn optional_private_reads_distinguish_path_absence_from_authority_loss() -> Result<()> {
+    for adapter in 0..3 {
+        let provider =
+            ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([36; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        host.put_content(
+            &volume,
+            &write,
+            "value",
+            b"original",
+            "text/plain",
+            "value",
+            64,
+            &IdempotencyKey::new("optional-source")?,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+        let missing = VolumeRef::new(
+            provider,
+            "missing-authority".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let (_, missing_read) = publication_grants(&missing, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let access = crate::conversation::ContentAccess {
+            ceiling: None,
+            io: io.as_ref(),
+        };
+        assert!(
+            host.read_private_path_indexed_if_present(&volume, &read, "absent", None, 64, access,)
+                .await?
+                .is_none()
+        );
+        let absent = host
+            .read_private_path_indexed(&volume, &read, "absent", None, 64, access)
+            .await
+            .unwrap_err();
+        let lost = host
+            .read_private_path_indexed_if_present(
+                &missing,
+                &missing_read,
+                "absent",
+                None,
+                64,
+                access,
+            )
+            .await
+            .unwrap_err();
+        // The public code cannot distinguish these two original causes.
+        assert_eq!(absent.code(), crate::wire::ErrorCode::NotFound);
+        assert_eq!(lost.code(), absent.code());
+        assert_eq!(
+            host.read_private_path_indexed_if_present(&volume, &read, "value", None, 64, access,)
+                .await?
+                .unwrap()
+                .1
+                .as_ref(),
+            b"original"
+        );
+        assert_eq!(
+            host.read_private_path_indexed_if_present(&volume, &read, "value", None, 0, access,)
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Invalid
+        );
+        if io.is_some() {
+            cancellation.cancel();
+            assert_eq!(
+                host.read_private_path_indexed_if_present(
+                    &volume, &read, "absent", None, 64, access,
+                )
+                .await
+                .unwrap_err()
+                .code(),
+                crate::wire::ErrorCode::Cancelled
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn publication_adapters_preserve_pinned_content_and_reject_changed_operation() -> Result<()> {
     for adapter in 0..3 {
         let provider =
