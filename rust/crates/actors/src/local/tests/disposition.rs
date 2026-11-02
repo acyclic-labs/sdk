@@ -41,7 +41,9 @@ async fn selected<P: StreamProvider>(
         .ok_or(Error::Invalid("missing selected failure record"))
 }
 
-async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
+async fn failed_input_contract<P: StreamProvider>(
+    provider: P,
+) -> Result<Vec<Record>, Box<dyn std::error::Error>> {
     let provider = Arc::new(Counted::new(provider));
     let store = Store::new(provider.clone(), state_root()?);
     let owner = actor("failure-disposition")?;
@@ -429,11 +431,9 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     );
     assert_eq!(purge.request().mutations.len(), 1);
     store.submit(purge).await?;
+    let purged = selected(provider.as_ref(), &second_entry.origin, 1).await?;
     assert_eq!(
-        FailureEntry::decode(
-            &second_path,
-            &selected(provider.as_ref(), &second_entry.origin, 1).await?
-        )?,
+        FailureEntry::decode(&second_path, &purged)?,
         FailureEntry::Resolved(FailureResolution::Purge)
     );
     // Reconcile the original replay only after a later input and disposition
@@ -539,12 +539,46 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             .commit_id,
         receipt.state().commit_id
     );
-    Ok(())
+    Ok(vec![
+        entry.clone(),
+        captured,
+        terminal,
+        second_entry.clone(),
+        purged,
+        receipt.state().clone(),
+        receipt.terminal().clone(),
+        selected(provider.as_ref(), call.settled(), 0).await?,
+    ])
 }
 
 #[tokio::test]
 async fn failed_input_disposition_is_atomic_and_preserves_original_identity() -> TestResult {
     failed_input_contract(MemoryStream::default()).await?;
     let directory = tempfile::tempdir()?;
-    failed_input_contract(LocalStream::open(directory.path(), Default::default()).await?).await
+    let original =
+        failed_input_contract(LocalStream::open(directory.path(), Default::default()).await?)
+            .await?;
+    // Drop every original Store/provider, then recover through the shipped
+    // durable entry point. Reconstructing only Store would retain live memory.
+    let reopened = LocalStream::open(directory.path(), Default::default()).await?;
+    for expected in original {
+        let retained = selected(&reopened, &expected.origin, expected.sequence).await?;
+        assert_eq!(
+            retained, expected,
+            "durable recovery must retain every field"
+        );
+        // Use the ordinary read projection, including its selected-origin
+        // elision, and the actual protobuf decoder rather than a DTO copy.
+        use prost::Message as _;
+        let bytes =
+            acyclic_stream::wire_codec::record_wire(retained.clone(), Some(&retained.origin))
+                .encode_to_vec();
+        let wire = acyclic_stream::wire::Record::decode(bytes.as_slice())?;
+        assert_eq!(
+            acyclic_stream::wire_codec::record(wire.clone(), Some(&retained.origin))?,
+            expected
+        );
+        assert!(acyclic_stream::wire_codec::record(wire, None).is_err());
+    }
+    Ok(())
 }
