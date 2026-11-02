@@ -31,7 +31,7 @@ async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_closed_pid_producer_ends_admission() -> Result {
-    served("codex", |host, cwd, _| {
+    served("codex", |host, cwd| {
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
         let (mut running, view) = claim(
             &mut sessions,
@@ -65,7 +65,7 @@ async fn a_closed_pid_producer_ends_admission() -> Result {
 }
 
 /// Runs `body` against a live workspace server for `host`.
-async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
+async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -73,17 +73,21 @@ async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
         LocalHarness::open(LocalHarnessConfig::native_host(&cwd).state_directory(state.path()))
             .await?,
     );
+    let owner_directory = cwd.join(".acyclic-sdk/host-files");
+    fs::create_dir_all(&owner_directory)?;
     let (changed, mut changes) = tokio::sync::mpsc::channel(1);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if !matches!(&event, Ok(event) if event.kind.is_access()) {
+        if !matches!(&event, Ok(event) if event.kind.is_access()
+            || !event.paths.iter().any(|path| path.file_name().is_some_and(|name| name == "owner.json")))
+        {
             let _ = changed.try_send(event);
         }
     })?;
-    watcher.watch(&cwd, notify::RecursiveMode::Recursive)?;
+    watcher.watch(&owner_directory, notify::RecursiveMode::NonRecursive)?;
     let server_local = Arc::clone(&local);
     let mut server = tokio::spawn(async move { host_files::serve(server_local).await });
     let result = async {
-        while !cwd.join(".acyclic-sdk/host-files/owner.json").is_file() {
+        while !owner_directory.join("owner.json").is_file() {
             tokio::select! {
                 result = &mut server => return Err(failed(
                     "start native child workspace", format!("owner ended: {result:?}")
@@ -95,7 +99,7 @@ async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
             }
         }
         drop(watcher);
-        body(host, &cwd, state.path())
+        body(host, &cwd)
     }.await;
     server.abort();
     if !server.is_finished() {
@@ -173,7 +177,7 @@ fn claim(
 /// An idle child's view is released once its turn settles with nothing
 /// queued; a follow-up mounts it again, and its turn runs and settles under
 /// the child's original receipt.
-fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
+fn follow_up(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "follow-up")?;
     let prompts = [
         SessionAction::Spawn {
@@ -226,6 +230,7 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
 /// Drain actual output before parking on the original process-event producer.
 /// Direct-child exit owns this wait; another stderr writer cannot delay it.
 fn wait_exit(running: &mut Running) -> Result {
+    running.process.take_output_progress();
     loop {
         running.process.pump_stdin()?;
         output(running)?;
@@ -265,7 +270,7 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
     }
 }
 
-fn exercise(host: &str, cwd: &Path, _: &Path) -> Result {
+fn exercise(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "held-stderr")?;
     let (mut running, view) = claim(
         &mut sessions,
