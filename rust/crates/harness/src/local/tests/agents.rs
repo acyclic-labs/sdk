@@ -279,7 +279,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let absent = |file: &crate::conversation::FileRef| {
         crate::conversation::FileRef::new(
             file.volume().clone(),
-            "/missing-turn-text".into(),
+            "missing-turn-text".into(),
             file.version().into(),
             file.descriptor().clone(),
             file.display_name().into(),
