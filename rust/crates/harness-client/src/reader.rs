@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct ReaderPolicy {
     /// One LRU byte budget for every cached record and listing page. It
     /// bounds caching, not reading: a displayed value the budget cannot hold
-    /// is served uncached while it is wanted.
+    /// is served uncached while it is wanted. Zero keeps only wanted values.
     pub cache_bytes: usize,
     /// Streams whose tail/fork facts are retained between frames, beside the
     /// byte budget; facts the current frame uses are never evicted.
@@ -103,13 +103,12 @@ impl ReaderPolicy {
         }
     }
 
-    /// Refuse budgets above the client hard ceilings or with no capacity.
+    /// Validate dispatch capacity, page sizes and progress settings.
     ///
     /// # Errors
     /// `StreamError::LimitExceeded` names any out-of-range budget.
     pub fn validate(&self) -> Result<(), StreamError> {
-        let ok = (64 * 1024..=256 << 20).contains(&self.cache_bytes)
-            && (16..=65_536).contains(&self.streams)
+        let ok = (16..=65_536).contains(&self.streams)
             && self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
@@ -673,9 +672,9 @@ impl Reader {
         Ok(())
     }
 
-    /// Adapt to memory pressure: shrink (or regrow) the one cache budget.
+    /// Set the exact cache byte budget, including zero under memory pressure.
+    /// New wanted results exceeding this budget use pass-through.
     pub fn set_cache_budget(&mut self, bytes: usize) {
-        let bytes = bytes.clamp(64 * 1024, 256 << 20);
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
         if self

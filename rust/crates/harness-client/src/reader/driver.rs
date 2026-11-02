@@ -1477,41 +1477,69 @@ mod tests {
                 .await
                 .unwrap();
             let head = provider.head(path.clone()).await.unwrap();
-            let mut driver = Driver::new(provider);
-            let mut reader = Reader::new(ReaderPolicy {
-                requests: 2,
-                prefetch_requests: 1,
-                read_limit: 1,
-                ..ReaderPolicy::default()
-            })
-            .unwrap();
-            let ready = Arc::new(Ready(AtomicBool::new(true)));
-            let waker = Waker::from(Arc::clone(&ready));
-            let mut cx = Context::from_waker(&waker);
-            driver.attach(&mut reader, 0);
-            reader.cache_mut().observe_origin(&path, head.origin);
-            reader.cache_mut().observe_tail(&path, head.tail);
-            reader.plan((0..head.tail).map(|from| {
-                (
-                    Want::Range {
-                        stream: path.clone(),
-                        from,
-                        to: from + 1,
-                    },
-                    Priority::Visible,
-                )
-            }));
-            // An explicit startup attachment and subsequent steps retain the
-            // same plan; attachment must not register/reset the source twice.
-            driver.attach(&mut reader, 0);
-            // Drive only actual wakes to quiescence, without another plan.
-            while ready.0.swap(false, Ordering::SeqCst) {
-                driver.step(&mut reader, 0, &mut cx);
-                assert!(reader.issued() <= head.tail, "completed read was reissued");
+            // Explicit capacity is not clamped by the device-memory preset.
+            // Zero and one byte exercise pass-through; a large allowance is
+            // lazy and allocates only for the same original three records.
+            for cache_bytes in [0, 1, (256 << 20) + 1] {
+                let mut driver = Driver::new(Arc::clone(&provider));
+                let mut reader = Reader::new(ReaderPolicy {
+                    cache_bytes,
+                    requests: 2,
+                    prefetch_requests: 1,
+                    read_limit: 1,
+                    ..ReaderPolicy::default()
+                })
+                .unwrap();
+                reader.set_cache_budget(cache_bytes);
+                let ready = Arc::new(Ready(AtomicBool::new(true)));
+                let waker = Waker::from(Arc::clone(&ready));
+                let mut cx = Context::from_waker(&waker);
+                driver.attach(&mut reader, 0);
+                reader
+                    .cache_mut()
+                    .observe_origin(&path, head.origin.clone());
+                reader.cache_mut().observe_tail(&path, head.tail);
+                reader.plan((0..head.tail).map(|from| {
+                    (
+                        Want::Range {
+                            stream: path.clone(),
+                            from,
+                            to: from + 1,
+                        },
+                        Priority::Visible,
+                    )
+                }));
+                // An explicit startup attachment and subsequent steps retain the
+                // same plan; attachment must not register/reset the source twice.
+                driver.attach(&mut reader, 0);
+                // Drive only actual wakes to quiescence, without another plan.
+                while ready.0.swap(false, Ordering::SeqCst) {
+                    driver.step(&mut reader, 0, &mut cx);
+                    assert!(reader.issued() <= head.tail, "completed read was reissued");
+                }
+                assert_eq!(reader.issued(), head.tail);
+                assert!(reader.cache().has_range(&path, 0, head.tail));
+                assert!(reader.poll(0).is_empty());
+                assert!(reader.residency().cache_bytes <= cache_bytes);
+                // A disabled cache still serves the same plan without another
+                // dispatch, then retires its pass-through when the want leaves.
+                for (sequence, expected) in [b"first".as_slice(), b"second", b"third"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert_eq!(
+                        reader
+                            .cache()
+                            .record(&path, sequence as u64)
+                            .unwrap()
+                            .as_ref(),
+                        expected
+                    );
+                }
+                reader.begin_frame(1);
+                reader.plan([]);
+                assert_eq!(reader.residency().passed_bytes, 0);
             }
-            assert_eq!(reader.issued(), head.tail);
-            assert!(reader.cache().has_range(&path, 0, head.tail));
-            assert!(reader.poll(0).is_empty());
         });
     }
 
