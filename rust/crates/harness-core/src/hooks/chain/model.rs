@@ -68,6 +68,7 @@ pub(super) async fn judge(
 /// Step the original future across producer withdrawal, before or after its
 /// first suspension. A registered result wait must wake and retain its cause.
 /// Two explicit transition polls make a lost wake or terminal fail without a hang.
+/// Caller cancellation must retire the same pending result receiver.
 fn withdrawn(bytes: &[u8]) -> Result<()> {
     struct Wakes(AtomicUsize);
     impl Wake for Wakes {
@@ -90,63 +91,75 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
     let (producer, receiver) = futures::channel::oneshot::channel::<()>();
     let mut receiver = Some(receiver);
     let visits = Cell::new(0);
-    let run = configured.run_commands(
-        HookEvent::PreToolUse,
-        &original,
-        &registry,
-        u64::MAX,
-        |hook, _, _| {
-            visits.set(visits.get() + 1);
-            let result = (instance(hook) == "source").then(|| receiver.take());
-            async move {
-                if let Some(result) = result {
-                    let receiver =
-                        result.ok_or_else(|| Error::Invalid("hook dispatched twice".into()))?;
-                    receiver.await.map_err(|_| Error::Invalid(CLOSED.into()))?;
-                    return Err(Error::Invalid("withdrawn producer returned success".into()));
+    let cancel = bytes.get(2).is_some_and(|byte| byte & 1 != 0);
+    let suspended = cancel || bytes.get(1).is_some_and(|byte| byte & 1 != 0);
+    let mut producer = Some(producer);
+    {
+        let run = configured.run_commands(
+            HookEvent::PreToolUse,
+            &original,
+            &registry,
+            u64::MAX,
+            |hook, _, _| {
+                visits.set(visits.get() + 1);
+                let result = (instance(hook) == "source").then(|| receiver.take());
+                async move {
+                    if let Some(result) = result {
+                        let receiver =
+                            result.ok_or_else(|| Error::Invalid("hook dispatched twice".into()))?;
+                        receiver.await.map_err(|_| Error::Invalid(CLOSED.into()))?;
+                        return Err(Error::Invalid("withdrawn producer returned success".into()));
+                    }
+                    Ok((Some(0), br#"{"allow":true}"#.to_vec(), Vec::new()))
                 }
-                Ok((Some(0), br#"{"allow":true}"#.to_vec(), Vec::new()))
-            }
-        },
-    );
-    let mut run = std::pin::pin!(run);
-    let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
-    let waker = Waker::from(wakes.clone());
-    let mut context = Context::from_waker(&waker);
-    if bytes.get(1).is_some_and(|byte| byte & 1 != 0) {
-        if run.as_mut().poll(&mut context).is_ready() || visits.get() != 2 {
+            },
+        );
+        let mut run = std::pin::pin!(run);
+        let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+        let waker = Waker::from(wakes.clone());
+        let mut context = Context::from_waker(&waker);
+        if suspended && (run.as_mut().poll(&mut context).is_ready() || visits.get() != 2) {
             return Err(Error::Invalid(
                 "hook did not wait on its result producer".into(),
             ));
         }
-        drop(producer);
-        if wakes.0.load(Ordering::Relaxed) != 1 {
-            return Err(Error::Invalid(
-                "hook result withdrawal lost its wake".into(),
-            ));
+        if !cancel {
+            drop(producer.take());
+            if suspended && wakes.0.load(Ordering::Relaxed) != 1 {
+                return Err(Error::Invalid(
+                    "hook result withdrawal lost its wake".into(),
+                ));
+            }
+            let Poll::Ready(output) = run.as_mut().poll(&mut context) else {
+                return Err(Error::Invalid(
+                    "hook result withdrawal lost its terminal".into(),
+                ));
+            };
+            let output = output?;
+            if visits.get() != 2
+                || output.blocks() == report
+                || output.updated_input.is_some()
+                || !matches!(
+                    output.diagnostics.as_slice(),
+                    [HookDiagnostic {
+                        cause: crate::ProcessError::InvalidOutput { exit_code: None, message },
+                        blocking,
+                    }] if message == CLOSED && *blocking != report
+                )
+            {
+                return Err(Error::Invalid(
+                    "hook withdrawal lost its cause, policy or dispatch count".into(),
+                ));
+            }
         }
-    } else {
-        drop(producer);
     }
-    let Poll::Ready(output) = run.as_mut().poll(&mut context) else {
-        return Err(Error::Invalid(
-            "hook result withdrawal lost its terminal".into(),
-        ));
-    };
-    let output = output?;
-    if visits.get() != 2
-        || output.blocks() == report
-        || output.updated_input.is_some()
-        || !matches!(
-            output.diagnostics.as_slice(),
-            [HookDiagnostic {
-                cause: crate::ProcessError::InvalidOutput { exit_code: None, message },
-                blocking,
-            }] if message == CLOSED && *blocking != report
-        )
+    // Leaving the original chain's scope must retire its pending callback.
+    // A successful send here would reveal a retained or detached result wait.
+    if let Some(producer) = producer
+        && producer.send(()).is_ok()
     {
         return Err(Error::Invalid(
-            "hook withdrawal lost its cause, policy or dispatch count".into(),
+            "cancelled hook chain retained its result receiver".into(),
         ));
     }
     Ok(())
@@ -154,7 +167,8 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
 
 /// Strictness is independent of configuration order. Rewriters must compose in
 /// that order, then every sibling must have checked the exact final input.
-/// Result-producer withdrawal must wake the chain and retain its failure policy.
+/// Result-producer withdrawal must wake the chain and retain its failure policy;
+/// caller cancellation must release the original result wait.
 pub async fn check(bytes: &[u8]) -> Result<()> {
     let decisions: Vec<_> = bytes
         .iter()
@@ -260,7 +274,9 @@ mod tests {
     async fn generated_chains_keep_strictness_final_input_and_linear_visits() -> Result<()> {
         for first in 0..6 {
             for second in 0..6 {
-                check(&[first, second]).await?;
+                for cancel in 0..2 {
+                    check(&[first, second, cancel]).await?;
+                }
             }
         }
         check(&[]).await
