@@ -1,8 +1,8 @@
 use super::*;
 
 #[tokio::test]
-async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn object_store_verifies_identity_bounds_and_original_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
         storage: None,
@@ -28,6 +28,59 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
             ..
         })
     ));
+
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget {
+        object_probes: 1,
+        backend_read_operations: 1,
+        object_bytes_read: 6,
+        bytes_hashed: 6,
+        ..crate::performance::work_budget(10_000, 65_536)
+    };
+    let mut context = AuthorityWork::new(budget, &cancellation);
+    context.accounting().charge_items(1)?;
+    let continuation = crate::kernel::allocation::retained::OwnedAccounting::take_branch(
+        &mut context.accounting(),
+        &cancellation,
+    )?;
+    let suspended = context.spent();
+    assert!(matches!(
+        store.read(object_id, 6, &mut context).await,
+        Err(ObjectStoreError::AccountingHandoffActive)
+    ));
+    assert_eq!(context.spent(), suspended);
+
+    continuation.restore(&mut context.accounting())?;
+    let before_read = context.spent();
+    let read = store.read(object_id, 6, &mut context).await?;
+    assert_eq!(read.bytes.as_ref(), b"abcdef");
+    assert_eq!(read.retention, ObjectReadRetention::Shared);
+    let completed = context.spent();
+    assert_eq!(completed.object_probes, 1);
+    assert_eq!(completed.backend_read_operations, 1);
+    assert_eq!(completed.object_bytes_read, 6);
+    assert_eq!(completed.bytes_hashed, 6);
+    assert_eq!(
+        completed.allocation_operations,
+        before_read.allocation_operations
+    );
+    assert_eq!(
+        completed.peak_allocation_bytes,
+        before_read.peak_allocation_bytes
+    );
+    assert!(matches!(
+        store.read(object_id, 6, &mut context).await,
+        Err(ObjectStoreError::Work(WorkError::BudgetExceeded { .. }))
+    ));
+    assert_eq!(context.spent(), completed);
+
+    cancellation.cancel();
+    assert!(matches!(
+        store.read(object_id, 6, &mut context).await,
+        Err(ObjectStoreError::Cancelled)
+    ));
+    assert_eq!(context.spent(), completed);
+    assert_eq!(read.bytes.as_ref(), b"abcdef");
     Ok(())
 }
 

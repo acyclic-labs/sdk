@@ -770,6 +770,9 @@ pub enum ObjectStoreError {
     /// SDK buffer custody failed without an allocator-provided error.
     #[error("SDK buffer allocation or custody failed")]
     SdkAllocationFailed,
+    /// An accepted continuation still owns the caller's original accounting.
+    #[error("object accounting is owned by an accepted continuation")]
+    AccountingHandoffActive,
     /// The resident table or read-result allocator rejected the exact reserve.
     #[error("memory object allocation failed: {0}")]
     MemoryTableAllocationFailed(#[source] std::collections::TryReserveError),
