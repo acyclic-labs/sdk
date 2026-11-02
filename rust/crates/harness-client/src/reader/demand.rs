@@ -46,10 +46,12 @@ impl Demands {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
     pub(super) fn get(&self, key: &OpKey) -> Option<&Demand> {
         self.entries.get(key).map(|entry| &entry.demand)
     }
 
+    #[cfg(test)]
     pub(super) fn contains_key(&self, key: &OpKey) -> bool {
         self.entries.contains_key(key)
     }
@@ -74,6 +76,7 @@ impl Demands {
         priority: Priority,
         paging: Paging,
         next_ticket: &mut u64,
+        changed: impl FnOnce(&OpKey, Priority),
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
@@ -84,6 +87,7 @@ impl Demands {
                 priority
             };
             if entry.demand.priority != priority {
+                changed(&key, priority);
                 self.order[class(entry.demand.priority)]
                     .remove(&(entry.demand.ticket, key.clone()));
                 self.order[class(priority)].insert((entry.demand.ticket, key));
@@ -91,6 +95,7 @@ impl Demands {
             }
             entry.mark = self.mark;
         } else {
+            changed(&key, priority);
             let ticket = *next_ticket;
             *next_ticket += 1;
             self.insert(
@@ -104,17 +109,15 @@ impl Demands {
         }
     }
 
-    pub(super) fn finish_plan(&mut self) {
+    pub(super) fn finish_plan(&mut self) -> impl Iterator<Item = OpKey> {
         let mark = self.mark;
-        self.entries.retain(|key, entry| {
-            if entry.mark == mark {
-                true
-            } else {
-                self.order[class(entry.demand.priority)]
-                    .remove(&(entry.demand.ticket, key.clone()));
-                false
-            }
-        });
+        let order = &mut self.order;
+        self.entries
+            .extract_if(.., move |_, entry| entry.mark != mark)
+            .map(move |(key, entry)| {
+                order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
+                key
+            })
     }
 
     pub(super) fn insert(&mut self, key: OpKey, demand: Demand) {
