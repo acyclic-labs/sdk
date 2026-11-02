@@ -75,6 +75,23 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 expected,
                 "the original volume binding and payload survive collection and reopen"
             );
+            if file.path() == "notes/uncertain.txt" {
+                let retry = |body: &'static [u8]| {
+                    binding.stage(
+                        OperationId::from_bytes([77; 16]),
+                        "notes/uncertain.txt",
+                        body,
+                        "text/plain",
+                        "one.txt",
+                        crate::conversation::ContentAccess::default(),
+                    )
+                };
+                assert_eq!(retry(expected)?.await?.0, file);
+                assert!(matches!(
+                    retry(b"another body")?.await,
+                    Err(Error::Conflict(_))
+                ));
+            }
         }
         drop(binding);
         drop(objects);
@@ -181,26 +198,23 @@ async fn upload_contract(
     );
     assert_eq!(stage(42, "notes/one.txt", b"owner bytes")?.await?.0, file);
     let uncertain = if let Some(lost_retain_reply) = lost_retain_reply {
+        let body = b"accepted before reply loss";
+        let expected = FileRef::new(
+            owner_store.volume().clone(),
+            "notes/uncertain.txt".into(),
+            Digest::of(body).to_hex(),
+            FileDescriptor::from_bytes(body, "text/plain", &mut None)?,
+            "one.txt".into(),
+            &mut None,
+        )?;
         lost_retain_reply.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(
-            stage(77, "notes/uncertain.txt", b"accepted before reply loss")?.await,
+            stage(77, "notes/uncertain.txt", body)?.await,
             Err(Error::Storage(_))
         ));
-        let retried = stage(77, "notes/uncertain.txt", b"accepted before reply loss")?
-            .await?
-            .0;
-        assert_eq!(
-            owner_store
-                .read(&retried, retried.descriptor().byte_length(), None, None)?
-                .await?
-                .as_slice(),
-            b"accepted before reply loss"
-        );
-        assert!(matches!(
-            stage(77, "notes/uncertain.txt", b"another body")?.await,
-            Err(Error::Conflict(_))
-        ));
-        Some(retried)
+        // Do not retry here: a replay could repair lost retention and mask it.
+        // The original binding must survive collection/reopen before any retry.
+        Some(expected)
     } else {
         None
     };
