@@ -33,7 +33,7 @@ fn agrees(
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let cache = Mutex::new(HashMap::new());
-    let mode = bytes.first().copied().unwrap_or_default() % 8;
+    let mode = bytes.first().copied().unwrap_or_default() % 10;
     let literal = json!({
         "text": String::from_utf8_lossy(bytes),
         "bytes": bytes,
@@ -92,9 +92,27 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 Form::Value,
                 false,
             ),
-            _ => (
+            7 => (
                 format!("export default {{revision: {revision}, value: {encoded}}};"),
                 json!({"revision": revision, "value": literal}),
+                Form::Value,
+                false,
+            ),
+            8 => (
+                [
+                    "throw {code: 1};",
+                    "throw [1];",
+                    "throw Symbol('x');",
+                    "throw (() => 1);",
+                ][bytes.get(1).copied().unwrap_or_default() as usize % 4]
+                    .to_owned(),
+                Value::Null,
+                Form::Value,
+                false,
+            ),
+            _ => (
+                "throw 'settings refused';".to_owned(),
+                Value::Null,
                 Form::Value,
                 false,
             ),
@@ -107,6 +125,14 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 evaluate_cached("agent.ts", source.as_bytes(), &tree, &base, surface, &cache).await,
             );
             agrees(&cold, expected.as_ref())?;
+            if mode == 8
+                && cold
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("0x"))
+            {
+                return Err("a non-scalar throw retained a native address".into());
+            }
             let warm = observed(
                 evaluate_cached("agent.ts", source.as_bytes(), &tree, &base, surface, &cache).await,
             );
@@ -137,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
-        for mode in 0..8 {
+        for mode in 0..10 {
             for variant in 0..4 {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
             }

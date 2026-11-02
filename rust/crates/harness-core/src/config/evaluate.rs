@@ -417,7 +417,16 @@ fn run(
                         _ => message,
                     }
                 }
-                CaughtError::Value(value) => format!("threw {value:?}"),
+                CaughtError::Value(value) => {
+                    // QuickJS Debug prints native addresses for reference
+                    // values. Preserve scalar causes, but never cache an
+                    // allocator-dependent address as a settings diagnostic.
+                    if value.is_string() || value.is_bool() || value.is_number() {
+                        format!("threw {value:?}")
+                    } else {
+                        format!("threw {:?}", value.type_of())
+                    }
+                }
                 CaughtError::Error(error) => error.to_string(),
             },
         })
