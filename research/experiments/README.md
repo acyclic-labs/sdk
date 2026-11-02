@@ -1,11 +1,17 @@
 # Organism-probe recipes
 
 These files are authored research inputs, not captured provider or tool output.
-They form the passive contents of an experiments plugin. Plugin installation,
-configuration evaluation and execution are not implemented by this directory;
-no hooks, graph schema, runner or provider adapter are added.
+They form the passive contents of an operator-only experiments plugin.
+`plugin.ts` uses the shared plugin manifest. Admit a pinned source directory
+through the shared loader in the operator's volume; keep it outside measured
+workers' grants and inherited history. Use separate worker volumes: granting
+the source checkout would expose these inputs too. These files are excluded from the
+universal seed: its read grant would reveal the hidden markers, scorers and
+conditions even when the plugin is disabled. Research is off by default.
+Installation and execution are not claimed here. This directory adds no hook,
+graph schema, runner or provider adapter.
 
-Use the shared [offline analysis](../../../../harness-core/docs/experiments.md)
+Use the shared [offline analysis](analysis.md)
 for scoring. The five recipes are:
 
 | Recipe | Changed factor | Primary outcome |

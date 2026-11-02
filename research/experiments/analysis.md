@@ -6,7 +6,7 @@ paired differences, ordinary paired standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
 integer scorer and assigned-trial summaries for organism probes.
 
-The [organism-probe recipes](../../harness/docs/plugins/experiments/README.md)
+The [organism-probe recipes](README.md)
 share authored task, intervention and scorer files. Their results tables are
 explicitly unrun; the recipes introduce no execution mechanism.
 
