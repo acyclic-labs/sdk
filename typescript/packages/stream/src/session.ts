@@ -96,13 +96,17 @@ export class StreamSessions {
     }), options);
     const input = toBinary(wire.SessionSubscriptionSchema, subscription);
     return new Opened(async signal => {
-      await ensureStreamWasm();
-      const owned = await openWasmCursor(async () => this.#inner.subscribe(input), signal);
+      let owned: Awaited<ReturnType<typeof openWasmCursor>> | undefined;
       try {
+        await ensureStreamWasm();
+        owned = await openWasmCursor(async () => this.#inner.subscribe(input), signal);
         const opening = streamOpening(owned.opened);
+        const cursor = owned;
         const records = async function* (): AsyncGenerator<EncodedRecord> {
           for (;;) {
-            const bytes = await owned.next();
+            let bytes: Uint8Array | null;
+            try { bytes = await cursor.next(); }
+            catch (error) { throw streamError(error, "session"); }
             if (bytes === null || signal.aborted) return;
             const frame = fromBinary(wire.SessionFrameSchema, bytes);
             if (frame.body.case === "watermark") continue;
@@ -114,7 +118,11 @@ export class StreamSessions {
           }
         };
         return { opening, records: records(), close: owned.close };
-      } catch (error) { await owned.close(); throw streamError(error, "follow"); }
+      } catch (error) {
+        await owned?.close();
+        if (signal.aborted) throw error;
+        throw streamError(error, "session");
+      }
     }, options.signal);
   }
 

@@ -938,11 +938,10 @@ describe("website Stream contract", () => {
   });
 
   test("hosted follow stops on malformed frames and canonical channel errors", async () => {
-    for (const mode of ["protobuf", "item", "cursor", "denied"] as const) {
+    for (const mode of ["protobuf", "item", "cursor"] as const) {
       const socket = new SessionSocket();
       socket.node.append("events");
       socket.transform = output => {
-        if (mode === "denied" && output.body.case === "opened") return { ...output, body: { case: "closed", value: create(SessionClosedSchema, { code: "access_denied", message: "revoked" }) } };
         if (output.body.case !== "data") return output;
         if (mode === "protobuf") return new Uint8Array([255]);
         if (mode === "item") output.body.value.item = { case: undefined };
@@ -953,10 +952,43 @@ describe("website Stream contract", () => {
         const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
           fetcher: async () => { throw new Error("follow must not fetch"); } });
         const iterator = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
-        await expect(iterator.next()).rejects.toMatchObject({ code: mode === "denied" ? "access_denied" : "invalid_response" });
+        await expect(iterator.next()).rejects.toMatchObject({ code: "invalid_response" });
         expect(await iterator.next()).toEqual({ done: true, value: undefined });
         expect(socket.sockets.length).toBe(1);
       } finally { socket.close(); }
+    }
+    for (const phase of ["opened", "data"] as const) {
+      for (const failure of [
+        { wireCode: "not_found", code: "stream_not_found" },
+        { wireCode: "access_denied", code: "access_denied" },
+        { wireCode: "capacity", code: "capacity_exhausted" },
+      ]) {
+        const socket = new SessionSocket();
+        socket.node.append("events");
+        socket.transform = output => {
+          if (output.body.case === phase && (phase === "opened" ||
+              (output.body.case === "data" && output.body.value.item.case === "record" && output.body.value.item.value.sequence === 1n))) {
+            return { ...output, body: { case: "closed", value: create(SessionClosedSchema, { code: failure.wireCode, message: "service detail" }) } };
+          }
+          return output;
+        };
+        try {
+          const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+            fetcher: async () => { throw new Error("follow must not fetch"); } });
+          const opened = provider.follow("events", { from: 0n });
+          if (phase === "data") {
+            await opened.opened;
+            await expect(opened.next()).resolves.toMatchObject({ done: false, value: { sequence: 0n } });
+            socket.node.append("events");
+          }
+          const error = await opened.next().catch(error => error);
+          expect(error).toBeInstanceOf(StreamError);
+          expect(error).toMatchObject({ code: failure.code });
+          if (phase === "opened") await expect(opened.opened).rejects.toBe(error);
+          expect(await opened.next()).toEqual({ done: true, value: undefined });
+          expect(socket.sockets.length).toBe(1);
+        } finally { socket.close(); }
+      }
     }
   });
 
