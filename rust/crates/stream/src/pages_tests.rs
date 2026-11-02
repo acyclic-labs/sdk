@@ -1,5 +1,8 @@
 use super::*;
-use crate::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};
+use crate::{
+    CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream, ReadRequest,
+    StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::sync::{
     Arc,
@@ -11,14 +14,18 @@ async fn required_ranges_refuse_missing_history_and_stop_at_the_original_cut()
 -> Result<(), StreamError> {
     let provider = MemoryStream::default();
     let path = StreamPath::new("account/conversation")?;
-    provider
-        .append(AppendRequest {
-            path: path.clone(),
-            records: vec!["zero".into(), "one".into(), "two".into(), "three".into()],
-            if_tail: None,
+    let published = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec!["zero".into(), "one".into(), "two".into(), "three".into()],
+            }],
             idempotency_key: IdempotencyKey::new("original")?,
         })
         .await?;
+    assert!(matches!(published, CommitOutcome::Committed(_)));
     let read = |from, limit| ReadRequest {
         path: path.clone(),
         key: None,
