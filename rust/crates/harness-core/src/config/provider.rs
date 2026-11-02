@@ -5,9 +5,38 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use ts_rs::TS;
 
+/// Caller-configured provider entry and its original settings base.
+/// This contains public model input only, never endpoint or credential data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ProviderEntry {
+    /// Exact settings entry in the admitted tree.
+    pub path: String,
+    /// Data over which that entry's layers fold.
+    pub base: ProviderProfile,
+}
+
+impl ProviderEntry {
+    /// Admit the original entry before retaining it in a selected model.
+    ///
+    /// # Errors
+    /// An invalid entry path or provider sampling value.
+    pub fn validate(&self) -> Result<()> {
+        if !self.path.starts_with("plugins/") || !super::composes(&self.path) {
+            return Err(Error::Invalid(format!(
+                "provider settings admission failed: {} is not a provider entry; recovery: select plugins/<provider>/provider.ts",
+                self.path
+            )));
+        }
+        self.base.validate()
+    }
+}
+
 /// The result of folding `plugins/<provider>/provider.ts` over its base.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProviderProfile {
     /// Model-visible declarations, freely replaceable by a settings layer.
     pub tools: Vec<NativeTool>,
@@ -26,10 +55,12 @@ pub struct ProviderProfile {
 /// A declaration changes model input, without granting its executable authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeTool {
     /// The declaration's model-visible name.
     pub name: String,
     /// The provider's declaration object; provider-specific keys are preserved.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, unknown>"))]
     #[ts(type = "object")]
     pub definition: Map<String, Value>,
 }
@@ -37,6 +68,7 @@ pub struct NativeTool {
 /// Cache settings interpreted by the selected protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProviderCache {
     /// Ordered locations at which a protocol may mark reusable bytes.
     pub breakpoints: Vec<CacheBreakpoint>,
@@ -47,6 +79,7 @@ pub struct ProviderCache {
 /// A cache breakpoint's location in the shared renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum CacheBreakpoint {
     /// The frozen request header.
     Header,
@@ -56,6 +89,7 @@ pub enum CacheBreakpoint {
 
 /// The provider's supported cache retention choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum CacheTtl {
     /// Five minutes.
     #[serde(rename = "5m")]
@@ -68,6 +102,7 @@ pub enum CacheTtl {
 /// Summary representation selection; a portable summary is always retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Compaction {
     /// Use native artifacts only with their admitted producer.
     NativeWhenAvailable,
@@ -78,6 +113,7 @@ pub enum Compaction {
 /// Header treatment for a summary call through the same wire renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum SummaryHeader {
     /// Remove builtins that the provider itself can execute.
     StripExecutableBuiltins,
@@ -88,14 +124,18 @@ pub enum SummaryHeader {
 /// Protocol fields selected by the agent's per-call effort.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProviderEffort {
     /// Least reasoning.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, unknown>"))]
     #[ts(type = "object")]
     pub low: Map<String, Value>,
     /// The middle setting.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, unknown>"))]
     #[ts(type = "object")]
     pub medium: Map<String, Value>,
     /// Most reasoning.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, unknown>"))]
     #[ts(type = "object")]
     pub high: Map<String, Value>,
 }
@@ -103,6 +143,7 @@ pub struct ProviderEffort {
 /// Provider sampling defaults. Null defers to the selected model.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProviderSampling {
     /// Temperature in the selected protocol's units.
     pub temperature: Option<f64>,
@@ -136,16 +177,27 @@ pub async fn admit(
 pub fn decode(value: Value) -> Result<ProviderProfile> {
     let profile: ProviderProfile = serde_json::from_value(value)
         .map_err(|error| Error::Invalid(format!("provider.ts: {error}")))?;
-    crate::model::ModelSampling {
-        seed: None,
-        temperature: profile.sampling.temperature,
-        top_p: profile.sampling.top_p,
-    }
-    .validate()?;
-    if profile.sampling.max_output_tokens == Some(0) {
-        return Err(Error::Invalid(
+    profile.validate()?;
+    Ok(profile)
+}
+
+impl ProviderProfile {
+    /// Admit sampling data at the original configuration boundary.
+    ///
+    /// # Errors
+    /// Invalid sampling values or an empty output reservation.
+    pub fn validate(&self) -> Result<()> {
+        crate::model::ModelSampling {
+            seed: None,
+            temperature: self.sampling.temperature,
+            top_p: self.sampling.top_p,
+        }
+        .validate()?;
+        if self.sampling.max_output_tokens == Some(0) {
+            return Err(Error::Invalid(
             "provider.ts sampling admission failed: zero maxOutputTokens; recovery: use a positive value or null".into(),
         ));
+        }
+        Ok(())
     }
-    Ok(profile)
 }

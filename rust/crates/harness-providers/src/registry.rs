@@ -166,6 +166,7 @@ impl Registry {
             &mut revision,
             &(
                 config.adapter,
+                &config.settings,
                 &config.authentication,
                 &config.base_url,
                 &config.headers,
@@ -233,6 +234,9 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    if let Some(settings) = &config.settings {
+        settings.validate()?;
+    }
     for (name, value) in &config.headers {
         if name.is_empty()
             || !name

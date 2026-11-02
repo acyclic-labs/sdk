@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec> {
     crate::registry::validate_url(&base_url)?;
     Ok(ProviderSpec {
+        settings: None,
         adapter: Adapter::Chat,
         authentication,
         base_url,

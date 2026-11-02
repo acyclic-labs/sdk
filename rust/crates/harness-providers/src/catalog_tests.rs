@@ -7,6 +7,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
     let mut registry =
         Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone());
     let mut spec = ProviderSpec {
+        settings: None,
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
@@ -64,12 +65,29 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
         serde_json::from_slice(&encoded).expect("catalog round trip");
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([("openai".into(), "fixture".into())])),
-        script,
+        script.clone(),
     );
     for (id, spec) in catalog {
         registry.register(id, spec)?;
     }
     let mut openai = registry.catalog()["openai"].as_ref().clone();
+    let native: Vec<serde_json::Value> = serde_json::from_slice(
+        acyclic_harness_core::seed::file("sys/native/openai/tools.json").unwrap(),
+    )
+    .unwrap();
+    openai.settings = Some(acyclic_harness_core::config::ProviderEntry {
+        path: "plugins/openai/provider.ts".into(),
+        base: acyclic_harness_core::config::provider::decode(json!({
+            "tools": native.into_iter().map(|definition| {
+                json!({"name": definition["name"], "definition": definition})
+            }).collect::<Vec<_>>(),
+            "cache": {"breakpoints": ["header", "segments"], "ttl": "5m"},
+            "compaction": "native-when-available",
+            "summaryHeader": "keep",
+            "effort": {"low": {}, "medium": {}, "high": {}},
+            "sampling": {"temperature": null, "topP": null, "maxOutputTokens": null}
+        }))?,
+    });
     openai.models.clear();
     registry.register("openai".into(), openai.clone())?;
     assert!(registry.resolve("openai/gpt-5").is_err());
@@ -86,9 +104,50 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
             features: ModelFeatures::default(),
         },
     );
-    registry.register("openai".into(), openai)?;
+    registry.register("openai".into(), openai.clone())?;
     let model = registry.resolve("openai/gpt-5")?;
     assert_eq!(model.context_capacity(model.model())?.context_tokens, 32768);
+    let original = model.provider_settings().unwrap();
+    let cost = acyclic_test_support::measure(|| {
+        assert!(std::ptr::eq(original, model.provider_settings().unwrap()));
+    });
+    assert_eq!(cost.count_total, 0);
+    assert_eq!(
+        original,
+        registry.catalog()["openai"].settings.as_ref().unwrap()
+    );
+
+    // The original configured base, rather than capacity or a family name,
+    // participates in this exact selection's immutable revision.
+    openai.settings.as_mut().unwrap().base.sampling.temperature = Some(0.5);
+    registry.register("openai".into(), openai.clone())?;
+    let changed = registry.resolve("openai/gpt-5")?;
+    assert_ne!(model.model(), changed.model());
+    assert_eq!(original.base.sampling.temperature, None);
+    assert_eq!(
+        changed
+            .provider_settings()
+            .unwrap()
+            .base
+            .sampling
+            .temperature,
+        Some(0.5)
+    );
+
+    for path in [
+        "agent.ts",
+        "plugins/../provider.ts",
+        "plugins/a\\b/provider.ts",
+    ] {
+        let mut refused = openai.clone();
+        refused.settings.as_mut().unwrap().path = path.into();
+        assert!(registry.register("openai".into(), refused).is_err());
+        assert_eq!(registry.resolve("openai/gpt-5")?.model(), changed.model());
+    }
+    openai.settings.as_mut().unwrap().base.sampling.top_p = Some(0.0);
+    assert!(registry.register("openai".into(), openai).is_err());
+    assert_eq!(registry.resolve("openai/gpt-5")?.model(), changed.model());
+    assert!(script.sent.lock().unwrap().is_empty());
     Ok(())
 }
 

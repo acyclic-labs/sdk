@@ -59,6 +59,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
             .register(
                 (*name).into(),
                 ProviderSpec {
+                    settings: None,
                     adapter: *adapter,
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),

@@ -18,7 +18,7 @@ mod types;
 
 pub use provider::{
     CacheBreakpoint, CacheTtl, Compaction, NativeTool, ProviderCache, ProviderEffort,
-    ProviderProfile, ProviderSampling, SummaryHeader,
+    ProviderEntry, ProviderProfile, ProviderSampling, SummaryHeader,
 };
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
@@ -66,7 +66,9 @@ pub fn composes(path: &str) -> bool {
         || path
             .strip_prefix("plugins/")
             .and_then(|rest| rest.strip_suffix("/provider.ts"))
-            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+            .is_some_and(|name| {
+                !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', '\0'])
+            })
 }
 
 /// `sys/types/config.d.ts`: the settings and record declarations, generated
@@ -99,6 +101,7 @@ pub fn typescript() -> &'static str {
             AdmissionStatus,
             Link,
             Form,
+            ProviderEntry,
             ProviderProfile,
             NativeTool,
             ProviderCache,
