@@ -18,13 +18,15 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
   void stopped.catch(() => undefined);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let closed = false;
-  const terminate = (cause: unknown) => {
+  const terminate = (cause: unknown, cancelPending = true) => {
     if (closed) return;
     closed = true;
     signal?.removeEventListener("abort", close);
-    stop(cause);
-    if (reader) void reader.cancel(cause).catch(() => undefined);
-    else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
+    if (cancelPending) {
+      stop(cause);
+      if (reader) void reader.cancel(cause).catch(() => undefined);
+      else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
+    }
     if ("close" in response) response.close();
   };
   const close = () => {
@@ -65,7 +67,9 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
         }
       }
       const trailers = await Promise.race([terminal, stopped]);
-      close();
+      // Both original producers completed. Retirement has no pending read to
+      // cancel and does not manufacture a failure after successful EOF.
+      terminate(undefined, false);
       yield { trailers };
     } finally {
       close();
