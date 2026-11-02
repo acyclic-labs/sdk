@@ -105,3 +105,22 @@ same recorded reference and its shared `acyclic.harness.v2.SecretRef` wire form.
 Native configuration variable names remain explicit host inputs. They do not
 claim the immutable version of a published secret, and file content hashes do
 not manufacture one.
+
+
+## Member refusal diagnostics
+
+`refusal::RefusalReason` owns the shared `acyclic-unserved-reason` response
+metadata contract for Streams, Objects, Actors and their adapters. Decode the
+original bytes with `from_header`; `Unspecified` means absence, while `Unknown`
+retains the exact supplied bytes, including empty and non-text values. A reason
+is diagnostic evidence, never authorization, an ownership hint, proof that a
+mutation did not execute, or permission to retry it.
+
+`RefusalReason::ALL` and `class()` expose the recognized vocabulary from the
+same declaration as the byte decoder. `cargo run --locked -p acyclic-auth
+--example generate -- <repository-root>` generates the dependency-free
+`@acyclic-labs/auth/refusal-contract` JavaScript module and TypeScript types.
+`REFUSAL_REASONS` maps stable diagnostic names to wire strings; `REASON_HEADER`
+is the original metadata key. `@acyclic-labs/auth/refusal` reexports these and
+supplies the shared metadata and foreign-byte projections. Serving applications
+consume these definitions rather than maintaining their own reason lists.

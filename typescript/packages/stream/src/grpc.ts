@@ -241,5 +241,5 @@ function providerError(error: unknown, operation: string): Error {
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown): unknown {
   if (!(error instanceof ConnectError)) return error;
-  return Object.assign(new Error(error.rawMessage), { code: grpcErrorCode(error.code, error.rawMessage), reason: refusalReason(error.metadata) });
+  return Object.assign(new Error(error.rawMessage, { cause: error }), { code: grpcErrorCode(error.code, error.rawMessage), reason: refusalReason(error.metadata) });
 }
