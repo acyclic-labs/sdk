@@ -14,7 +14,7 @@ pub(crate) fn observe_sync(
     descriptor: u64,
     call: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    struct AttemptSpan(Option<tracing::Span>);
+    struct AttemptSpan(Option<crate::obs::OperationSpan>);
     impl Drop for AttemptSpan {
         fn drop(&mut self) {
             // Close separately from recording, including during native unwind:
@@ -25,7 +25,7 @@ pub(crate) fn observe_sync(
     let mut observation = AttemptSpan(None);
     crate::obs::project(|| {
         crate::task::with_persistence_context(|| {
-            observation.0 = Some(tracing::info_span!(
+            observation.0 = Some(crate::obs::OperationSpan::new_root(tracing::info_span!(
                 "acyclic.runtime.durability",
                 syscall,
                 requested = match requested {
@@ -36,7 +36,7 @@ pub(crate) fn observe_sync(
                 outcome = tracing::field::Empty,
                 error.kind = tracing::field::Empty,
                 error.os = tracing::field::Empty,
-            ));
+            )));
         });
     });
     // The native attempt and its original result stay outside diagnostic

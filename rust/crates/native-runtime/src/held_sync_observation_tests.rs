@@ -274,7 +274,11 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     let original = evidence
         .spans
         .iter()
-        .rfind(|span| span.id == worker.span_id.into_u64())
+        .rfind(|span| {
+            span.id == worker.span_id.into_u64()
+                && span.name == "acyclic.runtime.durability"
+                && span.parent_id == worker.parent_id.map(tracing::Id::into_u64)
+        })
         .expect("original worker attempt");
     assert_eq!(
         worker.parent_id.map(tracing::Id::into_u64),
