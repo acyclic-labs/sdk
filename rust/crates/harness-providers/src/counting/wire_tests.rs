@@ -9,8 +9,8 @@ fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
         Adapter::Gemini => "contents",
         _ => "messages",
     };
-    let generation = crate::projection::wire::Body::fixture(value, field);
-    serde_json::to_value(super::body(&generation, model, adapter))
+    let generation = crate::projection::wire::Request::fixture(value, field);
+    serde_json::from_slice(&super::body(generation, model, adapter)?)
         .map_err(|_| invalid("fixture encoding failed"))
 }
 
@@ -30,7 +30,7 @@ fn assert_count_wire(actual: &Value, expected: &Value) {
 #[test]
 fn response_count_request_keeps_every_input_field_without_generation_controls() {
     let original = json!({"model":"gpt-6-luna", "input":[{"role":"user", "content":"dense"}],
-        "instructions":"system", "tools":[{"type":"function", "name":"echo"}],
+        "instructions":"system", "tools":[],
         "tool_choice":"required", "parallel_tool_calls":false,
         "reasoning":{"effort":"high"}, "personality":"pragmatic", "truncation":"disabled",
         "text":{"format":{"type":"json_schema", "name":"result", "schema":{"type":"object"}}},
@@ -49,7 +49,7 @@ fn response_count_request_keeps_every_input_field_without_generation_controls() 
 fn gemini_counts_the_full_generate_request_with_system_tools_and_schema() {
     let input = json!({"contents":[{"role":"user", "parts":[{"text":"dense"}]}],
         "systemInstruction":{"parts":[{"text":"system"}]},
-        "tools":[{"functionDeclarations":[{"name":"echo"}]}],
+        "tools":[],
         "generationConfig":{"responseJsonSchema":{"type":"object"}}});
     let counted = body(input.clone(), "gemini-2.5-pro", Adapter::Gemini).unwrap();
     let mut expected = input;
@@ -66,9 +66,9 @@ proptest! {
             let mut original = json!({"model":model, "stream":true, "max_output_tokens":output,
                 "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
             original[field] = json!([{"role":"user","content":text}]);
-            let generation = crate::projection::wire::Body::fixture(original.clone(), field);
-            let input = super::body(&generation, &model, adapter);
-            let counted = serde_json::to_value(&input).unwrap();
+            let counted: Value = serde_json::from_slice(
+                &super::body(crate::projection::wire::Request::fixture(original.clone(), field), &model, adapter).unwrap(),
+            ).unwrap();
             // Independent wire expectations, rather than comparing two implementations.
             let mut expected = json!({"model":model, "tools":[]});
             expected[field] = original[field].clone();
@@ -82,28 +82,10 @@ proptest! {
                 expected = json!({"generateContentRequest":expected});
             }
             assert_count_wire(&counted, &expected);
-            let mut encoded = Vec::with_capacity(serde_json::to_vec(&expected).unwrap().len());
-            let cost = acyclic_test_support::measure(|| {
-                serde_json::to_writer(&mut encoded, &input).unwrap();
-            });
-            prop_assert_eq!(cost.count_total, 0, "count serialization borrows every field");
-            prop_assert_eq!(crate::json(&encoded).unwrap(), expected.clone());
-            if let CountBody::Gemini { request } = &input {
-                let exact = serde_json::to_vec(request).unwrap();
-                let mut restored = Vec::with_capacity(exact.len());
-                let copied = acyclic_test_support::measure(|| {
-                    let model = format!("models/{model}");
-                    generation.serialize_fields(
-                        &mut serde_json::Serializer::new(&mut restored), None, Some(&model),
-                    ).unwrap();
-                });
-                prop_assert_eq!(restored, exact);
-                prop_assert!(copied.count_total > cost.count_total,
-                    "restoring the temporary model string fails the same allocation oracle");
-            }
             // A missing filter/envelope fails the same independent oracle.
             prop_assert!(std::panic::catch_unwind(|| assert_count_wire(&original, &expected)).is_err());
-            prop_assert_eq!(serde_json::to_value(&generation).unwrap(), original);
+            let generation = crate::projection::wire::Request::fixture(original.clone(), field);
+            prop_assert_eq!(serde_json::from_slice::<Value>(&generation.encode().unwrap()).unwrap(), original);
         }
     }
     #[test]

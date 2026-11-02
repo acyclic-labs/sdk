@@ -125,16 +125,15 @@ fn round_trip(provider: &ResolvedModel, request: ModelRequest, answer: &str, sig
         );
     }
     // GEM-THK-01/04 and O-9: each signed part stays byte-exact and separate.
-    let encoded = serde_json::to_vec(
-        &projection::body_named(
-            provider,
-            restored.request(),
-            &crate::tool_names::Names::new(restored.request()),
-            &provider.reasoning_origin(provider.key.as_deref(), None),
-            &mut crate::files::FileText::default(),
-        )
-        .unwrap(),
+    let encoded = projection::body_named(
+        provider,
+        restored.request(),
+        &crate::tool_names::Names::new(restored.request()),
+        &provider.reasoning_origin(provider.key.as_deref(), None),
+        &mut crate::files::FileText::default(),
     )
+    .unwrap()
+    .encode()
     .unwrap();
     for part in signed {
         assert_eq!(
@@ -327,14 +326,20 @@ proptest! {
             input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}),
             output_schema: json!({}), projection_schema: json!({}),
         });
+        // The full request, then its open conversation: everything before
+        // the trailer that an append replaces.
         let encode = |request: &ModelRequest| {
-            serde_json::to_vec(&projection::body_named(
-                &provider, request, &crate::tool_names::Names::new(request),
+            let names = crate::tool_names::Names::new(request);
+            let body = projection::body_named(
+                &provider, request, &names,
                 &provider.reasoning_origin(provider.key.as_deref(), None),
                 &mut crate::files::FileText::default(),
-            ).unwrap()).unwrap()
+            ).unwrap();
+            let bytes = body.encode().unwrap();
+            let open = bytes[..bytes.len() - body.tail().unwrap().bytes().len()].to_vec();
+            (bytes, open)
         };
-        let prefix = encode(&request);
+        let (_, prefix) = encode(&request);
         let mut first = json!({"thoughtSignature":signature,"functionCall":{"name":"read_file","args":{"file_path":"a"}}});
         if let Some(id) = &native_id { first["functionCall"]["id"] = json!(id); }
         let parts = vec![
@@ -388,10 +393,10 @@ proptest! {
                     content: ToolResultContent::Json {value:json!({"ok":true})},
                 }),
             });
-            if index == 0 { exchange_prefix = encode(&request); }
+            if index == 0 { exchange_prefix = encode(&request).1; }
         }
         finish(&mut request);
-        let continued = encode(&request);
+        let (continued, _) = encode(&request);
         let body: Value = serde_json::from_slice(&continued).unwrap();
         let returned_id = &body["contents"][1]["parts"][0]["functionCall"]["id"];
         let response_id = &body["contents"][2]["parts"][0]["functionResponse"]["id"];
@@ -399,14 +404,14 @@ proptest! {
         prop_assert_eq!(response_id.as_str(), native_id.as_deref());
         let foreign_id = body["contents"][3]["parts"][0]["functionCall"]["id"].as_str().unwrap();
         prop_assert_ne!(Some(foreign_id), native_id.as_deref());
-        // The closing contents array and object are the only bytes replaced by
-        // an append. Static tools, system instruction and prior contents retain
-        // their positions and bytes, so implicit caching sees the same prefix.
-        prop_assert!(continued.starts_with(&prefix[..prefix.len()-2]));
-        prop_assert!(continued.starts_with(&exchange_prefix[..exchange_prefix.len()-2]));
+        // The trailer is the only part replaced by an append. Static tools,
+        // system instruction and prior contents retain their positions and
+        // bytes, so implicit caching sees the same prefix.
+        prop_assert!(continued.starts_with(&prefix));
+        prop_assert!(continued.starts_with(&exchange_prefix));
         let mut changed = request.clone();
         changed.tools[0].description.push('!');
-        prop_assert!(!encode(&changed).starts_with(&prefix[..prefix.len()-2]));
+        prop_assert!(!encode(&changed).0.starts_with(&prefix));
         round_trip(&provider, request, &answer, &signed);
 
         // Removing the original terminal producer must end the stream with a
