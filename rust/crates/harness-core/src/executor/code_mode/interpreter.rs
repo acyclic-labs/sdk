@@ -526,6 +526,9 @@ mod tests {
                 Ok::<_, crate::Error>((count, large_pages, directory_pages))
             }
         );
+        // A serving failure drops its reply producer. Preserve that original
+        // error before inspecting the guest's resulting channel-closure error.
+        let (calls, large_pages, directory_pages) = served?;
         assert_eq!(
             result.unwrap().unwrap(),
             serde_json::json!({
@@ -533,7 +536,6 @@ mod tests {
                 "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
             })
         );
-        let (calls, large_pages, directory_pages) = served?;
         // Ten original operations, two notebook operations and one large write.
         // Only the source pages add calls; lines() has no host round trip.
         assert!(large_pages > 1);
