@@ -26,7 +26,7 @@ export class TerminalFrames {
 }
 
 const failures = visible => [...visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)/g)];
-const expected = (failure, condition) => typeof condition.task_failure === "string"
+const expected = (failure, condition) => typeof condition?.task_failure === "string"
   && condition.task_failure.length > 0 && failure[1].startsWith(condition.task_failure);
 export class FailureHistory {
   #handled = new Set();
