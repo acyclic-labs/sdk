@@ -241,6 +241,7 @@ fn resolve(
     registry.register(
         "recorded".into(),
         ProviderSpec {
+            settings: None,
             adapter,
             authentication: Authentication::Optional,
             base_url: "https://recorded.invalid/v1".into(),

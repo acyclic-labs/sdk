@@ -260,6 +260,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
     registry.register(
         "openai".into(),
         ProviderSpec {
+            settings: None,
             authentication: Authentication::ApiKeyOrCodexLogin,
             adapter: Adapter::Responses,
             base_url: "https://other.test/v1".into(),

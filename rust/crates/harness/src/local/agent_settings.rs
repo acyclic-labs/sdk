@@ -3,7 +3,7 @@
 //! its sampling. Each home version's outcome is recorded as an
 //! [`Admission`](crate::config::Admission) in the journal.
 use super::*;
-use crate::config::{self, Admission, AdmissionStatus, AgentConfig, Sampling};
+use crate::config::{self, Admission, AdmissionStatus, AgentConfig, ProviderSettings, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
 use crate::layers::{Layer, is_off};
 
@@ -53,13 +53,6 @@ pub(super) struct Source {
     generation_label: String,
 }
 
-/// The provider module's result, retaining its original source association.
-pub(super) struct ProviderSettings {
-    pub(super) profile: config::ProviderProfile,
-    pub(super) links: Vec<config::Link>,
-    pub(super) stack: [u8; 32],
-}
-
 impl Pin {
     async fn new(volumes: &Volumes<'_>) -> Result<Self> {
         let read = ContentGrant::verify_directory_read(
@@ -100,14 +93,13 @@ impl Source {
     pub(super) async fn provider(
         self: &Arc<Self>,
         volumes: &Volumes<'_>,
-        path: &str,
-        base: serde_json::Value,
+        entry: &config::ProviderEntry,
     ) -> Result<ProviderSettings> {
-        if !path.starts_with("plugins/") || !config::composes(path) {
-            return Err(Error::Invalid(format!(
-                "provider settings admission failed: {path} is not a provider entry; recovery: select plugins/<provider>/provider.ts"
-            )));
-        }
+        entry.validate()?;
+        let path = &entry.path;
+        let base = serde_json::to_value(&entry.base).map_err(|error| {
+            Error::Invalid(format!("provider settings encoding failed: {error}"))
+        })?;
         let tree = Tree {
             volumes,
             pin: &self.pin,
@@ -598,12 +590,12 @@ mod tests {
         assert!(disabled.rules.is_empty());
 
         let path = "plugins/openai/provider.ts";
-        let admitted = original_source
-            .provider(&volumes, path, base.clone())
-            .await?;
-        let changed = current_source
-            .provider(&volumes, path, base.clone())
-            .await?;
+        let entry = config::ProviderEntry {
+            path: path.into(),
+            base: config::provider::decode(base.clone())?,
+        };
+        let admitted = original_source.provider(&volumes, &entry).await?;
+        let changed = current_source.provider(&volumes, &entry).await?;
         assert_eq!(admitted.profile.sampling.temperature, Some(0.25));
         assert_eq!(changed.profile.sampling.temperature, Some(0.75));
         assert_eq!(
@@ -624,7 +616,13 @@ mod tests {
         assert_ne!(admitted.stack, changed.stack);
         assert!(
             original_source
-                .provider(&volumes, config::AGENT, base.clone())
+                .provider(
+                    &volumes,
+                    &config::ProviderEntry {
+                        path: config::AGENT.into(),
+                        base: entry.base.clone(),
+                    }
+                )
                 .await
                 .is_err()
         );
@@ -636,15 +634,10 @@ mod tests {
         )
         .await?;
         let refused_source = Source::new(&volumes).await?;
-        assert!(
-            refused_source
-                .provider(&volumes, path, base.clone())
-                .await
-                .is_err()
-        );
+        assert!(refused_source.provider(&volumes, &entry).await.is_err());
         // Invalid replacement and later imports cannot corrupt an admitted
         // source or make it silently fall back to the current home's bytes.
-        let retained = original_source.provider(&volumes, path, base).await?;
+        let retained = original_source.provider(&volumes, &entry).await?;
         assert_eq!(retained.profile, admitted.profile);
         assert_eq!(retained.links, admitted.links);
         assert_eq!(retained.stack, admitted.stack);

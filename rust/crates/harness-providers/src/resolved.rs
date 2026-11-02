@@ -271,6 +271,13 @@ impl ModelProvider for ResolvedModel {
         Ok(self.profile)
     }
 
+    fn provider_settings(
+        &self,
+        model: &Model,
+    ) -> Result<Option<&acyclic_harness_core::config::ProviderEntry>> {
+        self.validate(model)?;
+        Ok(self.config.settings.as_ref())
+    }
     fn native_tool_profile(
         &self,
         model: &Model,

@@ -31,6 +31,9 @@ where
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.inner().model_profile(model)
     }
+    fn provider_settings(&self, model: &Model) -> Result<Option<&crate::config::ProviderEntry>> {
+        self.inner().provider_settings(model)
+    }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.inner().native_tool_profile(model)
     }

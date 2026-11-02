@@ -307,6 +307,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
             (
                 id.into(),
                 ProviderSpec {
+                    settings: None,
                     adapter,
                     authentication,
                     base_url: base_url.into(),

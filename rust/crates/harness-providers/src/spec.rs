@@ -56,6 +56,10 @@ pub struct ProviderSpec {
         tsify(type = "Family")
     )]
     pub adapter: Adapter,
+    /// Explicit selected settings entry and base; omission supplies no policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub settings: Option<acyclic_harness_core::config::ProviderEntry>,
     /// Credential policy supplied by the catalog, independent of its provider ID.
     pub authentication: Authentication,
     /// HTTPS API root, or loopback HTTP API root.

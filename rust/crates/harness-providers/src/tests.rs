@@ -361,6 +361,7 @@ pub(super) fn provider_with(
         },
         profile: None,
         config: Arc::new(ProviderSpec {
+            settings: None,
             adapter,
             authentication: Authentication::ApiKey,
             base_url: base_url.into(),
@@ -657,6 +658,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
     let mut config = ProviderSpec {
+        settings: None,
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
