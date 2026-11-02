@@ -181,3 +181,50 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
             .map_err(authority_error)
     }
 }
+
+impl MemoryAuthorityStore {
+    #[inline]
+    pub(super) fn lock_authorities(
+        &self,
+    ) -> Result<
+        crate::sync::MutexGuard<'_, HashMap<AuthorityId, AuthorityState>>,
+        AuthorityStoreError,
+    > {
+        self.authorities
+            .lock()
+            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)
+    }
+
+    #[inline]
+    pub(super) fn with_authority<T>(
+        &self,
+        authority: &AuthorityId,
+        accounting: &mut KernelAccounting<'_>,
+        operation: impl FnOnce(&mut AuthorityState, &mut KernelAccounting<'_>) -> Result<T, FsError>,
+    ) -> Result<T, FsError> {
+        accounting.charge(read_work())?;
+        let mut authorities = self.lock_authorities()?;
+        examine(accounting)?;
+        let state = authorities
+            .get_mut(authority)
+            .ok_or(AuthorityStoreError::Missing)?;
+        operation(state, accounting)
+    }
+}
+
+#[test]
+fn authority_access_uses_one_lock_boundary() {
+    for (path, source) in [
+        ("read.rs", include_str!("read.rs")),
+        ("reservation.rs", include_str!("reservation.rs")),
+        ("publication.rs", include_str!("publication.rs")),
+    ] {
+        assert!(
+            !source
+                .split_whitespace()
+                .collect::<String>()
+                .contains("self.authorities"),
+            "REFUSED step=authority-access-policy file={path}: use MemoryAuthorityStore::lock_authorities; recovery: cargo test --locked -p acyclic-fs --lib authority_access_uses_one_lock_boundary"
+        );
+    }
+}

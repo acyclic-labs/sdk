@@ -7,10 +7,7 @@ impl MemoryAuthorityStore {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<CreatePlan, FsError> {
         accounting.check()?;
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        let mut authorities = self.lock_authorities()?;
         if let Some(state) = authorities.get(&authority) {
             accounting.charge(read_work())?;
             return Ok(CreatePlan::Existing(state.head()));
@@ -34,10 +31,7 @@ impl MemoryAuthorityStore {
             CreatePlan::Existing(head) => return Ok(Some(CreateAuthorityOutcome::Existing(head))),
             CreatePlan::Publish(envelope) => envelope,
         };
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        let mut authorities = self.lock_authorities()?;
         if let Some(state) = authorities.get(&authority) {
             accounting.charge(read_work())?;
             return Ok(Some(CreateAuthorityOutcome::Existing(state.head())));
@@ -81,10 +75,7 @@ impl MemoryAuthorityStore {
     ) -> Result<FirstRecordPlan, FsError> {
         let bytes = self.validate_payload(commit, accounting)?;
         accounting.charge(read_work())?;
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        let mut authorities = self.lock_authorities()?;
         examine(accounting)?;
         if let Some(state) = authorities.get(&authority) {
             if let Some(first) = state.commits.first() {
@@ -140,10 +131,7 @@ impl MemoryAuthorityStore {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<bool>, FsError> {
         accounting.check()?;
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        let mut authorities = self.lock_authorities()?;
         if let Some(existing) = authorities.get(&authority) {
             if let Some(first) = existing.commits.first() {
                 return Self::first_record_matches(first, commit, accounting).map(Some);
@@ -218,77 +206,70 @@ impl MemoryAuthorityStore {
     ) -> Result<AppendPlan, FsError> {
         self.validate_payload(&request.commit, accounting)?;
         Self::validate_permit(request.permit)?;
-        accounting.charge(read_work())?;
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
-        examine(accounting)?;
-        let state = authorities
-            .get_mut(&request.authority_id)
-            .ok_or(AuthorityStoreError::Missing)?;
-        let actual = state.head();
-        if let Some(outcome) = state.resolve_operation(&request.commit, accounting)? {
-            return Ok(AppendPlan::Resolved(outcome));
-        }
-        if request.epoch != actual.epoch {
-            return Ok(AppendPlan::Resolved(AppendOutcome::Fenced {
-                actual_epoch: actual.epoch,
-            }));
-        }
-        if request.expected != actual || !Self::permit_matches(state, request.permit) {
-            return Ok(AppendPlan::Resolved(AppendOutcome::Conflict { actual }));
-        }
-        accounting.admit(append_work(request.commit.payload.len() as u64))?;
-        let replacement = if state.commits.len() == state.commits.capacity() {
-            let capacity = state
-                .commits
-                .capacity()
-                .checked_mul(2)
-                .and_then(|double| {
-                    state
-                        .commits
-                        .len()
-                        .checked_add(1)
-                        .map(|needed| needed.max(double))
-                })
-                .ok_or(WorkError::Overflow)?;
-            Some(commits(capacity, accounting)?)
-        } else {
-            None
-        };
-        let operation = accounting.claim_owned(
-            size_of::<(OperationId, (usize, KernelOwnedAllocation))>() as u64,
-            0,
-        )?;
-        reserve(&mut state.operations, accounting)?;
-        let copied = if replacement.is_some() {
-            state
-                .commits
-                .len()
-                .checked_add(1)
-                .ok_or(WorkError::Overflow)?
-        } else {
-            1
-        };
-        accounting.admit(copy_work(copied, size_of::<DurableCommit>())?)?;
-        let durable = self.durable(
-            request.authority_id,
-            actual,
-            request.commit.clone(),
-            accounting,
-        )?;
-        let generation = prepare_generation(
-            &state.generations,
-            request.authority_id,
-            &durable,
-            accounting,
-        )?;
-        Ok(AppendPlan::Publish {
-            durable,
-            commits: replacement,
-            operation,
-            generation,
+        self.with_authority(&request.authority_id, accounting, |state, accounting| {
+            let actual = state.head();
+            if let Some(outcome) = state.resolve_operation(&request.commit, accounting)? {
+                return Ok(AppendPlan::Resolved(outcome));
+            }
+            if request.epoch != actual.epoch {
+                return Ok(AppendPlan::Resolved(AppendOutcome::Fenced {
+                    actual_epoch: actual.epoch,
+                }));
+            }
+            if request.expected != actual || !Self::permit_matches(state, request.permit) {
+                return Ok(AppendPlan::Resolved(AppendOutcome::Conflict { actual }));
+            }
+            accounting.admit(append_work(request.commit.payload.len() as u64))?;
+            let replacement = if state.commits.len() == state.commits.capacity() {
+                let capacity = state
+                    .commits
+                    .capacity()
+                    .checked_mul(2)
+                    .and_then(|double| {
+                        state
+                            .commits
+                            .len()
+                            .checked_add(1)
+                            .map(|needed| needed.max(double))
+                    })
+                    .ok_or(WorkError::Overflow)?;
+                Some(commits(capacity, accounting)?)
+            } else {
+                None
+            };
+            let operation = accounting.claim_owned(
+                size_of::<(OperationId, (usize, KernelOwnedAllocation))>() as u64,
+                0,
+            )?;
+            reserve(&mut state.operations, accounting)?;
+            let copied = if replacement.is_some() {
+                state
+                    .commits
+                    .len()
+                    .checked_add(1)
+                    .ok_or(WorkError::Overflow)?
+            } else {
+                1
+            };
+            accounting.admit(copy_work(copied, size_of::<DurableCommit>())?)?;
+            let durable = self.durable(
+                request.authority_id,
+                actual,
+                request.commit.clone(),
+                accounting,
+            )?;
+            let generation = prepare_generation(
+                &state.generations,
+                request.authority_id,
+                &durable,
+                accounting,
+            )?;
+            Ok(AppendPlan::Publish {
+                durable,
+                commits: replacement,
+                operation,
+                generation,
+            })
         })
     }
 
@@ -308,10 +289,7 @@ impl MemoryAuthorityStore {
                 generation,
             } => (durable, commits, operation, generation),
         };
-        let mut authorities = self
-            .authorities
-            .lock()
-            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        let mut authorities = self.lock_authorities()?;
         Self::validate_permit(request.permit)?;
         let state = authorities
             .get_mut(&request.authority_id)
