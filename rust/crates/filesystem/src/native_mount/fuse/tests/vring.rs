@@ -272,6 +272,10 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         let drained = drain.join().map_err(|_| "original drain owner unwound")?;
         let observations = observations?;
         waiting?;
+        if exit != 3 {
+            assert_eq!(unlocked.as_ref().ok(), Some(&[true; 3]));
+            assert_eq!(observations, Some((true, 0)));
+        }
         if exit == 3 {
             assert!(unlocked.is_err());
             assert_eq!(observations, None);
@@ -287,16 +291,12 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             ));
             assert_eq!(ram.read_obj::<u16>(GuestAddress(258))?, 0);
         } else if exit == 0 {
-            assert_eq!(unlocked?, [true; 3]);
-            assert_eq!(observations, Some((true, 0)));
             completion.map_err(|_| "original packet producer unwound")??;
             assert_eq!(drained?, 1);
             assert_eq!(ram.read_obj::<u16>(GuestAddress(258))?, 1);
             assert_eq!(ram.read_obj::<u64>(GuestAddress(4104))?, unique);
             assert_eq!(ram.read_obj::<u64>(GuestAddress(8200))?, 0);
         } else {
-            assert_eq!(unlocked?, [true; 3]);
-            assert_eq!(observations, Some((true, 0)));
             if exit == 1 {
                 let error = match completion.map_err(|_| "cancelled packet producer unwound")? {
                     Err(error) => error,
