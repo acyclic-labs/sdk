@@ -6,6 +6,25 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
+/// Publish retained diagnostics even when the original operation failed.
+/// A secondary publication failure cannot replace that original error.
+pub(super) fn retain_diagnostics<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    publish: impl FnOnce() -> Result<(), E>,
+    recovery: &str,
+) -> Result<T, E> {
+    let diagnostic = publish();
+    match result {
+        Ok(value) => diagnostic.map(|()| value),
+        Err(error) => {
+            if let Err(diagnostic) = diagnostic {
+                eprintln!("STEP_FAILED diagnostic publication: {diagnostic}; recovery: {recovery}");
+            }
+            Err(error)
+        }
+    }
+}
+
 #[derive(Default)]
 struct Fields {
     calls: [[AtomicU64; 3]; 7],
@@ -330,6 +349,42 @@ mod tests {
                 .unwrap();
             assert_eq!(observed.first_os_errors[row], Some(code));
             assert_eq!(observed.missing[4], Some(0));
+
+            let recovery = "cargo test --locked -p acyclic-conformance --test main native_projection::tests::original_task_projection_preserves_inline_work_and_abandonment -- --exact";
+            let mut output = Vec::new();
+            let original = retain_diagnostics::<(), _>(
+                Err(error),
+                || {
+                    serde_json::to_writer(&mut output, &projection.snapshot())
+                        .map_err(std::io::Error::other)
+                },
+                recovery,
+            )
+            .unwrap_err();
+            assert_eq!(original.raw_os_error(), Some(code));
+            let exported: serde_json::Value =
+                serde_json::from_slice(&output).map_err(std::io::Error::other)?;
+            assert_eq!(exported["first_os_errors"][row], code);
+            assert_eq!(exported["calls"][row][1], 1);
+
+            // The real sink's reader is gone. Retain the original operation
+            // error even when publication fails, and refuse a successful
+            // operation if its diagnostic output could not be delivered.
+            let (reader, mut writer) = std::io::pipe()?;
+            drop(reader);
+            let mut publish = || {
+                serde_json::to_writer(&mut writer, &projection.snapshot())
+                    .map_err(std::io::Error::other)
+            };
+            let original =
+                retain_diagnostics::<(), _>(Err(missing), &mut publish, recovery).unwrap_err();
+            assert_eq!(original.raw_os_error(), Some(original_code));
+            let sink = retain_diagnostics(Ok(()), &mut publish, recovery).unwrap_err();
+            assert!(
+                sink.get_ref()
+                    .and_then(|error| error.downcast_ref::<serde_json::Error>())
+                    .is_some_and(serde_json::Error::is_io)
+            );
             Ok(())
         })
     }

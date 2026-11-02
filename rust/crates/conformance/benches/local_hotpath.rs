@@ -270,23 +270,29 @@ fn run() -> Result {
             Result::Ok((complete, counts))
         }));
     });
-    let (latency_complete, counts) = measured.ok_or("measurement scope did not execute")??;
-    if let Some(query) = durability {
-        emit(serde_json::json!({
-            "schema": 1, "kind": "native_durability_projection", "snapshot": query.snapshot(),
-            "scope": "completed observed native attempts during setup and selected operation families; base-two latency buckets are not operation quantiles; unobserved leaves and original provider/group coverage remain unknown",
-            "complete_coverage": false,
-            "typed_attempts": typed_attempts.as_ref().map(durability::Projection::snapshot),
-            "syscall_rows": ["unknown", "fsync", "fdatasync", "F_FULLFSYNC", "F_BARRIERFSYNC", "FlushFileBuffers", "syncfs"],
-            "outcome_columns": ["ok", "err", "incomplete"],
-            "missing_field_columns": ["requested", "syscall", "descriptor", "parent", "os_error_on_failure"],
-            "task_rows": ["persistence", "blocking_io"],
-            "task_boolean_columns": ["unknown", "false", "true"],
-            "task_terminal_columns": ["unknown", "ok", "io_error", "panic", "missing"],
-            "first_os_error_scope": "first observed original OS error per syscall/task row; diagnostic only, not authenticated operation identity or error order; absent remains unknown",
-            "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
-        }))?;
-    }
+    let (latency_complete, counts) = durability::retain_diagnostics(
+        measured.unwrap_or_else(|| Err("measurement scope did not execute".into())),
+        || {
+            if let Some(query) = durability {
+                emit(serde_json::json!({
+                    "schema": 1, "kind": "native_durability_projection", "snapshot": query.snapshot(),
+                    "scope": "completed observed native attempts during setup and selected operation families; base-two latency buckets are not operation quantiles; unobserved leaves and original provider/group coverage remain unknown",
+                    "complete_coverage": false,
+                    "typed_attempts": typed_attempts.as_ref().map(durability::Projection::snapshot),
+                    "syscall_rows": ["unknown", "fsync", "fdatasync", "F_FULLFSYNC", "F_BARRIERFSYNC", "FlushFileBuffers", "syncfs"],
+                    "outcome_columns": ["ok", "err", "incomplete"],
+                    "missing_field_columns": ["requested", "syscall", "descriptor", "parent", "os_error_on_failure"],
+                    "task_rows": ["persistence", "blocking_io"],
+                    "task_boolean_columns": ["unknown", "false", "true"],
+                    "task_terminal_columns": ["unknown", "ok", "io_error", "panic", "missing"],
+                    "first_os_error_scope": "first observed original OS error per syscall/task row; diagnostic only, not authenticated operation identity or error order; absent remains unknown",
+                    "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
+                }))?;
+            }
+            Ok(())
+        },
+        &recovery,
+    )?;
     let findings = counts.qualification_findings(&options.operations, &recovery);
     let counts_complete = findings.is_empty();
     for finding in findings {
