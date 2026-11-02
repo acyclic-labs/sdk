@@ -14,8 +14,16 @@ pub(super) fn entered() {
 struct Files(Vec<u8>);
 
 impl Tree for Files {
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(async move { Ok((path == "sys/input.json").then(|| self.0.clone())) })
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        Box::pin(async move {
+            Ok(
+                (path == "sys/input.json")
+                    .then(|| acyclic_stream::OwnedBytes::from(self.0.clone())),
+            )
+        })
     }
 }
 

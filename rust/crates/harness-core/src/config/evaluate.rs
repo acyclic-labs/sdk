@@ -18,10 +18,15 @@ const VERSION: &str = "acyclic.harness.config.v2";
 /// or fails alike on every host; no plain-data fold comes near it.
 const FUEL: u64 = 1_000;
 
-/// Files a module may import: the effective tree (home over seed) and `sys/`.
+/// Files a module may import from the same pinned effective tree and `sys/`.
 pub trait Tree: Send + Sync {
-    /// The bytes of `path`, or `None` when no layer holds it.
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>>;
+    /// The original owned bytes of `path`, or `None` when no layer holds it.
+    /// Module loading borrows this backing through parsing; an adapter must
+    /// retain its original allocation owner rather than copy away its custody.
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>>;
 }
 
 /// What a module's default export may be.
