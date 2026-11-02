@@ -250,8 +250,11 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
                     }
                     Err(Error::ModelUnavailable {
                         failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        ..
-                    }) if interrupted => errors += 1,
+                        excerpt,
+                    }) if interrupted => {
+                        assert!(excerpt.is_empty(), "native EOF must not render a cause");
+                        errors += 1;
+                    }
                     Err(error) => return Err(error),
                 }
             }

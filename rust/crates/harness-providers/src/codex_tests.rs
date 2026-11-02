@@ -60,6 +60,8 @@ fn auth(access: &str) -> Value {
 }
 
 fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, Refresh)> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
     let root = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
     let path = root.path().join("auth.json");
     std::fs::write(&path, auth(access).to_string()).map_err(|error| invalid(error.to_string()))?;

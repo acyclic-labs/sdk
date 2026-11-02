@@ -44,19 +44,11 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
 async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<()> {
     // Generated adversarial protocol data, not captured provider fixtures.
     let mut frames = Vec::new();
-    for (reason, id) in [
-        ("MAX_TOKENS", Some(json!("call"))),
-        ("STOP", Some(json!(null))),
-        ("STOP", Some(json!(42))),
-        ("STOP", Some(json!(""))),
-    ] {
-        let mut function = json!({"name":"echo","args":{}});
-        if let Some(id) = id {
-            function["id"] = id;
-        }
+    for id in [json!(null), json!(42), json!("")] {
+        let function = json!({"name":"echo","args":{},"id":id});
         frames.push(json!({"candidates":[{"content":{"parts":[{
             "functionCall":function,"thoughtSignature":"opaque"
-        }]},"finishReason":reason}]}));
+        }]},"finishReason":"STOP"}]}));
     }
     let valid = json!({"content":{"role":"model","parts":[{
         "functionCall":{"name":"echo","args":{}},"thoughtSignature":"opaque"
@@ -79,6 +71,8 @@ async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<(
         candidate["content"]["parts"] = parts;
         frames.push(json!({"candidates":[candidate]}));
     }
+    let mut truncated = valid.clone();
+    truncated["finishReason"] = json!("MAX_TOKENS");
     let mut candidate = valid;
     candidate["finishReason"] = json!(true);
     frames.push(json!({"candidates":[candidate]}));
@@ -100,6 +94,21 @@ async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<(
             Err(acyclic_harness_core::Error::Invalid(_))
         ));
     }
+    // The original signed batch is withheld on truncation too, while the
+    // shared completion retains the token-limit reason instead of refusing it.
+    let frame = json!({"candidates":[truncated]});
+    let events = stream::events(
+        Adapter::Gemini,
+        chunks(&format!("data: {prefix}\n\ndata: {frame}\n\n"), 1),
+        4096,
+        parser_dispatch(),
+    )
+    .try_collect::<Vec<_>>()
+    .await?;
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
+    );
     Ok(())
 }
 

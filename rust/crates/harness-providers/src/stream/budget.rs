@@ -16,6 +16,17 @@ pub(super) struct Budget<'work> {
 }
 
 impl<'work> Budget<'work> {
+    pub(super) fn is_native(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.work.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bytes(&self) -> Result<usize> {
         if let Some(work) = self.work {
