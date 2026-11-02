@@ -70,19 +70,21 @@ fn rpc_failures_preserve_original_causes_and_outcomes() {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
         .unwrap_or_else(|_| unreachable!());
     assert_eq!(
-        mutation_error(key, &tonic::Status::unimplemented("capability unavailable"),),
-        ProviderError::Unsupported("capability unavailable".into())
+        mutation_error(key, tonic::Status::unimplemented("capability unavailable"))
+            .classification(),
+        &ProviderError::Unsupported("capability unavailable".into())
     );
     assert_eq!(
-        watch_error(key, &tonic::Status::unimplemented("watch unavailable")),
-        ProviderError::Indeterminate(key)
+        watch_error(key, tonic::Status::unimplemented("watch unavailable")).classification(),
+        &ProviderError::Indeterminate(key)
     );
     assert_eq!(
         watch_error(
             key,
-            &tonic::Status::resource_exhausted("watch capacity unavailable"),
-        ),
-        ProviderError::Indeterminate(key)
+            tonic::Status::resource_exhausted("watch capacity unavailable"),
+        )
+        .classification(),
+        &ProviderError::Indeterminate(key)
     );
     let machine = MachineId::from_digest([1; 32]);
     for code in [
@@ -101,11 +103,14 @@ fn rpc_failures_preserve_original_causes_and_outcomes() {
             b"original-status-details".as_slice().into(),
         );
         let failures = [
-            ("read", read_error(&status)),
-            ("mutation", mutation_error(key, &status)),
-            ("watch", watch_error(key, &status)),
-            ("recovery", recovery_error(key, &status)),
-            ("command admission", command_error(machine, &status)),
+            ("read", read_error(status.clone())),
+            ("mutation", mutation_error(key, status.clone())),
+            ("watch", watch_error(key, status.clone())),
+            ("recovery", recovery_error(key, status.clone())),
+            (
+                "command admission",
+                guest_error(ProviderError::CommandIndeterminate(machine), status.clone()),
+            ),
         ];
         let lost: Vec<_> = failures
             .iter()

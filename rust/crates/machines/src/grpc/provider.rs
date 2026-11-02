@@ -13,7 +13,7 @@ macro_rules! machine_mutations {
                     protocol: Some(protocol()),
                     idempotency_key: Some(encode_key(key)),
                     machine: Some(encode_machine(machine)),
-                }).await.map_err(|error| { obs::failed_rpc(&observation, &error); mutation_error(key, &error) })?.into_inner();
+                }).await.map_err(|error| { obs::failed_rpc(&observation, &error); mutation_error(key, error) })?.into_inner();
                 if decode_machine(value.machine.as_ref()).map_err(|_| ProviderError::Indeterminate(key))? != machine {
                     return Err(ProviderError::Indeterminate(key));
                 }
@@ -83,7 +83,7 @@ machine_mutations! {
                 ?
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    command_error(machine, &error)
+                    guest_error(ProviderError::CommandIndeterminate(machine), error)
                 })?
                 .into_inner();
             let output = stream::try_unfold(
@@ -131,7 +131,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             decode_machine_output(value, machine, offset, limit)
@@ -165,7 +165,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             settle_machine(self, key, response, false, |_, contract| {
@@ -199,7 +199,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             settle_machine(self, key, response, true, |actual, contract| {
@@ -224,7 +224,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })
                 .and_then(|response| decode_machine_observation(response.into_inner(), machine))
         })
@@ -252,7 +252,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             decode_machine_page(page, after, limit)
@@ -276,7 +276,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             let operation = decode_operation(value.operation.as_ref())
@@ -303,7 +303,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })
                 .and_then(|response| {
                     decode_checkpoint_observation(&response.into_inner(), checkpoint)
@@ -330,7 +330,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             settle_fork(self, key, ForkSource::Checkpoint(checkpoint), count, &value).await
@@ -356,7 +356,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             settle_fork(self, key, ForkSource::Machine(machine), count, &value).await
@@ -385,7 +385,7 @@ machine_mutations! {
                     .await
                     .map_err(|error| {
                         obs::failed_rpc(&observation, &error);
-                        mutation_error(key, &error)
+                        mutation_error(key, error)
                     })?
                     .into_inner();
                 if decode_machine(value.machine.as_ref())
@@ -426,7 +426,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    mutation_error(key, &error)
+                    mutation_error(key, error)
                 })?
                 .into_inner();
             if decode_checkpoint(value.checkpoint.as_ref())
@@ -470,7 +470,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             let mut previous = after_sequence.unwrap_or(0);
@@ -516,11 +516,11 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             Ok(crate::provider::events::checked(machine, after_sequence, events, move |mut events| async move {
-                match events.message().await.map_err(|error| read_error(&error))? {
+                match events.message().await.map_err(|error| read_error(error))? {
                     Some(event) => Ok(Some((decode_event(&event, machine)?, events))),
                     None => Ok(None),
                 }
@@ -552,7 +552,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
@@ -569,7 +569,7 @@ machine_mutations! {
             cursor.interval(cursor.cut, credit)?;
             let value = self.client().await?.read_results(wire::ReadResultsRequest {
                 protocol: Some(protocol()), cursor: Some(cursor.into()), credit: credit.get(),
-            }).await.map_err(|error| { obs::failed_rpc(&observation, &error); read_error(&error) })?.into_inner();
+            }).await.map_err(|error| { obs::failed_rpc(&observation, &error); read_error(error) })?.into_inner();
             decode_result_page(value, cursor, credit)
         })
     }
@@ -600,7 +600,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })
                 .and_then(|response| {
                     decode_operation_observation(&response.into_inner(), operation)
@@ -616,7 +616,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })
                 .and_then(|response| {
                     decode_operation_observation(&response.into_inner(), operation)
@@ -636,7 +636,7 @@ machine_mutations! {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             let stream = stream::unfold((stream, false), move |(mut stream, done)| async move {
