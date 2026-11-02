@@ -4,6 +4,62 @@ use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, 
 use std::sync::Arc;
 
 #[tokio::test]
+async fn retained_imports_share_the_original_preparation_capacity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{config::Tree as _, filesystem::PreparationIo};
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let fs = Fs::new(
+        StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs
+        .create_workspace("imports", WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    for (path, byte) in [("/first.ts", 'a'), ("/second.ts", 'b')] {
+        workspace
+            .write_text(path, &byte.to_string().repeat(8192))
+            .await?;
+    }
+    let generation = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let manifest = Manifest::new([&generation; 6]);
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
+    let tree = manifest.tree(&io, u64::MAX);
+    let first = tree.read("first.ts").await?.ok_or("missing first import")?;
+    let second = tree
+        .read("second.ts")
+        .await?
+        .ok_or("missing second import")?;
+    let retained = first.retained_capacity().ok_or("unknown first capacity")? as u64
+        + second
+            .retained_capacity()
+            .ok_or("unknown second capacity")? as u64;
+    assert_eq!(io.owned_bytes()?, retained);
+    let exceeds_live = budget.peak_allocation_bytes - retained + 1;
+    assert!(io.retain_owned(exceeds_live).is_err());
+
+    // Negative control: the original read frame alone records its peak but
+    // cannot keep returned backing in the preparation owner's live count.
+    let omitted = PreparationIo::from_budget(budget, &cancellation)?;
+    let raw = omitted.sdk(
+        generation
+            .read("/first.ts", u64::MAX, &omitted, &cancellation)
+            .await,
+    )?;
+    assert!(!raw.is_empty());
+    assert_eq!(omitted.owned_bytes()?, 0);
+    omitted.retain_owned(exceeds_live)?;
+    assert_eq!(first[0], b'a');
+    assert_eq!(second[0], b'b');
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_configuration_reads_preserve_the_original_refusal_class()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{config::Tree as _, filesystem::PreparationIo, wire::ErrorCode};

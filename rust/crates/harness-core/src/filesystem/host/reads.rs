@@ -693,7 +693,7 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     };
     io.remaining()?;
     let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;
-    retain_read_bytes(bytes, io)
+    io.retain_read_bytes(bytes)
 }
 
 pub(in crate::filesystem) async fn read_generation_if_present<
@@ -707,25 +707,8 @@ pub(in crate::filesystem) async fn read_generation_if_present<
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
     io.sdk_if_present(generation.read(path, maximum, io, io.cancellation()).await)?
-        .map(|bytes| retain_read_bytes(bytes, io))
+        .map(|bytes| io.retain_read_bytes(bytes))
         .transpose()
-}
-
-fn retain_read_bytes(
-    bytes: acyclic_stream::OwnedBytes,
-    io: &PreparationIo,
-) -> Result<acyclic_stream::OwnedBytes> {
-    if io.original_native_work().is_none() {
-        let capacity = bytes.retained_capacity().ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unsupported,
-                "content producer does not expose its owned capacity",
-            )
-        })?;
-        io.retain_owned(capacity as u64)?;
-    }
-    Ok(bytes)
 }
 
 use crate::executor::stock_boundary;
