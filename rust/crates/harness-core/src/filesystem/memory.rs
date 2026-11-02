@@ -76,7 +76,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
 /// The one harness approval owner over `files` under `policy`, for an agent
 /// with no parent.
 fn agent_approvals(
-    files: &Arc<dyn ApprovalFiles>,
+    files: Arc<dyn ApprovalFiles>,
     policy: ApprovalPolicy,
     maximum_file_bytes: u64,
 ) -> Result<Arc<AgentApprovals>> {
@@ -85,10 +85,7 @@ fn agent_approvals(
         ..Limits::default()
     };
     let policy = AgentApprovalPolicy::new(policy, None, Default::default(), limits)?;
-    Ok(Arc::new(AgentApprovals::new(
-        Arc::clone(files),
-        Arc::new(policy),
-    )))
+    Ok(Arc::new(AgentApprovals::new(files, Arc::new(policy))))
 }
 
 /// A fully bound journal and owner-private file volume.
@@ -102,7 +99,7 @@ pub struct MemoryHarnessStorage<
     O: 'static = MemoryObjectBackend,
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
-    approval_files: Arc<dyn ApprovalFiles>,
+    internal_files: Arc<AgentInternalFiles<A, O>>,
     approvals: Arc<AgentApprovals>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
@@ -245,7 +242,7 @@ impl<
         )?;
         // Approvals are the agent's own files on its private volume, as for
         // every hosted agent; only where those files live differs.
-        let approval_files: Arc<dyn ApprovalFiles> = Arc::new(AgentInternalFiles::new(
+        let internal_files = Arc::new(AgentInternalFiles::new(
             Arc::clone(&host),
             volume.clone(),
             crate::conversation::ContentGrant::verify(
@@ -258,7 +255,7 @@ impl<
             )?,
         ));
         let approvals = agent_approvals(
-            &approval_files,
+            internal_files.clone(),
             ApprovalPolicy::default(),
             maximum_file_bytes,
         )?;
@@ -286,7 +283,7 @@ impl<
         )?;
         Ok(Self {
             journal,
-            approval_files,
+            internal_files,
             approvals,
             content_verifier: input,
             publisher,
@@ -309,7 +306,8 @@ impl<
     /// uses the harness default policy chain. Binds before the journal is
     /// shared, so every approval of this storage sees one policy.
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Result<Self> {
-        let approvals = agent_approvals(&self.approval_files, policy, self.maximum_file_bytes)?;
+        let approvals =
+            agent_approvals(self.internal_files.clone(), policy, self.maximum_file_bytes)?;
         let journal = Arc::try_unwrap(self.journal).map_err(|_| {
             Error::Conflict("approval policy must be bound before the journal is shared".into())
         })?;
@@ -340,6 +338,12 @@ impl<
     #[must_use]
     pub fn journal(&self) -> Arc<dyn ExecutionJournal> {
         self.journal.clone()
+    }
+
+    /// Borrows the same host files used for approvals and settled turn outputs.
+    #[must_use]
+    pub fn turn_outputs(&self) -> &dyn crate::agent::TurnOutputs {
+        self.internal_files.as_ref()
     }
 
     /// Globally distinct identity of this local agent-private volume.

@@ -973,7 +973,10 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     // Select the original console files through the model's ordinary module
     // entrance, including tool authority and the file reader. Inner call logs
     // created during selection cannot alter the iterator's pinned generation.
-    let directory = format!("tools/.results/{operation}");
+    let directory = storage
+        .turn_outputs()
+        .tool_results(operation)
+        .expect("host tool-output locator");
     let select = format!(
         r#"import {{list, read}} from 'acyclic';
         const values = [];
