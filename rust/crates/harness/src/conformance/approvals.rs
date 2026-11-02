@@ -22,7 +22,6 @@ use acyclic_harness_core::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
         hosting::{Bound, Placement, RootRequest, RootSubmission, Turns, VerifiedCaller},
     },
-    interaction::{ApprovalBinding, Interaction},
     model::{
         Model, ModelContent, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
         ToolCall,
@@ -267,24 +266,12 @@ async fn human_decides(backend: &dyn Backend) -> Result {
     let (bound, root, calls, _storage) = asked(backend, ApprovalPolicy::default()).await?;
 
     // The turn waits on the tool call, which has not run.
-    let Some((
-        pending,
-        Interaction::Approval {
-            operation_id,
-            action_digest,
-            ..
-        },
-    )) = bound.pending_approval(&root).await?
-    else {
+    let Some((pending, _, exact)) = bound.pending_approval(&root).await? else {
         return Err("the turn does not wait on an approval of its tool call".into());
     };
     if calls.load(Ordering::SeqCst) != 0 {
         return Err("the tool ran before its approval".into());
     }
-    let exact = ApprovalBinding {
-        operation_id,
-        action_digest,
-    };
     let mut other = exact.clone();
     other.action_digest[0] ^= 1;
     if bound
