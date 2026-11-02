@@ -258,7 +258,7 @@ impl Identity {
             birth: String,
             expires_at: u64,
         }
-        let renewal: Renewal = serde_json::from_value(value.clone())
+        let renewal = Renewal::deserialize(&value)
             .map_err(|_| Error::new("invalid_response", "invalid agent renewal response"))?;
         if renewal.org_id != registration.org_id || renewal.key_id != registration.key_id {
             return Err(Error::new(
