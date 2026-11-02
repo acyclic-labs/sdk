@@ -4,6 +4,7 @@ use super::*;
 use crate::{hooks::Hooks, tool::ToolRegistry};
 
 pub fn check(bytes: &[u8]) -> Result<()> {
+    check_model_selection(bytes)?;
     for toml in [false, true] {
         let mut imported = Hooks::default();
         let admitted = if toml {
@@ -58,6 +59,37 @@ pub fn check(bytes: &[u8]) -> Result<()> {
             ));
         }
         check_rules(&original, bytes)?;
+    }
+    Ok(())
+}
+
+fn check_model_selection(bytes: &[u8]) -> Result<()> {
+    let original = super::model_selection::parse(bytes);
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Ok(());
+    };
+    let Ok(document) = toml::from_str::<toml::Table>(text) else {
+        return Ok(());
+    };
+    // Explicit provider selection owns the whole model name, including slashes.
+    if let (Ok(Some(selected)), Some(provider), Some(model)) = (
+        &original,
+        document.get("model_provider").and_then(toml::Value::as_str),
+        document.get("model").and_then(toml::Value::as_str),
+    ) && *selected != format!("{provider}/{model}")
+    {
+        return Err(Error::Invalid(
+            "provider and opaque model stay paired".into(),
+        ));
+    }
+    let encoded = toml::to_string(&document).map_err(|error| Error::Invalid(error.to_string()))?;
+    let replay = super::model_selection::parse(encoded.as_bytes());
+    // Reformatting changes diagnostic positions; admission and selected identity
+    // must agree, including refusal of a field with the wrong TOML type.
+    if original.is_ok() != replay.is_ok() || original.ok() != replay.ok() {
+        return Err(Error::Invalid(
+            "TOML replay changed model selection or admission".into(),
+        ));
     }
     Ok(())
 }

@@ -12,6 +12,8 @@ fn opaque_name(provider: &str, segments: &[String]) {
         ("model", name.as_str()),
     ]))
     .unwrap();
+    #[cfg(feature = "hooks")]
+    crate::native_settings::codec_fuzz::check(text.as_bytes()).unwrap();
     assert_eq!(
         parse(text.as_bytes()).unwrap(),
         Some(format!("{provider}/{name}")),
