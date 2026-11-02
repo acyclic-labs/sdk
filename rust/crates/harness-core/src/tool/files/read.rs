@@ -33,7 +33,7 @@ impl FileTool {
         {
             return super::notebook_read::read(context, &input.0, 0, None, work, io).await;
         }
-        if input.0.selection.is_none() {
+        if input.0.selection.is_none() || input.0.selection == Some(ReadSelection::Text) {
             return self.read_path_range(context, &input.0, work, io).await;
         }
         let source = self
@@ -81,7 +81,7 @@ impl FileTool {
         if end > window.source.byte_length() {
             return Err(invalid("read result belongs to another selection"));
         }
-        if input.range.is_none() {
+        if input.range.is_none() && input.selection.is_none() {
             let media = crate::model::image_media_type(&bytes)
                 .map(|_| ReadSelection::Image {
                     detail: crate::model::ImageDetail::Auto,

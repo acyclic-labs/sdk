@@ -396,9 +396,12 @@ impl StockExecution<'_> {
                             ExecutionProgress::PreDispatchFailed(failure) => return Ok(ExecutionProgress::PreDispatchFailed(failure)),
                         };
                         let ok = result.is_ok();
-                        let (value, _result_hold) = match result {
-                            Ok(result) => result,
-                            Err(cause) => (serde_json::json!({"class":cause.class,"message":cause.message}), None),
+                        let (value, _result_hold, _failure_hold) = match result {
+                            Ok((value, hold)) => (value, hold, None),
+                            Err(cause) => {
+                                let (value, hold) = crate::tool::value(&cause, u64::MAX, self.native_work())?;
+                                (value, None, hold)
+                            },
                         };
                         let version = if ok {
                             crate::tool::files::result_version(

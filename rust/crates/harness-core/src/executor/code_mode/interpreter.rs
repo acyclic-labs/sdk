@@ -263,6 +263,13 @@ mod tests {
             }
             await write('agent.ts', {model: 'example/model'}, 'any');
             const moduleText = (await read('agent.ts')).text();
+            const notebook = '{"cells":[],"nbformat":4}';
+            await write('empty.ipynb', notebook, 'any');
+            if ((await read('empty.ipynb')).text() !== notebook) throw new Error('source was projected');
+            const large = 'β\r\n'.repeat(2000);
+            await write('large.txt', large, 'any');
+            const paged = await read('large.txt');
+            if (paged.text() !== large || paged.lines(1999, 1)[0] !== 'β') throw new Error('page lost bytes');
             export default {lines, conflict, absent, stubs, moduleText};
         "#;
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
@@ -278,6 +285,7 @@ mod tests {
             )),
             async move {
                 let mut count = 0;
+                let mut large_pages = 0;
                 while let Some(request) = receive.recv().await {
                     let super::Request::Tool(call) = request else {
                         panic!("unexpected log");
@@ -299,6 +307,9 @@ mod tests {
                         name: name.into(),
                         arguments: serde_json::from_str(&call.arguments.value).unwrap(),
                     };
+                    if name == "read" && invocation.arguments["path"] == "large.txt" {
+                        large_pages += 1;
+                    }
                     let context = ToolContext::new(
                         task.clone(),
                         invocation.operation_id,
@@ -318,7 +329,7 @@ mod tests {
                         .reply
                         .send(Some(serde_json::to_vec(&reply).unwrap().into()));
                 }
-                Ok::<_, crate::Error>(count)
+                Ok::<_, crate::Error>((count, large_pages))
             }
         );
         assert_eq!(
@@ -328,7 +339,11 @@ mod tests {
                 "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
             })
         );
-        assert_eq!(served?, 10);
+        let (calls, large_pages) = served?;
+        // Ten original operations, two notebook operations and one large write.
+        // Only the source pages add calls; lines() has no host round trip.
+        assert!(large_pages > 1);
+        assert_eq!(calls, 13 + large_pages);
         Ok(())
     }
 

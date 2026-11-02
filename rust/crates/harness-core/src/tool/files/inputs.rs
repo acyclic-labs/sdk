@@ -29,6 +29,8 @@ pub struct ReadFileInput {
 )]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadSelection {
+    /// Exact UTF-8 source bytes, without automatic notebook or media projection.
+    Text,
     /// Text lines, with an optional byte cursor returned by a previous page.
     Lines {
         /// First line to return.

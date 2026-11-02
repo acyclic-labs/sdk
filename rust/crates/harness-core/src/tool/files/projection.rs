@@ -268,7 +268,7 @@ impl ToolProjection for FileProjection {
                             None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
                                 page.offset != 0
                             }
-                            None => {
+                            None | Some(ReadSelection::Text) => {
                                 page.offset != 0 || (input.0.range.is_none() && page.start != 0)
                             }
                         }

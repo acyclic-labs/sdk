@@ -62,7 +62,7 @@ class File {
 }
 
 export async function read(path) {
-    let result = await bind('read', {path, selection: {kind: 'lines', offset: 0}});
+    let result = await bind('read', {path, selection: {kind: 'text'}});
     if (result === null) return null;
     const version = result.version;
     const size = result.file.authored ? result.file.authored.byte_length
