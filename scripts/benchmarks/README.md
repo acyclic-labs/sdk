@@ -20,7 +20,7 @@ production registry with empty explicit credentials, and rejects the old
 incomplete feature declaration. It never sends a request.
 
 Build the Linux GraphCoder artifact from the selected source commit with
-`cargo build --locked --release -p graphcoder`. Preserve its source commit and
+`cargo build --locked --release -p acyclic-plugin`. Preserve its source commit and
 SHA256 digest with the plan; the artifact alone does not satisfy run readiness.
 
 Inventory an already available public dataset checkout at its immutable Git

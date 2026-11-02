@@ -1,4 +1,5 @@
 //! Shared frontend embedded by the product executable and server compositions.
+pub mod ingress;
 mod runner;
 
 pub use runner::{

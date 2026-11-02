@@ -16,20 +16,21 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() -> std::process::ExitCode {
-    if matches!(
-        env::args_os()
-            .nth(1)
-            .as_deref()
-            .and_then(std::ffi::OsStr::to_str),
-        Some("run" | "serve" | "attach")
-    ) {
-        return std::process::Termination::report(acyclic_plugin::main_from(
-            env::args_os(),
-            std::convert::identity,
-            None,
-        ));
-    }
-    match run() {
+    let arguments = match acyclic_plugin::ingress::parse(env::args_os().collect()) {
+        Ok(acyclic_plugin::ingress::Input::Agent(arguments)) => {
+            return std::process::Termination::report(acyclic_plugin::main_from(
+                arguments,
+                std::convert::identity,
+                None,
+            ));
+        }
+        Ok(acyclic_plugin::ingress::Input::Native(arguments)) => arguments,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    match run(arguments) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -38,8 +39,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run() -> Result<()> {
-    let mut args = env::args().skip(1).collect::<Vec<_>>();
+fn run(mut args: Vec<String>) -> Result<()> {
     let Some(command) = args.first().cloned() else {
         return help();
     };

@@ -39,7 +39,7 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="predictor-harbor-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.binary = self.root / "graphcoder"
+        self.binary = self.root / "acyclic"
         self.binary.write_bytes(b"immutable fixture executable")
         self.original = self.binary.read_bytes()
         self.kwargs = dict(logs_dir=self.root / "logs", model_name="openai/fixture",

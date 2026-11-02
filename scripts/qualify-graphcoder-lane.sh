@@ -41,18 +41,18 @@ qualify search-library 'config:: web::executor::tests::' \
   cargo test --locked -p acyclic-harness-search --features filesystem,search-http,test-support --lib
 qualify graphcoder-library 'runner::args::tests::' \
   cargo test --locked -p acyclic-plugin --features "$binary_features" --lib
-qualify graphcoder-cli 'a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly jsonl_prompts_share_one_conversation_and_exit_once_settled catalog_errors_fail_through_the_binary' \
-  cargo test --locked -p graphcoder --features "$binary_features" --test cli
+qualify graphcoder-cli 'a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly jsonl_prompts_share_one_conversation_and_exit_once_settled catalog_errors_exit_without_terminal_rendering execution_recorded_provider_refusal_settles_through_the_shipping_binary' \
+  cargo test --locked -p acyclic-plugin --features "$binary_features" --test cli
 if [ ${#artifact_args[@]} -ne 0 ]; then exit 0; fi
 cargo test --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
-cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+cargo build --locked -p acyclic-plugin -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
 source .sessions-binaries.env
-node scripts/qualify-web-lifecycle.mjs "$SESSIONS_GRAPHCODER_BINARY"
-node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_GRAPHCODER_BINARY"
-python3 scripts/qualify-graphcoder-run.test.py
+node scripts/qualify-web-lifecycle.mjs "$SESSIONS_ACYCLIC_BINARY"
+node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_ACYCLIC_BINARY"
+python3 scripts/qualify-graphcoder-run.test.py .sessions-shipping.jsonl
 python3 scripts/qualify-remote-command.test.py
 E2E_OUTPUT=e2e-consolidated-results python3 scripts/qualify-graphcoder-run.py .sessions-shipping.jsonl
-cargo check --locked -p graphcoder --target x86_64-pc-windows-gnu --features "$binary_features"
+cargo check --locked -p acyclic-plugin --target x86_64-pc-windows-gnu --features "$binary_features"

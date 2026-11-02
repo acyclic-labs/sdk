@@ -198,13 +198,13 @@ bun run --filter '@acyclic-labs/fs' test:composition
 
 # The installed host creates the real local provider scenario; pipes here are
 # process E2E evidence, not a claim that an interactive PTY was exercised.
-$GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
-cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
-    --root $GraphcoderInstall --target-dir $CargoTargetDir
+$AcyclicInstall = Join-Path $env:SDK_TEMP_DIR 'acyclic-installed'
+cargo install --path plugin --locked --debug `
+    --root $AcyclicInstall --target-dir $CargoTargetDir
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
-node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
-node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
+node scripts/test-graphcoder.mjs (Join-Path $AcyclicInstall 'bin/acyclic.exe')
+node scripts/test-graphcoder-pty.mjs (Join-Path $AcyclicInstall 'bin/acyclic.exe')
 # Native hosts own tools and providers; the shared harness owns their lifecycle.
 npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
 bun run --cwd plugin/tests/hosts test:shim

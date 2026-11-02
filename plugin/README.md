@@ -1,10 +1,17 @@
-# Native host workspace coordination
+# Acyclic CLI
+
+The `acyclic` executable runs the GraphCoder preset with `acyclic run`, serves the
+shared harness with `acyclic serve ADDRESS`, and reopens an existing agent with
+`acyclic attach AGENT`. All three use the same frontend library and SDK client.
+`acyclic run --help` lists execution, provider and output options.
+
+## Native host workspace coordination
 
 Claude Code, Codex and Pi run their own sessions, providers, tools, permissions
 and agent loops. Acyclic coordinates isolated workspaces, capture and merges
-through an already-running GraphCoder harness.
+through an already-running Acyclic harness.
 
-Start GraphCoder outside the host sandbox, from the workspace:
+Start the shared workspace owner outside the host sandbox, from the workspace:
 
 ```sh
 acyclic run --host-workspace --host-state-directory /path/to/explicit/state
