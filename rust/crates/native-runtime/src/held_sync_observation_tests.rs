@@ -319,8 +319,10 @@ fn subscriber_unwind_preserves_attempt(
         OutcomeAndClose,
     }
     struct Failure {
+        target: &'static str,
         cut: Cut,
         panics: AtomicUsize,
+        attempts: AtomicUsize,
     }
     impl Failure {
         fn trip(&self, cut: Cut) {
@@ -342,10 +344,19 @@ fn subscriber_unwind_preserves_attempt(
     impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Probe {
         fn on_new_span(&self, attributes: &Attributes<'_>, _: &tracing::Id, _: Context<'_, S>) {
             if attributes.metadata().name() == "acyclic.runtime.durability" {
+                self.0.attempts.fetch_add(1, Ordering::SeqCst);
+            }
+            if attributes.metadata().name() == self.0.target {
                 self.0.trip(Cut::Create);
             }
         }
-        fn on_record(&self, _: &tracing::Id, record: &Record<'_>, _: Context<'_, S>) {
+        fn on_record(&self, id: &tracing::Id, record: &Record<'_>, context: Context<'_, S>) {
+            if context
+                .metadata(id)
+                .is_none_or(|metadata| metadata.name() != self.0.target)
+            {
+                return;
+            }
             // The original layer shares its failure state with the caller.
             struct Fields<'a>(&'a Failure);
             impl Visit for Fields<'_> {
@@ -362,7 +373,7 @@ fn subscriber_unwind_preserves_attempt(
         fn on_close(&self, id: tracing::Id, context: Context<'_, S>) {
             if context
                 .metadata(&id)
-                .is_some_and(|metadata| metadata.name() == "acyclic.runtime.durability")
+                .is_some_and(|metadata| metadata.name() == self.0.target)
             {
                 self.0.trip(Cut::Close);
             }
@@ -392,8 +403,10 @@ fn subscriber_unwind_preserves_attempt(
                 continue;
             }
             let failure = Arc::new(Failure {
+                target: "acyclic.runtime.durability",
                 cut,
                 panics: AtomicUsize::new(0),
+                attempts: AtomicUsize::new(0),
             });
             let dispatch = tracing::Dispatch::new(
                 tracing_subscriber::registry().with(Probe(Arc::clone(&failure))),
@@ -423,6 +436,62 @@ fn subscriber_unwind_preserves_attempt(
                 );
             }
         }
+    }
+    // Public file flushes use only the original physical-attempt observer.
+    // Restoring either duplicate wrapper trips this subscriber before I/O.
+    for data in [false, true] {
+        let flush = |file: &std::fs::File| {
+            if data {
+                crate::sync_data(file, Durability::Full)
+            } else {
+                crate::sync_file(file, Durability::Full, None)
+            }
+        };
+        let expected_error = flush(&invalid)
+            .expect_err("original public flush refusal")
+            .raw_os_error();
+        let failure = Arc::new(Failure {
+            target: if data {
+                "acyclic.runtime.sync_data"
+            } else {
+                "acyclic.runtime.sync_file"
+            },
+            cut: Cut::Create,
+            panics: AtomicUsize::new(0),
+            attempts: AtomicUsize::new(0),
+        });
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Probe(Arc::clone(&failure))),
+        );
+        tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
+            flush(file)?;
+            assert_eq!(
+                flush(&invalid)
+                    .expect_err("original public flush refusal")
+                    .raw_os_error(),
+                expected_error
+            );
+            Ok(())
+        })?;
+        assert_eq!(failure.panics.load(Ordering::SeqCst), 0);
+        #[cfg(target_vendor = "apple")]
+        let expected_attempts = 4;
+        #[cfg(not(target_vendor = "apple"))]
+        let expected_attempts = 2;
+        assert_eq!(failure.attempts.load(Ordering::SeqCst), expected_attempts);
+        let reached = std::cell::Cell::new(false);
+        let restored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::dispatcher::with_default(&dispatch, || {
+                let duplicate = if data {
+                    tracing::debug_span!("acyclic.runtime.sync_data")
+                } else {
+                    tracing::debug_span!("acyclic.runtime.sync_file")
+                };
+                duplicate.in_scope(|| reached.set(true));
+            });
+        }));
+        assert!(restored.is_err() && !reached.get());
+        assert_eq!(failure.panics.load(Ordering::SeqCst), 1);
     }
     Ok(())
 }
