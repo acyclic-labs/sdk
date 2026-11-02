@@ -82,9 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-fn validate_extent_plan_request(
-    maximum_spans: Option<u32>,
-) -> Result<(), FsError> {
+fn validate_extent_plan_request(maximum_spans: Option<u32>) -> Result<(), FsError> {
     if maximum_spans == Some(0) {
         return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
     }
@@ -184,10 +182,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         record: FileRecord,
         range: ByteRange,
-        maximum_spans: Option<u32>,
+        maximum_spans: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Option<ExtentPlan>, KernelOwnedAllocation), FsError> {
+        let maximum_spans = maximum_spans.into();
         self.plan_record_extents_projected(
             record,
             range,
