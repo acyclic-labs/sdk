@@ -221,11 +221,19 @@ impl FollowFilter {
         let mut hash = Sha256::new();
         hash.update(b"acyclic.stream.follow-filter.v1\0");
         hash.update((self.clauses().len() as u64).to_le_bytes());
+        let mut bytes = Vec::new();
         for clause in self.clauses().iter() {
             hash.update([u8::from(clause.all_keys)]);
-            let bytes = clause.filter.encode_to_vec();
+            let length = clause.filter.encoded_len();
+            bytes.clear();
+            if bytes.capacity() < length {
+                // Release before reserving: no old bytes need copying or overlap.
+                bytes = Vec::new();
+                bytes.reserve_exact(length);
+            }
+            clause.filter.encode_raw(&mut bytes);
             hash.update((bytes.len() as u64).to_le_bytes());
-            hash.update(bytes);
+            hash.update(&bytes);
         }
         hash.finalize().into()
     }
@@ -502,6 +510,56 @@ mod tests {
                 "authorized clauses: {} -> {} allocations, {} -> {} bytes",
                 before.count_total, after.count_total, before.bytes_total, after.bytes_total
             );
+        }
+        let reversed = FollowFilter(Some(Arc::new(
+            original.clauses().iter().rev().cloned().collect(),
+        )));
+        let single = FollowFilter(Some(Arc::new(vec![original.clauses()[0].clone()])));
+        for filter in [&original, &reversed, &single, &FollowFilter::default()] {
+            let (mut expected, mut actual) = (None, None);
+            let mut original_digest = || {
+                // Original digest framing and protobuf encoding, one owner per clause.
+                let mut hash = Sha256::new();
+                hash.update(b"acyclic.stream.follow-filter.v1\0");
+                hash.update((filter.clauses().len() as u64).to_le_bytes());
+                for clause in filter.clauses() {
+                    hash.update([u8::from(clause.all_keys)]);
+                    let bytes = clause.filter.encode_to_vec();
+                    hash.update((bytes.len() as u64).to_le_bytes());
+                    hash.update(bytes);
+                }
+                expected = Some(<[u8; 32]>::from(hash.finalize()));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let before = acyclic_test_support::measure(&mut original_digest);
+            #[cfg(target_arch = "wasm32")]
+            original_digest();
+            let mut digest = || actual = Some(filter.digest());
+            #[cfg(not(target_arch = "wasm32"))]
+            let after = acyclic_test_support::measure(&mut digest);
+            #[cfg(target_arch = "wasm32")]
+            digest();
+            assert_eq!(actual, expected);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                assert!(after.count_total <= before.count_total);
+                assert!(after.bytes_total <= before.bytes_total);
+                assert!(after.bytes_max <= before.bytes_max);
+                if filter.clauses().len() > 1 {
+                    assert!(after.count_total < before.count_total);
+                    assert!(after.bytes_total < before.bytes_total);
+                }
+                eprintln!(
+                    "digest {} clauses: {} -> {} allocations, {} -> {} bytes, peak {} -> {}",
+                    filter.clauses().len(),
+                    before.count_total,
+                    after.count_total,
+                    before.bytes_total,
+                    after.bytes_total,
+                    before.bytes_max,
+                    after.bytes_max
+                );
+            }
         }
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
