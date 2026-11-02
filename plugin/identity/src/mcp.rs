@@ -428,7 +428,6 @@ mod tests {
         let mut client = connect(
             server(directory.path().join("ping.json")),
             &Output::default(),
-            None,
         );
         client.reply().await;
         client.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
@@ -866,11 +865,25 @@ mod tests {
         http.await.expect("fake server");
     }
 
-    /// Client end of a served identity transport: requests in, replies out.
+    #[derive(Debug, PartialEq, Eq)]
+    enum TransportEvent {
+        Stalled,
+        InputLimit,
+        WriteFailed,
+    }
+
+    #[derive(Debug)]
+    enum Event {
+        Reply(Value),
+        Transport(TransportEvent),
+        WriterClosed,
+    }
+
+    /// Client end of a served identity transport: requests in, ordered events out.
     struct Client {
         server: Arc<tokio::sync::Mutex<Server>>,
         requests: Option<std::sync::mpsc::Sender<Vec<u8>>>,
-        replies: tokio::sync::mpsc::UnboundedReceiver<Value>,
+        events: tokio::sync::mpsc::UnboundedReceiver<Event>,
         served: tokio::task::JoinHandle<io::Result<()>>,
     }
 
@@ -892,29 +905,30 @@ mod tests {
         }
 
         async fn reply(&mut self) -> Value {
-            self.replies
-                .recv()
+            self.next_reply()
                 .await
                 .expect("identity transport closed before its reply")
         }
 
-        async fn transport_event(
-            &mut self,
-            event: impl std::future::Future<Output = ()>,
-        ) -> io::Result<()> {
-            tokio::select! {
-                biased;
-                () = event => Ok(()),
-                reply = self.replies.recv() => Err(match reply {
-                    Some(_) => io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "identity replied before the expected transport event",
-                    ),
-                    None => io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "identity writer ended before the expected transport event",
-                    ),
-                }),
+        async fn next_reply(&mut self) -> Option<Value> {
+            match self.events.recv().await {
+                Some(Event::Reply(reply)) => Some(reply),
+                Some(Event::WriterClosed) | None => None,
+                Some(Event::Transport(event)) => panic!("unexpected transport event: {event:?}"),
+            }
+        }
+
+        async fn transport_event(&mut self, expected: TransportEvent) -> io::Result<()> {
+            match self.events.recv().await {
+                Some(Event::Transport(event)) if event == expected => Ok(()),
+                Some(Event::WriterClosed) | None => Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "identity writer ended before the expected transport event",
+                )),
+                Some(event) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected {expected:?}, received {event:?}"),
+                )),
             }
         }
     }
@@ -924,7 +938,7 @@ mod tests {
         requests: std::sync::mpsc::Receiver<Vec<u8>>,
         chunk: Vec<u8>,
         read: usize,
-        counted: Option<(usize, Arc<tokio::sync::Notify>)>,
+        events: tokio::sync::mpsc::UnboundedSender<Event>,
     }
 
     impl io::Read for Input {
@@ -940,13 +954,14 @@ mod tests {
                 .get_mut(..count)
                 .expect("bounded read")
                 .copy_from_slice(self.chunk.get(self.read..self.read + count).expect("chunk"));
+            let before = self.read;
             self.read += count;
-            if let Some((total, failed)) = &mut self.counted {
-                // The bounded codec rejects once the delimiter budget fills.
-                *total += count;
-                if *total >= FRAME_LIMIT {
-                    failed.notify_one();
-                }
+            // Each request chunk is one frame. Publish before returning the
+            // bytes that make the original bounded codec reject this frame.
+            if before < FRAME_LIMIT && self.read >= FRAME_LIMIT {
+                let _ = self
+                    .events
+                    .send(Event::Transport(TransportEvent::InputLimit));
             }
             Ok(count)
         }
@@ -957,10 +972,8 @@ mod tests {
     struct Output {
         /// While set, writes block, as a client that stopped reading.
         paused: Arc<(Mutex<bool>, std::sync::Condvar)>,
-        stalled: Arc<tokio::sync::Notify>,
         /// While set, writes fail as a closed pipe.
         broken: Arc<std::sync::atomic::AtomicBool>,
-        failed: Arc<tokio::sync::Notify>,
     }
 
     impl Output {
@@ -984,28 +997,40 @@ mod tests {
     struct Writer {
         output: Output,
         line: Vec<u8>,
-        replies: tokio::sync::mpsc::UnboundedSender<Value>,
+        events: tokio::sync::mpsc::UnboundedSender<Event>,
+    }
+
+    impl Drop for Writer {
+        fn drop(&mut self) {
+            // Input may still own a sender. Writer withdrawal is explicit and
+            // follows every event published by this writer, including failure.
+            let _ = self.events.send(Event::WriterClosed);
+        }
     }
 
     impl io::Write for Writer {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             if self.output.broken.load(std::sync::atomic::Ordering::SeqCst) {
-                self.output.failed.notify_one();
+                let _ = self
+                    .events
+                    .send(Event::Transport(TransportEvent::WriteFailed));
                 return Err(io::ErrorKind::BrokenPipe.into());
             }
             let (state, changed) = &*self.output.paused;
             let mut paused = state.lock().expect("pause");
+            if *paused {
+                let _ = self.events.send(Event::Transport(TransportEvent::Stalled));
+            }
             while *paused {
-                self.output.stalled.notify_one();
                 paused = changed.wait(paused).expect("pause");
             }
             drop(paused);
             self.line.extend_from_slice(bytes);
             while let Some(end) = self.line.iter().position(|byte| *byte == b'\n') {
                 let line = self.line.drain(..=end).collect::<Vec<_>>();
-                let _ = self
-                    .replies
-                    .send(serde_json::from_slice(&line).expect("JSON reply"));
+                let _ = self.events.send(Event::Reply(
+                    serde_json::from_slice(&line).expect("JSON reply"),
+                ));
             }
             Ok(bytes.len())
         }
@@ -1015,23 +1040,19 @@ mod tests {
         }
     }
 
-    fn connect(
-        server: Server,
-        output: &Output,
-        counted: Option<Arc<tokio::sync::Notify>>,
-    ) -> Client {
+    fn connect(server: Server, output: &Output) -> Client {
         let (requests, received) = std::sync::mpsc::channel();
-        let (sent, replies) = tokio::sync::mpsc::unbounded_channel();
+        let (sent, events) = tokio::sync::mpsc::unbounded_channel();
         let input = Input {
             requests: received,
             chunk: Vec::new(),
             read: 0,
-            counted: counted.map(|failed| (0, failed)),
+            events: sent.clone(),
         };
         let writer = Writer {
             output: output.clone(),
             line: Vec::new(),
-            replies: sent,
+            events: sent,
         };
         let runtime = tokio::runtime::Handle::current();
         let server = Arc::new(tokio::sync::Mutex::new(server));
@@ -1040,7 +1061,7 @@ mod tests {
         let client = Client {
             server: observed,
             requests: Some(requests),
-            replies,
+            events,
             served,
         };
         client.send(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
@@ -1058,7 +1079,6 @@ mod tests {
         let mut client = connect(
             server(directory.path().join("identity.json")),
             &Output::default(),
-            None,
         );
         let initialized = client.reply().await;
         assert_eq!(
@@ -1083,7 +1103,7 @@ mod tests {
         );
         client.send(&json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}));
         let unexpected = client
-            .transport_event(std::future::pending())
+            .transport_event(TransportEvent::Stalled)
             .await
             .expect_err("a reply cannot substitute for the missing fixture event");
         assert_eq!(unexpected.kind(), io::ErrorKind::InvalidData);
@@ -1091,11 +1111,36 @@ mod tests {
         // Deliberately omit the expected notification. The real transport's
         // writer withdrawal must settle this wait through its original channel.
         let lost = client
-            .transport_event(std::future::pending())
+            .transport_event(TransportEvent::Stalled)
             .await
             .expect_err("writer loss ends a missing event wait");
         assert_eq!(lost.kind(), io::ErrorKind::UnexpectedEof);
         client.served.await.expect("served").expect("transport");
+
+        // Observe only after the real writer has failed and withdrawn. Its
+        // failure must precede its terminal, even without an armed receiver.
+        let output = Output::default();
+        output
+            .broken
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut client = connect(server(directory.path().join("broken.json")), &output);
+        client.close();
+        (&mut client.served)
+            .await
+            .expect("served")
+            .expect_err("broken output");
+        client
+            .transport_event(TransportEvent::WriteFailed)
+            .await
+            .expect("failure stays ahead of writer withdrawal");
+        assert_eq!(
+            client
+                .transport_event(TransportEvent::WriteFailed)
+                .await
+                .expect_err("writer withdrawal follows failure")
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[tokio::test]
@@ -1103,7 +1148,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("directory");
         let mut server = server(directory.path().join("identity.json"));
         pending(&mut server);
-        let mut client = connect(server, &Output::default(), None);
+        let mut client = connect(server, &Output::default());
         client.reply().await;
         client.send(&call(1, "identity_login_complete"));
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
@@ -1161,18 +1206,18 @@ mod tests {
         server.identity = Identity::new(&endpoint).expect("identity");
         pending(&mut server);
         let output = Output::default();
-        let mut client = connect(server, &output, None);
+        let mut client = connect(server, &output);
         client.reply().await;
         client.send(&call(1, "identity_login_complete"));
         tokio::select! {
             biased;
-            reply = client.replies.recv() => panic!("login ended before HTTP entry: {reply:?}"),
+            reply = client.next_reply() => panic!("login ended before HTTP entry: {reply:?}"),
             entered = consumed => entered.expect("original login exchange entered"),
         }
         let paused = output.pause();
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
         client
-            .transport_event(output.stalled.notified())
+            .transport_event(TransportEvent::Stalled)
             .await
             .expect("writer pending");
         client.send(
@@ -1188,7 +1233,7 @@ mod tests {
         client.close();
         drop(paused);
         let mut replies = Vec::new();
-        while let Some(reply) = client.replies.recv().await {
+        while let Some(reply) = client.next_reply().await {
             replies.push(reply);
         }
         client.served.await.expect("served").expect("transport");
@@ -1220,7 +1265,7 @@ mod tests {
                 _directory,
             } = consumed_exchange(login).await;
             let output = Output::default();
-            let mut client = connect(server, &output, None);
+            let mut client = connect(server, &output);
             client.reply().await;
             let paused = output.pause();
             client.send(&call(
@@ -1236,7 +1281,7 @@ mod tests {
                 .expect("consumed");
             client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
             client
-                .transport_event(output.stalled.notified())
+                .transport_event(TransportEvent::Stalled)
                 .await
                 .expect("writer pending");
             if eof {
@@ -1258,7 +1303,7 @@ mod tests {
             client.close();
             drop(paused);
             let mut ids = Vec::new();
-            while let Some(reply) = client.replies.recv().await {
+            while let Some(reply) = client.next_reply().await {
                 ids.extend(reply.get("id").cloned());
             }
             client.served.await.expect("served").expect("transport");
@@ -1285,8 +1330,7 @@ mod tests {
                     _directory,
                 } = consumed_exchange(login).await;
                 let output = Output::default();
-                let counted = Arc::new(tokio::sync::Notify::new());
-                let mut client = connect(server, &output, Some(Arc::clone(&counted)));
+                let mut client = connect(server, &output);
                 client.reply().await;
                 let name = if login {
                     "identity_login_complete"
@@ -1299,7 +1343,7 @@ mod tests {
                     .expect("consumed");
                 let failed = if fault == "oversized" {
                     client.send_bytes(vec![b'x'; FRAME_LIMIT + 1]);
-                    counted
+                    TransportEvent::InputLimit
                 } else {
                     output
                         .broken
@@ -1310,10 +1354,10 @@ mod tests {
                         json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
                             "params": {"requestId": 1}})
                     });
-                    Arc::clone(&output.failed)
+                    TransportEvent::WriteFailed
                 };
                 client
-                    .transport_event(failed.notified())
+                    .transport_event(failed)
                     .await
                     .expect("transport fault reached");
                 assert!(
