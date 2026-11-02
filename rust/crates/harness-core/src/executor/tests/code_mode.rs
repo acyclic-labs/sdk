@@ -154,7 +154,7 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
 
 #[tokio::test]
 async fn custom_code_executor_preserves_other_native_declarations() -> Result<()> {
-    let (mut executor, model, echo) = executor("42", allowed()?, true)?;
+    let (mut executor, model, echo) = executor("export default 42", allowed()?, true)?;
     let object = json!({"type":"object"});
     let mut tools = echo_tools(
         echo.clone(),
@@ -181,7 +181,7 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
             .iter()
             .any(|message| message.content.notice_parts().is_some())
     );
-    assert_eq!(result(&model)["code"], "42");
+    assert_eq!(result(&model)["code"], "export default 42");
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
     forged.compose_tools = true;
@@ -196,13 +196,13 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
 
 #[tokio::test]
 async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix() -> Result<()> {
-    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let (mut executor, _, _) = executor("export default 42", allowed()?, true)?;
     let model = Arc::new(
         ScriptedModelProvider::new([
             tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "program".into(),
                 "code".into(),
-                json!({"code":"await tools.late({value:42})"}),
+                json!({"code":"export default await tools.late({value:42})"}),
             ))]),
             done_turn(),
         ])
@@ -283,11 +283,11 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
 #[tokio::test]
 async fn dynamic_tools_update_notices_and_program_bindings_without_changing_declarations()
 -> Result<()> {
-    let (first, first_model, _) = executor("typeof tools.late", allowed()?, false)?;
+    let (first, first_model, _) = executor("export default typeof tools.late", allowed()?, false)?;
     first.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&first_model), "undefined");
     let (mut second, second_model, echo) = executor(
-        "(await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
+        "export default (await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
         allowed()?,
         true,
     )?;
@@ -423,8 +423,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     assert_eq!(logs(&journal)[0]["input_bytes"], 12);
     assert_eq!(logs(&journal)[0]["output_bytes"], 12);
     // Removing the capability updates the same notice and the next VM table.
-    let (mut revoked, revoked_model, _) =
-        executor("typeof tools['example.echo']", allowed()?, true)?;
+    let (mut revoked, revoked_model, _) = executor(
+        "export default typeof tools['example.echo']",
+        allowed()?,
+        true,
+    )?;
     revoked.tools.remove_from_model("example.echo")?;
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
@@ -459,7 +462,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
 #[tokio::test]
 async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_log() -> Result<()> {
     for approved in [false, true] {
-        let code = "await console.log('before approval'); await tools['example.echo']({value: 42})";
+        let code = "await console.log('before approval'); export default await tools['example.echo']({value: 42})";
         let (executor, model, echo) = executor(code, Arc::new(InnerApproval), true)?;
         let input = input();
         let journal = Journal::default();
@@ -567,7 +570,7 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
         }
     }
     let (mut executor, model, _) = executor(
-        "await console.log('before', {value:42}); await tools['example.echo']({value:42}); await tools.observe({}); console.log('after'); 7",
+        "await console.log('before', {value:42}); await tools['example.echo']({value:42}); await tools.observe({}); console.log('after'); export default 7",
         allowed()?,
         true,
     )?;
@@ -605,7 +608,7 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
 #[tokio::test]
 async fn retained_inner_context_survives_both_replay_entry_points_without_running_js() -> Result<()>
 {
-    let code = "await tools['example.echo']({value:42})";
+    let code = "export default await tools['example.echo']({value:42})";
     let (executor, model, echo) = executor(code, allowed()?, true)?;
     let input = input();
     let journal = Journal::default();
@@ -720,7 +723,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
 #[tokio::test]
 async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() -> Result<()> {
     for code in [
-        "({toJSON() { console.log('encoding'); tools['example.echo']({value:42}); return 1; }})",
+        "export default ({toJSON() { console.log('encoding'); tools['example.echo']({value:42}); return 1; }})",
         "throw {toString() { console.log('diagnostic'); tools['example.echo']({value:42}); return 'failed'; }}",
     ] {
         let (executor, model, echo) = executor(code, allowed()?, true)?;
@@ -735,7 +738,7 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
             1
         );
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
-        if code.starts_with('(') {
+        if code.starts_with("export default") {
             assert_eq!(value, 1);
         } else {
             assert_eq!(value["error"], "failed");
@@ -755,12 +758,12 @@ async fn producerless_promises_fail_after_tool_retirement_and_live_producers_com
             true,
         ),
         (
-            "await new Promise(resolve => Promise.resolve().then(() => resolve(42)))",
+            "export default await new Promise(resolve => Promise.resolve().then(() => resolve(42)))",
             0,
             false,
         ),
         (
-            "await new Promise(resolve => tools['example.echo']({value:42}).then(value => resolve(value.value)))",
+            "export default await new Promise(resolve => tools['example.echo']({value:42}).then(value => resolve(value.value)))",
             1,
             false,
         ),
@@ -797,7 +800,7 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
         Object.defineProperty(Promise.prototype, 'constructor', {get() { throw 'mutated constructor'; }});
         Object.defineProperty(Promise, Symbol.species, {get() { throw 'mutated species'; }});
         Object.defineProperty = null;
-        42
+        export default 42
     "#;
     let (executor, model, echo) = executor(code, allowed()?, true)?;
     let journal = Journal::default();
@@ -819,7 +822,7 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
 
 #[tokio::test]
 async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Result<()> {
-    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
+    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } export default ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
     let (executor, model, echo) = executor(code, allowed()?, false)?;
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
@@ -839,7 +842,7 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
 async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
     let render_bytes = 65_536;
     let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
-    let code = format!("'x'.repeat({string_bytes})");
+    let code = format!("export default 'x'.repeat({string_bytes})");
     let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
     boundary_executor.limits.render_bytes = render_bytes as u64;
     boundary_executor
@@ -848,15 +851,15 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     // Each result retains its complete admitted per-part allowance even though
     // context framing and the other messages exceed that same byte count.
     assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
-    let (mut fitting, model, _) = executor("'x'.repeat(40000)", allowed()?, true)?;
+    let (mut fitting, model, _) = executor("export default 'x'.repeat(40000)", allowed()?, true)?;
     fitting.limits.render_bytes = render_bytes as u64;
     let mut turn = input();
     turn.input = ModelContent::Text("context".repeat(1000));
     fitting.execute(turn, &Journal::default()).await?;
     assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
-        "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
-        "await tools['example.echo']({value:42}); 'x'.repeat(1000000)",
+        "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } export default total",
+        "await tools['example.echo']({value:42}); export default 'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
     ] {
         let (mut executor, model, echo) = executor(code, allowed()?, true)?;
@@ -887,7 +890,7 @@ async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<
     let length = 65_536 + 1;
     let name = "x".repeat(length);
     let code = format!(
-        "await tools['x'.repeat({length})]({{value:41}}); (await tools['example.echo']({{value:42}})).value"
+        "await tools['x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
     );
     let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
     let mut tool = executor
@@ -1012,7 +1015,7 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
 
 #[tokio::test]
 async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
-    let (executor, _, _) = executor("42", allowed()?, true)?;
+    let (executor, _, _) = executor("export default 42", allowed()?, true)?;
     let execution = StockExecution::ordinary(&executor);
     let prior = vec![
         ModelMessage {
@@ -1061,14 +1064,14 @@ async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
 
 #[tokio::test]
 async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Result<()> {
-    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let (mut executor, _, _) = executor("export default 42", allowed()?, true)?;
     let model = Arc::new(
         ScriptedModelProvider::new([
             tool_turn(["first", "second"].map(|id| {
                 ModelEvent::ToolCall(crate::model::ToolCall::new(
                     id.into(),
                     "code".into(),
-                    json!({"code":"'x'.repeat(40000)"}),
+                    json!({"code":"export default 'x'.repeat(40000)"}),
                 ))
             })),
             done_turn(),

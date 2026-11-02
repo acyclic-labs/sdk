@@ -100,8 +100,8 @@ pub(crate) fn is_native_declaration(name: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 static CODE: ToolSpec = ToolSpec {
     name: "code",
-    revision: "1",
-    description: "Run JavaScript for multi-step reads, filters, loops and batches of tools. Use await tools[name](arguments) or Promise.all for independent calls, with each tool's existing JSON input schema; functions expose input_schema. tools.changed notices carry ordered JSON tool-table fragments: concatenate body.json by body.offset until body.complete. The table is refreshed for each program. Only the final expression is returned; call logs and console.log(...values) stream to tool-output files. Await console.log for publication before continuing; unawaited logs retire before the program returns. Values use JSON encoding. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
+    revision: "2",
+    description: "Run a JavaScript ES module for multi-step reads, filters, loops and batches of tools. Use await tools[name](arguments) or Promise.all for independent calls, with each tool's existing JSON input schema; functions expose input_schema. tools.changed notices carry ordered JSON tool-table fragments: concatenate body.json by body.offset until body.complete. The table is refreshed for each program. Export the result with export default; its value is awaited and returned; call logs and console.log(...values) stream to tool-output files. Await console.log for publication before continuing; unawaited logs retire before the program returns. Values use JSON encoding. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
     hook_names: &[],
     binding: ToolBinding::Volume,
     input: || {

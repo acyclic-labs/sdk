@@ -1,5 +1,7 @@
 use super::{Call, CancellationToken, Request};
-use rquickjs::{AsyncContext, AsyncRuntime, CaughtError, Function, Promise, prelude::Async};
+use rquickjs::{
+    AsyncContext, AsyncRuntime, CaughtError, Function, Module, Promise, prelude::Async,
+};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
@@ -45,17 +47,23 @@ pub(super) async fn run(
         .map_err(|error| error.to_string())?;
     let execution = context.async_with(async move |ctx| {
         // Bound diagnostics inside JS before converting them to a host string.
-        let diagnostic = ctx.eval::<Function, _>(r#"(() => {
+        let diagnostic = ctx
+            .eval::<Function, _>(
+                r#"(() => {
             const text = String, slice = Function.prototype.call.bind(String.prototype.slice);
             return value => slice(text(value), 0, 2048);
-        })()"#).ok();
+        })()"#,
+            )
+            .ok();
         let describe_error = |error| {
             let value = match CaughtError::from_error(&ctx, error) {
                 CaughtError::Error(error) => return error.to_string().chars().take(2048).collect(),
                 CaughtError::Exception(error) => error.into_value(),
                 CaughtError::Value(value) => value,
             };
-            diagnostic.as_ref().and_then(|format| format.call::<_, String>((value,)).ok())
+            diagnostic
+                .as_ref()
+                .and_then(|format| format.call::<_, String>((value,)).ok())
                 .unwrap_or_else(|| "JavaScript exception or interrupt".into())
         };
         let program = async {
@@ -63,78 +71,65 @@ pub(super) async fn run(
             // installed. Remove ambient time/randomness to make receipt replay
             // deterministic; the only external data comes from admitted tools.
             ctx.eval::<(), _>("delete globalThis.Date; delete Math.random;")?;
-            let rpc = Function::new(ctx.clone(), Async(move |name: Option<rquickjs::String<'_>>, arguments: rquickjs::String<'_>| {
-                let send = send.clone();
-                let input = name.as_ref().map(|name| bridge.copy_text(name)).transpose().and_then(|name| bridge.copy_text(&arguments).map(|arguments| (name, arguments)));
-                async move {
-                    let (name, arguments) = input?;
-                    let (reply, receive) = oneshot::channel();
-                    let request = match name {
-                        Some(name) => Request::Tool(Call { name, arguments, reply }),
-                        None => Request::Log { arguments, reply },
-                    };
-                    send.send(request).await.map_err(|_| rquickjs::Error::Unknown)?;
-                    receive.await.map(Reply).map_err(|_| rquickjs::Error::Unknown)
-                }
-            }))?;
-            let definitions = rquickjs::String::from_str(ctx.clone(), std::str::from_utf8(&definitions).map_err(|_| rquickjs::Error::Unknown)?)?;
-            let setup: Function = ctx.eval(r#"
-                (rpc, definitions) => {
-                    const parse = JSON.parse, stringify = JSON.stringify;
-                    const ErrorType = Error, PromiseType = Promise;
-                    const define = Object.defineProperty, tools = Object.create(null);
-                    const then = Promise.prototype.then;
-                    const constructor = Object.freeze({[Symbol.species]: PromiseType});
-                    // Await only private promises with a stable constructor. User
-                    // mutations of Promise.prototype cannot replace their await.
-                    const stable = promise => define(promise, 'constructor', {value: PromiseType});
-                    let pending = 0, wake;
-                    let closed = false;
-                    const invoke = async (name, args) => {
-                        pending++;
-                        try {
-                            const response = await stable(rpc(name, stringify(args)));
-                            if (name === null) return;
-                            const reply = parse(response);
-                            if (!reply.ok) throw new ErrorType(reply.value);
-                            return reply.value;
-                        } finally {
-                            if (--pending === 0 && wake) wake();
+            let rpc = Function::new(
+                ctx.clone(),
+                Async(
+                    move |name: Option<rquickjs::String<'_>>, arguments: rquickjs::String<'_>| {
+                        let send = send.clone();
+                        let input = name
+                            .as_ref()
+                            .map(|name| bridge.copy_text(name))
+                            .transpose()
+                            .and_then(|name| {
+                                bridge
+                                    .copy_text(&arguments)
+                                    .map(|arguments| (name, arguments))
+                            });
+                        async move {
+                            let (name, arguments) = input?;
+                            let (reply, receive) = oneshot::channel();
+                            let request = match name {
+                                Some(name) => Request::Tool(Call {
+                                    name,
+                                    arguments,
+                                    reply,
+                                }),
+                                None => Request::Log { arguments, reply },
+                            };
+                            send.send(request)
+                                .await
+                                .map_err(|_| rquickjs::Error::Unknown)?;
+                            receive
+                                .await
+                                .map(Reply)
+                                .map_err(|_| rquickjs::Error::Unknown)
                         }
-                    };
-                    for (const definition of parse(definitions)) {
-                        const tool = args => {
-                            if (closed) throw new ErrorType('JavaScript calls are closed');
-                            return invoke(definition.name, args);
-                        };
-                        Object.defineProperty(tool, 'input_schema', {value: definition.input_schema});
-                        tools[definition.name] = Object.freeze(tool);
-                    }
-                    Object.defineProperty(globalThis, 'tools', {value: Object.freeze(tools)});
-                    Object.defineProperty(globalThis, 'console', {value: Object.freeze({
-                        log: (...values) => {
-                            if (closed) throw new ErrorType('JavaScript calls are closed');
-                            return invoke(null, values);
-                        }
-                    })});
-                    return {
-                        // The Rust promise future attaches its waker through then.
-                        protect: promise => define(define(promise, 'constructor', {value: constructor}), 'then', {value: then}),
-                        drain: async () => {
-                            while (pending) await stable(new PromiseType(resolve => { wake = resolve; }));
-                            closed = true;
-                        }
-                    };
-                }
-            "#)?;
+                    },
+                ),
+            )?;
+            let definitions = rquickjs::String::from_str(
+                ctx.clone(),
+                std::str::from_utf8(&definitions).map_err(|_| rquickjs::Error::Unknown)?,
+            )?;
+            let setup: Function = ctx.eval(include_str!("bridge.js"))?;
             let bridge: rquickjs::Object = setup.call((rpc, definitions))?;
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
-            let program: Promise = protect.call((ctx.eval_promise(code)?,))?;
-            // Async eval wraps its completion in { value } to avoid assimilating
-            // a user-returned promise. Encode the completion's value once.
-            let result = program.into_future::<rquickjs::Object>().await
-                .and_then(|completion| completion.get::<_, rquickjs::Value>("value"));
+            let module = Module::declare(ctx.clone(), "code", code)?;
+            let (module, evaluated) = module.eval()?;
+            let evaluated: Promise = protect.call((evaluated,))?;
+            let result = async {
+                evaluated.into_future::<()>().await?;
+                let value: rquickjs::Value = module.get("default")?;
+                let complete: Function = bridge.get("complete")?;
+                let completion: Promise =
+                    protect.call((complete.call::<_, Promise>((value,))?,))?;
+                completion
+                    .into_future::<rquickjs::Object>()
+                    .await?
+                    .get::<_, rquickjs::Value>("value")
+            }
+            .await;
             // Encoding can execute user getters/toJSON, including more tool calls.
             let json = result.and_then(|result| ctx.json_stringify(result));
             // Format exceptions before draining: their toString may also call tools.
@@ -146,14 +141,21 @@ pub(super) async fn run(
                 Ok(json) => json,
                 Err(error) => return Ok(Err(error)),
             };
-            let Some(json) = json else { return Ok(Ok(Value::Null)); };
+            let Some(json) = json else {
+                return Ok(Ok(Value::Null));
+            };
             let json = json.to_cstring()?;
             if json.len() > maximum {
                 return Ok(Err("JavaScript result exceeds admitted output".into()));
             }
-            serde_json::from_slice(json.as_str().as_bytes()).map(Ok).map_err(|_| rquickjs::Error::Unknown)
-        }.await;
-        program.map_err(describe_error).and_then(std::convert::identity)
+            serde_json::from_slice(json.as_str().as_bytes())
+                .map(Ok)
+                .map_err(|_| rquickjs::Error::Unknown)
+        }
+        .await;
+        program
+            .map_err(describe_error)
+            .and_then(std::convert::identity)
     });
     let execution = async {
         futures::pin_mut!(execution);
@@ -191,6 +193,35 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn module_default_is_awaited_and_script_completion_is_not_a_result() {
+        for (code, expected) in [
+            (
+                "export default Promise.resolve(42)",
+                Ok(serde_json::json!(42)),
+            ),
+            ("42", Ok(serde_json::Value::Null)),
+            (
+                "export default Promise.reject(new Error('failed'))",
+                Err("Error: failed".into()),
+            ),
+        ] {
+            let (send, _receive) = tokio::sync::mpsc::channel(1);
+            let result = acyclic_native_runtime::blocking_future(super::run(
+                code.into(),
+                acyclic_stream::OwnedBytes::from_static(b"[]"),
+                send,
+                tokio_util::sync::CancellationToken::new(),
+                4096,
+                super::super::allocator::EngineAllocator::new(None),
+                super::INTERRUPT_BUDGET,
+            ))
+            .await
+            .unwrap();
+            assert_eq!(result, expected);
+        }
+    }
+
     #[tokio::test]
     async fn producerless_promise_returns_without_waiting_for_an_external_wake() {
         use futures::FutureExt;
