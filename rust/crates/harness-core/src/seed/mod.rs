@@ -58,6 +58,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
+    ("sys/types/index.d.ts", include_bytes!("types/index.d.ts")),
 ];
 
 /// Every seed file by its path in the tree, sorted by path: the embedded
