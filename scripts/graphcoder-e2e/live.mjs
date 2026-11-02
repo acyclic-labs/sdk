@@ -13,7 +13,7 @@ import { conversation } from "./conversation.mjs";
 import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
-export const liveCases = ["session", "instructions", "skill-invocation", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
+export const liveCases = ["session", "instructions", "skill-invocation", "file-mention", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
   executionSucceeded(result);
@@ -132,6 +132,8 @@ export async function runCase(binary, login, root, name, signal, { model = "open
       const skill = join(workspace, ".agents/skills/inventory");
       await mkdir(skill, { recursive: true });
       await writeFile(join(skill, "SKILL.md"), `---\nname: inventory\ndescription: Report the selected inventory token\n---\nReply with exactly SKILL_${marker} and no additional text. Do not use tools.\n`);
+    } else if (name === "file-mention") {
+      await writeFile(join(workspace, "mention.txt"), `MENTION_${marker}\n`);
     }
     env = environment(settings);
     // Reuse only the admitted login path after stripping provider keys.
@@ -148,15 +150,17 @@ export async function runCase(binary, login, root, name, signal, { model = "open
       step = "invoke shipping GraphCoder";
       if (name === "session") {
         await invoke(`Reply with exactly ${marker}. Do not use tools.`, "text", marker);
-      } else if (name === "instructions" || name === "skill-invocation") {
+      } else if (name === "instructions" || name === "skill-invocation" || name === "file-mention") {
         await invoke(name === "instructions"
           ? "Report agents_token then claude_token from the current project instructions, separated by one space. Do not use tools. Reply with exactly those two values and no additional text."
-          : "/inventory Follow the selected skill precisely.", "text",
-        name === "instructions" ? `AGENT_${marker} CLAUDE_${marker}` : `SKILL_${marker}`);
-        step = "assert selected instructions reached the model without a file tool";
+          : name === "skill-invocation" ? "/inventory Follow the selected skill precisely."
+          : "Report the exact token in @mention.txt with no additional text. Do not use tools.", "text",
+        name === "instructions" ? `AGENT_${marker} CLAUDE_${marker}`
+          : name === "skill-invocation" ? `SKILL_${marker}` : `MENTION_${marker}`);
+        step = "assert selected context reached the model without a file tool";
         const recorded = childHooks = await hooks();
         requireTools(recorded, []);
-        assert.equal(recorded.length, 0, "instruction acceptance used a tool instead of the selected context");
+        assert.equal(recorded.length, 0, "context acceptance used a tool instead of the selected context");
       } else if (name === "shell") {
         await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply with exactly DONE and no additional text.`, "text", "DONE");
         step = "assert shell effect and completed tool event";
