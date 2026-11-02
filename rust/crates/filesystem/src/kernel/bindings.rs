@@ -99,7 +99,6 @@ impl SelectedFileRecord {
         &mut self,
         parent: FileId,
         name: &LogicalName,
-        limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
         // A sole source edge is necessarily unchanged if its record survives.
@@ -113,7 +112,6 @@ impl SelectedFileRecord {
             parent,
             name,
             true,
-            limits.maximum_name_bytes,
             accounting,
         )
     }
@@ -134,8 +132,6 @@ impl SelectedFileRecord {
                     store,
                     None,
                     &self.edits.value,
-                    u32::try_from(self.edits.value.len())
-                        .map_err(|_| crate::WorkError::Overflow)?,
                     limits,
                     accounting,
                     cancellation,

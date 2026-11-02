@@ -1,5 +1,5 @@
 use super::*;
-use crate::{HeadProjection, HeadsRequest, RevisionCut};
+use crate::{ForkRequest, HeadProjection, HeadsRequest, RevisionCut};
 use futures::FutureExt as _;
 
 fn request(paths: &[&str]) -> Result<HeadsRequest, StreamError> {
