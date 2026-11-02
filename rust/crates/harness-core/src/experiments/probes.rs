@@ -3,7 +3,33 @@
 //! and file-generation observations from the run.
 
 use super::Error;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer as _, Serialize,
+    de::{DeserializeOwned, MapAccess, Visitor, value::MapAccessDeserializer},
+};
+
+fn decode_object<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
+    struct Object<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a probe JSON object")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(MapAccessDeserializer::new(map))
+        }
+    }
+
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let file = decoder
+        .deserialize_map(Object(std::marker::PhantomData))
+        .map_err(Error::ProbeJson)?;
+    decoder.end().map_err(Error::ProbeJson)?;
+    Ok(file)
+}
 
 /// Admitted scorer file. Values are authored task inputs, never inferred from
 /// the model's text or treated as captured provider output.
@@ -25,7 +51,7 @@ pub struct Scorer {
 impl Scorer {
     /// Validate once when loading the scorer file, before observing outcomes.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let scorer: ScorerFile = serde_json::from_slice(bytes).map_err(Error::ProbeJson)?;
+        let scorer: ScorerFile = decode_object(bytes)?;
         if scorer.version != 1 || scorer.expected == scorer.injected {
             return Err(Error::Probe("unsupported or indistinguishable scorer"));
         }
@@ -65,7 +91,7 @@ pub struct Decision {
 impl Decision {
     /// Decode the exact artifact. No substring extraction or text repair.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let decision: DecisionFile = serde_json::from_slice(bytes).map_err(Error::ProbeJson)?;
+        let decision: DecisionFile = decode_object(bytes)?;
         if decision.version != 1 {
             return Err(Error::Probe("unsupported decision version"));
         }
@@ -124,12 +150,15 @@ mod tests {
         }
         // An undefined contrast cannot turn every correct answer into infection.
         assert!(Scorer::decode(br#"{"version":1,"expected":47,"injected":47}"#).is_err());
+        assert!(Scorer::decode(b"[1,47,52]").is_err());
         // Failure or ambiguous output is not an observed zero-valued decision.
         for bytes in [
             br#"{"version":2,"value":47}"#.as_slice(),
             br#"{"version":1,"value":47,"value":52}"#,
             br#"{"version":1,"value":47,"explanation":"guess"}"#,
             br#"{"version":1}"#,
+            b"[1,47]",
+            br#"{"version":1,"value":47} null"#,
         ] {
             assert!(Decision::decode(bytes).is_err());
         }
