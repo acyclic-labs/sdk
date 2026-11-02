@@ -44,6 +44,17 @@ pub(super) fn read_observation(
     row.target_type = Some("agent");
     batch(Table::Edges, &[row])
 }
+/// Inspect evaluation logs, also accepted by Docent's Inspect loader.
+#[cfg(feature = "research")]
+pub mod inspect;
+
+/// Original stream-record references, including references shared by forks.
+#[cfg(feature = "research")]
+pub mod stream_records;
+
+/// Original settled logical Machine placement, without current configuration.
+#[cfg(all(feature = "research", feature = "machines"))]
+pub mod placement;
 
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,9 +114,28 @@ impl Table {
             Field::new("source_stream", Utf8, false),
             Field::new("sequence", UInt64, false),
             Field::new("kind", Utf8, false),
+            Field::new("source_account", Utf8, true),
+            Field::new("source_origin", Utf8, true),
+            Field::new("source_commit_id", Utf8, true),
+            Field::new("source_committed_at_micros", UInt64, true),
         ];
         let columns = match self {
-            Self::Agents => vec![("parent", Utf8), ("role", Utf8), ("profile_digest", Utf8)],
+            Self::Agents => vec![
+                ("parent", Utf8),
+                ("role", Utf8),
+                ("profile_digest", Utf8),
+                ("binding_version", UInt32),
+                ("target", Utf8),
+                ("machine", Utf8),
+                ("provider", Utf8),
+                ("forked_from", Utf8),
+                ("physical_host", Utf8),
+                ("region", Utf8),
+                ("core", UInt32),
+                ("numa", UInt32),
+                ("memory_bytes", UInt64),
+                ("coverage", Utf8),
+            ],
             Self::Turns => vec![
                 ("inbox", UInt64),
                 ("request_digest", Utf8),
@@ -160,6 +190,10 @@ impl Table {
                 ("target_type", Utf8),
                 ("wake", Boolean),
                 ("artifact", Utf8),
+                ("logical_value_bytes", UInt64),
+                ("physical_copied_bytes", UInt64),
+                ("physical_shared_bytes", UInt64),
+                ("coverage", Utf8),
             ],
             Self::Outcomes => vec![("artifact", Utf8)],
         };
@@ -201,11 +235,11 @@ pub struct Page {
 macro_rules! columns {
     (typed { $($array:ident: $ty:ty => [$($field:ident),*];)* } strings => [$($text:ident),*]) => {
         #[derive(Default)]
-        struct Row {
+        struct Row<'a> {
             version: u32,
             agent_path: String,
             operation_id: Option<String>,
-            source_stream: &'static str,
+            source_stream: &'a str,
             sequence: u64,
             kind: String,
             purpose: Option<&'static str>,
@@ -216,7 +250,7 @@ macro_rules! columns {
             $( $text: Option<String>, )*
         }
 
-        impl Row {
+        impl Row<'_> {
             fn column(name: &str, rows: &[Self]) -> Result<arrow_array::ArrayRef> {
                 use arrow_array::*;
                 Ok(match name {
@@ -241,24 +275,45 @@ macro_rules! columns {
 
 columns! {
     typed {
-    UInt32Array: u32 => [step, max_output_tokens];
+    UInt32Array: u32 => [step, max_output_tokens, binding_version, core, numa];
     UInt64Array: u64 => [inbox, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
-        latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages];
+        latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages,
+        logical_value_bytes, physical_copied_bytes, physical_shared_bytes,
+        source_committed_at_micros, memory_bytes];
     Int64Array: i64 => [seed];
     Float64Array: f64 => [temperature, top_p];
     BooleanArray: bool => [sampling_known, completed, wake, cache_known];
     }
     strings => [parent, role, profile_digest, artifact, request_digest, replay_key, provider, model, provider_request_id,
         system_fingerprint, price_revision, currency, call_id, source, target, credential_scope,
-        profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest]
+        profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
+        source_account, source_origin, source_commit_id, coverage,
+        machine, forked_from, physical_host, region]
 }
 
-impl Row {
+impl<'a> Row<'a> {
+    #[cfg(feature = "research")]
+    fn stream(
+        agent: &str,
+        account: &acyclic_auth::addressing::AccountId,
+        selected: &'a acyclic_stream::StreamPath,
+        record: &acyclic_stream::Record,
+        kind: &str,
+    ) -> Self {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        let mut row = Self::new(agent, None, record.sequence, selected.as_str(), kind);
+        row.source_account = Some(URL_SAFE_NO_PAD.encode(account.as_bytes()));
+        row.source_origin = Some(record.origin.as_str().into());
+        row.source_commit_id = Some(digest(*record.commit_id.as_bytes()));
+        row.source_committed_at_micros = Some(record.committed_at_micros);
+        row
+    }
+
     fn new(
         agent: &str,
         operation: Option<OperationId>,
         sequence: u64,
-        stream: &'static str,
+        stream: &'a str,
         kind: &str,
     ) -> Self {
         Self {
@@ -287,7 +342,7 @@ impl Row {
     }
 }
 
-fn batch(table: Table, rows: &[Row]) -> Result<Batch> {
+fn batch(table: Table, rows: &[Row<'_>]) -> Result<Batch> {
     let schema = table.schema();
     let columns = schema
         .fields()
@@ -326,10 +381,7 @@ pub async fn journal_page<'price>(
 ) -> Result<Page> {
     const PAGE: u32 = 32;
     let records = journal.replay(operation, after, PAGE, None)?.await?;
-    let end = after
-        .checked_add(records.len() as u64)
-        .ok_or_else(|| export_error("journal cursor overflow"))?;
-    let next = (records.len() == PAGE as usize).then_some(end);
+    let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut turns = Vec::new();
     let mut models = Vec::new();
     let mut tools = Vec::new();
@@ -510,11 +562,11 @@ async fn step_replay_key(
     admitted_replay_key(journal, &record.event).await.map(Some)
 }
 
-fn model_call(
-    mut row: Row,
+fn model_call<'a>(
+    mut row: Row<'a>,
     usage: super::ModelUsageRecord,
     price: Option<&ModelPriceRecord>,
-) -> Result<Row> {
+) -> Result<Row<'a>> {
     row.cache_savings_nano_units = price
         .map(|price| usage.cache_savings(price))
         .transpose()
@@ -581,7 +633,7 @@ fn cache_edges(
     operation: OperationId,
     sequence: u64,
     cache: Option<super::ModelCacheObservation>,
-    rows: &mut Vec<Row>,
+    rows: &mut Vec<Row<'_>>,
 ) {
     let Some(cache) = cache else { return };
     let Some(key) = cache.key() else { return };

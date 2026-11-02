@@ -163,11 +163,10 @@ leave those keys null for an offline join to the original admission. Export
 adds no provider request or execution-side capture work, retains one request
 at a time, and performs work proportional to that request's canonical bytes.
 
-Capture orchestration belongs in the non-enforcing `plugins/capture/` directory,
-using committed records and immutable artifact files. These library functions
-provide its bounded projections and shared publication primitive; they do not
-install a plugin, actor or background subscription. A scope is the grouping root;
-independent root agents do not acquire a fabricated parent.
+Research capture is controlled by operator-only `sys/capture`. These offline
+library functions consume original committed records and immutable artifacts;
+they do not install an actor, plugin or background subscription. A scope is
+the grouping root; independent root agents do not acquire a fabricated parent.
 
 Future call integration uses the original caller-owned `calls/<id>` reply path
 and its terminal record, rather than a separate capture settlement carrier.
@@ -178,17 +177,115 @@ Live consumers use the original durable read and alarm rather than polling.
 Status and counts remain the existing phase projection and `counts(range)`;
 the exporter adds neither a status writer nor execution counters.
 
-The following row kinds are reserved for the original research carriers in
-the same six tables. Their producers remain separate from this offline codec:
+The following row kinds use the same six tables. Their original producers
+remain separate from this offline codec:
 
 | Table / kind | Original authority and coverage |
 | --- | --- |
-| `turns` / `resources` | Cumulative resource snapshot at its original resource stream, sequence and commit ID. Select latest; never sum snapshots. Original inbox cursor is distinct from the source sequence. Semantic step commits and newly encoded conversation bytes do not measure physical work. |
-| `agents` / `placement` | Original immutable placement fact on initial observation or change, joined by its original digest. Unknown location stays unknown. |
-| `edges` / `stream_record_shared` | Original record origin, sequence and commit ID, selected destination stream and bound provider/account. Coverage is logical record-value bytes; union original identities before summing. |
+| `agents` / `placement` | `metrics::placement::project` consumes the original settled `MachineBinding` v2 and stream envelope. Coverage is logical provider placement; physical location and resource measurements stay unknown. Requires `machines`. |
+| `edges` / `stream_record_shared` | `metrics::stream_records::project` preserves an authorized original record's account, origin, sequence and commit ID, separately from the selected destination. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
 
-These reservations do not claim that the outstanding producer integrations
-already emit rows. Existing object identity or `AlreadyExists` alone never
+Interval integration remains reserved. The stream projection
+accepts the original `Record`, selected `StreamPath` and authenticated
+`AccountId`; it makes no read or provider request. Common nullable
+`source_account` (URL-safe base64 without padding), `source_origin` and
+`source_commit_id` retain exact original source fields. The common nullable
+`source_committed_at_micros` preserves replicated stream commit time; it is not
+an execution start or a provider latency. Stream sequences are
+zero-based; journal completion sequences use their separate one-based contract.
+The `source` edge endpoint is the JSON tuple `[account, origin, sequence, commit]`,
+and `target` is `[account, selected_path]`. An observation at its original path
+has kind `stream_record`; an inherited reference has kind `stream_record_shared`.
+Equal-length or equal-valued independent records retain different identities.
+`logical_value_bytes` excludes headers, framing and physical backing;
+`physical_copied_bytes` and `physical_shared_bytes` remain null. Zero-length
+record values remain known zero. RDF retains the same identity and coverage
+without attesting a new content producer.
+
+The projection retains one row and does not copy, hash or decode record values.
+It encodes account and commit once, formats two endpoint tuples and copies
+metadata into the existing Arrow columns. Borrowing dynamic source paths removes
+an intermediate owned path. Added execution reads, allocations, provider calls,
+commits, barriers and flushes remain 0. An exact logical union is an offline
+query, never a growing capture-side seen-content map.
+
+Placement reads the fixed settled position at `AgentPath::machine(target)`
+(`from=1, limit=1`), then projects that already-authorized record synchronously.
+Position 0 is the provisioning plan. A foreign selected agent/target, wrong
+position, malformed binding or unsupported version refuses instead of producing
+an empty placement. The selected source path is separate from the original
+record origin, sequence and commit, including a shared source record.
+
+The `agents` row contains `binding_version`, original `target`, `machine` (the
+complete typed `SandboxRef` as JSON), `provider` (its complete `ProviderRef` as
+JSON), and nullable `forked_from` (the original logical Machine ID). These opaque
+references are authority identities, not physical locations or credentials.
+`coverage` is `logical_provider_binding`; `physical_host`, `region`, `core`,
+`numa` and `memory_bytes` stay null. No current configuration, provider usage or
+machine inspection is consulted. The RDF projection retains those original
+facts without inferring a provisioning activity, clock interval or measurement.
+
+Both stream projections share one original-envelope encoder: account and commit
+are encoded once per row. Placement additionally decodes one binding, checks
+its selected source, encodes two typed references and formats at most one parent
+ID. It retains one row and one binding, with work proportional to their selected
+bytes rather than history or agent count. It adds no execution reads, provider
+requests, publication commits, durability barriers, flushes or waits.
+
+Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added
-into a critical path.
+into a critical path. Phase counts come from the primitive's `counts(range)`;
+no checkpoint resource accumulator or separate snapshot writer is used.
+With both features enabled, `metrics::inspect::Call` projects one original
+model admission into an Inspect JSON log, also accepted by Docent's Inspect
+JSON loader. Read `ExecutionPayloadField::AdmittedRequest` to reconstruct the
+request first; the stored `Request` in a later step can be a segment manifest.
+`Call::new` checks the original operation, sequence and request digest and uses
+the shared `model::replay_key`. Supply the original settled assistant content
+and optional committed `ModelUsageRecord` to `Call::write`. Foreign usage is
+refused. Scope, agent, stream, operation and sequence remain the observation
+identity; the replay key groups equal content across observations.
+
+Replay requests and recorded model events use the same complete-value decoder
+as admitted requests, without serde's unrelated default nesting ceiling.
+JSON embedded in harness-owned text first passes the saved-record codec's
+existing depth admission. Encoded strings share that allowance; they cannot
+restart it. Deeper or malformed embedded content remains opaque text, with UUID
+normalization preserved, rather than rejecting the request or recursively
+constructing an unbounded tree. Opaque tool JSON keeps its portable record
+contract; malformed outer JSON and trailing data are refused.
+
+Prefer `Call::settlement(journal, terminal_record)` when the original terminal
+record is available. It checks the original operation, step, purpose and source
+order before reading that event and its optional usage artifact. The shared
+usage validator binds accounting to the terminal's original metadata. Its
+`Settlement::write` also preserves `terminal_sequence` and raw
+`terminal_metadata`. Nonterminal or foreign observations refuse; missing usage
+stays unknown. This adds at most two original artifact loads, independent of
+history, without replay or a tail lookup. The terminal model event contains
+metadata rather than the complete assistant message: canonical response content
+must still come from its original settlement owner. This codec does not attest
+arbitrary caller-supplied response content or add a call-settlement writer.
+
+Each shard contains one sample, with its original context and settled response.
+The request context is written once, in `messages`; evaluation dataset input is
+unknown and remains an empty list.
+Readable text, reasoning and tool pairs use Inspect's native fields. Files,
+notices, configuration, native continuity and structured projections remain in
+message metadata; no media is fetched and no substitute text is invented.
+Grouped tool results stream into separate Inspect messages in original order.
+Their complete original group appears once, on the first result; each result
+retains its original message and part index. A refused call with non-object
+arguments has an empty Inspect display object and an explicit `parse_error`;
+the unchanged original arguments remain in the assistant message metadata.
+Usage remains the original record in sample metadata, with absent measurements
+preserved. Inspect creation time is supplied by the exporting caller; execution
+timestamps and normalized token totals remain unknown. No score is inferred.
+
+The serializer borrows one decoded request and response, without a run-sized
+buffer or file index. It performs no read, flush, commit, retry, provider call or
+upload. A JSON tool result needs a temporary encoded display string; other
+message serialization borrows its content. Discard the unpublished shard after
+any output failure. Docent's external loader may materialize an entire shard,
+so import shards separately rather than accumulating a whole swarm in one log.

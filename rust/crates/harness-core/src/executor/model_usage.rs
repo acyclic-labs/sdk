@@ -150,7 +150,10 @@ impl ModelUsageRecord {
     pub const VERSION: u32 = 2;
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(any(
+    feature = "filesystem",
+    all(feature = "metrics-export", feature = "research")
+))]
 pub(crate) fn validate(
     record: &ModelUsageRecord,
     operation: OperationId,
@@ -224,14 +227,7 @@ pub async fn usage_page(
 ) -> Result<ModelUsagePage> {
     const PAGE: u32 = 32;
     let records = journal.replay(operation, after, PAGE, None)?.await?;
-    let end = after
-        .checked_add(records.len() as u64)
-        .ok_or_else(|| Error::Invalid("usage journal continuation overflows".into()))?;
-    let next = if records.len() == PAGE as usize {
-        Some(end)
-    } else {
-        None
-    };
+    let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
     for record in records {
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {

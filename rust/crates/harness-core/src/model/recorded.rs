@@ -97,7 +97,7 @@ impl Recording {
 pub fn replay_key(request: &[u8]) -> Result<[u8; 32]> {
     use serde_json::Value;
     let invalid = |error: serde_json::Error| Error::Invalid(format!("replay request: {error}"));
-    let mut value: Value = serde_json::from_slice(request).map_err(invalid)?;
+    let mut value: Value = crate::contract::json_from_slice(request).map_err(invalid)?;
     if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
         for message in messages {
             if message.get("role").and_then(Value::as_str) == Some("system") {
@@ -131,7 +131,15 @@ fn erase_references(value: &mut serde_json::Value) {
 
 /// Erases identity throughout a harness-owned value, JSON-valued text included.
 fn erase_owned(value: &mut serde_json::Value) {
+    erase_owned_at(value, None);
+}
+
+// Outer structure was admitted with its request. Embedded text starts a single
+// saved-record depth allowance, shared by any further JSON encoded in strings.
+fn erase_owned_at(value: &mut serde_json::Value, embedded_depth: Option<u32>) {
     use serde_json::Value;
+    let depth = embedded_depth.unwrap_or(crate::executor::json::RECORD_MAXIMUM_DEPTH);
+    let child_depth = embedded_depth.map(|depth| depth.saturating_sub(1));
     match value {
         Value::Object(map) => {
             if map.contains_key("descriptor") {
@@ -140,18 +148,45 @@ fn erase_owned(value: &mut serde_json::Value) {
             if map.get("kind").and_then(Value::as_str) == Some("generation") {
                 map.remove("key");
             }
-            map.values_mut().for_each(erase_owned);
+            map.values_mut()
+                .for_each(|value| erase_owned_at(value, child_depth));
         }
-        Value::Array(items) => items.iter_mut().for_each(erase_owned),
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
-            Ok(mut nested) if nested.is_object() || nested.is_array() => {
-                erase_owned(&mut nested);
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|value| erase_owned_at(value, child_depth)),
+        Value::String(text) => match embedded_value(text, depth) {
+            Some(mut nested) => {
+                erase_owned_at(&mut nested, Some(depth));
                 *text = nested.to_string();
             }
             _ => erase_uuids(text),
         },
         _ => {}
     }
+}
+
+/// Text is not an admitted JSON tree. Interpret embedded structure only within
+/// the saved-record codec's existing depth contract; deeper or malformed text
+/// remains text and still receives UUID erasure. Admission precedes recursive
+/// decode, traversal, serialization and drop, including on a failed parse.
+fn embedded_value(text: &str, maximum_depth: u32) -> Option<serde_json::Value> {
+    use crate::executor::json::{JsonBounds, JsonValueSchema, json_from_slice_bounded};
+    if maximum_depth == 0 || !matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'[')) {
+        return None;
+    }
+    json_from_slice_bounded(
+        std::marker::PhantomData::<serde_json::Value>,
+        text.as_bytes(),
+        JsonBounds {
+            maximum_bytes: text.len() as u64,
+            maximum_items: text.len() as u64,
+            maximum_depth,
+        },
+        None,
+        Some(JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    )
+    .ok()
 }
 
 /// Replaces each hyphenated UUID in `text` with `*`.
@@ -280,8 +315,127 @@ impl RecordedModel {
 }
 
 fn decode(bytes: &[u8]) -> Result<ModelEvent> {
-    serde_json::from_slice(bytes)
+    crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("recorded model event: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn replay_preserves_admitted_nesting_and_owned_identity_rules() -> Result<()> {
+        for depth in [126, 127, 128] {
+            let nest = |mut value, depth| {
+                for _ in 0..depth {
+                    value = Value::Array(vec![value]);
+                }
+                value
+            };
+            let request = |generation: &str, argument: &str| {
+                serde_json::to_vec(&json!({"messages": [
+                    {"role": "system", "content": {
+                        "kind": "text",
+                        "text": nest(json!({"kind":"generation", "key":generation}), depth - 1).to_string()
+                    }},
+                    {"role": "assistant", "content": {
+                        "kind": "tool_call", "arguments": nest(json!(argument), depth)
+                    }}
+                ]}))
+                .expect("generated request JSON")
+            };
+            let original = request("original-generation", "original-argument");
+            assert!(
+                serde_json::from_slice::<Value>(&original).is_err(),
+                "default decoder negative control must reject admitted nesting"
+            );
+            let key = replay_key(&original)?;
+            assert_eq!(
+                key,
+                replay_key(&request("new-generation", "original-argument"))?,
+                "nested harness-owned generation identity is erased"
+            );
+            assert_ne!(
+                key,
+                replay_key(&request("original-generation", "changed-argument"))?,
+                "deep tool JSON remains content-exact"
+            );
+
+            let event = ModelEvent::Completed {
+                metadata: nest(json!(true), depth),
+            };
+            let mut bytes = serde_json::to_vec(&event).expect("generated canonical model event");
+            if depth == 128 {
+                assert!(serde_json::from_slice::<ModelEvent>(&bytes).is_err());
+            }
+            assert_eq!(decode(&bytes)?, event);
+            bytes.push(b']');
+            assert!(
+                matches!(decode(&bytes), Err(Error::Storage(_))),
+                "shared decoding must still reject trailing data"
+            );
+            let mut malformed = original;
+            malformed.push(b']');
+            assert!(matches!(replay_key(&malformed), Err(Error::Invalid(_))));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_text_is_admitted_before_recursive_interpretation() -> Result<()> {
+        use crate::executor::json::RECORD_MAXIMUM_DEPTH;
+        let uuid = "01234567-89ab-cdef-0123-456789abcdef";
+        let mut rejected_allocations = None;
+        for depth in [8192, 32768] {
+            let text = format!("{}\"{uuid}\"{}", "[".repeat(depth), "]".repeat(depth));
+            let allocations = acyclic_test_support::measure(|| {
+                assert!(embedded_value(&text, RECORD_MAXIMUM_DEPTH).is_none());
+            });
+            let counts = (allocations.count_total, allocations.bytes_total);
+            if let Some(previous) = rejected_allocations {
+                assert_eq!(
+                    counts, previous,
+                    "no deep value graph is allocated or dropped"
+                );
+            }
+            rejected_allocations = Some(counts);
+            let expected = Value::String(text.replace(uuid, "*"));
+            let mut original = Value::String(text.clone());
+            erase_owned(&mut original);
+            assert_eq!(original, expected, "deeper structure remains opaque text");
+            let request =
+                |text: &str| json!({"messages":[{"role":"system","content":text}]}).to_string();
+            assert_eq!(
+                replay_key(request(&text).as_bytes())?,
+                replay_key(request(expected.as_str().expect("text")).as_bytes())?,
+                "the whole request remains usable and UUID normalization is preserved"
+            );
+        }
+        // Structured interpretation within the original contract remains
+        // distinct from the opaque-text path, without executing an unsafe
+        // unbounded recursive decode as the negative control.
+        let mut structured = json!("[{\"kind\":\"generation\",\"key\":\"epoch\"}]");
+        erase_owned(&mut structured);
+        assert_eq!(structured, json!("[{\"kind\":\"generation\"}]"));
+        let nest = |text| format!("{}{}{}", "[".repeat(90), text, "]".repeat(90));
+        let inner = nest(r#"{"kind":"generation","key":"epoch"}"#.to_owned());
+        let outer = nest(serde_json::to_string(&inner).expect("encoded nested text"));
+        let mut encoded = Value::String(outer.clone());
+        erase_owned(&mut encoded);
+        assert_eq!(
+            encoded,
+            Value::String(outer),
+            "encoded strings share one depth allowance rather than restarting it"
+        );
+        for text in ["[0] trailing", r#"[{"version":1"#] {
+            assert!(
+                embedded_value(text, RECORD_MAXIMUM_DEPTH).is_none(),
+                "malformed JSON remains text"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl ModelProvider for RecordedModel {

@@ -1,0 +1,109 @@
+{
+  "version": 2,
+  "status": "success",
+  "eval": {
+    "eval_id": "generated-evaluation",
+    "run_id": "generated-run",
+    "created": "2026-11-02T02:06:37.061870+00:00",
+    "task": "format-control",
+    "task_id": "generated-task",
+    "task_version": 0,
+    "task_attribs": {},
+    "task_args": {},
+    "task_args_passed": {},
+    "solver_args_passed": {},
+    "dataset": {},
+    "model": "generated-model",
+    "model_generate_config": {},
+    "model_args": {},
+    "config": {},
+    "packages": {
+      "inspect_ai": "0.3.287"
+    }
+  },
+  "plan": {
+    "name": "plan",
+    "steps": [],
+    "config": {}
+  },
+  "stats": {
+    "started_at": "",
+    "completed_at": "",
+    "model_usage": {},
+    "role_usage": {},
+    "connection_limit_history": []
+  },
+  "invalidated": false,
+  "tags": [],
+  "metadata": {},
+  "samples": [
+    {
+      "id": "generated-sample",
+      "epoch": 1,
+      "input": [
+        {
+          "id": "MZ2eHes2uAXgcNgLMk5LnC",
+          "content": "Generated format control: quotation \" and newline\nλ",
+          "role": "user"
+        }
+      ],
+      "target": [],
+      "messages": [
+        {
+          "id": "MZ2eHes2uAXgcNgLMk5LnC",
+          "content": "Generated format control: quotation \" and newline\nλ",
+          "role": "user"
+        },
+        {
+          "id": "UmKpue7P6ikA8kkUBMFHec",
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "generated-call",
+              "function": "read",
+              "arguments": {
+                "path": "example.txt"
+              },
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "id": "SFXdANccABr7EP7VfEkYTH",
+          "content": "Generated tool text",
+          "role": "tool",
+          "tool_call_id": "generated-call",
+          "function": "read"
+        },
+        {
+          "id": "WZaJ74CjUe5eDkgCdf94PX",
+          "content": "Generated final text",
+          "role": "assistant"
+        }
+      ],
+      "output": {
+        "model": "generated-model",
+        "choices": [
+          {
+            "message": {
+              "id": "WZaJ74CjUe5eDkgCdf94PX",
+              "content": "Generated final text",
+              "role": "assistant"
+            },
+            "stop_reason": "unknown"
+          }
+        ],
+        "completion": "Generated final text"
+      },
+      "metadata": {
+        "source": "generated SDK format control; no provider output or measurement"
+      },
+      "store": {},
+      "events": [],
+      "model_usage": {},
+      "role_usage": {},
+      "attachments": {}
+    }
+  ]
+}

@@ -141,14 +141,24 @@ pub async fn event_page(
     let items = journal
         .replay(operation, after, EXECUTION_EVENT_PAGE_RECORDS, None)?
         .await?;
-    let end = after
-        .checked_add(items.len() as u64)
-        .ok_or_else(|| Error::Invalid("event journal continuation overflows".into()))?;
-    let next = (items.len() == EXECUTION_EVENT_PAGE_RECORDS as usize).then_some(end);
+    let (end, next) = page_continuation(after, items.len(), EXECUTION_EVENT_PAGE_RECORDS)?;
     Ok(ExecutionEventPage {
         operation: Some(operation),
         items,
         end,
         next,
     })
+}
+
+// One cursor rule, without another asynchronous reader or intermediate page.
+// A short page describes only the current tail, never settlement.
+pub(super) fn page_continuation(
+    after: u64,
+    count: usize,
+    maximum: u32,
+) -> Result<(u64, Option<u64>)> {
+    let end = after.checked_add(count as u64).ok_or_else(|| Error::Invalid(
+        "journal page cursor overflows; recovery: resume event_page with the original representable source cursor".into()
+    ))?;
+    Ok((end, (count == maximum as usize).then_some(end)))
 }

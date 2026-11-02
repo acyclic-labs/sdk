@@ -69,6 +69,16 @@ impl<W: Write> Output<W> {
         )
     }
 
+    fn unsigned(&mut self, subject: &Id, predicate: &'static str, value: u64) -> Result<()> {
+        let mut number = arrayvec::ArrayString::<{ u64::MAX.ilog10() as usize + 1 }>::new();
+        write!(&mut number, "{value}").map_err(export_error)?;
+        self.triple(
+            subject,
+            predicate,
+            LiteralRef::new_typed_literal(&number, xsd::UNSIGNED_LONG).into(),
+        )
+    }
+
     fn agent(&mut self, path: &str, kind: &str) -> Result<Id> {
         let agent = id("agent", &[kind.as_bytes(), path.as_bytes()]);
         self.class(
@@ -145,6 +155,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
             return Err(export_error("PROV observation sequence is unknown"));
         }
         let sequence = sequences.value(row).to_le_bytes();
+        let account = text(batch, "source_account", row)?;
+        let origin = text(batch, "source_origin", row)?;
+        let commit = text(batch, "source_commit_id", row)?;
         let agent = out.agent(path, "agent")?;
         let observation = id(
             "observation",
@@ -155,6 +168,9 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 &sequence,
                 batch.table.name().as_bytes(),
                 kind.as_bytes(),
+                account.unwrap_or("").as_bytes(),
+                origin.unwrap_or("").as_bytes(),
+                commit.unwrap_or("").as_bytes(),
             ],
         );
         out.class(&observation, "http://www.w3.org/ns/prov#Entity")?;
@@ -165,13 +181,28 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
         )?;
         out.text(&observation, "urn:acyclic:research:sourceStream", stream)?;
         out.text(&observation, "urn:acyclic:research:kind", kind)?;
-        let mut number = arrayvec::ArrayString::<{ u64::MAX.ilog10() as usize + 1 }>::new();
-        write!(&mut number, "{}", sequences.value(row)).map_err(export_error)?;
-        out.triple(
+        out.unsigned(
             &observation,
             "urn:acyclic:research:sequence",
-            LiteralRef::new_typed_literal(&number, xsd::UNSIGNED_LONG).into(),
+            sequences.value(row),
         )?;
+        for (predicate, value) in [
+            ("urn:acyclic:research:sourceAccount", account),
+            ("urn:acyclic:research:sourceOrigin", origin),
+            ("urn:acyclic:research:sourceCommitId", commit),
+        ] {
+            if let Some(value) = value {
+                out.text(&observation, predicate, value)?;
+            }
+        }
+        let committed_at = column::<UInt64Array>(batch, "source_committed_at_micros")?;
+        if !committed_at.is_null(row) {
+            out.unsigned(
+                &observation,
+                "urn:acyclic:research:sourceCommittedAtMicros",
+                committed_at.value(row),
+            )?;
+        }
         let turn = if let Some(operation) = operation {
             let turn = id("turn", &[path.as_bytes(), operation.as_bytes()]);
             out.class(&turn, "http://www.w3.org/ns/prov#Activity")?;
@@ -264,19 +295,52 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
                 }
             }
         }
-        if batch.table == Table::Agents
-            && let Some(profile) = text(batch, "profile_digest", row)?
-        {
-            let profile_id = id("profile", &[profile.as_bytes()]);
-            out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
-            out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
-            out.relation(
-                &agent,
-                "http://www.w3.org/ns/prov#wasInfluencedBy",
-                &profile_id,
-            )?;
+        if batch.table == Table::Agents {
+            if let Some(profile) = text(batch, "profile_digest", row)? {
+                let profile_id = id("profile", &[profile.as_bytes()]);
+                out.class(&profile_id, "http://www.w3.org/ns/prov#Entity")?;
+                out.text(&profile_id, "urn:acyclic:research:profileDigest", profile)?;
+                out.relation(
+                    &agent,
+                    "http://www.w3.org/ns/prov#wasInfluencedBy",
+                    &profile_id,
+                )?;
+            }
+            if kind == "placement" {
+                for (field, predicate) in [
+                    ("target", "urn:acyclic:research:placementTarget"),
+                    ("machine", "urn:acyclic:research:machineReference"),
+                    ("provider", "urn:acyclic:research:providerReference"),
+                    ("forked_from", "urn:acyclic:research:forkedFromMachine"),
+                ] {
+                    if let Some(value) = text(batch, field, row)? {
+                        out.text(&observation, predicate, value)?;
+                    }
+                }
+                let version = column::<UInt32Array>(batch, "binding_version")?;
+                if !version.is_null(row) {
+                    out.unsigned(
+                        &observation,
+                        "urn:acyclic:research:bindingVersion",
+                        version.value(row).into(),
+                    )?;
+                }
+            }
+        }
+        if matches!(batch.table, Table::Agents | Table::Edges) {
+            if let Some(coverage) = text(batch, "coverage", row)? {
+                out.text(&observation, "urn:acyclic:research:coverage", coverage)?;
+            }
         }
         if batch.table == Table::Edges {
+            let logical = column::<UInt64Array>(batch, "logical_value_bytes")?;
+            if !logical.is_null(row) {
+                out.unsigned(
+                    &observation,
+                    "urn:acyclic:research:logicalValueBytes",
+                    logical.value(row),
+                )?;
+            }
             let source = text(batch, "source", row)?
                 .map(|source| out.endpoint(source, text(batch, "source_type", row)?))
                 .transpose()?;
