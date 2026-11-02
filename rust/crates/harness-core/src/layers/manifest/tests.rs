@@ -100,7 +100,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
             "restricted-configuration",
             acyclic_fs::VolumeInitialization {
                 config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-                access_policy: Some(&policy),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
             acyclic_fs::OperationId::new(),
             WorkBudget::UNBOUNDED,
@@ -108,8 +108,58 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
             None,
         )
         .await?
+        .value
+        .workspace();
+    denied
+        .write_text("/settings.ts", "export default {};")
+        .await?;
+    // The original adapter binds persisted policy before selecting a generation.
+    // An unbound owner read intentionally does not apply a delegated policy.
+    let reader = denied
+        .clone()
+        .bind_coarse_access(&acyclic_fs::access::Action::ALL, &cancellation)
+        .await?;
+    let selected = io.sdk(reader.head(&io, &cancellation).await)?;
+    let mut checkout = denied
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
         .value;
-    let denied = Manifest::new([&denied; 6]);
+    checkout
+        .write_access_policy(
+            &policy,
+            acyclic_fs::NamedAttributeWriteMode::Upsert,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    let committed = checkout
+        .commit(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        committed,
+        acyclic_fs::LivePublicationObservation::Committed { .. }
+    ));
+    let denied = Manifest::new([&selected; 6]);
     let refused = denied
         .tree(&io, u64::MAX)
         .read("settings.ts")
@@ -118,6 +168,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
         .ok_or("original policy refusal bypassed")?;
     assert_eq!(refused.code(), ErrorCode::Unauthorized);
     drop(refused);
+    drop(selected);
 
     cancellation.cancel();
     assert!(
