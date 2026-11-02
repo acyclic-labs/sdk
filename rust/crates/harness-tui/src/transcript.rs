@@ -10,6 +10,7 @@ use ratatui::{
 };
 use ratatui_core::style::Style;
 use std::{
+    borrow::Cow,
     fs::File,
     io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     ops::Range,
@@ -104,14 +105,15 @@ impl Rendered {
         let columns = if marked { width - 2 } else { width };
         let (text, styles) = if prompt {
             (
-                source.to_owned(),
+                Cow::Borrowed(source),
                 vec![(
                     0..source.len(),
                     Style::default().add_modifier(Modifier::BOLD),
                 )],
             )
         } else {
-            crate::markdown::render(source, columns)
+            let (text, styles) = crate::markdown::render(source, columns);
+            (Cow::Owned(text), styles)
         };
         let mut style_at = crate::styled_cells::ordered_styles(styles);
         let mut previous_end = None;
