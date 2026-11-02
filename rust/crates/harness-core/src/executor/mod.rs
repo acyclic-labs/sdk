@@ -522,9 +522,10 @@ pub struct TurnOutput {
     pub steps: u32,
     /// Every message the turn added after its input, in request order: tool
     /// notices, each step's assistant parts and tool results, then the final
-    /// reply. The next turn replays them verbatim, so its request extends this
-    /// turn's last request byte for byte and the provider's prompt cache
-    /// holds. Empty for an output that did not come from a model turn; such a
+    /// reply. After working-history compaction, retired steering precedes
+    /// the surviving tail; all other messages in the retired prefix stay
+    /// retired. The next turn replays this transcript verbatim.
+    /// Empty for an output that did not come from a model turn; such a
     /// turn replays as its text. Staged with the output itself, so keeping
     /// them costs no extra write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

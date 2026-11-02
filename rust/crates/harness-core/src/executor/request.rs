@@ -3,7 +3,10 @@ use super::*;
 /// The response loop owns growing history; standalone and summary calls borrow
 /// their already selected history without collecting another inbox boundary.
 pub(super) enum ModelStepHistory<'a> {
-    Turn(&'a mut Vec<ModelMessage>),
+    Turn(
+        &'a mut Vec<ModelMessage>,
+        &'a mut working_tail::retirement::SteeringHistory,
+    ),
     Selected(&'a [ModelMessage]),
 }
 

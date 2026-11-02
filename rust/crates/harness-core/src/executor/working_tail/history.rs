@@ -24,11 +24,18 @@ impl StockExecution<'_> {
     pub(in crate::executor) async fn retire_working_history(
         &self,
         messages: &mut Vec<ModelMessage>,
+        steering: Option<&mut retirement::SteeringHistory>,
     ) -> Result<()> {
         let mut cache = self.working_tail.lock().await;
         if let Some(retained) = &cache.retained {
             let through = retained.cut.prior_messages;
-            retirement::retire_prefix(messages, &mut cache.prior_offset, through, self.io)?;
+            retirement::retire_prefix(
+                messages,
+                &mut cache.prior_offset,
+                through,
+                steering,
+                self.io,
+            )?;
         }
         Ok(())
     }

@@ -1551,11 +1551,11 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
 }
 
 /// A settled turn's transcript after its input as the next turn sees it:
-/// every message its last request sent plus its final reply, verbatim, or its
+/// its surviving history, retired steering and final reply, verbatim, or its
 /// separately admitted steering and text when the output kept none. A complete
 /// transcript already contains steering in request order, so its fallback must
 /// never be prepended a second time. Replaying the transcript rather than a
-/// summary of it keeps each turn's request a byte extension of the last.
+/// summary of it preserves the exact admitted steering across turns and forks.
 async fn staged_transcript(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,

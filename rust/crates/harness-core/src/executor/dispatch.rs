@@ -50,11 +50,11 @@ impl StockExecution<'_> {
                 let scope = ModelStepScope {
                     purpose,
                     boundary: match &prior_messages {
-                        request::ModelStepHistory::Turn(_) => journal.model_boundary(),
+                        request::ModelStepHistory::Turn(..) => journal.model_boundary(),
                         request::ModelStepHistory::Selected(_) => None,
                     },
                 };
-                if let request::ModelStepHistory::Turn(history) = &mut prior_messages
+                if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
                     && let Some(boundary) = scope.boundary
                 {
                     let (_, records) = self
@@ -73,18 +73,20 @@ impl StockExecution<'_> {
                             "agent request has no frozen inbox range".into(),
                         ));
                     }
-                    for message in boundary
+                    let messages = boundary
                         .messages(input.operation_id, step, frozen.flatten())
-                        .await?
-                    {
+                        .await?;
+                    let from = history.len();
+                    for message in messages {
                         with_history_io(self.io, |work| {
                             message.content.validate_limits(self.stock.limits, work)
                         })?;
                         stock_vec_push(history, message, self.io)?;
                     }
+                    steering.admit(from..history.len(), self.io)?;
                 }
                 let history = match &prior_messages {
-                    request::ModelStepHistory::Turn(history) => history.as_slice(),
+                    request::ModelStepHistory::Turn(history, _) => history.as_slice(),
                     request::ModelStepHistory::Selected(history) => history,
                 };
                 self.dispatch_model_step(journal, input, step, history, scope, phase)

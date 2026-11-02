@@ -68,7 +68,11 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     for step in 2..4 {
         prior.push(ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Text(format!("new tail {step}")),
+            content: ModelContent::Text(if step == 2 {
+                "recent answer".into()
+            } else {
+                format!("new tail {step}")
+            }),
         });
         // A new execution has no in-memory working checkpoint to rely on.
         let session = StockExecution::ordinary(&executor);
@@ -194,8 +198,30 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
                 .is_err()
         );
         let mut tail = prior.clone();
-        session.retire_working_history(&mut tail).await?;
+        let mut steering = working_tail::retirement::SteeringHistory::default();
+        steering.admit(2..4, None)?;
+        session
+            .retire_working_history(&mut tail, Some(&mut steering))
+            .await?;
         assert_eq!(tail.as_slice(), &prior[3..]);
+        // The cut splits the admitted steering range. Repeating that cut
+        // must neither lose its retired prefix nor duplicate the live suffix.
+        session
+            .retire_working_history(&mut tail, Some(&mut steering))
+            .await?;
+        let transcript =
+            session.settled_transcript(steering.into_retired(), tail.clone(), false, "final")?;
+        let mut expected = prior[2..].to_vec();
+        expected.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text("final".into()),
+        });
+        assert_eq!(transcript, expected);
+        assert_ne!(
+            session.settled_transcript(Vec::new(), tail.clone(), false, "final")?,
+            expected,
+            "the old tail-only settlement lost no steering"
+        );
         assert_eq!(
             session.absolute_prior_count(tail.len()).await?,
             prior.len() as u64

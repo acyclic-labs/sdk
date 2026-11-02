@@ -38,6 +38,7 @@ impl StockExecution<'_> {
         self.begin_working_history().await;
         self.begin_request_continuation().await;
         let mut prior_messages = Vec::new();
+        let mut steering = working_tail::retirement::SteeringHistory::default();
         let mut hook_context = Vec::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
@@ -56,12 +57,13 @@ impl StockExecution<'_> {
                     journal,
                     input,
                     step,
-                    request::ModelStepHistory::Turn(&mut prior_messages),
+                    request::ModelStepHistory::Turn(&mut prior_messages, &mut steering),
                     ModelPurpose::Response,
                     phase,
                 )?
                 .await?;
-            self.retire_working_history(&mut prior_messages).await?;
+            self.retire_working_history(&mut prior_messages, Some(&mut steering))
+                .await?;
             let CollectedStep {
                 calls,
                 text,
@@ -83,7 +85,8 @@ impl StockExecution<'_> {
                     stop_active = true;
                     continue;
                 }
-                let transcript = self.settled_transcript(prior_messages, parts, &text)?;
+                let transcript =
+                    self.settled_transcript(steering.into_retired(), prior_messages, parts, &text)?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     #[cfg(feature = "research")]
                     journal_cut: phase.1.take(),
@@ -237,11 +240,13 @@ impl StockExecution<'_> {
         })
     }
 
-    /// The turn's transcript after its input, exactly as its requests sent
-    /// it, closed by the final reply. Tool notices lead it, as every request
-    /// placed them directly after the input.
-    fn settled_transcript(
+    /// The surviving working tail and final reply, preceded by any steering
+    /// retired during compaction. Tool notices lead it, as every request
+    /// placed them directly after the input. Steering in the live tail stays
+    /// at its original position and is never duplicated.
+    pub(super) fn settled_transcript(
         &self,
+        retired_steering: Vec<ModelMessage>,
         messages: Vec<ModelMessage>,
         parts: bool,
         text: &str,
@@ -255,6 +260,9 @@ impl StockExecution<'_> {
             }
         }
         let mut settled = notices.messages;
+        for message in retired_steering {
+            stock_vec_push(&mut settled, message, self.io)?;
+        }
         for message in messages {
             stock_vec_push(&mut settled, message, self.io)?;
         }
