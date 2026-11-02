@@ -209,6 +209,21 @@ pub struct FileRecord {
 }
 
 impl FileRecord {
+    /// Regular EOF or link-target length; zero for every other payload.
+    pub(crate) fn logical_file_bytes(&self) -> u64 {
+        match &self.payload {
+            FilePayload::InlineRegular(data) => {
+                u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
+            }
+            FilePayload::Regular { logical_bytes, .. } => *logical_bytes,
+            FilePayload::SymbolicLink { target_bytes, .. } => *target_bytes,
+            FilePayload::Directory { .. }
+            | FilePayload::Empty
+            | FilePayload::Device { .. }
+            | FilePayload::ReparsePoint { .. } => 0,
+        }
+    }
+
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
         #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         decode_probe::validation();
