@@ -177,8 +177,9 @@ mod tests {
             fn read<'a>(
                 &'a self,
                 path: &'a str,
-            ) -> futures::future::BoxFuture<'a, crate::Result<Option<Vec<u8>>>> {
-                Box::pin(async move { Ok(file(path).map(<[u8]>::to_vec)) })
+            ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>>
+            {
+                Box::pin(async move { Ok(file(path).map(acyclic_stream::OwnedBytes::from_static)) })
             }
         }
         let base = serde_json::json!({"model": "p/m"});

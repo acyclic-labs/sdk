@@ -5,8 +5,16 @@ use futures::future::BoxFuture;
 struct Files(BTreeMap<&'static str, &'static str>);
 
 impl Tree for Files {
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(async move { Ok(self.0.get(path).map(|text| text.as_bytes().to_vec())) })
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        Box::pin(async move {
+            Ok(self
+                .0
+                .get(path)
+                .map(|text| acyclic_stream::OwnedBytes::from_static(text.as_bytes())))
+        })
     }
 }
 
