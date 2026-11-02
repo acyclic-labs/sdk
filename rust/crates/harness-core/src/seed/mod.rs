@@ -25,11 +25,20 @@ pub(crate) const GOOGLE_PROFILE: &str = include_str!("../profile/native/google.m
 /// Where the seed's skills live in its tree.
 pub const SKILLS: &str = "skills";
 
+macro_rules! seed_file {
+    ($path:expr) => {
+        seed_file!($path, $path)
+    };
+    ($path:expr, $source:expr) => {
+        ($path, include_bytes!($source))
+    };
+}
+
 macro_rules! skill {
     ($name:literal) => {
-        (
+        seed_file!(
             concat!("skills/", $name, "/SKILL.md"),
-            include_bytes!(concat!("../skills/", $name, "/SKILL.md")),
+            concat!("../skills/", $name, "/SKILL.md")
         )
     };
 }
@@ -37,22 +46,15 @@ macro_rules! skill {
 /// Every seed file by its path in the tree, sorted by path.
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
-    (
-        "plugins/compaction/hooks/after-usage.ts",
-        include_bytes!("plugins/compaction/hooks/after-usage.ts"),
-    ),
-    (
-        "plugins/compaction/plugin.ts",
-        include_bytes!("plugins/compaction/plugin.ts"),
-    ),
-    (
-        "plugins/spawn/plugin.ts",
-        include_bytes!("plugins/spawn/plugin.ts"),
-    ),
-    (
-        "plugins/spawn/spawn.ts",
-        include_bytes!("plugins/spawn/spawn.ts"),
-    ),
+    seed_file!("plugins.ts"),
+    seed_file!("plugins/approvals/modes/ask.ts"),
+    seed_file!("plugins/approvals/modes/model.ts"),
+    seed_file!("plugins/approvals/modes/parent.ts"),
+    seed_file!("plugins/approvals/plugin.ts"),
+    seed_file!("plugins/compaction/hooks/after-usage.ts"),
+    seed_file!("plugins/compaction/plugin.ts"),
+    seed_file!("plugins/spawn/plugin.ts"),
+    seed_file!("plugins/spawn/spawn.ts"),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
@@ -60,7 +62,7 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("fresh-context-review"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
-    ("sys/kernel.md", include_bytes!("kernel.md")),
+    seed_file!("sys/kernel.md", "kernel.md"),
     (
         "sys/native/anthropic/profile.md",
         ANTHROPIC_PROFILE.as_bytes(),
@@ -73,37 +75,37 @@ pub const TREE: &[(&str, &[u8])] = &[
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
-    (
+    seed_file!(
         "templates/advisor/AGENT.md",
-        include_bytes!("plugins/spawn/templates/advisor/AGENT.md"),
+        "plugins/spawn/templates/advisor/AGENT.md"
     ),
-    (
+    seed_file!(
         "templates/advisor/agent.ts",
-        include_bytes!("plugins/spawn/templates/advisor/agent.ts"),
+        "plugins/spawn/templates/advisor/agent.ts"
     ),
-    (
+    seed_file!(
         "templates/orchestrator/AGENT.md",
-        include_bytes!("plugins/spawn/templates/orchestrator/AGENT.md"),
+        "plugins/spawn/templates/orchestrator/AGENT.md"
     ),
-    (
+    seed_file!(
         "templates/orchestrator/agent.ts",
-        include_bytes!("plugins/spawn/templates/orchestrator/agent.ts"),
+        "plugins/spawn/templates/orchestrator/agent.ts"
     ),
-    (
+    seed_file!(
         "templates/reviewer/AGENT.md",
-        include_bytes!("plugins/spawn/templates/reviewer/AGENT.md"),
+        "plugins/spawn/templates/reviewer/AGENT.md"
     ),
-    (
+    seed_file!(
         "templates/reviewer/agent.ts",
-        include_bytes!("plugins/spawn/templates/reviewer/agent.ts"),
+        "plugins/spawn/templates/reviewer/agent.ts"
     ),
-    (
+    seed_file!(
         "templates/worker/AGENT.md",
-        include_bytes!("plugins/spawn/templates/worker/AGENT.md"),
+        "plugins/spawn/templates/worker/AGENT.md"
     ),
-    (
+    seed_file!(
         "templates/worker/agent.ts",
-        include_bytes!("plugins/spawn/templates/worker/agent.ts"),
+        "plugins/spawn/templates/worker/agent.ts"
     ),
 ];
 
