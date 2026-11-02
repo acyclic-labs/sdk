@@ -3,7 +3,10 @@
 //! fold memory and cancellation of lazy interests, not network credit.
 use super::*;
 use crate::{AgentId, AgentPath};
-use acyclic_stream::{runtime::Executor, session::transport};
+use acyclic_stream::{
+    AppendRecord, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
+    StreamProviderExt as _, runtime::Executor, session::transport,
+};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -108,18 +111,45 @@ fn follow(resource: String) -> wire::SessionSubscription {
     }
 }
 
-fn fill(view: &mut StreamView) {
-    // Server committed history is delivered incrementally, never retained as
-    // a whole transcript. Exercise eviction in the actual StreamView reducer.
-    for sequence in view.next_sequence()..view.next_sequence() + 16 {
+async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
+    // Capture real provider records and use the shared encoder's origin rule:
+    // stream views elide their own origin; resource views spell every origin.
+    let memory = MemoryStream::default();
+    let path = followed
+        .cloned()
+        .unwrap_or_else(|| StreamPath::new("viewport/output").unwrap());
+    memory
+        .append(AppendRequest {
+            path: path.clone(),
+            records: (0..16)
+                .map(|_| AppendRecord {
+                    value: Bytes::from_static(&[42; 1024]).into(),
+                    headers: Default::default(),
+                })
+                .collect(),
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await
+        .unwrap();
+    let mut records = memory
+        .read(ReadRequest {
+            path,
+            from: 0,
+            limit: 16,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await
+        .unwrap();
+    while let Some(record) = records.next().await {
+        let record = record.unwrap();
+        let sequence = record.sequence;
         let frame = wire::SessionFrame {
             body: Some(wire::session_frame::Body::Data(wire::SessionData {
-                item: Some(wire::session_data::Item::Record(wire::Record {
-                    sequence,
-                    value: Bytes::from_static(&[42; 1024]),
-                    commit_id: Bytes::from_static(&[1; 32]),
-                    ..Default::default()
-                })),
+                item: Some(wire::session_data::Item::Record(wire_codec::record_wire(
+                    record, followed,
+                ))),
                 after: Some(wire::SessionCursor {
                     next: sequence + 1,
                     opaque: Bytes::new(),
@@ -135,14 +165,18 @@ fn fill(view: &mut StreamView) {
     assert_eq!(view.records().len(), 4);
 }
 
-#[test]
-fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
+#[tokio::test]
+async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let tree = Tree::new(64);
     let (mut session, scheduler) = client();
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
     let old_path = session.views.keys().next().unwrap().clone();
-    fill(&mut session.views.get_mut(&old_path).unwrap().view);
+    fill(
+        &mut session.views.get_mut(&old_path).unwrap().view,
+        Some(&old_path),
+    )
+    .await;
     let old_bytes = session.retained_bytes();
     assert!(old_bytes > 0);
     assert_eq!(old_bytes, session.view(&old_path).unwrap().retained_bytes());
@@ -231,8 +265,8 @@ fn agent_viewport_releases_output_panes_on_scroll_out() {
     scheduler.tasks.lock().unwrap().clear();
 }
 
-#[test]
-fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
+#[tokio::test]
+async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
     for resource in [false, true] {
         for failed in [false, true] {
             let tree = Tree::new(64);
@@ -259,12 +293,16 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             };
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
-                fill(&mut session.resource_views.get_mut(&name).unwrap().view);
+                fill(
+                    &mut session.resource_views.get_mut(&name).unwrap().view,
+                    None,
+                )
+                .await;
                 session.resources.insert(name.clone(), follow);
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
-                fill(&mut session.views.get_mut(&path).unwrap().view);
+                fill(&mut session.views.get_mut(&path).unwrap().view, Some(&path)).await;
                 session.follows.insert(path.clone(), follow);
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
@@ -345,7 +383,11 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             assert_eq!(session.followed_interests(), 12);
             assert_eq!(session.retained_bytes(), 0);
             if resource {
-                fill(&mut session.resource_views.get_mut(&name).unwrap().view);
+                fill(
+                    &mut session.resource_views.get_mut(&name).unwrap().view,
+                    None,
+                )
+                .await;
                 assert!(session.retained_bytes() > 0);
                 assert!(session.release_resource(&name).unwrap());
                 assert_eq!(session.retained_bytes(), 0);
