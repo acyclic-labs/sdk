@@ -21,6 +21,65 @@ fn notice(index: usize, wake: bool) -> InboxRecord {
 }
 
 #[tokio::test]
+async fn steering_review_sends_skip_closed_recipients() -> Result {
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        let stream = MemoryStream::default();
+        let sender = create(&stream, id(10)).await?;
+        let recipient = create(&stream, id(11)).await?;
+        let state = AgentState::adopted(sender.clone(), &adopted(sender.id())).expect("adopts");
+        let message = Message {
+            from: Sender::Agent { path: sender },
+            id: intent("message"),
+            body: Box::new(super::driver::file("message.md")?),
+            attachments: None,
+        };
+        let record = match delivery {
+            MessageDelivery::Steer => InboxRecord::Message(message),
+            MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
+        };
+        let step = Step {
+            state,
+            outs: vec![Out::Send {
+                to: recipient.clone(),
+                record,
+            }],
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        let open = lower(&step, 1, intent_key("open", &[])?)?;
+        assert!(matches!(
+            stream.commit(open).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(inbox_tail(&stream, &recipient).await?, 2);
+
+        // Close after preparation, before submission: the same effect must skip.
+        let late = lower(&step, 1, intent_key("late", &[])?)?;
+        submit(&stream, archive(&recipient, &user(), &intent("close"))?).await?;
+        let closed_tail = inbox_tail(&stream, &recipient).await?;
+        assert!(matches!(
+            stream.commit(late.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(inbox_tail(&stream, &recipient).await?, closed_tail);
+
+        // The actual same append lands if its original close condition is removed.
+        let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
+        for mutation in &mut unguarded.mutations {
+            if let CommitMutation::SoftAppend { closed, .. } = mutation {
+                *closed = None;
+            }
+        }
+        assert!(matches!(
+            stream.commit(unguarded).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(inbox_tail(&stream, &recipient).await?, closed_tail + 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn steering_keeps_followups_and_interrupts_behind_their_source_barriers() -> Result {
     let stream = MemoryStream::default();
     let path = create(&stream, id(1)).await?;

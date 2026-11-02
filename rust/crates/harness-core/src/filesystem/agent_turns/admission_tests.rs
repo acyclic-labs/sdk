@@ -138,7 +138,6 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             Arc::new(NoDispatch),
             TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
                 history_turns: 8,
             },
             Default::default(),

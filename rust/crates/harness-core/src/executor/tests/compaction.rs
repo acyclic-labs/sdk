@@ -205,11 +205,11 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         .ensure_started(&journal, &input)
         .await?;
     let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], None)
         .await?;
     let counted = accounting_calls.load(Ordering::SeqCst);
     let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(&journal, &input, 0, &[])
+        .prepared_response(&journal, &input, 0, &[], None)
         .await?;
     assert_eq!(original.bytes(), recovered.bytes());
     assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);

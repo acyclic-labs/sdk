@@ -547,6 +547,87 @@ async fn publication_field_controls() {
 }
 
 #[tokio::test]
+async fn steering_review_standalone_inference_ignores_the_turn_boundary() -> Result<()> {
+    use crate::agent::{BoundaryCut, ModelBoundary, SteeringTranscript};
+
+    #[derive(Default)]
+    struct Boundary(AtomicUsize);
+    impl Boundary {
+        fn reject<T>(&self) -> Result<T> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Storage("foreign turn boundary".into()))
+        }
+    }
+    impl ModelBoundary for Boundary {
+        fn messages(
+            &self,
+            _: OperationId,
+            _: u32,
+            _: Option<BoundaryCut>,
+        ) -> BoxFuture<'_, Result<Vec<ModelMessage>>> {
+            Box::pin(async { self.reject() })
+        }
+        fn selection(&self, _: OperationId, _: u32) -> Result<BoundaryCut> {
+            self.reject()
+        }
+        fn admitted(&self, _: OperationId, _: u32) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { self.reject() })
+        }
+        fn transcript(&self, _: OperationId) -> BoxFuture<'_, Result<Option<SteeringTranscript>>> {
+            Box::pin(async { self.reject() })
+        }
+    }
+
+    let (journal, _issuer) = journal().await?;
+    let boundary = Arc::new(Boundary::default());
+    let journal = journal.with_model_boundary(boundary.clone());
+    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+        "approved".into(),
+    )]));
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "review".into(), "1".into())?,
+        model.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("review this request".into()),
+        selected_context: None,
+        max_steps: Some(1),
+    };
+    for _ in 0..2 {
+        assert_eq!(
+            executor.infer(&journal, &input, None).await?.text(),
+            "approved"
+        );
+    }
+    assert_eq!(boundary.0.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        model.requests().len(),
+        1,
+        "replay dispatched another review"
+    );
+    let records = journal.replay(input.operation_id, 0, 100, None)?.await?;
+    assert!(records.iter().any(|record| matches!(
+        record.event,
+        ExecutionEvent::ContextPrepared { steering: None, .. }
+    )));
+    // The same attached boundary is live for the owning response loop.
+    let owning_turn = TurnInput {
+        operation_id: OperationId::new(),
+        ..input
+    };
+    assert!(matches!(
+        executor.execute(owning_turn, &journal).await,
+        Err(Error::Storage(ref cause)) if cause == "foreign turn boundary"
+    ));
+    assert_eq!(boundary.0.load(Ordering::SeqCst), 1);
+    assert_eq!(model.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn boundary_read_cancellation_and_source_loss_precede_model_dispatch() -> Result<()> {
     use crate::agent::{BoundaryCut, ModelBoundary, SteeringTranscript};
     use futures::{FutureExt as _, channel::oneshot, future::Either};
@@ -614,7 +695,7 @@ async fn boundary_read_cancellation_and_source_loss_precede_model_dispatch() -> 
             operation_id: OperationId::new(),
             input: ModelContent::Text("original".into()),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         let execution = Box::pin(executor.execute_progress(input, &journal));
         let execution = match futures::future::select(execution, entry).await {

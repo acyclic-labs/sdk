@@ -61,7 +61,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;
     let compacted = execution
-        .prepared_response(&journal, &input, 1, &prior)
+        .prepared_response(&journal, &input, 1, &prior, None)
         .await?;
     assert!(compacted.bytes().len() < 2_000);
     assert!(provider.requests().is_empty());
@@ -172,7 +172,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             "working history retained stale stage output"
         );
         let response = session
-            .prepared_response(&journal, &input, step, &prior)
+            .prepared_response(&journal, &input, step, &prior, None)
             .await?;
         assert!(response.bytes().len() < 2_000);
         assert!(
