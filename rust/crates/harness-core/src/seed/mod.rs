@@ -38,6 +38,7 @@ macro_rules! skill {
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
     skill!("advisor-consultation"),
+    skill!("background-tasks"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
     skill!("debugging"),

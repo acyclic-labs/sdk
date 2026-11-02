@@ -157,7 +157,7 @@
   },
   {
     "name": "run_shell_command",
-    "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply. Background execution is unavailable.",
+    "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply.",
     "parametersJsonSchema": {
       "type": "object",
       "properties": {
@@ -175,11 +175,11 @@
         },
         "is_background": {
           "type": "boolean",
-          "description": "Background execution is unavailable. Omit this field or set it to false."
+          "description": "Return the call identity without awaiting its terminal result. Use the background-tasks skill to observe or cancel the call."
         },
         "delay_ms": {
           "type": "integer",
-          "description": "Background execution is unavailable. Omit this field."
+          "description": "Handoff delay is not supported. Omit this field."
         }
       },
       "required": [
