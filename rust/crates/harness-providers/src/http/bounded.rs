@@ -31,13 +31,8 @@ pub(crate) async fn read(
         .map(|work| work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED))
         .transpose()?;
     let mut bytes = Zeroizing::new(Vec::new());
-    let mut chunks = 0usize;
     while let Some(chunk) = body.next().await {
         let chunk = chunk?;
-        chunks = chunks
-            .checked_add(1)
-            .filter(|count| *count <= maximum)
-            .ok_or_else(|| boundary(work, "HTTP JSON response exceeds item limit"))?;
         let next = bytes
             .len()
             .checked_add(chunk.len())

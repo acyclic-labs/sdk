@@ -21,6 +21,20 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         crate::http_failure(response(400, 1024), 2048, None).await,
         Error::ModelContextOverflow
     ));
+    let recorded = include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
+    let fragmented = HttpResponse {
+        status: 400,
+        retry_after: None,
+        body: Box::pin(futures::stream::iter(
+            recorded
+                .chunks(1)
+                .flat_map(|byte| [Ok(Bytes::new()), Ok(Bytes::from_static(byte))]),
+        )),
+    };
+    assert!(matches!(
+        crate::http_failure(fragmented, recorded.len(), None).await,
+        Error::ModelContextOverflow
+    ));
     assert!(matches!(
         crate::http_failure(response(400, 1024), 512, None).await,
         Error::Invalid(_)
