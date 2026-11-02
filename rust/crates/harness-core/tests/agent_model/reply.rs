@@ -200,7 +200,8 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
     state.steered_through = selected.through;
     assert!(matches!(
         reply(&provider, &state, 4, &intent("steered"), 2).await?,
-        Reply::Answered { sequence: 0, entry, origin: None } if entry == settled
+        Reply::Answered { sequence: 0, entry, origin: None, steering: Some(source) }
+            if entry == settled && source.inbox == 2 && source.id == intent("steered")
     ));
     assert!(matches!(
         reply(&provider, &state, 4, &intent("wrong"), 2).await,

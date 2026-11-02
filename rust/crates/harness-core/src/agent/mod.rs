@@ -87,7 +87,7 @@ pub use records::{
     NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnProfiles, SpawnRequest,
     StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
-pub use reply::{Reply, reply};
+pub use reply::{Reply, SteeringReply, reply};
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]

@@ -855,7 +855,7 @@ ship it
         );
         assert!(
             matches!(reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?,
-            Reply::Answered { sequence: 2, entry, origin: Some(origin) } if entry.inbox == 3 && origin.inbox == 1)
+            Reply::Answered { sequence: 2, entry, origin: Some(origin), .. } if entry.inbox == 3 && origin.inbox == 1)
         );
         state = settled.state;
     }

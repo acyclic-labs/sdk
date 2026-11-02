@@ -17,6 +17,19 @@ use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
+/// Original message identity verified in the admitted steering interval.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct SteeringReply {
+    /// Original inbox sequence of the steering message.
+    pub inbox: u64,
+    /// Original intent of that message.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub id: IntentId,
+}
+
 /// Where one accepted message stands in the committed agent state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -33,6 +46,9 @@ pub enum Reply {
         /// Ordinary prompts answer with their own entry and no origin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin: Option<Box<ConversationEntry>>,
+        /// Verified steering message answered by the original settling entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steering: Option<SteeringReply>,
     },
     /// Unread, queued or in the running turn.
     Pending,
@@ -70,7 +86,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
                     TurnInput::Message { id: settled, .. } if settled == id => {
-                        goal_reply(provider, state, middle, entry).await
+                        goal_reply(provider, state, middle, entry, None).await
                     }
                     _ => Err(Error::Conflict(
                         "the inbox sequence settled another request",
@@ -106,7 +122,17 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             .ok_or(Error::Record("admitted steering input is missing"))?;
         return match super::InboxRecord::decode(&record.value)? {
             super::InboxRecord::Message(message) if &message.id == id => {
-                goal_reply(provider, state, sequence, entry).await
+                goal_reply(
+                    provider,
+                    state,
+                    sequence,
+                    entry,
+                    Some(SteeringReply {
+                        inbox,
+                        id: message.id,
+                    }),
+                )
+                .await
             }
             _ => Err(Error::Conflict(
                 "the inbox sequence admitted another request",
@@ -150,12 +176,14 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     state: &AgentState,
     sequence: u64,
     request: ConversationEntry,
+    steering: Option<SteeringReply>,
 ) -> Result<Reply, Error> {
     let Some(run) = request.goal else {
         return Ok(Reply::Answered {
             sequence,
             entry: request,
             origin: None,
+            steering,
         });
     };
     let pending = || {
@@ -195,5 +223,6 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         sequence: completed.sequence,
         entry,
         origin: Some(Box::new(request)),
+        steering,
     })
 }

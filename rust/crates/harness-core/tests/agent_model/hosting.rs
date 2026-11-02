@@ -396,6 +396,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         goal: None,
         targets: None,
         tool_results: None,
+        steering: None,
         notices: None,
     };
     assert!(staged.encode()?.len() < 4096);
