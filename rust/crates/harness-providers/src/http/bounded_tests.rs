@@ -76,7 +76,7 @@ proptest::proptest! {
             budget.items_examined = chunks - u64::from(!admitted);
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
             let source = Box::pin(futures::stream::iter(fragments.iter().cloned().map(Ok).collect::<Vec<_>>()));
-            let result = futures::executor::block_on(read(source, recorded.len(), Some(&work)));
+            let result = futures::executor::block_on(read(source, Some(recorded.len()), Some(&work)));
             if admitted {
                 let body = result.unwrap();
                 proptest::prop_assert_eq!(body.bytes.as_slice(), recorded.as_slice());

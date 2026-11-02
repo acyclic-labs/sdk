@@ -346,7 +346,7 @@ mod properties {
         fn sse_framing_round_trips_unicode_data(lines in prop::collection::vec("[^\\r\\n]{0,64}", 1..8), width in 1usize..64) {
             let input: String = lines.iter().map(|line| format!("data: {line}\n")).chain(["\n".into()]).collect();
             let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
-            let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
+            let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), Some(4096)).try_collect::<Vec<_>>()).unwrap();
             prop_assert_eq!(frames, vec![lines.join("\n")]);
         }
     }
