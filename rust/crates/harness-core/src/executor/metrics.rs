@@ -44,6 +44,9 @@ pub(super) fn read_observation(
     row.target_type = Some("agent");
     batch(Table::Edges, &[row])
 }
+/// Inspect evaluation logs, also accepted by Docent's Inspect loader.
+#[cfg(feature = "research")]
+pub mod inspect;
 
 /// The six tables in metrics schema v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,11 +328,12 @@ pub async fn journal_page<'price>(
     price: impl Fn(&super::ModelUsageRecord) -> Option<&'price ModelPriceRecord>,
 ) -> Result<Page> {
     const PAGE: u32 = 32;
-    let records = journal.replay(operation, after, PAGE, None)?.await?;
-    let end = after
-        .checked_add(records.len() as u64)
-        .ok_or_else(|| export_error("journal cursor overflow"))?;
-    let next = (records.len() == PAGE as usize).then_some(end);
+    let super::ExecutionEventPage {
+        items: records,
+        end,
+        next,
+        ..
+    } = super::event_page::original_page(journal, operation, after, PAGE).await?;
     let mut turns = Vec::new();
     let mut models = Vec::new();
     let mut tools = Vec::new();

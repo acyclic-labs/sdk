@@ -223,15 +223,12 @@ pub async fn usage_page(
     after: u64,
 ) -> Result<ModelUsagePage> {
     const PAGE: u32 = 32;
-    let records = journal.replay(operation, after, PAGE, None)?.await?;
-    let end = after
-        .checked_add(records.len() as u64)
-        .ok_or_else(|| Error::Invalid("usage journal continuation overflows".into()))?;
-    let next = if records.len() == PAGE as usize {
-        Some(end)
-    } else {
-        None
-    };
+    let ExecutionEventPage {
+        items: records,
+        end,
+        next,
+        ..
+    } = super::event_page::original_page(journal, operation, after, PAGE).await?;
     let mut items = Vec::new();
     for record in records {
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {

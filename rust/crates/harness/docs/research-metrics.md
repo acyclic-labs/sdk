@@ -192,3 +192,27 @@ These reservations do not claim that the outstanding producer integrations
 already emit rows. Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added
 into a critical path.
+With both features enabled, `metrics::inspect::Call` projects one original
+model admission into an Inspect JSON log, also accepted by Docent's Inspect
+JSON loader. Read `ExecutionPayloadField::AdmittedRequest` to reconstruct the
+request first; the stored `Request` in a later step can be a segment manifest.
+`Call::new` checks the original operation, sequence and request digest and uses
+the shared `model::replay_key`. Supply the original settled assistant content
+and optional committed `ModelUsageRecord` to `Call::write`. Foreign usage is
+refused. Scope, agent, stream, operation and sequence remain the observation
+identity; the replay key groups equal content across observations.
+
+Each shard contains one sample, with its original context and settled response.
+Readable text, reasoning and tool pairs use Inspect's native fields. Files,
+notices, configuration, native continuity and structured projections remain in
+message metadata; no media is fetched and no substitute text is invented.
+Usage remains the original record in sample metadata, with absent measurements
+preserved. Inspect creation time is supplied by the exporting caller; execution
+timestamps and normalized token totals remain unknown. No score is inferred.
+
+The serializer borrows one decoded request and response, without a run-sized
+buffer or file index. It performs no read, flush, commit, retry, provider call or
+upload. A JSON tool result needs a temporary encoded display string; other
+message serialization borrows its content. Discard the unpublished shard after
+any output failure. Docent's external loader may materialize an entire shard,
+so import shards separately rather than accumulating a whole swarm in one log.

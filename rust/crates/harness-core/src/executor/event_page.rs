@@ -138,13 +138,22 @@ pub async fn event_page(
     operation: OperationId,
     after: u64,
 ) -> Result<ExecutionEventPage> {
-    let items = journal
-        .replay(operation, after, EXECUTION_EVENT_PAGE_RECORDS, None)?
-        .await?;
+    original_page(journal, operation, after, EXECUTION_EVENT_PAGE_RECORDS).await
+}
+
+// Shared cursor semantics for interactive reads and offline projections. A short
+// page describes only the current tail; no consumer can infer settlement here.
+pub(super) async fn original_page(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    after: u64,
+    maximum: u32,
+) -> Result<ExecutionEventPage> {
+    let items = journal.replay(operation, after, maximum, None)?.await?;
     let end = after
         .checked_add(items.len() as u64)
-        .ok_or_else(|| Error::Invalid("event journal continuation overflows".into()))?;
-    let next = (items.len() == EXECUTION_EVENT_PAGE_RECORDS as usize).then_some(end);
+        .ok_or_else(|| Error::Invalid("journal page cursor overflows; recovery: resume event_page with the original representable source cursor".into()))?;
+    let next = (items.len() == maximum as usize).then_some(end);
     Ok(ExecutionEventPage {
         operation: Some(operation),
         items,
