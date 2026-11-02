@@ -1,14 +1,14 @@
 use super::*;
 use acyclic_actors::call::{Accepted, CallPath, Commit, Journal};
 use acyclic_stream::{
-    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream,
+    CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamProvider,
     StreamProviderExt as _,
 };
 use arrow_array::{Array, StringArray, UInt64Array};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
-async fn publish(provider: &MemoryStream, commit: Commit) -> Result<()> {
+async fn publish<P: StreamProvider + ?Sized>(provider: &Arc<P>, commit: Commit) -> Result<()> {
     match provider
         .commit(commit.request(IdempotencyKey::unique()))
         .await
@@ -21,7 +21,11 @@ async fn publish(provider: &MemoryStream, commit: Commit) -> Result<()> {
     }
 }
 
-async fn at(provider: &Arc<MemoryStream>, path: &StreamPath, sequence: u64) -> Result<Record> {
+async fn at<P: StreamProvider + ?Sized>(
+    provider: &Arc<P>,
+    path: &StreamPath,
+    sequence: u64,
+) -> Result<Record> {
     Stream::new(provider.clone(), path.as_str())
         .map_err(export_error)?
         .read(sequence, 1)
@@ -56,6 +60,7 @@ fn number(batch: &Batch, name: &str) -> u64 {
 }
 
 #[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
     let account = AccountId::new(b"original\0\xff").map_err(export_error)?;
@@ -67,7 +72,12 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
     };
     // Different terminals in one real commit share their sequence and commit
     // identity. The selected path cannot stand in for the record's source.
-    let provider = Arc::new(MemoryStream::default());
+    let directory = tempfile::tempdir().map_err(export_error)?;
+    let provider = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(export_error)?,
+    );
     let call = CallPath::new(&scope, "first").map_err(export_error)?;
     let sibling = CallPath::new(&scope, "second").map_err(export_error)?;
     let mut joined = call.cancel("first").map_err(export_error)?;
@@ -77,6 +87,14 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
     joined.conditions.extend(other.conditions);
     joined.mutations.extend(other.mutations);
     publish(&provider, joined).await?;
+    drop(provider);
+    // Reconstruct the receipt from the persisted source, rather than keeping
+    // a live reader or an in-memory commit result across the reopen.
+    let provider = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(export_error)?,
+    );
     let original = at(&provider, call.log(), 0).await?;
     let mut foreign = at(&provider, sibling.log(), 0).await?;
     assert_eq!(original.commit_id, foreign.commit_id);
@@ -102,7 +120,12 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
     );
     assert_ne!(original.value.len(), foreign.value.len());
     for accepted in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
+        let directory = tempfile::tempdir().map_err(export_error)?;
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(export_error)?,
+        );
         let call = CallPath::new(&scope, "cancel").map_err(export_error)?;
         if accepted {
             publish(
@@ -127,15 +150,63 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             )
             .await?;
         }
-        publish(&provider, call.cancel("stop").map_err(export_error)?).await?;
+        let terminal = call
+            .cancel("stop")
+            .map_err(export_error)?
+            .request(IdempotencyKey::unique());
+        let committed = provider
+            .commit(terminal.clone())
+            .await
+            .map_err(export_error)?;
+        let CommitOutcome::Committed(original_receipt) = &committed else {
+            return Err(export_error("original cancellation conflicted"));
+        };
+        drop(provider);
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(export_error)?,
+        );
+        assert_eq!(
+            provider
+                .commit(terminal.clone())
+                .await
+                .map_err(export_error)?,
+            committed,
+            "reopen must retain the original terminal receipt"
+        );
+        // A new identity cannot recover that receipt or append a second end.
+        let mut rival = terminal;
+        rival.idempotency_key = IdempotencyKey::unique();
+        assert!(matches!(
+            provider.commit(rival).await.map_err(export_error)?,
+            CommitOutcome::Conflict(_)
+        ));
         let mut journal = Journal::new(call.log());
         let last = if accepted { 3 } else { 0 };
+        assert_eq!(
+            provider
+                .head(call.log().clone())
+                .await
+                .map_err(export_error)?
+                .tail,
+            last + 1
+        );
+        assert_eq!(
+            provider
+                .head(call.settled().clone())
+                .await
+                .map_err(export_error)?
+                .tail,
+            1
+        );
         for sequence in 0..=last {
             journal
                 .apply(&at(&provider, call.log(), sequence).await?)
                 .map_err(export_error)?;
         }
         let record = at(&provider, call.log(), last).await?;
+        assert_eq!(record.commit_id, original_receipt.commit_id);
         let row = project(source(), &journal, &call, call.log(), &record)?;
         assert_eq!(row.table, Table::Outcomes);
         assert_eq!(
