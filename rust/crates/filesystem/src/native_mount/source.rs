@@ -154,7 +154,7 @@ impl MountNodeKind {
             _ => return Err(libc::EOPNOTSUPP),
         };
         let device = matches!(kind, Self::CharacterDevice | Self::BlockDevice)
-            .then(|| super::device::split_device(device));
+            .then(|| crate::native_host::split_device(device));
         Ok((kind, device))
     }
 }

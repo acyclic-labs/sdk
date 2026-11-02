@@ -126,7 +126,7 @@ impl DarwinMountContext {
             device: node
                 .device
                 .map(|(major, minor)| {
-                    crate::native_mount::device::join_device(major, minor)
+                    crate::native_host::join_device(major, minor)
                         .map(|device| u64::from(u32::from_ne_bytes(device.to_ne_bytes())))
                 })
                 .transpose()
