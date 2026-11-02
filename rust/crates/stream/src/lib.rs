@@ -123,7 +123,8 @@ mod wasm;
 pub use wasm::js_error as wasm_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::{
-    WasmFollow, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session, serve_wasm_session,
+    WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session,
+    serve_wasm_session,
 };
 #[cfg(feature = "test-support")]
 #[doc(hidden)]

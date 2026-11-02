@@ -837,7 +837,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct Counted {
-            records: RecordStream,
+            records: acyclic_stream::BoxProviderStream<'static, Result<Record, StreamError>>,
             polls: Arc<AtomicUsize>,
             dropped: Arc<AtomicUsize>,
         }
@@ -897,10 +897,12 @@ mod tests {
                         path,
                         1,
                         1,
-                        Box::pin(Counted {
-                            records: acyclic_stream::records_only(records),
-                            polls,
-                            dropped: dropped.clone(),
+                        acyclic_stream::records_only(records).map_cursor(|records| {
+                            Box::pin(Counted {
+                                records,
+                                polls,
+                                dropped: dropped.clone(),
+                            })
                         }),
                     )
                     .unwrap();
@@ -1125,7 +1127,9 @@ mod tests {
                         path.clone(),
                         source.position,
                         source.accepted,
-                        Box::pin(source.records.take_until(disconnected.map(|_| ()))),
+                        source.records.map_cursor(|records| {
+                            Box::pin(records.take_until(disconnected.map(|_| ())))
+                        }),
                     )
                     .unwrap();
                 driver.step(&mut reader, 1, &mut cx);

@@ -61,9 +61,12 @@ export const modelTokenCount = (bytes, request_digest) => ({
 export async function untilRecords(fixture, agents, agent, stream, test) {
   const completed = agents.completion();
   completed.catch(() => {});
-  const cursor = await agents.follow(agent, stream, 0n);
+  const request = agents.follow(agent, stream, 0n);
+  let cursor;
   const records = [];
   try {
+    cursor = await Promise.race([request.next(), fixture.failed, completed]);
+    if (cursor === null) throw new Error("agent stream closed before opening");
     for (;;) {
       const bytes = await Promise.race([cursor.next(), fixture.failed, completed]);
       if (bytes === null) throw new Error("agent stream closed before its required record");
@@ -72,7 +75,7 @@ export async function untilRecords(fixture, agents, agent, stream, test) {
       for (const record of batch.records) records.push({ sequence: record.sequence, value: decodeAgentRecord(record.value) });
       if (test(records)) return records;
     }
-  } finally { cursor.close(); cursor.free(); }
+  } finally { request.close(); request.free(); cursor?.close(); cursor?.free(); }
 }
 
 // The staged output text of `agent`'s settled turn `entry`.

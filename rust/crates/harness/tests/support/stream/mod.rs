@@ -246,7 +246,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         let fault = self
             .history_read_fault
             .swap(0, std::sync::atomic::Ordering::SeqCst);
-        use futures::TryStreamExt as _;
+        use futures::{StreamExt as _, TryStreamExt as _};
         if fault == 0 {
             let delivered = self.observation_bytes.clone();
             return Ok(opened.map_cursor(|records| {
