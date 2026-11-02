@@ -21,12 +21,12 @@ mod matchers;
 mod mcp_identity;
 #[path = "../../harness/tests/support/ordered_matcher.rs"]
 mod ordered_matcher;
+#[path = "integration/prefix_cache.rs"]
+mod prefix_cache;
 #[path = "../../harness/tests/support/progress_guard.rs"]
 mod progress_guard;
 #[path = "../../harness/tests/support/progress_registry.rs"]
 mod progress_registry;
-#[path = "integration/prefix_cache.rs"]
-mod prefix_cache;
 #[path = "integration/provider_case.rs"]
 mod provider_case;
 #[path = "integration/provider_http.rs"]
