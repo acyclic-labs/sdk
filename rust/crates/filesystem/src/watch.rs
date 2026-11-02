@@ -2522,7 +2522,7 @@ impl NativeWatch {
         held: &crate::native_host::HostRoot,
         work: &mut W,
     ) -> Result<WindowsRegistrations, NativeWatchError> {
-        let (root, bytes) = crate::native_host::canonical_directory_wide(&held.directory, work)
+        let (root, bytes) = crate::native_host::canonical_directory_wide(&held.directory(), work)
             .map_err(demand_watch_error)?;
         // Ordinary work keeps the claim for the watch, as its root path does.
         let allocation = if work.is_native_original() {

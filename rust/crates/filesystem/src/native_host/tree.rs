@@ -77,10 +77,10 @@ impl HostRoot {
             return Err(DemandError::StaleVersion);
         }
         #[cfg(unix)]
-        return remove_leaf(&self.directory, name, real_directory, work);
+        return remove_leaf(&self.directory(), name, real_directory, work);
         #[cfg(windows)]
         remove_windows_leaf(
-            &self.directory,
+            &self.directory(),
             name,
             stat.file_type() == crate::demand::SourceNodeKind::Directory,
             Some(expected),

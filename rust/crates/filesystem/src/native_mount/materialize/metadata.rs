@@ -123,7 +123,7 @@ pub(super) async fn apply_host_attributes_offloaded(
                 .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
             #[cfg(target_os = "macos")]
             let target = crate::native_host::open_macos_metadata_target(
-                &root.0.directory,
+                &root.0.directory(),
                 super::work::host_path(&path.0),
                 work,
             )?;
@@ -186,7 +186,7 @@ pub(super) async fn apply_host_metadata_offloaded(
             .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
         #[cfg(target_os = "macos")]
         let target = crate::native_host::open_macos_metadata_target(
-            &root.0.directory,
+            &root.0.directory(),
             super::work::host_path(&path.0),
             work,
         )?;

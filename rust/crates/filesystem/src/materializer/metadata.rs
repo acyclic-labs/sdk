@@ -154,7 +154,7 @@ fn hash_native_entry(
         }
         let root = HostRoot::from_parts(directory, identity);
         let (mut reader, _buffer) =
-            crate::native_host::read_dir_held(&root.directory, &mut &*work)?;
+            crate::native_host::read_dir_held(&root.directory(), &mut &*work)?;
         let mut names = Vec::new();
         let mut capacity = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         while let Some((entry, allocation)) = reader.next(&mut &*work)? {

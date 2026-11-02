@@ -63,7 +63,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
     std::fs::write(&original, b"old")?;
     let owner = std::fs::metadata(&original)?;
     let root = test_root(&root_path)?;
-    let target = open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?;
+    let target = open_macos_metadata_target(&root.directory(), Path::new("file"), &mut work)?;
     let moved = root_path.join("moved");
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"replacement")?;
@@ -91,16 +91,17 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
     assert_eq!(std::fs::read(&original)?, b"replacement");
     assert_ne!(std::fs::metadata(&original)?.mode() & 0o7777, 0o4751);
     assert!(
-        open_macos_metadata_target(&root.directory, Path::new("../outside"), &mut work).is_err()
+        open_macos_metadata_target(&root.directory(), Path::new("../outside"), &mut work).is_err()
     );
     let outside = temporary.path().join("outside");
     std::fs::write(&outside, b"untouched")?;
     std::os::unix::fs::symlink(temporary.path(), root_path.join("pivot"))?;
     assert!(
-        open_macos_metadata_target(&root.directory, Path::new("pivot/outside"), &mut work).is_err()
+        open_macos_metadata_target(&root.directory(), Path::new("pivot/outside"), &mut work)
+            .is_err()
     );
     assert_eq!(std::fs::read(outside)?, b"untouched");
-    open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
+    open_macos_metadata_target(&root.directory(), Path::new("file"), &mut work)?.apply(
         FileMetadata {
             posix_flags: MetadataField::Value(0),
             ..FileMetadata::default()
@@ -108,7 +109,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
         &mut work,
     )?;
     assert!(matches!(
-        open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
+        open_macos_metadata_target(&root.directory(), Path::new("file"), &mut work)?.apply(
             FileMetadata {
                 posix_flags: MetadataField::Value(1),
                 ..FileMetadata::default()
@@ -118,7 +119,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
         Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
-        open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
+        open_macos_metadata_target(&root.directory(), Path::new("file"), &mut work)?.apply(
             FileMetadata {
                 changed_ns: MetadataField::Value(1),
                 ..FileMetadata::default()
@@ -142,7 +143,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     let socket = temporary.path().join("socket");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let root = test_root(temporary.path())?;
-    open_macos_metadata_target(&root.directory, Path::new("pipe"), &mut work)?.apply(
+    open_macos_metadata_target(&root.directory(), Path::new("pipe"), &mut work)?.apply(
         FileMetadata {
             posix_mode: MetadataField::Value(0o640),
             created_ns: MetadataField::Value(1_234_567_890_123_000_000),
@@ -161,10 +162,10 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     ] {
         assert_eq!(actual.duration_since(UNIX_EPOCH)?.as_nanos(), expected);
     }
-    open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?
+    open_macos_metadata_target(&root.directory(), Path::new("socket"), &mut work)?
         .apply(FileMetadata::default(), &mut work)?;
     assert!(matches!(
-        open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?.apply(
+        open_macos_metadata_target(&root.directory(), Path::new("socket"), &mut work)?.apply(
             FileMetadata {
                 posix_mode: MetadataField::Value(0o640),
                 ..FileMetadata::default()
@@ -174,7 +175,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
         Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     let old_socket = temporary.path().join("old-socket");
-    let pending = open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?;
+    let pending = open_macos_metadata_target(&root.directory(), Path::new("socket"), &mut work)?;
     std::fs::rename(&socket, old_socket)?;
     let _replacement = std::os::unix::net::UnixListener::bind(&socket)?;
     assert!(matches!(

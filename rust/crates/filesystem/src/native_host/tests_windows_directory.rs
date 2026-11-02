@@ -32,7 +32,7 @@ fn absolute_creation_returns_its_validated_directory_without_reopening_the_path(
             );
             assert_eq!(held.identity(), test_root(&path)?.identity());
             let output = open_leaf(
-                &held.directory,
+                &held.directory(),
                 Path::new("literal&%.bin"),
                 &NativeOpenOptions::ReadWriteCreate,
                 &mut work,
@@ -60,8 +60,12 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             let cancellation = crate::CancellationToken::new();
             let work = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
-            let result =
-                directory_path(&root.directory, &test_path("existing"), create, &mut &work);
+            let result = directory_path(
+                &root.directory(),
+                &test_path("existing"),
+                create,
+                &mut &work,
+            );
             assert_eq!(result.is_ok(), limit == 1);
             assert_eq!(
                 work.receipt().backend_read_operations,
@@ -75,8 +79,13 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             cancellation.cancel();
             let before = work.receipt();
             assert!(
-                directory_path(&root.directory, &test_path("existing"), create, &mut &work,)
-                    .is_err()
+                directory_path(
+                    &root.directory(),
+                    &test_path("existing"),
+                    create,
+                    &mut &work,
+                )
+                .is_err()
             );
             assert_eq!(work.receipt(), before);
         }
@@ -86,7 +95,13 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             .map_err(|(error, _)| error)?;
         cancellation.cancel();
         assert!(
-            directory_path(&root.directory, &test_path("existing"), create, &mut &work).is_err()
+            directory_path(
+                &root.directory(),
+                &test_path("existing"),
+                create,
+                &mut &work
+            )
+            .is_err()
         );
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
@@ -109,7 +124,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
         let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
             || stat_probe::Probe::rescan(false),
             |probe| {
-                let result = directory_path(&root.directory, &path, create, &mut work);
+                let result = directory_path(&root.directory(), &path, create, &mut work);
                 probe.publish();
                 result
             },
@@ -127,7 +142,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
         let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
             || stat_probe::Probe::rescan(false),
             |probe| {
-                let result = open_windows_directory(&root.directory, &path, create, &mut control);
+                let result = open_windows_directory(&root.directory(), &path, create, &mut control);
                 probe.publish();
                 result
             },
@@ -160,7 +175,9 @@ fn component_opens_reject_real_junctions_at_every_depth_and_disposition()
     for create in [false, true] {
         for name in ["alias", r"alias\child", r"alias\new-child"] {
             let path = test_path(name);
-            assert!(directory_path(&root.directory, &path, create, &mut ordinary_work()).is_err());
+            assert!(
+                directory_path(&root.directory(), &path, create, &mut ordinary_work()).is_err()
+            );
             assert!(
                 root.create_directories(
                     Path::new(name),
@@ -202,7 +219,7 @@ fn component_opens_keep_each_ancestors_original_access_check()
     let unchecked = std::fs::read_dir(parent.join("child"));
     let results = [false, true].map(|create| {
         directory_path(
-            &root.directory,
+            &root.directory(),
             &test_path(r"parent\child"),
             create,
             &mut ordinary_work(),
@@ -266,9 +283,10 @@ fn held_creation_queries_only_the_returned_identity_without_dropping_barriers()
 
             // The former shape queries, then discards, every parent's identity.
             let mut old = ordinary_work();
+            let parent = root.directory();
             let mut held: Option<Dir> = None;
             for component in relative.components() {
-                let directory = held.as_ref().unwrap_or(&root.directory);
+                let directory = held.as_ref().unwrap_or(&parent);
                 let (child, _) =
                     with_wide_path(Path::new(component.as_os_str()), &mut old, |name, work| {
                         open_windows_directory(directory, name, true, work)

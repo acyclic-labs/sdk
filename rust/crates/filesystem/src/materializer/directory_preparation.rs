@@ -86,7 +86,7 @@ impl NativeTreeMaterializationBackend {
                     if resuming && error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(native_materialization_work_error(error).into()),
             }
-            crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?;
+            crate::native_host::sync_directory_held(&parent.directory(), &mut &*work)?;
             let child = held_child(&parent, leaf, work)?;
             require_preparation_contents(&child, index == 0, work)?;
             identities[index] = child.identity().to_bytes();
@@ -167,7 +167,7 @@ where
             host_path(leaf, state, |path, work| parent.create_dir(path, work))
         });
         match created {
-            Ok(()) => crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?,
+            Ok(()) => crate::native_host::sync_directory_held(&parent.directory(), &mut &*work)?,
             Err(crate::demand::DemandError::Io(error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(native_materialization_work_error(error).into()),

@@ -90,7 +90,7 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
         let cleanup = crate::NativeMaterializationWork::reserve_cleanup_write(work)?;
         let file = acyclic_native_runtime::FileLock::new(
             crate::native_host::open_leaf(
-                &parent.directory,
+                &parent.directory(),
                 name,
                 &crate::native_host::NativeOpenOptions::ReadWriteCreate,
                 work,
@@ -124,7 +124,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
 ) -> Result<(), MaterializeError> {
     use std::io::Write as _;
     let mut file = crate::native_host::open_leaf(
-        &parent.directory,
+        &parent.directory(),
         name,
         &crate::native_host::NativeOpenOptions::CreateNew,
         work,
@@ -162,7 +162,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
     work.started_io(crate::materializer::NativeResourceCredit::DurabilityOperations.delta(1))
         .map_err(MaterializeError::from)?;
     file.sync_all()?;
-    crate::native_host::sync_directory_held(&parent.directory, work).map_err(MaterializeError::from)
+    parent.sync_directory(work).map_err(MaterializeError::from)
 }
 
 pub(in crate::native_mount::materialize) fn validate_restore_witness(
@@ -173,7 +173,7 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
 ) -> Result<bool, MaterializeError> {
     use std::io::Read as _;
     let mut file = match crate::native_host::open_leaf(
-        &parent.directory,
+        &parent.directory(),
         name,
         &crate::native_host::NativeOpenOptions::Read,
         work,
@@ -232,5 +232,5 @@ pub(in crate::native_mount::materialize) fn remove_restore_witness(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
     remove_entry(parent, name, work).map_err(MaterializeError::from)?;
-    crate::native_host::sync_directory_held(&parent.directory, work).map_err(MaterializeError::from)
+    parent.sync_directory(work).map_err(MaterializeError::from)
 }

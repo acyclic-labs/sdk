@@ -245,7 +245,7 @@ impl Drop for IssuedDestination {
         if let (Some(parent), Some(leaf)) = (self.created.take(), self.path.file_name()) {
             // Removal through the held parent never follows a replaced path,
             // and rmdir never removes a live mount point or authored content.
-            match parent.directory.remove_dir(leaf) {
+            match parent.directory().remove_dir(leaf) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                     tracing::warn!(path = %self.path.display(), %error, "view mount point was not removed");
                 }
@@ -357,7 +357,7 @@ fn create_root(roots: &crate::HeldRoot, name: &str) -> Result<Root, NativeMountE
             .map_err(crate::NativeTreeMaterializationError::from)?,
         FileLockMode::Exclusive,
     )?;
-    roots.root.directory.create_dir(name)?;
+    roots.root.directory().create_dir(name)?;
     let path = roots.path().join(name);
     drop(reaping);
     Ok(Root {
@@ -369,7 +369,7 @@ fn create_root(roots: &crate::HeldRoot, name: &str) -> Result<Root, NativeMountE
 /// Detaches and removes every root under `roots` whose owner is gone; the
 /// caller holds the directory's reap lock. Returns how many were removed.
 fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
-    let entries = roots.root.directory.entries()?;
+    let entries = roots.root.directory().entries()?;
     let suffix = format!(".{OWNER}");
     let mut reaped = 0;
     for entry in entries {
@@ -406,7 +406,7 @@ fn reap_root(roots: &crate::HeldRoot, name: &Path) -> Result<(), NativeMountErro
         // Pinned recovery cannot detach an alias or a replacement mount.
         #[cfg(target_os = "linux")]
         super::super::recover_disconnected_native_mount_destination_in(roots, name.as_os_str())?;
-        match roots.root.directory.remove_dir(name) {
+        match roots.root.directory().remove_dir(name) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),

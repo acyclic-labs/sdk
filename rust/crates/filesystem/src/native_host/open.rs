@@ -445,7 +445,7 @@ mod prepared_leaf_tests {
             &crate::CancellationToken::new(),
         );
         let file = open_ascii_leaf(
-            &root.directory,
+            &root.directory(),
             &name,
             &NativeOpenOptions::ReadWriteCreate,
             &mut work,
@@ -460,7 +460,7 @@ mod prepared_leaf_tests {
         let before = preparation.receipt();
         let live = preparation.live_allocation_bytes();
         let file = open_ascii_leaf(
-            &root.directory,
+            &root.directory(),
             &name,
             &NativeOpenOptions::Read,
             &mut &preparation,
@@ -471,7 +471,7 @@ mod prepared_leaf_tests {
         assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(preparation.live_allocation_bytes(), live);
         drop(file);
-        remove_ascii_leaf(&root.directory, &name, &mut work)?;
+        remove_ascii_leaf(&root.directory(), &name, &mut work)?;
         assert_eq!(work.work.items_examined, 0);
         assert_eq!(work.work.bytes_encoded, 0);
         assert_eq!(work.work.allocation_operations, 0);

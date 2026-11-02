@@ -8,7 +8,7 @@ impl HostRoot {
         #[cfg(windows)] options: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<File, DemandError> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             #[cfg(windows)]
             return open_windows_at(
                 parent,
@@ -39,7 +39,7 @@ impl HostRoot {
         path: &NativePath,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             #[cfg(windows)]
             return open_windows_at(
                 parent,
@@ -59,7 +59,7 @@ impl HostRoot {
         path: &NativePath,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        let directory = directory_path(&self.directory, path, true, work)?;
+        let directory = directory_path(&self.directory(), path, true, work)?;
         let identity = directory_identity(&directory, work)?;
         Ok(Self::from_parts(directory, identity))
     }
@@ -71,14 +71,19 @@ impl HostRoot {
         destination: &Path,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-            unix_name(target, work, |target, work| {
-                // SAFETY: held directory and terminated names outlive the syscall.
-                unix_mutation(work, || unsafe {
-                    libc::symlinkat(target.as_ptr(), parent.as_raw_fd(), leaf.as_ptr())
+        with_parent_leaf(
+            &self.directory(),
+            destination,
+            work,
+            |parent, leaf, work| {
+                unix_name(target, work, |target, work| {
+                    // SAFETY: held directory and terminated names outlive the syscall.
+                    unix_mutation(work, || unsafe {
+                        libc::symlinkat(target.as_ptr(), parent.as_raw_fd(), leaf.as_ptr())
+                    })
                 })
-            })
-        })
+            },
+        )
     }
     #[cfg(all(unix, any(feature = "native-mount", test)))]
     pub(crate) fn create_fifo_held<W: SourceDemandReadWork>(
@@ -87,7 +92,7 @@ impl HostRoot {
         mode: u32,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated leaf outlive the syscall.
             unix_mutation(work, || unsafe {
                 libc::mkfifoat(
@@ -112,7 +117,7 @@ impl HostRoot {
             return Err(DemandError::InvalidRequest);
         }
         let mode = native_mode;
-        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated leaf outlive the syscall.
             unix_mutation(work, || unsafe {
                 libc::mknodat(parent.as_raw_fd(), leaf.as_ptr(), mode, device)
@@ -126,7 +131,7 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_parent_leaf(&self.directory, path, work, bind_unix_socket_in)
+        with_parent_leaf(&self.directory(), path, work, bind_unix_socket_in)
     }
 
     #[cfg(all(unix, feature = "native-mount"))]
@@ -171,7 +176,7 @@ impl HostRoot {
         destination: &[u16],
         work: &mut W,
     ) -> Result<(), DemandError> {
-        with_parent_leaf(&self.directory, source, work, |parent, leaf, work| {
+        with_parent_leaf(&self.directory(), source, work, |parent, leaf, work| {
             let file = open_windows_at(
                 parent,
                 leaf,
@@ -180,9 +185,14 @@ impl HostRoot {
                 nt::FILE_SYNCHRONOUS_IO_NONALERT,
                 work,
             )?;
-            with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-                set_windows_name(&file, parent, leaf, 0, nt::FileLinkInformation, work)
-            })
+            with_parent_leaf(
+                &self.directory(),
+                destination,
+                work,
+                |parent, leaf, work| {
+                    set_windows_name(&file, parent, leaf, 0, nt::FileLinkInformation, work)
+                },
+            )
         })
     }
     #[cfg(windows)]
@@ -207,19 +217,24 @@ impl HostRoot {
                 return Err(DemandError::InvalidRequest);
             }
         }
-        with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-            let (target, target_allocation) = decode_windows_name(target, work)?;
-            let result = (|| {
-                let (leaf, allocation) = decode_windows_name(leaf, work)?;
-                let result = work.attempt_io(WRITE, || parent.symlink_file(&target, &leaf));
-                drop(leaf);
-                work.release(allocation)?;
+        with_parent_leaf(
+            &self.directory(),
+            destination,
+            work,
+            |parent, leaf, work| {
+                let (target, target_allocation) = decode_windows_name(target, work)?;
+                let result = (|| {
+                    let (leaf, allocation) = decode_windows_name(leaf, work)?;
+                    let result = work.attempt_io(WRITE, || parent.symlink_file(&target, &leaf));
+                    drop(leaf);
+                    work.release(allocation)?;
+                    result
+                })();
+                drop(target);
+                work.release(target_allocation)?;
                 result
-            })();
-            drop(target);
-            work.release(target_allocation)?;
-            result
-        })
+            },
+        )
     }
 }
 

@@ -63,21 +63,21 @@ pub(super) fn validate_layout(
     // A missing path cannot be an ancestor of an existing checkout.
     #[cfg(unix)]
     let nested = crate::native_host::directory_has_ancestor(
-        &operation.directory,
+        &operation.directory(),
         root.identity(),
         &mut &*work,
     )? || suffix.as_os_str().is_empty()
         && crate::native_host::directory_has_ancestor(
-            &root.directory,
+            &root.directory(),
             operation.identity(),
             &mut &*work,
         )?;
     #[cfg(windows)]
     let nested = {
         let (root, _root) =
-            crate::native_host::canonical_directory_wide(&root.directory, &mut &*work)?;
+            crate::native_host::canonical_directory_wide(&root.directory(), &mut &*work)?;
         let (operation, _operation) =
-            crate::native_host::canonical_directory_wide(&operation.directory, &mut &*work)?;
+            crate::native_host::canonical_directory_wide(&operation.directory(), &mut &*work)?;
         work.charge(NativeResourceCredit::Items.delta((root.len() + operation.len()) as u64))?;
         fn contains(parent: &[u16], child: &[u16]) -> bool {
             child.starts_with(parent)

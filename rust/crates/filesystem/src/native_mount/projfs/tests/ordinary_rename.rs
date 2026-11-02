@@ -86,14 +86,15 @@ fn replace_with_reader_in(
     let mut reader = std::fs::File::open(target.join(&leaf))?;
     let identity = handle_state(&reader)?;
     let guard = held_while(&target.join(&leaf), identity)?.ok_or("target identity changed")?;
-    let mut replacement = create_ordinary_file(&from.directory, std::ffi::OsStr::new(&new), &work)?;
+    let mut replacement =
+        create_ordinary_file(&from.directory(), std::ffi::OsStr::new(&new), &work)?;
     replacement.write_all(new_contents)?;
     set_read_only(&staging.join(&new), replacement_read_only)?;
     publish_ordinary_file(
         &replacement,
-        &from.directory,
+        &from.directory(),
         std::ffi::OsStr::new(&new),
-        &to.directory,
+        &to.directory(),
         std::ffi::OsStr::new(&leaf),
         Some((&guard, identity)),
         &work,
