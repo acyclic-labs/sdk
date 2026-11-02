@@ -153,16 +153,16 @@ pub(crate) struct Target {
 #[derive(Clone, Debug)]
 pub(crate) struct Layout {
     root: StreamPath,
+    epochs: StreamPath,
 }
 
 impl Layout {
     pub(crate) fn new<P: StreamProvider + ?Sized>(store: &Store<P>) -> Result<Self, Error> {
+        let root = StreamPath::new(format!("{}/_sockets/v1", store.root()))?;
         Ok(Self {
-            root: StreamPath::new(format!("{}/_sockets/v1", store.root()))?,
+            epochs: StreamPath::new(format!("{root}/epochs"))?,
+            root,
         })
-    }
-    fn epochs(&self) -> Result<StreamPath, Error> {
-        Ok(StreamPath::new(format!("{}/epochs", self.root))?)
     }
     fn segment(&self, index: u64) -> Result<StreamPath, Error> {
         Ok(StreamPath::new(format!("{}/segments/{index}", self.root))?)
@@ -280,7 +280,7 @@ async fn commit_close<P: StreamProvider + ?Sized>(
     });
     if let Some(segment) = segment {
         conditions.push(CommitCondition::Tail {
-            path: layout.epochs()?,
+            path: layout.epochs.clone(),
             expected: segment.epochs,
         });
     }
@@ -617,7 +617,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, Error> {
         let layout = Layout::new(&store)?;
-        let epochs = layout.epochs()?;
+        let epochs = layout.epochs.clone();
         let (tail, last) = match store.provider().head(epochs.clone()).await {
             Ok(head) => (head.tail, head.last),
             Err(StreamError::NotFound) => (0, None),
@@ -952,7 +952,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     /// after it is complete, so a crash at any point loses no open socket.
     async fn compact(&self) -> Result<(), Error> {
         let mut ledger = self.ledger.write().await;
-        let epochs = self.layout.epochs()?;
+        let epochs = self.layout.epochs.clone();
         let next = ledger.allocated + 1;
         let epoch = |from| -> AppendRecord {
             EpochWire {
@@ -1188,7 +1188,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         // The epoch condition fences this cut without retaining the lock over
         // provider I/O. Every unknown retry still carries this identical cut.
         let ledger = *self.ledger.read().await;
-        let epochs = self.layout.epochs()?;
+        let epochs = self.layout.epochs.clone();
         let segment = self.layout.segment(ledger.segment)?;
         let actor: Bytes = open.actor.encode().into();
         let mut inbox = None;

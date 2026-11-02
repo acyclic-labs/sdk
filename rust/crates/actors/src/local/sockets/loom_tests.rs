@@ -66,7 +66,7 @@ fn race(broken: bool) -> Result {
                 Vec::new()
             ),
             append(
-                layout.epochs()?,
+                layout.epochs.clone(),
                 vec![
                     EpochWire {
                         version: 1,
