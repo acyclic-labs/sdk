@@ -217,7 +217,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
                         MergeConflict::Binding { name, .. } => NamespacePath::child_from_owned(
                             path,
                             name,
-                            workspace.volume.config().limits,
                             &mut accounting,
                             cancellation,
                         )?,
