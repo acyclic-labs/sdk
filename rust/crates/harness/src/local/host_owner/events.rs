@@ -89,18 +89,19 @@ impl HostWorkspaceOwner {
         )
     }
 
-    /// A host's permission prompt for one of the harness's own coordination
-    /// tools, answered by the configured approval chain in order: a rules
+    /// A host's permission prompt for harness spawn, answered by the
+    /// configured approval chain in order: a rules
     /// stage allows, denies or escalates; exhausting the chain refuses. A
     /// human, model or parent stage leaves the prompt to the host, whose own
-    /// approval then applies. Host tools never reach the chain: their
-    /// prompts stay the host's. No agent, file or request beyond the hook.
+    /// approval then applies. Other tools never reach the chain: their
+    /// prompts stay the host's. Fork, merge and commit use the workspace
+    /// boundary, not this MCP hook. No agent, file or request beyond the hook.
     pub(super) fn permission(&self, host: &str, input: &Value) -> Value {
         use crate::approvals::{ApprovalRule, Approver, RuleVerdict};
         let Some(tool) = input
             .get("tool_name")
             .and_then(Value::as_str)
-            .and_then(|name| coordination_tool(host, name))
+            .and_then(|name| gated_tool(host, name))
         else {
             return json!({});
         };
@@ -157,9 +158,9 @@ impl HostWorkspaceOwner {
     }
 }
 
-/// The coordination tool `name` invokes, under the server name each host's
-/// plugin manifest gives it; any other tool is the host's own.
-fn coordination_tool<'a>(host: &str, name: &'a str) -> Option<&'a str> {
+/// Only spawn is gated among the tools the native MCP server advertises.
+/// Match the host's exact server namespace before interpreting the tool.
+fn gated_tool<'a>(host: &str, name: &'a str) -> Option<&'a str> {
     let servers: &[&str] = match host {
         "codex" => &["mcp__acyclic-sessions__", "mcp__acyclic_sessions__"],
         "claude-code" => &["mcp__plugin_acyclic_acyclic-sessions__"],
@@ -168,5 +169,5 @@ fn coordination_tool<'a>(host: &str, name: &'a str) -> Option<&'a str> {
     servers
         .iter()
         .find_map(|server| name.strip_prefix(server))
-        .filter(|tool| crate::local::host_process::children::TOOLS.contains(tool))
+        .filter(|tool| *tool == "spawn")
 }

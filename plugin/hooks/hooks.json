@@ -1,5 +1,5 @@
 {
-  "description": "Native session boundaries, and harness approval for its own coordination tools; native tools and subagents retain host behavior.",
+  "description": "Native session boundaries and harness spawn approval; other tools and subagents retain host behavior.",
   "hooks": {
     "SessionStart": [
       {
@@ -39,7 +39,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "^mcp__acyclic[-_]sessions__",
+        "matcher": "^mcp__acyclic[-_]sessions__spawn$",
         "hooks": [
           {
             "type": "command",

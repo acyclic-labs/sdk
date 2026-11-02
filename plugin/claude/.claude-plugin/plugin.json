@@ -45,7 +45,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "mcp__plugin_acyclic_acyclic-sessions__.*",
+        "matcher": "^mcp__plugin_acyclic_acyclic-sessions__spawn$",
         "hooks": [
           {
             "type": "command",
