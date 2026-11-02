@@ -91,7 +91,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         record: FileRecord,
     ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
         let logical_bytes = match record.payload {
-            FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
+            FilePayload::InlineRegular(data) => {
+                crate::foundation::usize_to_u64(data.as_bytes().len())
+            }
+
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
         };
