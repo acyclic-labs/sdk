@@ -1,5 +1,36 @@
 # Polling and timed-wait inventory
 
+Identity transport fixture event successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1131` | Writer-stalled readiness timeout | Select the original stalled notification against the original writer's reply channel. | Source complete; unqualified |
+| `plugin/identity/src/mcp.rs:1194` | Writer-stalled readiness timeout during consumed exchange | The same shared event selector; output pause is scoped to an unpause guard. | Source complete; unqualified |
+| `plugin/identity/src/mcp.rs:1270` | Input/output-fault readiness timeout | Select the original counted-input or failed-write notification against that reply channel. | Source complete; unqualified |
+
+The selector arms the original fixture notification and the original reply
+receiver together. A retained notification wins if both are ready. An unexpected
+reply returns `InvalidData`; writer withdrawal closes its sole sender and returns
+`UnexpectedEof`. Existing blocked-output, cancellation, oversized-input and
+broken-pipe cases still own their original producers and result assertions.
+The existing real transport test now sends one additional ping while deliberately
+omitting a fixture notification, asserts `InvalidData`, then closes its original
+input and asserts `UnexpectedEof` for another missing notification. Both negative
+controls are implemented but unexecuted. They cover the shared event selector,
+not the separately proposed `Client::reply` closure assertion.
+
+Pausing output returns one borrowing guard. Normal completion and unwinding
+release that same Condvar gate; the retained writer/drain assertions exercise
+normal release. Unwinding is not independently runtime-qualified. Per pause pair,
+mutex acquisitions stay two and notifications change from two to one, deleting
+the unnecessary notification when entering the paused state. Each fixture wait
+replaces one timer arm with one receive arm on the existing channel: timers
+one to zero, notification waits one to one. The selector has two fixed branches
+and adds no task, channel, worker, payload copy or product operation. The guard
+adds no allocation. Native syscall/allocation counts and event latency remain
+unmeasured. The two HTTP-entry timeouts, admission retry loop and other census
+survivors remain open.
+
 Identity drain observation successor:
 
 | Source | Kind | Replacement and terminal | Status |

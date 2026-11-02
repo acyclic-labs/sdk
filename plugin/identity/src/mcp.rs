@@ -897,6 +897,26 @@ mod tests {
                 .await
                 .expect("identity transport closed before its reply")
         }
+
+        async fn transport_event(
+            &mut self,
+            event: impl std::future::Future<Output = ()>,
+        ) -> io::Result<()> {
+            tokio::select! {
+                biased;
+                () = event => Ok(()),
+                reply = self.replies.recv() => Err(match reply {
+                    Some(_) => io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "identity replied before the expected transport event",
+                    ),
+                    None => io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "identity writer ended before the expected transport event",
+                    ),
+                }),
+            }
+        }
     }
 
     /// Blocking input fed by the test, ending when the client closes.
@@ -944,9 +964,19 @@ mod tests {
     }
 
     impl Output {
-        fn pause(&self, paused: bool) {
-            let (state, changed) = &*self.paused;
-            *state.lock().expect("pause") = paused;
+        fn pause(&self) -> Paused<'_> {
+            let (state, _) = &*self.paused;
+            *state.lock().expect("pause") = true;
+            Paused(self)
+        }
+    }
+
+    struct Paused<'a>(&'a Output);
+
+    impl Drop for Paused<'_> {
+        fn drop(&mut self) {
+            let (state, changed) = &*self.0.paused;
+            *state.lock().unwrap_or_else(PoisonError::into_inner) = false;
             changed.notify_all();
         }
     }
@@ -1051,7 +1081,20 @@ mod tests {
             client.reply().await.pointer("/error/code"),
             Some(&json!(-32602))
         );
+        client.send(&json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}));
+        let unexpected = client
+            .transport_event(std::future::pending())
+            .await
+            .expect_err("a reply cannot substitute for the missing fixture event");
+        assert_eq!(unexpected.kind(), io::ErrorKind::InvalidData);
         client.close();
+        // Deliberately omit the expected notification. The real transport's
+        // writer withdrawal must settle this wait through its original channel.
+        let lost = client
+            .transport_event(std::future::pending())
+            .await
+            .expect_err("writer loss ends a missing event wait");
+        assert_eq!(lost.kind(), io::ErrorKind::UnexpectedEof);
         client.served.await.expect("served").expect("transport");
     }
 
@@ -1126,9 +1169,10 @@ mod tests {
             reply = client.replies.recv() => panic!("login ended before HTTP entry: {reply:?}"),
             entered = consumed => entered.expect("original login exchange entered"),
         }
-        output.pause(true);
+        let paused = output.pause();
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
-        tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
+        client
+            .transport_event(output.stalled.notified())
             .await
             .expect("writer pending");
         client.send(
@@ -1142,7 +1186,7 @@ mod tests {
         drop(completed);
         assert!(!client.served.is_finished());
         client.close();
-        output.pause(false);
+        drop(paused);
         let mut replies = Vec::new();
         while let Some(reply) = client.replies.recv().await {
             replies.push(reply);
@@ -1178,7 +1222,7 @@ mod tests {
             let output = Output::default();
             let mut client = connect(server, &output, None);
             client.reply().await;
-            output.pause(true);
+            let paused = output.pause();
             client.send(&call(
                 1,
                 if login {
@@ -1191,7 +1235,8 @@ mod tests {
                 .await
                 .expect("consumed");
             client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
-            tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
+            client
+                .transport_event(output.stalled.notified())
                 .await
                 .expect("writer pending");
             if eof {
@@ -1211,7 +1256,7 @@ mod tests {
             drop(completed);
             assert!(!client.served.is_finished());
             client.close();
-            output.pause(false);
+            drop(paused);
             let mut ids = Vec::new();
             while let Some(reply) = client.replies.recv().await {
                 ids.extend(reply.get("id").cloned());
@@ -1267,7 +1312,8 @@ mod tests {
                     });
                     Arc::clone(&output.failed)
                 };
-                tokio::time::timeout(Duration::from_secs(3), failed.notified())
+                client
+                    .transport_event(failed.notified())
                     .await
                     .expect("transport fault reached");
                 assert!(
