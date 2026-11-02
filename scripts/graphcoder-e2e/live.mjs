@@ -13,7 +13,7 @@ import { conversation } from "./conversation.mjs";
 import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
-export const liveCases = ["session", "instructions", "skill-invocation", "shell", "file-tools", "child-result", "resume", "fork-merge"];
+export const liveCases = ["session", "instructions", "skill-invocation", "shell", "file-tools", "child-result", "nested-children", "resume", "fork-merge"];
 
 export function answer(result, format, expected, id) {
   executionSucceeded(result);
@@ -29,10 +29,11 @@ export function answer(result, format, expected, id) {
   return value;
 }
 
-export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
+export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, expectedChildren = 1) {
   const remaining = new Set(names);
   const mergeCwd = mergeWorkspace === undefined ? undefined : toNamespacedPath(mergeWorkspace);
-  let child, childName, consumed = false, merged = false;
+  const children = new Map();
+  let merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
     if (hook.tool_response === undefined || hook.tool_response === null)
@@ -41,31 +42,43 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) 
     remaining.delete(hook.tool_name);
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
-      assert.equal(child, undefined, "single-child journey spawned another child");
-      child = hook.tool_response.agent;
-      childName = hook.tool_response.name;
-    } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
-      const references = hook.tool_input?.agents;
-      assert.ok(Array.isArray(references) && references.length === 1
-        && (references[0] === child || (typeof childName === "string" && references[0] === childName)),
+      const child = hook.tool_response.agent;
+      assert.ok(!children.has(child), "journey repeated a spawned child");
+      const selected = { agent: child, name: hook.tool_response.name, consumed: false };
+      children.set(child, selected);
+    } else if (hook.tool_name === "wait" && hook.tool_response?.settled?.length) {
+      const agents = hook.tool_input?.agents;
+      const reference = Array.isArray(agents) && agents.length === 1 ? agents[0] : undefined;
+      const only = expectedChildren === 1 && children.size === 1 ? children.values().next().value : undefined;
+      const child = children.get(reference) ?? (only?.name === reference ? only : undefined);
+      assert.ok(child,
       "wait used a different child reference");
       assert.deepEqual(hook.tool_response.running, [], "child remains running");
       assert.equal(hook.tool_response.settled.length, 1, "wait settled a different child set");
       const [settled] = hook.tool_response.settled;
-      assert.equal(settled.agent, child, "settlement names a different child");
+      assert.equal(settled.agent, child.agent, "settlement names a different child");
       assert.equal(settled.phase, "idle", "child did not settle successfully");
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
-      consumed = true;
-    } else if (mergeWorkspace !== undefined && consumed && typeof childName === "string"
+      child.consumed = true;
+    } else if (mergeWorkspace !== undefined && children.size === 1
       && hook.tool_name === "fs" && typeof hook.cwd === "string" && isAbsolute(hook.cwd)
       && toNamespacedPath(hook.cwd) === mergeCwd
-      && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
+      && children.values().next().value.consumed
+      && hook.tool_response?.result?.Committed?.message === `merge agents/${children.values().next().value.name}`) {
       // The filesystem generates this message from its completed join operand.
       merged = true;
     }
   }
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
-  if (expectedChildResult !== undefined) assert.ok(consumed, "missing completed public wait for the spawned child's result");
+  if (expectedChildResult !== undefined) {
+    assert.equal(children.size, expectedChildren, "journey spawned a different child set");
+    for (const child of children.values()) assert.ok(child.consumed, "missing completed public wait for the spawned child's result");
+    if (expectedChildren === 2) {
+      const [first, second] = children.keys();
+      assert.ok(first.startsWith(second + "/children/") || second.startsWith(first + "/children/"),
+        "nested journey requires the original descendant path, not two siblings");
+    }
+  }
   if (mergeWorkspace !== undefined) assert.ok(merged,
     `step=admit committed merge of the settled child's branch in its parent workspace; recovery=${recovery}`);
 }
@@ -164,6 +177,13 @@ export async function runCase(binary, login, root, name, signal, { model = "open
         step = "assert child result read by parent";
         const recorded = childHooks = await hooks();
         requireTools(recorded, ["spawn", "wait"], marker);
+      } else if (name === "nested-children") {
+        const task = `Spawn exactly one child named leaf, asking it to reply with exactly ${marker} and no additional text. Preserve the canonical agent path from spawn. In a later distinct tool call, use wait with that exact path, read its settled idle answer, then reply with exactly that answer. Do not return a console-only code result or use a top-level return statement; a code tool program returns its final expression.`;
+        await collaborate(`Spawn exactly one child named worker with this task: ${JSON.stringify(task)}. Preserve the returned canonical agent path. End this turn with exactly SPAWNED so the worker spawn commits.`,
+          "Use wait with the exact canonical worker path from the preceding spawn result. Read its settled idle answer, then reply with exactly that answer and no additional text.");
+        step = "assert original worker and descendant settlements";
+        const recorded = childHooks = await hooks();
+        requireTools(recorded, ["spawn", "wait"], marker, undefined, 2);
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl", marker);
