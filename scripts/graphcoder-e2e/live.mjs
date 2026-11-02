@@ -105,9 +105,8 @@ export async function runCase(binary, login, root, name, signal) {
     // Reuse only the admitted login path after stripping provider keys.
     env.CODEX_HOME = login;
     const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
-    const command = `"${process.execPath}" "${recorder}" "${hookFile}"`;
     await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
-      PostToolUse: [{ hooks: [{ type: "command", command }] }],
+      PostToolUse: [{ hooks: [{ type: "command", command: process.execPath, args: [recorder, hookFile] }] }],
     } }));
   };
   try {

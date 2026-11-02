@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Processes } from "./process.mjs";
@@ -163,6 +163,27 @@ test("a real command must publish exact bytes and a successful shell status", as
     assert.throws(() => requireTools([hook(status), { hook_event_name: "PostToolUse",
       tool_name: "spawn", tool_response: { agent: "agents/worker" } }], ["spawn"]), /unexpected tool error/);
     requests({ ...fixture, assert: { requests: 1, tool_errors: ["exit_code=17"] } }, record(status));
+  } finally {
+    await processes.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the completed-tool recorder uses literal executable arguments on every OS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "live hook & $ literal '-")), processes = new Processes();
+  try {
+    // The real child rejects GraphCoder's arguments, after the original case
+    // preparation has written its actual settings. No model is launched.
+    const result = await runCase(process.execPath, root, root, "session", new AbortController().signal);
+    assert.equal(result.status, "fail");
+    const settings = JSON.parse(await readFile(join(root, "session/settings/.claude/settings.json"), "utf8"));
+    const [{ hooks: [hook] }] = settings.hooks.PostToolUse;
+    const original = childResults[0].events[0];
+    const executed = await processes.run(hook.command, hook.args,
+      { cwd: join(root, "session/workspace") }, JSON.stringify(original));
+    assert.equal(executed.code, 0, executed.stderr);
+    assert.deepEqual(JSON.parse(await readFile(join(root, "session/workspace/hooks.jsonl"), "utf8")), original);
+    requireTools([original], ["spawn"]);
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });
