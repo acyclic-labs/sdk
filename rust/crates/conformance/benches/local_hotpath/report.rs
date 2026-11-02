@@ -17,10 +17,42 @@ pub(super) type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Erro
 
 /// Stream the original observations without a second JSON array allocation.
 #[derive(Serialize)]
-pub(super) struct RawSamples<'a> {
+pub(super) struct RawSamples<'a, T = serde_json::Value> {
     #[serde(flatten)]
-    pub(super) fields: serde_json::Value,
+    pub(super) fields: T,
     pub(super) raw_ns: &'a [f64],
+}
+
+#[derive(Serialize)]
+struct WorkReceipts<'a> {
+    #[serde(flatten)]
+    fields: serde_json::Value,
+    #[serde(serialize_with = "serialize_work_receipts")]
+    original_work_receipts: &'a [(serde_json::Value, Work)],
+}
+
+fn serialize_work_receipts<S: serde::Serializer>(
+    receipts: &[(serde_json::Value, Work)],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Receipt<'a> {
+        sample: usize,
+        identity: &'a serde_json::Value,
+        work: &'a [Option<u64>],
+        physical_admission_binding: Option<()>,
+        progress: &'static str,
+    }
+
+    serializer.collect_seq(receipts.iter().enumerate().map(|(sample, (identity, work))| {
+        Receipt {
+            sample,
+            identity,
+            work: &work.0,
+            physical_admission_binding: None,
+            progress: "original operation returned; operation-specific result oracle checked before the report",
+        }
+    }))
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -108,15 +140,67 @@ pub(super) fn check_observations() -> Result {
     if cohort.rows[&Operation::ObjectGet].raw_ns.len() != 2 {
         return Err("refused floor terms changed the original latency cohort".into());
     }
-    let evidence = RawSamples {
-        fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
-        raw_ns: &[5.0, 1.0, 4.0, 2.0, 3.0],
-    };
+    let row = cohort
+        .rows
+        .get_mut(&Operation::ObjectGet)
+        .ok_or("original observation row missing")?;
+    row.work.observations = u64::MAX;
+    let full = row.work.clone();
+    if cohort
+        .record(
+            Operation::ObjectGet,
+            Terms {
+                copy_bytes: 1024,
+                ..Terms::default()
+            },
+            Duration::ZERO,
+            Observation::default(),
+            serde_json::Value::Null,
+        )
+        .is_ok()
+    {
+        return Err("exhausted observation count admitted another sample".into());
+    }
+    let row = &cohort.rows[&Operation::ObjectGet];
+    if row.work != full
+        || [
+            row.raw_ns.len(),
+            row.coordinator_allocations.len(),
+            row.provider_requests.len(),
+            row.native_attempts.len(),
+            row.original_work.len(),
+        ] != [2; 5]
+    {
+        return Err("refused observation changed the retained evidence".into());
+    }
+    check_borrowed_serialization(
+        WorkReceipts {
+            fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
+            original_work_receipts: &row.original_work,
+        },
+        "work receipts",
+    )?;
+    check_borrowed_serialization(
+        RawSamples {
+            fields: serde_json::json!({"schema": 1, "kind": "negative_control"}),
+            raw_ns: &[5.0, 1.0, 4.0, 2.0, 3.0],
+        },
+        "raw samples",
+    )?;
+    emit(
+        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
+    )
+}
+
+fn check_borrowed_serialization(evidence: impl Serialize, kind: &str) -> Result {
     let mut encoded = Ok(());
     let borrowed = acyclic_test_support::measure(|| {
         encoded = serde_json::to_writer(std::io::sink(), &evidence);
     });
     encoded?;
+    if borrowed.count_total != 0 || borrowed.bytes_total != 0 {
+        return Err(format!("{kind} direct encoding allocated").into());
+    }
     // Restore the former full JSON materialization around the same evidence.
     let mut encoded = Ok(());
     let copied = acyclic_test_support::measure(|| {
@@ -124,12 +208,10 @@ pub(super) fn check_observations() -> Result {
             .and_then(|value| serde_json::to_writer(std::io::sink(), &value));
     });
     encoded?;
-    if borrowed.count_total >= copied.count_total || borrowed.bytes_total >= copied.bytes_total {
-        return Err("raw sample array materialization was not removed".into());
+    if copied.count_total == 0 || copied.bytes_total == 0 {
+        return Err(format!("{kind} materialization negative did not allocate").into());
     }
-    emit(
-        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "invalid quantile observations and mismatched floor terms", "result": "rejected"}),
-    )
+    Ok(())
 }
 
 pub(super) fn ns(duration: Duration) -> f64 {
@@ -245,8 +327,7 @@ struct Row {
     coordinator_allocations: Vec<Option<[u64; 2]>>,
     provider_requests: Vec<Option<[u64; 7]>>,
     native_attempts: Vec<Option<[u64; 3]>>,
-    identities: Vec<serde_json::Value>,
-    original_work: Vec<Work>,
+    original_work: Vec<(serde_json::Value, Work)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -416,20 +497,18 @@ impl Measurements {
             coordinator_allocations: Vec::new(),
             provider_requests: Vec::new(),
             native_attempts: Vec::new(),
-            identities: Vec::new(),
             original_work: Vec::new(),
         });
         if row.terms != floor {
             return Err(format!("{} samples have different floor terms", operation.name()).into());
         }
-        row.raw_ns.push(ns(elapsed));
         row.work.record(observation.work, &self.recovery)?;
+        row.raw_ns.push(ns(elapsed));
         row.coordinator_allocations
             .push(observation.coordinator_allocations);
         row.provider_requests.push(observation.provider_requests);
         row.native_attempts.push(observation.native_attempts);
-        row.identities.push(identity);
-        row.original_work.push(observation.work);
+        row.original_work.push((identity, observation.work));
         Ok(())
     }
 
@@ -464,14 +543,14 @@ impl Measurements {
                 coordinator_allocations,
                 provider_requests,
                 native_attempts,
-                identities,
                 original_work,
             } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
             let timer = floors.timer();
             emit(RawSamples {
-                fields: serde_json::json!({
+                fields: WorkReceipts {
+                    fields: serde_json::json!({
                     "schema": 1, "kind": "operation", "operation": operation.name(),
                     "measurement_label": match operation {
                         Operation::ActorWake => "event-drain-to-handler-entry",
@@ -490,13 +569,6 @@ impl Measurements {
                     "minimum_positive_timer_ns": floors.minimum_positive_timer_ns(),
                     "floor_resolution_limited": floor_ns < timer.p50_ns.max(floors.minimum_positive_timer_ns()),
                     "resolution_scope": "timestamp pair only; async polling and other instrumentation add cost; no subtraction",
-                    "original_work_receipts": identities.iter().zip(&original_work).enumerate().map(|(sample, (identity, work))| {
-                        serde_json::json!({
-                            "sample": sample, "identity": identity, "work": work.0,
-                            "physical_admission_binding": null,
-                            "progress": "original operation returned; operation-specific result oracle checked before the report",
-                        })
-                    }).collect::<Vec<_>>(),
                     "work_columns": acyclic_test_support::scale::METRICS,
                     "identity_scope": "original API request/resource/cursor supplied by the operation driver in raw sample order; not an authenticated admission or physical coverage token",
                     "work_observations": work.observations,
@@ -511,7 +583,9 @@ impl Measurements {
                     "native_attempt_columns": ["ok", "err", "incomplete"],
                     "native_attempt_counts": native_attempts,
                     "native_attempt_scope": "diagnostic completed observed native calls between the original counter boundaries; includes concurrent work; unobserved leaves and provider/group attribution remain unknown; excluded from durability_calls qualification",
-                }),
+                    }),
+                    original_work_receipts: &original_work,
+                },
                 raw_ns: &raw_ns,
             })?;
             point.samples.push(work);
