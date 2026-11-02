@@ -1,0 +1,132 @@
+{
+  "source": "f2a8def7d7411353485c847bc1f8a85b4a0a6162",
+  "consumer": "b2f9206f28f871c5c7b3944502eb76e62ecfcc6d",
+  "platform": "linux",
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "original_result_sha256": "0395925d1d2f78e37aa0848a924ab7a58ed702357eaef7b522e786ca24367597",
+  "attribution": "Original native spawn, message and wait envelopes in their observed order. The full journey failed its original oracle and exceeded its time requirement; this capture does not requalify that journey.",
+  "original_hook_indices": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    11
+  ],
+  "expected": "LIVE_37fffebf3d7b4cd383e73bca4157e8ca",
+  "events": [
+    {
+      "tool_name": "spawn",
+      "tool_input": {
+        "name": "worker",
+        "role": "worker",
+        "task": "Reply with exactly READY."
+      },
+      "tool_use_id": "33c3ba8ceb9b3f86e1ac46c039beb885f4cd9e0cf29433ed6774e54538f13835",
+      "session_id": null,
+      "tool_response": {
+        "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+        "name": "worker"
+      },
+      "hook_event_name": "PostToolUse"
+    },
+    {
+      "tool_name": "wait",
+      "tool_input": {
+        "agents": [
+          "worker"
+        ]
+      },
+      "tool_use_id": "ecfbb74dd046e76ed7fa5c24e5642c78510fc0f7592fb7cce4bd0e471725f30f",
+      "session_id": null,
+      "tool_response": {
+        "running": [],
+        "settled": [
+          {
+            "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+            "answer": "READY",
+            "branch": "agents/worker",
+            "name": "worker",
+            "phase": "idle"
+          }
+        ]
+      },
+      "hook_event_name": "PostToolUse"
+    },
+    {
+      "tool_name": "wait",
+      "tool_input": {
+        "agents": [
+          "worker"
+        ],
+        "timeout_ms": 1000
+      },
+      "tool_use_id": "f3176662d8c8d73e5ec6cd2d1143184afb8bccd499602967f1a90499b6816170",
+      "session_id": null,
+      "tool_response": {
+        "running": [],
+        "settled": [
+          {
+            "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+            "answer": "READY",
+            "branch": "agents/worker",
+            "name": "worker",
+            "phase": "idle"
+          }
+        ]
+      },
+      "hook_event_name": "PostToolUse"
+    },
+    {
+      "tool_name": "send",
+      "tool_input": {
+        "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+        "message": "READY"
+      },
+      "tool_use_id": "017be6115fc5d6e628ba296af8aff458e8aef34625b54e9cb52113d5e8c76144",
+      "session_id": null,
+      "tool_response": {
+        "sent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+        "status": "queued"
+      },
+      "hook_event_name": "PostToolUse"
+    },
+    {
+      "tool_name": "send",
+      "tool_input": {
+        "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+        "message": "LIVE_37fffebf3d7b4cd383e73bca4157e8ca"
+      },
+      "tool_use_id": "a3f3ace07190e8ee3c3fbe6c43506e3f8b637cdb05a7a143096d8ff12f8714f4",
+      "session_id": null,
+      "tool_response": {
+        "sent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+        "status": "queued"
+      },
+      "hook_event_name": "PostToolUse"
+    },
+    {
+      "tool_name": "wait",
+      "tool_input": {
+        "agents": [
+          "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8"
+        ]
+      },
+      "tool_use_id": "f7484e1c090a9b6995380e3a17d5dbc5eb6fe95440599cd5da8a741612ce5d59",
+      "session_id": null,
+      "tool_response": {
+        "running": [],
+        "settled": [
+          {
+            "agent": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+            "answer": "LIVE_37fffebf3d7b4cd383e73bca4157e8ca",
+            "name": "harness/agents/e83dcfa118c442a095d80ac5f004ce18/children/01997688c44a83ccd33ced336d9d05c8",
+            "phase": "idle"
+          }
+        ]
+      },
+      "hook_event_name": "PostToolUse"
+    }
+  ]
+}

@@ -34,7 +34,6 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
   const mergeCwd = mergeWorkspace === undefined ? undefined : toNamespacedPath(mergeWorkspace);
   const children = new Map();
   const requireMessage = remaining.has("send");
-  let sent = !requireMessage;
   let merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
@@ -46,12 +45,15 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
       const child = hook.tool_response.agent;
       assert.ok(!children.has(child), "journey repeated a spawned child");
-      const selected = { agent: child, name: hook.tool_response.name, consumed: false };
+      const selected = { agent: child, name: hook.tool_response.name, sent: !requireMessage, consumed: false };
       children.set(child, selected);
     } else if (hook.tool_name === "send" && requireMessage) {
-      assert.ok(children.has(hook.tool_input?.agent), "message used a different canonical child");
-      assert.equal(hook.tool_input.message, expectedChildResult, "message changed the selected child input");
-      sent = true;
+      const child = children.get(hook.tool_input?.agent);
+      assert.ok(child, "message used a different canonical child");
+      assert.equal(hook.tool_response.sent, child.agent, "message result names a different child");
+      assert.equal(hook.tool_response.status, "queued", "message was not queued");
+      child.sent = hook.tool_input.message === expectedChildResult;
+      child.consumed = false;
     } else if (hook.tool_name === "wait" && hook.tool_response?.settled?.length) {
       const agents = hook.tool_input?.agents;
       const reference = Array.isArray(agents) && agents.length === 1 ? agents[0] : undefined;
@@ -64,6 +66,9 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
       const [settled] = hook.tool_response.settled;
       assert.equal(settled.agent, child.agent, "settlement names a different child");
       assert.equal(settled.phase, "idle", "child did not settle successfully");
+      // A successful preparatory wait does not consume a later message. Every
+      // native failure was already rejected above, including earlier waits.
+      if (requireMessage && (!child.sent || settled.answer !== expectedChildResult)) continue;
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
       child.consumed = true;
     } else if (mergeWorkspace !== undefined && children.size === 1
@@ -78,8 +83,10 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace, 
   for (const name of remaining) assert.fail(`missing completed ${name} tool call`);
   if (expectedChildResult !== undefined) {
     assert.equal(children.size, expectedChildren, "journey spawned a different child set");
-    assert.ok(sent, "missing completed message to the spawned child");
-    for (const child of children.values()) assert.ok(child.consumed, "missing completed public wait for the spawned child's result");
+    for (const child of children.values()) {
+      assert.ok(child.sent, "missing completed message to the spawned child");
+      assert.ok(child.consumed, "missing completed public wait for the spawned child's result");
+    }
     if (expectedChildren === 2) {
       const [first, second] = children.keys();
       assert.ok(first.startsWith(second + "/children/") || second.startsWith(first + "/children/"),
