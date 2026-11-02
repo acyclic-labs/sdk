@@ -242,7 +242,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 // additional future layer.
 macro_rules! policy_revision {
     ($volume:expr, $accounting:ident, $cancellation:ident) => {{
-        let mut scope = $accounting.allocation_scope();
+        let mut scope = $accounting.allocation_scope()?;
         async {
             let volume = $volume;
             let (generation, observed) = volume

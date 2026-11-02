@@ -509,10 +509,28 @@ mod tests {
             },
             &cancel,
         );
+        let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut caller)?;
+        earlier.value.push(7);
+        let mut retained = Retained::from_owned(
+            crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut caller)?,
+            &mut caller,
+        )?;
+        retained.value.push(9);
+        let original_live = caller.standalone_parts().unwrap().0.live_bytes();
         caller.charge_items(1)?;
         let mut owned = OwnedAccounting::take_branch(&mut caller, &cancel)?;
         cancel.cancel();
         let baseline = caller.spent();
+        let handed_off_live = caller.standalone_parts().unwrap().0.live_bytes();
+        assert!(matches!(
+            caller.allocation_scope(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
+        assert_eq!(
+            caller.standalone_parts().unwrap().0.live_bytes(),
+            handed_off_live,
+            "scope refusal retired the continuation's original backing"
+        );
         assert!(matches!(
             caller.charge_items(1),
             Err(crate::FsError::AccountingHandoffActive)
@@ -537,10 +555,20 @@ mod tests {
         );
         owned.restore(&mut caller)?;
         assert_eq!(caller.spent().items_examined, 2);
+        // Restored scope cleanup remains available after caller cancellation.
+        drop(caller.allocation_scope()?);
+        assert_eq!(
+            caller.standalone_parts().unwrap().0.live_bytes(),
+            original_live
+        );
+        assert_eq!(earlier.value, [7]);
+        assert_eq!(retained.value, [9]);
         assert!(
             caller.check().is_err(),
             "restoring accounting changed caller cancellation"
         );
+        drop(retained);
+        earlier.retire(&mut caller)?;
         Ok(())
     }
 

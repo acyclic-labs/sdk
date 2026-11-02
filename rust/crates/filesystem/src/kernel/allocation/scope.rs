@@ -8,14 +8,19 @@ pub(crate) struct AllocationScope<'w, 'a> {
 }
 
 impl<'a> KernelAccounting<'a> {
-    pub(crate) fn allocation_scope(&mut self) -> AllocationScope<'_, 'a> {
-        let floor = self
-            .standalone_parts()
-            .map(|(allocations, ..)| allocations.scratch_bytes());
-        AllocationScope {
+    /// A handed-off caller cannot retire scratch owned by its continuation.
+    pub(crate) fn allocation_scope(&mut self) -> Result<AllocationScope<'_, 'a>, crate::FsError> {
+        let floor = match self.standalone_parts() {
+            Some((allocations, ..)) => {
+                allocations.ensure_active()?;
+                Some(allocations.scratch_bytes())
+            }
+            None => None,
+        };
+        Ok(AllocationScope {
             accounting: self,
             floor,
-        }
+        })
     }
 }
 

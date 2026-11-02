@@ -30,26 +30,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
-            async {
-                let mut label = label;
-                if accounting.standalone_parts().is_some() {
-                    label.allocation = accounting.claim_owned(label.bytes, 0)?;
-                }
-                self.retain_workspace_generation_with_accounting(
-                    volume,
-                    generation_id,
-                    kind,
-                    label,
-                    publication,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
+            let mut label = label;
+            if accounting.standalone_parts().is_some() {
+                label.allocation = accounting.claim_owned(label.bytes, 0)?;
             }
+            self.retain_workspace_generation_with_accounting(
+                volume,
+                generation_id,
+                kind,
+                label,
+                publication,
+                &mut accounting,
+                cancellation,
+            )
             .await
-        };
+        }
+        .await;
         budget.finish(result, &accounting)
     }
 

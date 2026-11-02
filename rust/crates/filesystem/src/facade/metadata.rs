@@ -139,7 +139,7 @@ pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<FileMetadata, FsError> {
-    let mut accounting = accounting.allocation_scope();
+    let mut accounting = accounting.allocation_scope()?;
     let (read, _retained_bytes) = crate::kernel::read_object_with_accounting(
         &volume.fs.inner.objects,
         record.metadata,
@@ -302,7 +302,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        let mut accounting = accounting.allocation_scope();
+        let mut accounting = accounting.allocation_scope()?;
         match file.address() {
             ContentAddress::Path(path) => self
                 .lookup_no_follow_with_metadata_with_accounting(path, &mut accounting, cancellation)

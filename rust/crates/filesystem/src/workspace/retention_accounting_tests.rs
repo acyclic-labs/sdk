@@ -88,14 +88,14 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
     let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
     let scratch = accounting.standalone_parts().unwrap().0.scratch_bytes();
     let identity_bytes = {
-        let mut scope = accounting.allocation_scope();
+        let mut scope = accounting.allocation_scope()?;
         let identity = WorkspaceName::with_accounting("exact", &mut scope)?;
         let bytes = scope.standalone_parts().unwrap().0.scratch_bytes() - scratch;
         drop(identity);
         bytes
     };
     for _ in 0..2 {
-        let mut scope = accounting.allocation_scope();
+        let mut scope = accounting.allocation_scope()?;
         let pinned = generation
             .pin_with_accounting("exact", &mut scope, &cancellation)
             .await?;

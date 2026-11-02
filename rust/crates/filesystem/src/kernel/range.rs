@@ -176,7 +176,7 @@ pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<u64>, FsError> {
-    let mut scope = accounting.allocation_scope();
+    let mut scope = accounting.allocation_scope()?;
     run_range_async(
         store,
         seek_request(request)?,

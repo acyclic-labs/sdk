@@ -298,29 +298,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> W::Output<FileRecord, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
-            async {
-                let record = self
-                    .lookup_file_record_by_id_with_accounting(
-                        file_id,
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await?;
-                let record = record.ok_or(FsError::NotFound)?;
-                if self.tracks_observations() {
-                    self.observe_identity_regions_with_accounting(
-                        [Some(DependencyRegion::FileRecord(file_id)), None],
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Ok(record)
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
+            let record = self
+                .lookup_file_record_by_id_with_accounting(file_id, &mut accounting, cancellation)
+                .await?;
+            let record = record.ok_or(FsError::NotFound)?;
+            if self.tracks_observations() {
+                self.observe_identity_regions_with_accounting(
+                    [Some(DependencyRegion::FileRecord(file_id)), None],
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
             }
-            .await
-        };
+            Ok(record)
+        }
+        .await;
         budget.finish(result, &accounting)
     }
 

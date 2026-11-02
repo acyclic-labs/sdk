@@ -10,8 +10,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
         let mut accounting = work.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
             let result = async {
                 validate_extent_plan_request(self.reader.volume.config, range, maximum_spans)?;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +34,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
                 accounting.keep();
             }
             result
-        };
+        }
+        .await;
         work.finish_owned(result, &accounting)
     }
 }
@@ -50,8 +51,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
         let mut accounting = work.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
             let result = async {
                 validate_extent_plan_request(self.volume.config, range, maximum_spans)?;
                 let record = self
@@ -73,7 +74,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 accounting.keep();
             }
             result
-        };
+        }
+        .await;
         work.finish_owned(result, &accounting)
     }
 }
@@ -241,8 +243,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
         let mut accounting = work.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
             let result = self
                 .plan_file_extents_projected_with_accounting(
                     &file,
@@ -257,7 +259,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 accounting.keep();
             }
             result
-        };
+        }
+        .await;
         work.finish_owned(result, &accounting)
     }
 

@@ -271,7 +271,7 @@ where
     C: Fn(&F::Key) -> std::cmp::Ordering,
     P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
 {
-    let mut scope = accounting.allocation_scope();
+    let mut scope = accounting.allocation_scope()?;
     let accounting = &mut *scope;
     accounting.check()?;
     if root.kind != F::kind() {

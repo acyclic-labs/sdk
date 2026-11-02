@@ -34,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         if let Some(original) = accounting.native_work() {
             self.validate_native_work(original)?;
         }
-        let mut accounting = accounting.allocation_scope();
+        let mut accounting = accounting.allocation_scope()?;
         lookup_path_async_with_accounting(
             &self.volume.fs.inner.objects,
             &self.root,
@@ -490,7 +490,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileRecord>, FsError> {
-        let mut accounting = accounting.allocation_scope();
+        let mut accounting = accounting.allocation_scope()?;
         crate::kernel::lookup_file_record_async_with_accounting(
             &self.volume.fs.inner.objects,
             self.root.file_table,

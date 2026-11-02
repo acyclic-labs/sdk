@@ -10,7 +10,7 @@ pub(super) async fn lookup_paths<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(crate::kernel::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
-    let mut scope = accounting.allocation_scope();
+    let mut scope = accounting.allocation_scope()?;
     let result = async {
         let mut checkout = workspace
             .open_checkout(
@@ -54,8 +54,8 @@ pub(super) async fn read_selected<
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
@@ -96,7 +96,8 @@ pub(super) async fn read_selected<
             scope.keep();
         }
         result
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 
@@ -116,8 +117,8 @@ pub(super) async fn read_range<
     let mut accounting = work.accounting(cancellation);
     let unchanged_since =
         unchanged_since.filter(|original| selector != GenerationSelector::Exact(*original));
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
@@ -171,7 +172,8 @@ pub(super) async fn read_range<
             scope.keep();
         }
         result
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 
@@ -190,8 +192,8 @@ pub(super) async fn matches_content<
     cancellation: &CancellationToken,
 ) -> W::Output<bool, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(
@@ -247,7 +249,8 @@ pub(super) async fn matches_content<
         }
         .await;
         authorize(workspace, result, &mut scope, cancellation).await
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 
@@ -263,8 +266,8 @@ pub(super) async fn read_link<
     cancellation: &CancellationToken,
 ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
@@ -283,7 +286,8 @@ pub(super) async fn read_link<
             scope.keep();
         }
         result
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 
@@ -337,13 +341,14 @@ pub(super) async fn stat<
     cancellation: &CancellationToken,
 ) -> W::Output<WorkspaceStat, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = lookup_stat(workspace, selector, path, &mut scope, cancellation)
             .await
             .and_then(|value| value.ok_or(WorkspaceError::NotFound));
         authorize(workspace, result, &mut scope, cancellation).await
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 
@@ -361,8 +366,8 @@ pub(super) async fn list<
     cancellation: &CancellationToken,
 ) -> W::Output<(crate::kernel::DirectoryPage, crate::AuthorityAllocation), WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
@@ -388,7 +393,8 @@ pub(super) async fn list<
             scope.keep();
         }
         result
-    };
+    }
+    .await;
     let result = result.map(|(mut page, allocation)| {
         page.work = accounting.spent();
         (page, allocation)
@@ -411,8 +417,8 @@ pub(super) async fn plan<
     cancellation: &CancellationToken,
 ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
-    let result = {
-        let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
@@ -480,7 +486,8 @@ pub(super) async fn plan<
             scope.keep();
         }
         result
-    };
+    }
+    .await;
     work.finish(result, &accounting)
 }
 

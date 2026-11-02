@@ -178,7 +178,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
     // Withdraw a suspended operation with real temporary backing. Its owner
     // drops before scope cleanup; completed work and earlier storage remain.
     let mut operation = Box::pin(async {
-        let mut scope = accounting.allocation_scope();
+        let mut scope = accounting.allocation_scope()?;
         let mut temporary = crate::kernel::Owned::<Vec<u8>>::allocate(512, &mut scope)?;
         temporary.value.push(9);
         scope.charge_items(3)?;

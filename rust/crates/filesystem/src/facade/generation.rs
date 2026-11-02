@@ -191,7 +191,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ) -> Result<(ObjectId, Head), FsError> {
         // Head payload and replay storage retire after decoding the scalar root.
         // Preserve earlier scratch and independently retained provider backing.
-        let mut scope = accounting.allocation_scope();
+        let mut scope = accounting.allocation_scope()?;
         let authority_id = volume_authority_id(self.id);
         let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut scope)?;
         let result = self

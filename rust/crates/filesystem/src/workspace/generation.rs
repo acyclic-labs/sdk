@@ -60,28 +60,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = {
-            let mut accounting = accounting.allocation_scope();
-            async {
-                if !self
-                    .workspace
-                    .volume
-                    .fs
-                    .workspace_generation_is_retained(
-                        &self.workspace.volume,
-                        self.id,
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await?
-                {
-                    self.pin_with_accounting(identity.as_ref(), &mut accounting, cancellation)
-                        .await?;
-                }
-                Ok(())
+        let result = async {
+            let mut accounting = accounting.allocation_scope()?;
+            if !self
+                .workspace
+                .volume
+                .fs
+                .workspace_generation_is_retained(
+                    &self.workspace.volume,
+                    self.id,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?
+            {
+                self.pin_with_accounting(identity.as_ref(), &mut accounting, cancellation)
+                    .await?;
             }
-            .await
-        };
+            Ok(())
+        }
+        .await;
         work.finish(result, &accounting)
     }
 
@@ -185,8 +183,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<(Vec<GenerationId>, crate::AuthorityAllocation), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = {
-            let mut scope = accounting.allocation_scope();
+        let result = async {
+            let mut scope = accounting.allocation_scope()?;
             let result = async {
                 let volume = &self.workspace.volume;
                 let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
@@ -212,7 +210,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                 scope.keep();
             }
             result
-        };
+        }
+        .await;
         work.finish(result, &accounting)
     }
 
@@ -484,11 +483,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(WorkspaceName, Generation<A, O>), WorkspaceError> {
-        let mut accounting = accounting.allocation_scope();
+        let mut accounting = accounting.allocation_scope()?;
         let result = async {
             let identity = WorkspaceName::with_accounting(identity, &mut accounting)?;
             {
-                let mut temporary = accounting.allocation_scope();
+                let mut temporary = accounting.allocation_scope()?;
                 let label = copy_workspace_label(&identity, &mut temporary)?;
                 let publication = self
                     .publication_closure
