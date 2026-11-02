@@ -41,6 +41,68 @@ fn csi_replies_borrow_parameters_and_reuse_frame_storage() {
 }
 
 #[test]
+fn passthrough_replies_reuse_storage_and_refuse_embedded_nesting() {
+    // Generated protocol operands exercise the shared wire framer; these do
+    // not claim to be a captured response from a particular terminal.
+    let body = b"\x1b[?62;4c\x1b_Ga=q,x=1,i=314159;OK\x1b\\";
+    let wrapped = Multiplexer::Tmux.wrap(body);
+    for chunk in [1, 2, 7, wrapped.len()] {
+        let mut decoder = Decoder::default();
+        // Warm both retained buffers; the first outer envelope is larger
+        // than the inner frame and can grow either alternating allocation.
+        decoder.feed(&wrapped).unwrap();
+        decoder.feed(&wrapped).unwrap();
+        let measured = acyclic_test_support::measure(|| {
+            for bytes in wrapped.chunks(chunk) {
+                decoder.feed(bytes).unwrap();
+            }
+        });
+        assert_eq!(measured.count_total, 0, "chunk {chunk}");
+        assert!(decoder.replies().sentinel);
+        assert_eq!(decoder.replies().sixel, Some(true));
+        assert_eq!(decoder.replies().graphics, Some(true));
+        assert!(decoder.take_events().is_empty());
+
+        // Each decoded field still needs the exact original query ID. A
+        // negative response settles the same capability without becoming input.
+        decoder
+            .feed(&Multiplexer::Tmux.wrap(b"\x1b_Gi=3141590;OK\x1b\\"))
+            .unwrap();
+        assert_eq!(decoder.replies().graphics, Some(true));
+        decoder.take_events();
+        decoder
+            .feed(&Multiplexer::Tmux.wrap(b"\x1b_Gi=314159;ENOTSUP\x1b\\"))
+            .unwrap();
+        assert_eq!(decoder.replies().graphics, Some(false));
+        assert!(decoder.take_events().is_empty());
+    }
+
+    let nested = Multiplexer::Tmux.wrap(b"\x1b_Gi=314159;OK\x1b\\");
+    for prefix in [b"".as_slice(), b"\x1b[?62;4c"] {
+        let mut body = prefix.to_vec();
+        body.extend_from_slice(&nested);
+        body.extend_from_slice(b"\x1b[?0u");
+        let wrapped = Multiplexer::Tmux.wrap(&body);
+        for chunk in [1, 7, wrapped.len()] {
+            let mut decoder = Decoder::default();
+            for bytes in wrapped.chunks(chunk) {
+                decoder.feed(bytes).unwrap();
+            }
+            assert_eq!(decoder.replies().graphics, None, "nested reply refused");
+            assert_eq!(decoder.replies().keyboard_flags, Some(0), "body progresses");
+            assert_eq!(decoder.replies().sentinel, !prefix.is_empty());
+            assert!(decoder.take_events().is_empty());
+        }
+    }
+
+    // Omitting the outer envelope recreates the old recursive interpretation:
+    // the same inner graphics reply would be accepted by the same decoder.
+    let mut unwrapped = Decoder::default();
+    unwrapped.feed(&nested).unwrap();
+    assert_eq!(unwrapped.replies().graphics, Some(true));
+}
+
+#[test]
 fn multiplexer_frames_append_without_temporary_allocations() {
     struct FailedSend<'a> {
         batch: &'a [u8],

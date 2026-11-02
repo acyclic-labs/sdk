@@ -135,6 +135,8 @@ pub struct Probe {
     /// Decoded replies, including those received after the startup sentinel.
     pub replies: ProbeReplies,
     frame: Vec<u8>,
+    passthrough: Vec<u8>,
+    unwrapping: bool,
     state: u8,
     pub(crate) input: VecDeque<Vec<u8>>,
     discarding: bool,
@@ -263,26 +265,37 @@ impl Probe {
             return;
         }
         if self.frame.starts_with(b"\x1bPtmux;") && parse {
-            let frame = std::mem::take(&mut self.frame);
+            if self.unwrapping {
+                self.frame.clear();
+                self.state = 0;
+                return;
+            }
+            let mut frame =
+                std::mem::replace(&mut self.frame, std::mem::take(&mut self.passthrough));
             self.state = 0;
-            let body = frame
-                .get(7..frame.len().saturating_sub(2))
-                .unwrap_or_default();
             let mut previous_escape = false;
-            let mut decoded = Vec::new();
-            for &byte in body {
+            let mut decoded = 0;
+            // Unescape into the original envelope allocation. The destination
+            // always precedes unread bytes; the same framer consumes the body
+            // using the buffer retained from the preceding envelope.
+            for at in 7..frame.len().saturating_sub(2) {
+                let byte = frame[at];
                 if byte == 0x1b && !previous_escape {
                     previous_escape = true;
                     continue;
                 }
-                decoded.push(byte);
+                frame[decoded] = byte;
+                decoded += 1;
                 previous_escape = false;
             }
-            // A tmux envelope is terminal traffic, never user input. One level
-            // is sufficient; nested envelopes are discarded without recursion.
-            if !decoded.starts_with(b"\x1bPtmux;") {
-                self.feed(&decoded);
-            }
+            frame.truncate(decoded);
+            // A tmux envelope is terminal traffic, never user input. Reject a
+            // nested envelope anywhere in this body, including after a reply.
+            self.unwrapping = true;
+            self.feed(&frame);
+            self.unwrapping = false;
+            frame.clear();
+            self.passthrough = frame;
             return;
         }
         let mut handler = ReplyHandler {
@@ -298,7 +311,7 @@ impl Probe {
                     && let Some((header, status)) = body.split_once(';')
                     && header
                         .split(',')
-                        .any(|field| field == format!("i={GRAPHICS_ID}"))
+                        .any(|field| field.strip_prefix("i=") == Some(GRAPHICS_ID))
                 {
                     handler.replies.graphics = Some(status == "OK");
                     handler.recognized = true;
