@@ -116,7 +116,10 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
                 ]
                 .iter()
                 .any(|prefix| value.trim().starts_with(prefix))
-                    && cwd.join(value.as_str()).exists()
+                    && !value.starts_with("file://")
+                    && value.as_str() != "~"
+                    && !value.starts_with("~/")
+                    && !(cfg!(windows) && value.starts_with("~\\"))
             }
             _ => false,
         };
