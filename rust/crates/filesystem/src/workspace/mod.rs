@@ -32,7 +32,7 @@ const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 pub(crate) mod access;
 #[cfg(all(test, feature = "memory"))]
 mod access_tests;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 mod accounting_tests;
 mod changed_paths;
 mod checkout;
