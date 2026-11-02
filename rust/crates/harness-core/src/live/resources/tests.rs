@@ -339,6 +339,27 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
             let record = read(&provider, &path, 1).await;
             assert_eq!(record.sequence, 1);
             let placement = Placement::project(&agent, &account, &path, &record).unwrap();
+            let project = || Placement::project(&agent, &account, &path, &record).unwrap();
+            let admitted = acyclic_test_support::measure(|| {
+                std::hint::black_box(
+                    crate::machines::MachineBinding::decode_selected(&agent, &path, &record)
+                        .unwrap(),
+                );
+            });
+            let projected = acyclic_test_support::measure(|| {
+                std::hint::black_box(project());
+            });
+            assert_eq!(
+                (projected.count_total, projected.bytes_total),
+                (admitted.count_total, admitted.bytes_total)
+            );
+            // An extra decode is the allocating negative control: retaining
+            // original source metadata must pay only for the one binding.
+            let duplicate = acyclic_test_support::measure(|| {
+                std::hint::black_box((project(), project()));
+            });
+            assert!(duplicate.count_total > projected.count_total);
+            assert!(duplicate.bytes_total > projected.bytes_total);
             assert_eq!(placement.binding.machine, sandbox);
             assert_eq!(placement.source.origin, record.origin.as_str());
             assert!(std::ptr::eq(
