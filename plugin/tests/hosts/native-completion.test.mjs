@@ -21,6 +21,15 @@ test('Claude failed tool results survive a later successful parent terminal', as
  const siblings=structuredClone(record.events);
  siblings[0].message.content.push({...siblings[1].message.content[0],is_error:true});
  assert.throws(()=>assertNativeCompletion(record.host,result(siblings),record.answer),{code:'NATIVE_HOST_TOOL_FAILED'});
+ // Earlier native turn failures must survive a later successful result, too.
+ const terminal=record.events.at(-1);
+ for(const changed of [{...terminal,is_error:true},{...terminal,subtype:'error_during_execution'}]) {
+  assert.throws(()=>assertNativeCompletion(record.host,result([changed,...record.events]),record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_MODEL_FAILED');
+   assert.deepEqual(error.cause,changed);
+   return true;
+  });
+ }
 });
 
 // Real pinned-host output, with event deletion as the missing-terminal control.
