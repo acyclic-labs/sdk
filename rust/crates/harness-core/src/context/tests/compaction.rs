@@ -229,6 +229,29 @@ fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> R
     };
     let (retained, reference) = compact(&source, 3, 2)?;
     let cancellation = acyclic_fs::CancellationToken::new();
+    // Independent serialized-source oracle: admitting a full-prefix summary
+    // needs one source hash. A second hash of the identical prefix exhausts
+    // this original budget, while a changed digest must still be refused.
+    let mut hash_budget = owned_context_budget();
+    hash_budget.bytes_hashed = crate::contract::canonical_json_bytes(&source)?.len() as u64;
+    let hash_io = crate::executor::PreparationIo::from_budget(hash_budget, &cancellation)?;
+    let full_summary = summary(&source, source.messages.len())?;
+    let (full_retained, full_reference) =
+        compact_projection(&source, 3, Some(full_summary.clone()), Some(&hash_io))?;
+    assert_eq!(full_reference.source_digest, full_summary.source_digest);
+    assert_eq!(full_retained, compact(&source, 3, source.messages.len())?.0);
+    assert_eq!(hash_io.remaining()?.bytes_hashed, 0);
+    assert!(crate::executor::preparation_digest(&source, Some(&hash_io)).is_err());
+    let hash_hold = hash_io.guard_owned(hash_io.owned_bytes()?)?;
+    drop(full_retained);
+    drop(full_reference);
+    drop(hash_hold);
+    assert_eq!(hash_io.owned_bytes()?, 0);
+    let hash_io = crate::executor::PreparationIo::from_budget(hash_budget, &cancellation)?;
+    let mut changed_summary = full_summary;
+    changed_summary.source_digest[0] ^= 1;
+    assert!(compact_projection(&source, 3, Some(changed_summary), Some(&hash_io)).is_err());
+    assert_eq!(hash_io.owned_bytes()?, 0);
     let io = crate::executor::PreparationIo::from_budget(owned_context_budget(), &cancellation)?;
     validate_compaction(&reference, &source, &retained, Some(&io))?;
     assert_eq!(io.owned_bytes()?, 0);
