@@ -63,7 +63,7 @@ pub mod wire;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 /// Largest accepted bearer credential, in bytes.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+pub use acyclic_auth::credential::MAX_CREDENTIAL_BYTES as MAX_BEARER_TOKEN_BYTES;
 
 pub(crate) fn valid_token(token: &str) -> bool {
     acyclic_auth::credential::valid_credential(token)

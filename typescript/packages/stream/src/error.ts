@@ -1,10 +1,19 @@
-import { publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import { publicGrpcErrorCode, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 
 /** Project canonical service codes through the Rust-owned public vocabulary. */
 export function streamFailure(rawCode: string, message: string, operation: string, status?: number): StreamError | undefined {
-  const code = publicHttpErrorCode(rawCode, operation === "read_commit" ? "commits/read" : operation);
+  const code = publicHttpErrorCode(rawCode, publicRoute(operation));
   return code === undefined ? undefined : new StreamError(code as StreamFailureCode, message, status);
+}
+
+export function grpcStreamError(status: number, message: string, operation: string): StreamError {
+  const code = publicGrpcErrorCode(status, message, publicRoute(operation));
+  return new StreamError((code ?? "unavailable") as StreamFailureCode, message);
+}
+
+function publicRoute(operation: string): string {
+  return operation === "read_commit" ? "commits/read" : operation;
 }
 
 export function streamError(error: unknown, operation: string): Error {

@@ -197,6 +197,3 @@ async function boundedText(response: Response, maximum: number | undefined, size
   return decoder.decode(bytes);
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
-
-/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;

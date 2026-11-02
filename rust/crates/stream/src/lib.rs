@@ -145,8 +145,8 @@ pub use local::replay_model::{
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+/// Largest bearer credential, in bytes, that an SDK client accepts.
+pub use acyclic_auth::credential::MAX_CREDENTIAL_BYTES as MAX_BEARER_TOKEN_BYTES;
 
 /// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
