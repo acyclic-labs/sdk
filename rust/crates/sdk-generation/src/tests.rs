@@ -586,6 +586,18 @@ fn restoration_rejects_junction_ancestors_before_writing() {
 #[test]
 fn file_hashes_keep_existing_artifact_and_tool_identities() {
     use proptest::prelude::*;
+    struct ReadFailureOnce {
+        file: fs::File,
+        failure: Option<std::io::ErrorKind>,
+    }
+    impl std::io::Read for ReadFailureOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            match self.failure.take() {
+                Some(kind) => Err(kind.into()),
+                None => std::io::Read::read(&mut self.file, buffer),
+            }
+        }
+    }
     let (root_directory, root) = test_root("sha256-equivalence");
     let path = root.join("input.bin");
     // The full branch retains every original byte vector with fewer shrink trees.
@@ -626,13 +638,23 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
         check(&bytes).unwrap();
     }
     let copied = root.join("copied.bin");
-    let mut input = fs::File::open(&path).unwrap();
+    let mut input = ReadFailureOnce {
+        file: fs::File::open(&path).unwrap(),
+        failure: Some(std::io::ErrorKind::Interrupted),
+    };
     let mut output = fs::File::create(&copied).unwrap();
     let (digest, length) = copy_and_hash(&mut input, &mut output, 65537, "member-byte").unwrap();
     assert_eq!(length, 65537);
     assert_eq!(digest, sha256_file(&path).unwrap());
     assert_eq!(fs::read(&copied).unwrap(), fs::read(&path).unwrap());
     drop((input, output));
+    let mut input = ReadFailureOnce {
+        file: fs::File::open(&path).unwrap(),
+        failure: Some(std::io::ErrorKind::PermissionDenied),
+    };
+    let error = copy_and_hash(&mut input, &mut std::io::sink(), 65537, "member-byte").unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    drop(input);
     let mut input = fs::File::open(&path).unwrap();
     let mut output = fs::File::create(&copied).unwrap();
     let error = copy_and_hash(&mut input, &mut output, 16384, "member-byte").unwrap_err();
