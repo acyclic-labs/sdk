@@ -41,7 +41,7 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
     } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
-    if let Error::ModelUnavailable { excerpt, .. } = &error {
+    if let Error::ModelUnavailable { excerpt, .. } | Error::Invalid(excerpt) = &error {
         assert!(excerpt.len() <= crate::EXCERPT_BYTES);
         assert!(excerpt.chars().all(|character| !character.is_control()));
     }
@@ -73,8 +73,9 @@ pub fn assert_http_failure_invariants(input: &[u8]) {
             "escape mutation changed JSON meaning"
         );
         assert_eq!(
-            decode(status, &canonical, canonical.len().max(1), false),
-            decode(status, &escaped, escaped.len().max(1), false)
+            decode(status, &canonical, canonical.len().max(1), false).0,
+            decode(status, &escaped, escaped.len().max(1), false).0,
+            "JSON spelling may change the original excerpt, never its class"
         );
     }
 }
@@ -125,6 +126,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/proxy-rate").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/gemini-signature").as_slice(),
     ] {
         assert_http_failure_invariants(input);
     }

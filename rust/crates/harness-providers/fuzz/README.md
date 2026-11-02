@@ -44,3 +44,14 @@ The proxy response is not a model-server protocol response. The named recorded
 HTTP-refusal replay passed with equivalent escapes, chunking, producer loss and
 native funding/cancellation controls at its recorded revision. Sanitizer campaigns
 remain separate obligations.
+
+The Gemini signature-refusal seed is status400 followed by the unchanged
+captured response in `src/fixtures/gemini-captured-refusal.json`; its producing
+source and original body hash are documented in `src/fixtures/captured-gemini.md`.
+The same recorded-refusal control retains its bounded original diagnostic under
+all chunkings; `shared_refusal_admission_retains_only_the_original_error` checks
+native diagnostic custody and refund with that same body. Equivalent JSON
+escape mutations preserve classification, while their raw excerpts may differ.
+The real-socket `captured_gemini_terminal_and_refusal_keep_original_evidence`
+control separately exercises public registry selection, execution, journal replay
+and usage projection with the captured success and refusal bodies.

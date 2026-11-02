@@ -1,10 +1,12 @@
-//! Regression mutations of the actual Linux llama.cpp refusal, not fabricated fixtures.
+//! Regression mutations of captured llama.cpp and Gemini refusals.
 use crate::{Error, HttpResponse};
 use acyclic_harness_core::ModelTransportFailure;
 use bytes::Bytes;
 
-fn response(status: u16, padding: usize) -> HttpResponse {
-    let recorded = include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
+const CONTEXT: &[u8] =
+    include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
+
+fn response(status: u16, padding: usize, recorded: &'static [u8]) -> HttpResponse {
     HttpResponse {
         status,
         request_id: None,
@@ -19,10 +21,10 @@ fn response(status: u16, padding: usize) -> HttpResponse {
 #[tokio::test]
 async fn context_classification_uses_protocol_budget_and_preserves_status_classes() {
     assert!(matches!(
-        crate::http_failure(response(400, 1024), 2048, None).await,
+        crate::http_failure(response(400, 1024, CONTEXT), 2048, None).await,
         Error::ModelContextOverflow
     ));
-    let recorded = include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
+    let recorded = CONTEXT;
     let fragmented = HttpResponse {
         status: 400,
         request_id: None,
@@ -38,11 +40,11 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         Error::ModelContextOverflow
     ));
     assert!(matches!(
-        crate::http_failure(response(400, 1024), 512, None).await,
+        crate::http_failure(response(400, 1024, CONTEXT), 512, None).await,
         Error::Invalid(_)
     ));
     assert!(matches!(
-        crate::http_failure(response(429, 0), 2048, None).await,
+        crate::http_failure(response(429, 0, CONTEXT), 2048, None).await,
         Error::ModelUnavailable {
             failure: ModelTransportFailure::Status(429),
             ..
@@ -73,17 +75,31 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    for status in [400, 401, 403, 404, 408, 413, 429, 503] {
+    const GEMINI: &[u8] = include_bytes!("../fixtures/gemini-captured-refusal.json");
+    for (status, recorded) in [400, 401, 403, 404, 408, 413, 429, 503]
+        .into_iter()
+        .map(|status| (status, CONTEXT))
+        .chain([(400, GEMINI), (413, GEMINI)])
+    {
         let ordinary = crate::diagnostic::rejection(
-            crate::http_failure(response(status, 0), 2048, None).await,
+            crate::http_failure(response(status, 0, recorded), 2048, None).await,
         );
-        let native = crate::http_failure(response(status, 0), 2048, Some(&work)).await;
+        let native = crate::http_failure(response(status, 0, recorded), 2048, Some(&work)).await;
         assert_eq!(native.code(), ordinary.code());
         assert_eq!(native.to_string(), ordinary.to_string());
         if let Error::ModelDiagnostic {
             message, custody, ..
         } = &native
         {
+            if matches!(status, 400 | 413) {
+                assert!(message.contains(&status.to_string()), "{message}");
+                assert!(
+                    message.contains("Function call is missing a thought_signature"),
+                    "{message}"
+                );
+                assert!(message.len() <= crate::EXCERPT_BYTES);
+                assert!(message.chars().all(|character| !character.is_control()));
+            }
             let hold = custody.as_ref().expect("original diagnostic custody");
             assert!(hold.work().shares_allocation_context(&work));
             assert_eq!(hold.bytes(), message.capacity() as u64);
