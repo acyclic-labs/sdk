@@ -33,6 +33,13 @@ fuzz_target!(|input: &[u8]| {
     {
         assert!(matches!(pages.outcome, Some(Outcome::Failed { .. })));
     }
+    if input == include_bytes!("../corpus/native_reply/claude-code-completed.jsonl") {
+        // Derived JSON representation, with the captured member/value unchanged.
+        // The production JSON decoder owns escapes, including in member names.
+        let captured = std::str::from_utf8(input).expect("recorded Claude terminal");
+        let escaped = captured.replace("\"session_id\"", r#""sess\u0069on\u005fid""#);
+        assert_eq!(session(escaped.as_bytes(), 1), session(input, 8192),);
+    }
 });
 
 // Exercise the production closed-log resume fold as well as the live reply

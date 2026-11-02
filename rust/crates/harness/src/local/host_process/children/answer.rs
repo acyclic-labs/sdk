@@ -36,10 +36,6 @@ impl SessionId {
     pub(crate) fn push(&mut self, bytes: &[u8]) {
         for line in self.frames.push(bytes) {
             let Ok(line) = line else { continue };
-            // Decode only frames that can name a native session.
-            if !(line.contains("_id") || line.contains("session")) {
-                continue;
-            }
             let Some((_, event)) = decode(Ok(line)) else {
                 continue;
             };

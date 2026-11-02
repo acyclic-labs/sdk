@@ -14,6 +14,9 @@ fixtures. This target does not exercise process launch or durable settlement.
 The same target also includes the production closed-log resume-id fold. It
 compares fragmented reads with pages, including the parser-only EOF delimiter
 for a complete final JSON value without a newline. Artifact bytes are unchanged.
+The original Claude seed also derives an equivalent escaped `session_id` member
+and checks it through the same fold. This is a JSON representation negative
+control, not an additional captured response.
 
 Run from the repository root with
 `cargo fuzz run native_reply --fuzz-dir rust/crates/harness/fuzz-native-journal`.
