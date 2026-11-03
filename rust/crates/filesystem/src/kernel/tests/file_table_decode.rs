@@ -1,82 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-#[path = "file_table_decode/reference.rs"]
-mod reference;
-
-#[derive(Clone, Debug, PartialEq)]
-enum Failure {
-    Decode(CanonicalDecodeError),
-    Denied,
-}
-
-impl From<CanonicalDecodeError> for Failure {
-    fn from(error: CanonicalDecodeError) -> Self {
-        Self::Decode(error)
-    }
-}
-
-fn event(step: ReadAllocationStep) -> (u8, u64, u64) {
-    match step {
-        ReadAllocationStep::Allocate { bytes, operations } => (0, bytes, operations),
-        ReadAllocationStep::ReserveFailed(_) => (1, 0, 0),
-        ReadAllocationStep::Capacity {
-            admitted_bytes,
-            actual_bytes,
-        } => (2, admitted_bytes, actual_bytes),
-        ReadAllocationStep::CheckCopy(bytes) => (9, bytes, 0),
-        ReadAllocationStep::BeforeCopy(bytes) => (3, bytes, 0),
-        ReadAllocationStep::Copied(bytes) => (4, bytes, 0),
-        ReadAllocationStep::BeforeHash(bytes) => (5, bytes, 0),
-        ReadAllocationStep::Hashed(bytes) => (6, bytes, 0),
-        ReadAllocationStep::BeforeItem => (7, 0, 0),
-        ReadAllocationStep::Item => (8, 0, 0),
-    }
-}
-
-fn observed<const ORDER: bool, const LEGACY: bool>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-    deny_at: usize,
-) -> (Result<FileTablePage, Failure>, Vec<(u8, u64, u64)>) {
-    let mut events = Vec::new();
-    let mut observe = |step| {
-        events.push(event(step));
-        if events.len() > deny_at {
-            Err(Failure::Denied)
-        } else {
-            Ok(())
-        }
-    };
-    let result = if LEGACY {
-        reference::decode(bytes, limits, &mut observe)
-    } else if ORDER {
-        decode_file_table_page(bytes, limits, &mut observe)
-    } else {
-        decode_page::<false, Failure>(bytes, limits, &mut observe)
-    };
-    (result, events)
-}
-
-fn compare<const ORDER: bool>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> proptest::test_runner::TestCaseResult {
-    // Independently derive every denied prefix from the complete legacy trace:
-    // denial at event k must return Denied with exactly events [0..=k].
-    let (complete, tape) = observed::<false, true>(bytes, limits, usize::MAX);
-    for denied in 0..=tape.len() {
-        let (actual, events) = observed::<ORDER, false>(bytes, limits, denied);
-        let expected = if denied < tape.len() {
-            Err(Failure::Denied)
-        } else {
-            complete.clone()
-        };
-        prop_assert_eq!(actual, expected);
-        prop_assert_eq!(events.as_slice(), &tape[..(denied + 1).min(tape.len())]);
-    }
-    Ok(())
-}
+use super::fuzz::{Failure, compare, observed};
 
 fn record(key: u8) -> FileRecord {
     let object = |kind| digest_object(kind, [key; 32]);
@@ -84,7 +9,7 @@ fn record(key: u8) -> FileRecord {
         0 => (
             FileKind::Regular,
             FilePayload::Regular {
-                logical_bytes: 1,
+                logical_bytes: u64::from(key) + 1,
                 extents: object(ObjectKind::ExtentPage),
             },
         ),
@@ -122,7 +47,7 @@ fn record(key: u8) -> FileRecord {
         bindings: (key % 2 != 0).then(|| object(ObjectKind::BindingPage)),
         file_id: FileId::from_bytes([key; 16]),
         kind,
-        link_count: 1,
+        link_count: u64::from(key) + 1,
         metadata: object(ObjectKind::Metadata),
         payload,
     }
@@ -191,8 +116,8 @@ proptest! {
             bytes[index % length] = value;
         }
         let limits = DecodeLimits { maximum_page_items: maximum, ..DecodeLimits::default() };
-        compare::<true>(&bytes, limits)?;
-        compare::<true>(&raw, limits)?;
+        compare::<true>(&bytes, limits).map_err(proptest::test_runner::TestCaseError::fail)?;
+        compare::<true>(&raw, limits).map_err(proptest::test_runner::TestCaseError::fail)?;
     }
 }
 
@@ -210,7 +135,10 @@ fn oracle_detects_missing_order_check_and_keeps_error_precedence() {
     let bytes = encoder.finish();
     let limits = DecodeLimits::default();
     compare::<true>(&bytes, limits).unwrap();
-    assert!(compare::<false>(&bytes, limits).is_err());
+    let rejected = std::panic::catch_unwind(|| super::fuzz::check::<false>(&bytes, limits, 0));
+    let message = rejected.unwrap_err();
+    let message = message.downcast_ref::<String>().unwrap();
+    assert!(message.contains("decoder result differs"), "{message}");
     for length in 0..bytes.len() {
         compare::<true>(&bytes[..length], limits).unwrap();
     }
