@@ -147,7 +147,7 @@ proptest! {
             prop_assert_eq!(recall.editor.text(), entries.last().map_or("second", String::as_str));
             input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
             prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
-            prop_assert_eq!(input.history().entries(), entries);
+            prop_assert_eq!(input.history().entries(), entries.as_slice());
             input.key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), 7, 80);
             input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 8, 80);
             prop_assert_eq!(input.editor.text(), entries.last().map_or("second", String::as_str));
