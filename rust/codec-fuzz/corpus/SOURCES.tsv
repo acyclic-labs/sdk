@@ -1882,6 +1882,11 @@ harness_codecs/agent-v13-closed	89	ca3bf7bb389ce7a6d3d7e385ad4d27d557563e13f61d8
 harness_codecs/agent-v13-effect	89	2e07786be84096440938de3ff2a35ae8ee1e317146899fa2fddd32014a49dce0	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-checkpoint	253	e713d0c96d26caf2d3140bdc482f05d093766bfaef0e040789b8e15641c736af	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-checkpoint-envelope	1001	235cb8462a5525286dfc514ead7f728a7ff61025cff33f91df9c02f9a0413fc6	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-spawn-history	719	29f1f5eadb1053c01200200fc4ee0567917b6fe7e6cb54e421d98df86c74e13d	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-restore-files	411	af3f6775158a42286460dfab112ae79425deece28b4778e74904e45d43b460fb	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-restore-context	143	2ca0190b380abb7b0124bf87ec71569ae2c57f947c06db7d5c6759725727c843	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-restore-both	410	eaf8a5cec4c2eb7dc670582134df7b21fa5d1b9b85fd9315b42ed8a7f71e1c65	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v13-conversation-restore	1487	34b1eea38dbfb17249d0a72c534ceed23202e40d4f706799dac4737478ee5c4d	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-status-approval-bound	182	63675becd6d15ac8d185e89546cc81f9ce253f825025cd279d9a55705b86997c	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-checkpoint-approval-bound	397	4771bd9a51245bae7da55fd959cdbac2aa5acd263dff26f77a414009f26e0d0a	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v13-checkpoint-envelope-approval-bound	1490	8cf1c8be4505a46219cbc8ce71597d621c4994eb351f5b8f906f1f17507ff992	harness-core canonical agent record, effect and checkpoint encoders
