@@ -192,6 +192,77 @@ pub(crate) fn watch(steps: u16, extended: bool) {
     );
 }
 
+/// A ready result is insufficient when the pending consumer is never woken.
+#[cfg(loom)]
+pub(crate) fn watch_progress() {
+    use std::{
+        future::Future,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Wake, Waker},
+    };
+
+    struct Flag(AtomicBool);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    macro_rules! progress {
+        ($channel:path) => {{
+            let (sender, mut receiver) = $channel(0u8);
+            let flag = Arc::new(Flag(AtomicBool::new(false)));
+            let waker = Waker::from(Arc::clone(&flag));
+            let mut cx = Context::from_waker(&waker);
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            sender.send_modify(|value| *value += 1);
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "publication lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            drop(changed);
+
+            // Cancelling a pending future must leave the next wait usable.
+            let mut cancelled = Box::pin(receiver.changed());
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+            drop(cancelled);
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            sender.send_replace(7);
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "replacement lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            drop(changed);
+
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            drop(sender);
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "publisher loss lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Err(_))
+            ));
+        }};
+    }
+    progress!(tokio::sync::watch::channel);
+    progress!(super::watch::channel);
+}
+
 #[cfg(test)]
 #[cfg(not(loom))]
 #[test]
