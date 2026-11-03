@@ -4,7 +4,7 @@ use super::*;
 async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-    let root = tempfile::tempdir().map_err(storage)?;
+    let root = tempfile::tempdir_in(".").map_err(storage)?;
     let skill = root.path().join("skills/greet2/SKILL.md");
     std::fs::create_dir_all(skill.parent().unwrap()).map_err(storage)?;
     std::fs::write(
@@ -38,7 +38,12 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         root.path().join("retained"),
         volume,
         None,
-        vec![root.path().join("skills")],
+        vec![
+            PathBuf::from(root.path().file_name().ok_or_else(|| {
+                Error::Invalid("native skill fixture has no directory name".into())
+            })?)
+            .join("skills"),
+        ],
     )?;
     let skills = sources
         .user_catalog(&mut crate::context::DiscoveryWork::default())?
