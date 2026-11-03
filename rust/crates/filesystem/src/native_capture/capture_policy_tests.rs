@@ -713,31 +713,46 @@ async fn content_hints_override_metadata_hints_in_either_order()
     Ok(())
 }
 
-#[tokio::test]
-async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
--> Result<(), Box<dyn std::error::Error>> {
+// Property: any subset/order/duplication of parent creation hints leaves the
+// same renamed FileId and complete ancestry, within the event/path bound.
+#[test]
+fn rename_parent_hints_are_confluent() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let initial = runtime.block_on(checkout(&[("/old.txt", "old")]))?;
     for hints in [vec![], vec![0], vec![1], vec![0, 1]] {
-        rename_with_hints(2, hints, false).await?;
+        runtime.block_on(rename_with_hints(&initial, 2, hints, false))?;
     }
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 32,
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::rename_parent_hints_are_confluent"
+        )),
+        ..proptest::test_runner::Config::default()
+    });
+    runner
+        .run(
+            &(
+                1usize..5,
+                proptest::collection::vec(0usize..4, 0..8),
+                proptest::bool::ANY,
+            ),
+            |(depth, hints, rename_first)| {
+                runtime
+                    .block_on(rename_with_hints(&initial, depth, hints, rename_first))
+                    .unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
     Ok(())
 }
 
-// Property: any subset/order/duplication of parent creation hints leaves the
-// same renamed FileId and complete ancestry, within the event/path bound.
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    #[test]
-    fn rename_parent_hints_are_confluent(
-        depth in 1usize..5,
-        hints in proptest::collection::vec(0usize..4, 0..8),
-        rename_first in proptest::bool::ANY,
-    ) {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(rename_with_hints(depth, hints, rename_first)).unwrap();
-    }
-}
-
 async fn rename_with_hints(
+    initial: &crate::facade::MemoryCheckout,
     depth: usize,
     hints: Vec<usize>,
     rename_first: bool,
@@ -756,7 +771,13 @@ async fn rename_with_hints(
         source.path().join(destination.trim_start_matches('/')),
         b"new",
     )?;
-    let mut checkout = checkout(&[("/old.txt", "old")]).await?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut checkout = initial.private_candidate(
+        &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+        &cancellation,
+    )?;
     let before = checkout
         .lookup_no_follow(
             &path("/old.txt")?,
