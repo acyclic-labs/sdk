@@ -31,6 +31,11 @@ def run(step, diagnostic=None):
 
 
 def main():
+    selection = sys.argv[1:]
+    if selection and (len(selection) != 2 or selection[0] != '--only'
+                      or selection[1] not in ['cache-version', 'summary-version',
+                                             'snapshot-identity', 'snapshot-generation']):
+        raise RuntimeError('select mutation: expected --only GUARD; recovery: python3 mutations/resource-codecs.py --only snapshot-generation')
     run('original')
     for step, relative, before, after, diagnostic in [
         ('cache-version', 'executor/model_cache.rs',
@@ -41,7 +46,12 @@ def main():
         ('snapshot-identity', 'conversation/epochs/snapshot.rs',
          'if wire.epoch.key.digest_through(pending.through) != pending.summary {', 'if false {',
          'foreign snapshot preparation identity admitted'),
+        ('snapshot-generation', 'conversation/epochs/protocol.rs',
+         'if prepared.generation != generation {', 'if false {',
+         'foreign pending epoch generation admitted'),
     ]:
+        if selection and selection[1] != step:
+            continue
         production = root / 'rust/crates/harness-core/src' / relative
         original = production.read_bytes()
         source = original.decode()

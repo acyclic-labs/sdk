@@ -203,6 +203,18 @@ pub(super) fn check(bytes: &[u8]) {
         assert!(e::Snapshot::decode(&record, &source(), u64::MAX).is_err());
     }
     if let Some(pending) = state.pending() {
+        // Leave the epoch generation unchanged to reach the restored pending
+        // identity fence, rather than the earlier epoch/generation parity check.
+        let mut changed = original.clone();
+        changed["snapshot"]["pending"]["generation"] = (pending.generation ^ 1).into();
+        record.value = serde_json::to_vec(&changed).unwrap().into();
+        assert!(
+            matches!(
+                e::Snapshot::decode(&record, &source(), u64::MAX),
+                Err(e::SnapshotError::Transition(e::protocol::Refusal::Stale)),
+            ),
+            "foreign pending epoch generation admitted",
+        );
         let mut changed = original;
         changed["snapshot"]["pending"]["summary"][0] = (pending.summary[0] ^ 1).into();
         record.value = serde_json::to_vec(&changed).unwrap().into();

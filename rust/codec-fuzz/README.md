@@ -168,6 +168,10 @@ inputs, then removes each production admission guard while keeping the fuzz
 oracle unchanged. Rejection requires that guard's semantic diagnostic at the
 resource oracle's source location; an unrelated assertion, compiler or tool
 failure does not count.
+Use `--only snapshot-generation` (or another listed guard) to qualify a changed
+oracle without repeating unrelated mutation controls. The pending-generation
+challenge changes only the pending field, reaching `State::restore` through
+`Snapshot::decode` while leaving the earlier epoch parity fence satisfied.
 Corpus capture, executed coverage and mutation results must be recorded separately;
 the presence of a target does not establish complete format or state coverage.
 
