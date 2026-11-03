@@ -9,7 +9,6 @@ use acyclic_stream::{StreamSelection, wire};
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
-mod cancellation;
 mod checked;
 #[path = "../../stream-napi/src/eager.rs"]
 mod eager;

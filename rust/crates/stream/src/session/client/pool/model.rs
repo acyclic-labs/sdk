@@ -4,7 +4,7 @@ use super::*;
 mod follow_data;
 pub use follow_data::verify_follow_data;
 mod cancellation;
-pub use cancellation::verify_cancel_before_open;
+pub use cancellation::{verify_cancel_before_open, verify_cancelled_queued_open};
 
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {

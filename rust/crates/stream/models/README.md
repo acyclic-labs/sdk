@@ -33,6 +33,7 @@ Stream owner at `b5899587789ad2152b29beaab1ee85e843a25645`:
 | Cursor movement and stale generation | Included `client/progress.rs`, with the real generated `acyclic_stream::wire::SessionCursor`. |
 | Atomic anchored resume cut; split-observation negative | Both `consume_record` and `consume_progress` race `fence` and `subscription`. Sequence and preceding immutable commit must move together; both stale consumption methods must refuse. |
 | Conflated latest movement | `tests/client_pool_loom.rs` runs the production `session::verify_latest_progress` model and its generation-split negative control. The standalone target does not repeat that same pair. |
+| Cancellation of a queued Open | `tests/client_pool_loom.rs` races the actual cursor drop with `Pool::command` and the original removal event. It checks route retirement, pending membership, the cancellation fence and the last interest count. The former standalone `installed` boolean did not execute the dispatcher or receiver closure. |
 
 The former child-only opaque-consumption model called the removed
 `consume_opaque`. The product retired child subscriptions: `session.proto`
