@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/native_mount/registry.rs b/rust/crates/filesystem/src/native_mount/registry.rs
+index 0c83d7793b..7d659c5c35 100644
+--- a/rust/crates/filesystem/src/native_mount/registry.rs
++++ b/rust/crates/filesystem/src/native_mount/registry.rs
+@@ -201,9 +201,6 @@ where
+     let mut shared = SHARED
+         .lock()
+         .unwrap_or_else(std::sync::PoisonError::into_inner);
+-    if let Some(registry) = shared.as_ref() {
+-        return Ok(crate::sync::native::Arc::clone(registry));
+-    }
+     let (directory, file) = open_with_directory(work)?;
+     let registry = crate::sync::native::Arc::new(Registry::new(directory, file));
+     *shared = Some(crate::sync::native::Arc::clone(&registry));
