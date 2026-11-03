@@ -219,6 +219,74 @@ fn residency(previous: ModelCacheResidency) {
     }
 }
 
+// Exercise the public wrapper as well as its scalar protocol reducer. Full
+// result references distinguish two Ready outcomes with the same completion.
+fn snapshot_transitions(snapshot: &e::Snapshot) {
+    let Some(pending) = snapshot.state().pending() else {
+        return;
+    };
+    let Some(e::SummaryOutcome::Ready(body)) = snapshot.outcome() else {
+        return;
+    };
+    let mut replay = snapshot.clone();
+    replay
+        .complete(pending.summary, e::SummaryOutcome::Ready(body.clone()))
+        .unwrap();
+    assert_eq!(
+        replay, *snapshot,
+        "terminal snapshot replay changed custody"
+    );
+
+    // Change only the immutable revision in the admitted producer's canonical
+    // reference. This is a metadata mutation, never authenticated file content.
+    let mut changed = serde_json::to_value(body).unwrap();
+    changed["portable"]["version"] = if body.portable().version() == "fuzz-alternate" {
+        "fuzz-original"
+    } else {
+        "fuzz-alternate"
+    }
+    .into();
+    let other: e::SummaryRef = serde_json::from_value(changed).unwrap();
+    assert_ne!(other, *body);
+    assert!(
+        matches!(
+            replay.complete(pending.summary, e::SummaryOutcome::Ready(other.clone())),
+            Err(e::SnapshotError::Transition(
+                e::protocol::Refusal::Contradiction
+            ))
+        ),
+        "different terminal snapshot reference admitted",
+    );
+    assert_eq!(
+        replay, *snapshot,
+        "refused completion changed snapshot custody"
+    );
+
+    let Some(generation) = snapshot.state().generation().checked_add(1) else {
+        return;
+    };
+    let mut next = snapshot.epoch().clone();
+    next.key.through = pending.through;
+    next.summary = Some(other);
+    assert!(
+        matches!(
+            replay.swap(snapshot.state().generation(), next.clone(), u64::MAX),
+            Err(e::SnapshotError::ResultReference)
+        ),
+        "different swap result reference admitted",
+    );
+    assert_eq!(replay, *snapshot, "refused swap changed snapshot custody");
+    next.summary = Some(body.clone());
+    replay
+        .swap(snapshot.state().generation(), next.clone(), u64::MAX)
+        .unwrap();
+    assert_eq!(replay.epoch(), &next);
+    assert_eq!(replay.state().generation(), generation);
+    assert_eq!(replay.state().cursor(), pending.through);
+    assert!(replay.state().pending().is_none());
+    assert!(replay.outcome().is_none());
+}
+
 fn source() -> StreamPath {
     StreamPath::new("corpus/agent/conversation").unwrap()
 }
@@ -353,6 +421,7 @@ pub(super) fn check(bytes: &[u8]) {
     let Ok(snapshot) = e::Snapshot::decode(&record, &source(), u64::MAX) else {
         return;
     };
+    snapshot_transitions(&snapshot);
     let state = snapshot.state();
     assert!(
         e::Snapshot::decode(
