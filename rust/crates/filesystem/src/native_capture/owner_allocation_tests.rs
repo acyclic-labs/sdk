@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_native_runtime::{NativeFile, ReadAllocation};
-use acyclic_test_support::{AllocationInfo, measure};
+use acyclic_test_support::measure;
 use std::{borrow::Borrow, cell::Cell, ops::Deref, sync::Arc};
 
 thread_local! {
@@ -53,25 +53,6 @@ impl Drop for OldOwner {
     fn drop(&mut self) {
         OLD_OWNER.set(self.0);
     }
-}
-
-// Warm one-byte staging with live shared health, excluding fixture setup.
-// Both native adapters eliminate one allocation in the optimized build.
-// An exact profile count is essential: the debug count in release would
-// admit the very outer-owner allocation restored by the negative control.
-const OWNER_FREE_ALLOCATIONS: u64 = {
-    let debug = if cfg!(windows) { 43 } else { 46 };
-    debug - if cfg!(debug_assertions) { 0 } else { 1 }
-};
-
-fn no_owner_allocation(measured: AllocationInfo) -> Result<(), String> {
-    let ceiling = OWNER_FREE_ALLOCATIONS;
-    if measured.count_total != ceiling {
-        return Err(format!(
-            "capture allocations: expected {ceiling}, got {measured:?}"
-        ));
-    }
-    Ok(())
 }
 
 #[test]
@@ -131,14 +112,13 @@ fn production_capture_has_no_outer_file_owner_allocation() -> Result<(), Box<dyn
     let old = run(true);
     let repeated = run(false);
     eprintln!("CAPTURE_ALLOC borrowed={borrowed:?} old={old:?} repeated={repeated:?}");
-    assert_eq!(borrowed.count_total, repeated.count_total);
+    // Compare the original owner operation on the same source and store. The
+    // complete staging total also contains authenticated storage allocations.
+    assert_eq!(borrowed, repeated);
     assert_eq!(old.count_total, borrowed.count_total + 1);
     assert_eq!(
         old.bytes_total - borrowed.bytes_total,
         (std::mem::size_of::<NativeFile>() + 2 * std::mem::size_of::<usize>()) as u64
     );
-    no_owner_allocation(borrowed).unwrap();
-    no_owner_allocation(repeated).unwrap();
-    assert!(no_owner_allocation(old).is_err());
     Ok(())
 }

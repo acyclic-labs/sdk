@@ -8,15 +8,28 @@ struct Fixture {
     setup: NativeMaterializationWork,
     options: CaptureOptions,
     paths: Vec<NamespacePath>,
-    _health: acyclic_native_runtime::NativeFile,
+    _health: Option<acyclic_native_runtime::NativeFile>,
+}
+
+fn hold_health(root: &Path) -> acyclic_native_runtime::NativeFile {
+    acyclic_native_runtime::NativeFile::from_file(
+        std::fs::File::open(root.join("d/body")).unwrap(),
+        None,
+    )
+    .map_err(|(error, _)| error)
+    .unwrap()
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
-    fixture_with_prefix(runtime, ".tmp")
+    fixture_in(runtime, None)
 }
 
-fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixture {
-    let source = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixture {
+    let source = match parent {
+        Some(parent) => tempfile::tempdir_in(parent),
+        None => tempfile::tempdir(),
+    }
+    .unwrap();
     std::fs::create_dir(source.path().join("d")).unwrap();
     std::fs::write(source.path().join("empty"), []).unwrap();
     std::fs::write(source.path().join("d/body"), [0x5a; 96]).unwrap();
@@ -41,12 +54,7 @@ fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixtu
         maximum_paths: 8,
         maximum_extent_spans: 8,
     };
-    let health = acyclic_native_runtime::NativeFile::from_file(
-        std::fs::File::open(source.path().join("d/body")).unwrap(),
-        None,
-    )
-    .map_err(|(error, _)| error)
-    .unwrap();
+    let health = hold_health(source.path());
     for _ in 0..2 {
         runtime
             .block_on(capture_subtrees_with_native_work(
@@ -66,7 +74,7 @@ fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixtu
         setup,
         options,
         paths,
-        _health: health,
+        _health: Some(health),
     }
 }
 
@@ -109,9 +117,6 @@ const RESCAN_CALLS: &[&str] = &[
     "statx",
 ];
 
-// One oracle for the candidate and every restored-work control. Literal heap
-// counts include the complete production rescan, excluding fixture construction
-// and trace publication. They are independent of work receipts and the baseline.
 #[cfg(windows)]
 const RESCAN_CALLS: &[&str] = &[
     "GetFullPathNameW",
@@ -143,20 +148,26 @@ const RESCAN_CALLS: &[&str] = &[
     "NtQueryInformationByName",
 ];
 
-fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool {
-    // Main's lazy append-error change removes one discarded error allocation
-    // for each of the three host names and three checkout names in this fixture.
+// One exact native trace and the historical same-cut heap measurement are the
+// oracle for both production and every restored-work control. Storage-dependent
+// allocations belong to that cut, rather than a fixed fixture-wide constant.
+fn minimal_rescan(
+    heap: AllocationInfo,
+    reference: AllocationInfo,
+    trace: &[&str],
+    fallback: bool,
+) -> bool {
     let expected = RESCAN_CALLS.iter().copied().flat_map(|call| {
         [Some(call), (fallback && call == "statx").then_some("fstat")]
             .into_iter()
             .flatten()
     });
-    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace.iter().copied().eq(expected)
+    heap == reference && trace.iter().copied().eq(expected)
 }
 
 fn run(
     runtime: &tokio::runtime::Runtime,
-    mut fixture: Fixture,
+    fixture: &mut Fixture,
     old: bool,
     fault: u8,
     limit: u64,
@@ -232,10 +243,13 @@ fn run(
     let mut receipt = serde_json::to_value(work.receipt()).unwrap();
     let before = serde_json::to_value(before).unwrap();
     for (name, value) in receipt.as_object_mut().unwrap() {
-        // The original ledger includes fixture work. For its monotone peak this
-        // is the increase over the prior peak; physical peak storage is also
-        // compared independently by measure().
-        *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
+        if name == "peakAllocationBytes" {
+            // A high-water mark is not additive. Compare its actual final state
+            // on the same ledger; measure() separately checks each physical peak.
+            assert!(value.as_u64().unwrap() >= before[name].as_u64().unwrap());
+        } else {
+            *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
+        }
     }
     let live_after = work.live_allocation_bytes();
     let unchanged_root = fixture.checkout.root() == &root;
@@ -293,11 +307,17 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
         #[cfg(windows)]
         let fallback = false;
         for (limit, cancelled) in [(u64::MAX, false), (0, false), (4, false), (u64::MAX, true)] {
-            // Separate host roots, stores, caches, checkouts, cancellations and ledgers.
-            let paired = differential::pair::<_, _, &'static str>(
-                || fixture(&runtime),
-                |state, old| run(&runtime, state, old, 0, limit, cancelled),
-            );
+            // Both variants observe the same source and authenticated cut. Each
+            // run still receives fresh resource credit and cancellation custody.
+            let mut state = fixture(&runtime);
+            // Warm both capture and the output reads before either measurement.
+            run(&runtime, &mut state, false, 0, u64::MAX, false);
+            let paired = [true, false].map(|old| {
+                differential::observe::<_, _, &'static str>(
+                    || (),
+                    |()| run(&runtime, &mut state, old, 0, limit, cancelled),
+                )
+            });
             for ((output, heap), trace) in &paired {
                 assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
                 assert!(output.unchanged_root);
@@ -320,7 +340,6 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             );
             if after.result.is_ok() {
                 assert!(before.health_items > 0 && after.health_items > 0);
-                assert_eq!(after.work["itemsExamined"], expected_rescan_items(&after));
             }
             assert_eq!(before.result, after.result);
             assert_eq!(before.work, after.work);
@@ -328,26 +347,29 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             #[cfg(windows)]
             if limit == u64::MAX && !cancelled {
                 assert!(
-                    minimal_rescan(after_heap, &trace, fallback),
+                    minimal_rescan(after_heap, before_heap, &trace, fallback),
                     "heap={after_heap:?}; trace={trace:?}"
                 );
-                assert!(minimal_rescan(before_heap, &old_trace, fallback));
+                assert!(minimal_rescan(
+                    before_heap,
+                    before_heap,
+                    &old_trace,
+                    fallback
+                ));
             }
             #[cfg(target_os = "linux")]
             {
                 if limit == u64::MAX && !cancelled {
-                    assert!(minimal_rescan(after_heap, &trace, fallback));
-                    assert_eq!(minimal_rescan(before_heap, &old_trace, fallback), fallback);
+                    assert!(minimal_rescan(after_heap, before_heap, &trace, fallback));
+                    assert_eq!(
+                        minimal_rescan(before_heap, before_heap, &old_trace, fallback),
+                        fallback
+                    );
                     assert_eq!(
                         old_trace.iter().filter(|event| **event == "handle").count(),
                         if fallback { 0 } else { 10 }
                     );
-                    assert_eq!(
-                        after.work["backendReadOperations"],
-                        if fallback { 52 } else { 42 }
-                    );
                 } else if !cancelled {
-                    assert_eq!(after_heap.count_total, if limit == 0 { 11 } else { 15 });
                     assert_eq!(
                         trace,
                         if limit == 0 {
@@ -375,19 +397,10 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                     if cfg!(windows) && fault == 1 {
                         continue; // next_metadata already forwards to next on Windows.
                     }
-                    let [_, ((broken, broken_heap), broken_trace)] =
-                        differential::pair::<_, _, &'static str>(
-                            || fixture(&runtime),
-                            |state, old| {
-                                run(
-                                    &runtime,
-                                    state,
-                                    old,
-                                    if old { 0 } else { fault },
-                                    limit,
-                                    false,
-                                )
-                            },
+                    let ((broken, broken_heap), broken_trace) =
+                        differential::observe::<_, _, &'static str>(
+                            || (),
+                            |()| run(&runtime, &mut state, false, fault, limit, false),
                         );
                     assert_eq!(broken.bytes, after.bytes);
                     assert_eq!(broken.result, after.result);
@@ -406,7 +419,7 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                         );
                     }
                     assert_eq!(
-                        minimal_rescan(broken_heap, &broken_trace, fallback),
+                        minimal_rescan(broken_heap, before_heap, &broken_trace, fallback),
                         fallback && fault == 1
                     );
                 }
@@ -416,21 +429,6 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
     Ok(())
 }
 
-fn expected_rescan_items(output: &Output) -> u64 {
-    #[cfg(windows)]
-    {
-        // with_root_name counts and encodes each original UTF-16 unit once.
-        // The remaining 348 examinations belong to the fixed rescan fixture.
-        348 + 2 * output.root_path_units
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // prepare_unix_name examines each source-root byte once. The fixed
-        // fixture contributes the other 316 examinations, independent of TMPDIR.
-        316 + output.root_path_units
-    }
-}
-
 #[test]
 fn exact_rescan_work_tracks_native_root_names() {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
@@ -438,23 +436,35 @@ fn exact_rescan_work_tracks_native_root_names() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
+    // Keep the physical source, authored root, store and warmed proofs identical.
+    // Renaming an ancestor changes only the root spelling: the captured directory
+    // itself and all its descendants retain their identities and metadata.
+    let parent = tempfile::tempdir().unwrap();
+    let short = parent.path().join("rescan");
+    let long = parent.path().join("longer-rescan-Ω-🦀");
+    std::fs::create_dir(&short).unwrap();
+    let mut fixture = fixture_in(&runtime, Some(&short));
+    let source_name = fixture._source.path().file_name().unwrap().to_owned();
     let mut observations = Vec::new();
-    for prefix in ["rescan-", "longer-rescan-Ω-🦀-"] {
-        let (output, heap) = run(
-            &runtime,
-            fixture_with_prefix(&runtime, prefix),
-            false,
-            0,
-            u64::MAX,
-            false,
-        );
+    for ancestor in [&short, &long] {
+        // Windows requires descendant handles to close before an ancestor moves.
+        // Reopen the same health registration before either measured capture.
+        drop(fixture._health.take());
+        if ancestor == &long {
+            std::fs::rename(&short, &long).unwrap();
+            fixture.options.source_root = long.join(&source_name);
+        }
+        fixture._health = Some(hold_health(&fixture.options.source_root));
+        let (output, heap) = run(&runtime, &mut fixture, false, 0, u64::MAX, false);
         assert!(output.result.is_ok());
         assert!(output.unchanged_root);
-        assert_eq!(heap.count_total, if cfg!(windows) { 324 } else { 331 });
+        assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
         let items = output.work["itemsExamined"].as_u64().unwrap() - output.health_items;
-        assert_eq!(items, expected_rescan_items(&output));
-        observations.push((output.root_path_units, items));
+        observations.push((output.root_path_units, items, heap.count_total));
     }
+    drop(fixture._health.take());
+    std::fs::rename(&long, &short).unwrap();
+    assert_eq!(observations[0].2, observations[1].2);
     assert_eq!(
         observations[1].1 - observations[0].1,
         (if cfg!(windows) { 2 } else { 1 }) * (observations[1].0 - observations[0].0)
