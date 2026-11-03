@@ -110,7 +110,7 @@ pub fn check(bytes: &[u8]) {
 }
 
 /// Capture real codec outputs; callers retain these bytes as corpus inputs.
-#[cfg(not(fuzzing))]
+#[cfg(all(not(fuzzing), not(test)))]
 pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let empty = value(&[]);
     let mut boundary = value(b"native\0\xff\nlock");
