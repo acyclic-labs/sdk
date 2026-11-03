@@ -149,3 +149,21 @@ skipped validation` and `accepted literal-key refusal skipped spelling compariso
 Restore both source files before running the positive control. This establishes
 generator admission conformance, not complete parser coverage or a sanitizer
 campaign.
+
+The input selector and refusal spelling generator check rejected admission
+against the production JSON decoder before returning. A helper that silently
+skips a production-valid value therefore crashes the actual fuzz entry point.
+Accepted inputs retain one parse and replay; only a rejected helper input needs
+the independent production-admission check. This adds no product work.
+
+`corpus/DERIVED.tsv` records two ignored-field mutations of the original
+llama.cpp request and Gemini refusal, with exact source/derived hashes and the
+byte insertion. These are explicitly generated corpus entries, not new provider
+captures. The original seeds remain unchanged. With
+`mutations/literal-input-default-decoder.patch` applied, the existing
+`provider_stream` and `http_failure` fuzz targets must crash on their respective
+`*-literal-extension` inputs with `production-accepted input skipped fuzz
+validation` and `production-accepted refusal skipped fuzz spelling comparison`.
+A compile failure is not a negative control. Restore the source before replaying
+the corpus; finite fuzzer feedback does not establish complete source branches
+or a sanitizer campaign.

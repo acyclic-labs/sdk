@@ -133,7 +133,10 @@ pub fn assert_stream_invariants(input: &[u8]) {
             Adapter::Chat,
             Adapter::Gemini,
         ][usize::from(kind) % 4];
-        input_round_trip(adapter, input);
+        assert!(
+            input_round_trip(adapter, input) || crate::json(input).is_err(),
+            "production-accepted input skipped fuzz validation"
+        );
         return;
     }
     if kind == b'L' {
@@ -438,6 +441,9 @@ mod properties {
 
     #[test]
     fn checked_in_stream_corpus_obeys_the_properties() {
+        assert_stream_invariants(include_bytes!(
+            "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
+        ));
         assert!(catalog_round_trip(
             &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
         ));
