@@ -1,0 +1,9 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -350,4 +350,5 @@
+     pub profile: CreationConfig,
+     /// Select a retained prior turn instead of the current conversation head.
++    #[serde(skip_deserializing)]
+     pub history: Option<super::HistorySelection>,
+ }

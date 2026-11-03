@@ -159,7 +159,9 @@ both a retained action binding and an explicit absent binding for external hosts
 
 The shared agent oracle checks record version and checkpoint codec refusals
 before payload decoding. Record checks alter original writer output, including
-missing, unknown and duplicate header fields. Its ordinary writer replay runs
+short and foreign fixed headers, trailing values and truncated payloads.
+Nested spawn history, restore generations and conversation records compare
+the admitted value with the original writer input. Its ordinary writer replay runs
 without a fuzzing toolchain:
 
 ```sh
@@ -175,6 +177,8 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | --- | --- |
 | `agent-checkpoint-identity.patch` | `checkpoint codec refusal did not precede payload decoding` |
 | `agent-record-version.patch` | `agent record header refusal changed` |
+| `agent-record-trailing.patch` | `agent record header refusal changed` |
+| `agent-spawn-history.patch` | `agent record lost the writer's input` |
 
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:

@@ -170,6 +170,17 @@ pub fn check(bytes: &[u8]) {
 
 /// Seed bytes come from the same writers used by committed actor transitions.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    fn written<T: AgentRecord + PartialEq + std::fmt::Debug>(
+        value: &T,
+    ) -> Result<Vec<u8>, super::Error> {
+        let bytes = value.encode()?;
+        assert_eq!(
+            T::decode(&bytes)?,
+            *value,
+            "agent record lost the writer's input"
+        );
+        Ok(bytes)
+    }
     let agent = AgentId::from_bytes([7; 16]);
     let path = AgentPath::root(&agent);
     let adopted = ForkAdopted {
@@ -220,6 +231,109 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             crate::contract::canonical_json_bytes(&envelope)?,
         ),
     ];
+    // These records carry distinct nested history types, not the history
+    // descriptor format. Capture them through their original record writer.
+    let volume = crate::conversation::VolumeRef::new(
+        crate::resources::ProviderRef::new(
+            "agents".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?,
+        "project".into(),
+        crate::conversation::VolumeClass::Project,
+        crate::conversation::VolumeOwner::Project("project".into()),
+        &mut None,
+    )?;
+    let file = crate::conversation::FileRef::new(
+        volume.clone(),
+        "inputs/brief.txt".into(),
+        "captured-revision".into(),
+        crate::conversation::FileDescriptor::new([19; 32], 37, "text/plain".into())?,
+        "brief".into(),
+        &mut None,
+    )?;
+    seeds.push((
+        "spawn-history",
+        written(&InboxRecord::Spawn(super::SpawnRequest {
+            by: Sender::Agent {
+                path: state.path.clone(),
+            },
+            id: IntentId::try_from("captured-spawn")?,
+            brief: Box::new(file.clone()),
+            profile: super::CreationConfig {
+                context: super::SpawnContext::Fork,
+                template: Some(file.clone()),
+            },
+            history: Some(super::HistorySelection {
+                conversation: 23,
+                checkpoint: Some(17),
+            }),
+        }))?,
+    ));
+    for (name, mode) in [
+        ("restore-files", super::RestoreMode::Files),
+        ("restore-context", super::RestoreMode::Context),
+        ("restore-both", super::RestoreMode::Both),
+    ] {
+        let action = super::ContextAction::Restore {
+            at: 23,
+            mode,
+            expected: vec![super::HistoryVolume {
+                binding: super::VolumeBinding {
+                    name: "project".into(),
+                    volume: volume.clone(),
+                },
+                generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                    kind: acyclic_fs::ObjectKind::GenerationRoot,
+                    digest: acyclic_fs::Digest::from_bytes([23; 32]),
+                    storage: Some(acyclic_fs::ObjectStorage {
+                        locator: acyclic_fs::Digest::from_bytes([29; 32]),
+                        root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
+                        origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
+                    }),
+                }),
+            }],
+        };
+        seeds.push((
+            name,
+            written(&InboxRecord::Context(super::ContextRequest {
+                by: Sender::Agent {
+                    path: state.path.clone(),
+                },
+                id: IntentId::try_from("captured-restore")?,
+                action: action.clone(),
+            }))?,
+        ));
+        if mode == super::RestoreMode::Both {
+            seeds.push((
+                "conversation-restore",
+                written(&ConversationEntry {
+                    inbox: 29,
+                    input: super::TurnInput::Context {
+                        from: Sender::Agent {
+                            path: state.path.clone(),
+                        },
+                        id: IntentId::try_from("captured-restore")?,
+                        action,
+                    },
+                    output: file.clone(),
+                    outcome: super::TurnOutcome::RestoreConflict,
+                    goal: Some(crate::OperationId::from_bytes([41; 16])),
+                    targets: Some(file.clone()),
+                    tool_results: Some("tools/.results/captured-turn".into()),
+                    steering: Some(super::SteeringTranscript {
+                        through: 31,
+                        file: file.clone(),
+                    }),
+                    notices: Some(super::NoticeSelection {
+                        source: state.path.clone(),
+                        range: 7..11,
+                    }),
+                })?,
+            ));
+        }
+    }
     for (names, binding) in [
         (
             [
