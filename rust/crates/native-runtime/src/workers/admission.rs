@@ -16,9 +16,6 @@ pub(crate) struct AdmissionState {
     notifying: bool,
     notify_again: bool,
     notify_next: Option<Arc<CapacityWaiter>>,
-    /// Refunds a live shared node early, for the Loom negative control.
-    #[cfg(all(test, loom))]
-    pub(crate) broken_charge: bool,
 }
 
 pub(crate) struct CapacityWaiter {
@@ -44,8 +41,6 @@ impl AdmissionState {
             notifying: false,
             notify_again: false,
             notify_next: None,
-            #[cfg(all(test, loom))]
-            broken_charge: false,
         }
     }
 
@@ -91,10 +86,6 @@ impl AdmissionState {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(all(test, loom))]
-        if self.broken_charge {
-            state._allocation.take();
-        }
         if !state.queued {
             return None;
         }

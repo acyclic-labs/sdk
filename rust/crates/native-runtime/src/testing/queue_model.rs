@@ -1,4 +1,6 @@
 //! The real admission, owned job, terminal poll and observer-drop paths.
+//! `tests/signal-control.py` plants capacity, terminal and funding defects in
+//! those production operations; the assertions below stay unchanged.
 use super::*;
 use crate::{AdmissionState, NativeWorkers, TaskTerminal, run_blocking_io, wake_capacity_waiter};
 use loom::{sync::atomic::AtomicUsize, thread};
@@ -259,7 +261,7 @@ fn physical_completion_races_observer_drop_on_the_real_terminal() {
 
 /// Result observation and abandonment race the worker's final shared release.
 /// Every remaining state owner must retain the original physical funding.
-fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
+fn charge(drop_observer: bool, disposition: Disposition) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -278,17 +280,11 @@ fn charge(drop_observer: bool, disposition: Disposition, broken: bool) {
         .unwrap();
         let state = task.state.as_ref().unwrap().clone();
         let funded = {
-            let mut state = state.lock().unwrap();
-            state.broken_charge = broken;
+            let state = state.lock().unwrap();
             state._allocation.as_ref().unwrap().bytes()
         };
         assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
         let job = task.pending.take().unwrap();
-        if matches!(disposition, Disposition::Panicked) && broken {
-            // Sever only the original shared state's funding. The panic,
-            // terminal publication and worker lifetime remain unchanged.
-            state.lock().unwrap()._allocation.take();
-        }
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         if drop_observer {
             drop(task);
@@ -350,42 +346,22 @@ fn shared_state_funding_survives_observation_and_worker_release() {
         Disposition::Failed,
         Disposition::Panicked,
     ] {
-        charge(false, disposition, false);
-        charge(true, disposition, false);
+        charge(false, disposition);
+        charge(true, disposition);
     }
-}
-
-#[test]
-#[should_panic(expected = "live shared state lost its funding")]
-fn premature_shared_state_refund_is_detected() {
-    charge(false, Disposition::Returned, true);
-}
-
-#[test]
-#[should_panic(expected = "live shared state lost its funding")]
-fn premature_panicked_shared_state_refund_is_detected() {
-    charge(false, Disposition::Panicked, true);
-}
-
-#[test]
-#[should_panic(expected = "abandoned shared state lost its funding")]
-fn premature_abandoned_panicked_state_refund_is_detected() {
-    charge(true, Disposition::Panicked, true);
 }
 
 /// A metered submission waits for capacity while the worker's release
 /// notifier holds its waiter node. Admission and cancellation unlink the node
 /// without refunding memory still owned by that notifier.
-fn waiter_charge(cancel: bool, broken: bool) {
+fn waiter_charge(cancel: bool) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
     loom::model(move || {
         explored.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
         let receiver = Arc::new(Mutex::new(receiver));
-        let mut admission = AdmissionState::new();
-        admission.broken_charge = broken;
-        let workers = NativeWorkers::single(sender, admission);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
             workers
@@ -477,20 +453,8 @@ fn waiter_charge(cancel: bool, broken: bool) {
 
 #[test]
 fn shared_waiter_funding_survives_admission_and_cancellation() {
-    waiter_charge(false, false);
-    waiter_charge(true, false);
-}
-
-#[test]
-#[should_panic(expected = "live shared waiter lost its funding")]
-fn premature_admitted_waiter_refund_is_detected() {
-    waiter_charge(false, true);
-}
-
-#[test]
-#[should_panic(expected = "live shared waiter lost its funding")]
-fn premature_cancelled_waiter_refund_is_detected() {
-    waiter_charge(true, true);
+    waiter_charge(false);
+    waiter_charge(true);
 }
 
 fn release_broadcast() {

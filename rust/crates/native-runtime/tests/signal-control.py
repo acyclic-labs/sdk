@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal or --native-capacity.
+Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity or --native-funding.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -46,6 +46,7 @@ def main():
         "--durability-io": ("../src/testing/durability/tests.rs", (durability,), "--native-durability-io"),
         "--native-terminal": ("../src/testing/queue_model.rs", (blocking, completion), "--native-terminal"),
         "--native-capacity": ("../src/testing/queue_model.rs", (admission,), "--native-capacity"),
+        "--native-funding": ("../src/testing/queue_model.rs", (completion, admission), "--native-funding"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -201,6 +202,17 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b"admission.notify_next = state.next.clone();",
              b"admission.notify_next = None;",
              "capacity broadcast lost a live waiter", "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation"),
+        ]
+    elif mode == "--native-funding":
+        mutations = [
+            ("terminal-refund", completion,
+             b"        state.task_pending = false;",
+             b"        state._allocation.take();\n        state.task_pending = false;",
+             "live shared state lost its funding", "testing::queue_model::shared_state_funding_survives_observation_and_worker_release"),
+            ("waiter-refund", admission,
+             b"        state.queued = false;",
+             b"        state._allocation.take();\n        state.queued = false;",
+             "live shared waiter lost its funding", "testing::queue_model::shared_waiter_funding_survives_admission_and_cancellation"),
         ]
     if len(sys.argv) == 4:
         selected = set(sys.argv[3].split(","))
