@@ -33,8 +33,6 @@ pub use tools::serve;
 const EVENT_LIMIT: usize = 65_536;
 /// The saved log's line where the bounded framer dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
