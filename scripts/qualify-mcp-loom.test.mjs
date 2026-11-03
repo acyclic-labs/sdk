@@ -183,19 +183,18 @@ test("fs Session qualification instruments real provider and Session locks and r
   assertGateStep(["--session-fs"]);
 });
 
-test("hook qualification requires every retained checkout and projection model", () => {
+test("hook qualification requires every retained projection model", () => {
   /** @type {Array<[typeof qualifyHookLifecycleLoom, string, number]>} */
-  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 7]];
+  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 6]];
   for (const [qualify, target, count] of hooks) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
       const run = (command, args, options) => {
         if (command === "cargo") {
           assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
-          assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
           return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
         }
-        assert.match(args[0], /(?:cancelled_bash_retains_projection|local::workspace::projection::tests::)/);
+        assert.match(args[0], /local::workspace::projection::tests::/);
         assert.equal(args[1], "--exact");
         models++;
         return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };

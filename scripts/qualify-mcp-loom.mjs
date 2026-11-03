@@ -245,11 +245,10 @@ function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, r
   catch (error) { fail("restored production qualification", String(error)); }
 }
 
-// Checkout and projection models retain physical cleanup custody.
+// These models check shared projection ownership; native process cleanup is separate.
 export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
-      "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
       "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
       "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
@@ -358,7 +357,7 @@ export function qualifyOwnershipLoom(run = runCommand) {
 export const harnessModelSuites = {
   "acyclic-harness": [
     ["local::workspace::bootstrap::loom_tests::", 1],
-    ["local::checkout_tools::tests::", 5],
+    ["local::checkout_tools::tests::", 3],
   ],
 };
 
