@@ -26,6 +26,51 @@ async function processSource() {
     "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
 }
 
+async function argumentControls(host) {
+  const command = ['--', 'node', '-e', 'process.exit(17)'];
+  async function capture(cases, label) {
+    const records = [];
+    for (const [args, expected] of cases) {
+      const original = spawn(host, args, {stdio: ['ignore', 'pipe', 'pipe']});
+      const stdout = [], stderr = [];
+      original.stdout.on('data', bytes => stdout.push(bytes));
+      original.stderr.on('data', bytes => stderr.push(bytes));
+      const [code, signal] = await once(original, 'close');
+      const record = {arguments: args, code, signal,
+        stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8')};
+      assert.equal(signal, null);
+      assert.equal(code, expected);
+      assert.equal(record.stdout, '');
+      if (code === 125) assert.match(record.stderr, /step=process-host-arguments;/);
+      else assert.equal(record.stderr, '');
+      records.push(record);
+    }
+    console.log(`${label}=${Buffer.from(JSON.stringify(records)).toString('base64')}`);
+  }
+  // Preserve the original portable records byte for byte. Endpoint records
+  // below retain the actual platform's paths separately, without rewriting.
+  await capture([[[], 125], [['--'], 125], [['--inherit-input', ...command], 17]],
+    'PROCESS_HOST_PORTABLE_CORPUS_BASE64');
+  const directory = await mkdtemp(join(tmpdir(), 'acyclic-argument-control-'));
+  try {
+    const path = join(directory, 'completion');
+    const refused = [];
+    for (const option of ['--completion', '--control', '--custody', '--lease']) {
+      refused.push([option], [option, 'relative', ...command], [option, path],
+        [option, path, option, path, ...command]);
+    }
+    for (const binding of ['', ' ', 'π']) refused.push(['--invocation', binding, ...command]);
+    refused.push(['--invocation'], ['--invocation', 'valid_ID-17', ...command],
+      ['--invocation', 'valid_ID-17'],
+      ['--invocation', 'valid_ID-17', '--invocation', 'valid_ID-17', ...command],
+      ['--inherit-input', '--inherit-input', ...command],
+      ['--custody', path, '--lease', path, ...command], ['--unknown', ...command], ['--', '']);
+    await capture([...refused.map(args => [args, 125]),
+      [['--completion', path, '--invocation', 'valid_ID-17', '--inherit-input', ...command], 17]],
+    'PROCESS_HOST_ENDPOINT_CORPUS_BASE64');
+  } finally { await rm(directory, {recursive: true, force: true}); }
+}
+
 async function captureCancellationControl(run, host) {
   const stop = new AbortController(), input = new PassThrough();
   const reason = new Error('original capture cancellation');
@@ -361,26 +406,7 @@ if (mode === 'signal-owner') {
   assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test node_process');
   const options = {host};
   await processSignalControls();
-  // Capture the shipped argument boundary without installation or temporary
-  // paths. These original argv/output records can seed the parser corpus
-  // unchanged on another machine; no response or status is synthesized.
-  const argumentCorpus = [];
-  for (const args of [[], ['--'], ['--inherit-input', '--', 'node', '-e', 'process.exit(17)']]) {
-    const original = spawn(host, args, {stdio: ['ignore', 'pipe', 'pipe']});
-    const stdout = [], stderr = [];
-    original.stdout.on('data', bytes => stdout.push(bytes));
-    original.stderr.on('data', bytes => stderr.push(bytes));
-    const [code, signal] = await once(original, 'close');
-    const record = {arguments: args, code, signal,
-      stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8')};
-    assert.equal(signal, null);
-    assert.equal(code, args.length > 1 ? 17 : 125);
-    assert.equal(record.stdout, '');
-    if (code === 125) assert.match(record.stderr, /step=process-host-arguments;/);
-    else assert.equal(record.stderr, '');
-    argumentCorpus.push(record);
-  }
-  console.log(`PROCESS_HOST_PORTABLE_CORPUS_BASE64=${Buffer.from(JSON.stringify(argumentCorpus)).toString('base64')}`);
+  await argumentControls(host);
   const input = Buffer.from('stdin is independent of cancellation\nπ\n');
   const captured = await commandCapture(process.execPath, [script, 'echo'], {...options, input});
   assert.equal(captured.stdout, input.toString());

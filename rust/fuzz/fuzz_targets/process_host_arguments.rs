@@ -1,3 +1,4 @@
+//! Byte-input properties for the same argument admission used by the host.
 #![no_main]
 
 #[path = "../../crates/native-runtime/src/process_tree/external_host/arguments.rs"]
