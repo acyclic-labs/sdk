@@ -60,6 +60,8 @@ test("decoder fuzz oracles reject planted production defects", async () => {
     ["process.mjs", "await this.#written;\n    if (this.#broken) throw this.#broken;",
       "await this.#written;", "spool"],
     ["process.mjs", "if (this.#completed === 0) return [];", "", "spool"],
+    ["process.mjs", "if (wait.match?.(event)) {",
+      "if ((wait.match?.(event), wait.match?.(event))) {", "spool"],
     ["process.mjs", "this.#last.set(needle, base + at);", "this.#last.set(needle, 0);", "watch"],
     ["process.mjs", "const combined = this.#tail + text, base = this.#offset - this.#tail.length;",
       "const combined = text, base = this.#offset;", "watch"],

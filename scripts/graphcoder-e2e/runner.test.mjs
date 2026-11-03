@@ -355,29 +355,6 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
   assert.ok(burst > size * chunks / 2, `the ignore-write-return control queued only ${burst} bytes`);
 });
 
-test("spool cost is per event and waiter, not per event retained", async () => {
-  // N events; each wait registers for the next event, as a turn-by-turn
-  // driver does. The spool compares each event once per pending wait.
-  // Negative control: the retained-history wait scanned every earlier event.
-  for (const count of [100, 10_000, 100_000]) {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}));
-    let comparisons = 0;
-    const retained = [];
-    let scans = 0;
-    for (let index = 0; index < count; index++) {
-      const waiting = events.next(event => { comparisons++; return event.index === index; });
-      stream.write(JSON.stringify({ index }) + "\n");
-      const event = await waiting;
-      retained.push(event);
-      scans += retained.findIndex(seen => seen.index === index) + 1;
-    }
-    assert.equal(comparisons, count);
-    assert.equal(scans, count * (count + 1) / 2, "the retained-history control scans quadratically");
-    assert.ok(scans > comparisons * (count / 4), "the control exceeds the per-event budget");
-  }
-});
-
 const raw = text => OutputWatch.of(text, ["\x07", SHOW_CURSOR, HIDE_CURSOR]);
 
 test("screen conditions require rendered styles and reject literal markdown", async () => {
