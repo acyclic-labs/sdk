@@ -476,6 +476,12 @@ to reject an actual production `Delivery::socket` returning no events. Error inp
 has no shipped producer capture yet; these controls do not establish complete
 branch coverage, non-owner routing or upgrades.
 
+`python3 actor-negative-control.py --socket-metadata` derives wrong sequence,
+alarm trigger, unknown marker version and overflowing offset from those same
+captured deliveries. The positive-only oracle misses a production sequence-guard
+bypass; the unchanged derived-record oracle must catch actual sequence/version
+guard removal. It reuses the original corpus without reconstructing a wire schema.
+
 `python3 actor-negative-control.py --call-schedules` restores the former decoder
 schedule drive and requires a production schedule-entry refusal to expose it.
 The separated decoder must still replay; the unchanged schedule entry must

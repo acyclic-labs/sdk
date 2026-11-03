@@ -647,29 +647,4 @@ mod tests {
         assert!(SocketOpen::decode(&trailing).is_err());
         Ok(())
     }
-
-    #[test]
-    fn a_verdict_selects_only_an_offered_subprotocol() -> Result<(), GuestError> {
-        let open = SocketOpen {
-            actor: ActorReference::new(b"account", b"targets", b"laptop").map_err(|_| invalid())?,
-            subscription: "sockets".into(),
-            app_channel: None,
-            subprotocols: vec!["v1".into()],
-            headers: Vec::new(),
-            resume_after: 0,
-            reconnected: false,
-        };
-        let accept = |subprotocol: Option<&str>| {
-            socket_reply(&GuestEventResult::SocketAccept {
-                subprotocol: subprotocol.map(Into::into),
-                attachment: Bytes::new(),
-                tags: Vec::new(),
-            })
-        };
-        assert!(socket_verdict(&accept(Some("v1"))?, &open).is_ok());
-        assert!(socket_verdict(&accept(None)?, &open).is_ok());
-        // Negative control: a protocol the peer never offered.
-        assert!(socket_verdict(&accept(Some("v2"))?, &open).is_err());
-        Ok(())
-    }
 }

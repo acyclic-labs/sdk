@@ -50,8 +50,10 @@ def main():
         return sockets()
     if sys.argv[1:] == ["--socket-inputs"]:
         return socket_inputs()
+    if sys.argv[1:] == ["--socket-metadata"]:
+        return socket_metadata()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--call-schedules|--replay-diagnostics|--sockets|--socket-inputs|--socket-metadata|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -349,6 +351,36 @@ def socket_inputs():
             "socket input writer must be admitted")
         production.write_bytes(source)
         capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
+def socket_metadata():
+    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    admission = b"        actor_socket_input_refusals(&delivery)?;"
+    plants = (
+        (b"!matches!(&self.trigger, Trigger::Record { sequence, .. } if *sequence == record.sequence)",
+         b"false", "socket input rejects wrong sequence"),
+        (b"attributes.get(index).ok_or_else(invalid)?.value.as_ref() != VERSION",
+         b"false", "socket input rejects unknown version"),
+    )
+    if oracle.count(admission) != 1 or any(source.count(a) != 1 for a, _, _ in plants):
+        raise RuntimeError("socket metadata anchor changed; recovery: inspect Delivery::socket "
+                           "and actor_socket_input_refusals before python3 actor-negative-control.py --socket-metadata")
+    try:
+        print("socket metadata production sha256=" + hashlib.sha256(source).hexdigest(), flush=True)
+        production.write_bytes(source.replace(*plants[0][:2]))
+        ORACLE.write_bytes(oracle.replace(admission, b""))
+        run("positive-only oracle misses production sequence bypass", "accepted")
+        ORACLE.write_bytes(oracle)
+        for anchor, replacement, diagnostic in plants:
+            production.write_bytes(source.replace(anchor, replacement))
+            run("same derived-record oracle rejects actual metadata bypass", "rejected", diagnostic)
+        production.write_bytes(source)
+        run("restored production admits original envelopes and rejects derived violations", "accepted")
     finally:
         for path, value in original.items():
             path.write_bytes(value)

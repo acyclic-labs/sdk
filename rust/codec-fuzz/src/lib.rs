@@ -691,6 +691,7 @@ fn actor_socket_input_seeds()
             capture["event"],
             "socket input must retain the original runtime event"
         );
+        actor_socket_input_refusals(&delivery)?;
         seeds.push((
             name,
             bytes,
@@ -698,6 +699,65 @@ fn actor_socket_input_seeds()
         ));
     }
     Ok(seeds)
+}
+
+fn actor_socket_input_refusals(
+    delivery: &acyclic_actors::guest::Delivery,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::{guest::Trigger, sockets::SOCKET_RECORD};
+    let mut invalid = delivery.clone();
+    let Trigger::Record { sequence, .. } = &mut invalid.trigger else {
+        return Err("original socket capture is not a record delivery".into());
+    };
+    *sequence ^= 1;
+    assert!(
+        invalid.socket().is_err(),
+        "socket input rejects wrong sequence"
+    );
+    invalid.trigger = Trigger::Alarm {
+        generation: 1,
+        now_unix_ms: delivery.now_unix_ms,
+    };
+    assert!(
+        invalid.socket().is_err(),
+        "socket input rejects alarm trigger"
+    );
+
+    let mut invalid = delivery.clone();
+    let record = invalid
+        .record
+        .as_mut()
+        .ok_or("socket capture has no record")?;
+    let mut attributes = record
+        .headers
+        .attributes()
+        .iter()
+        .map(|a| a.to_owned())
+        .collect::<Vec<_>>();
+    if let Some(marker) = attributes.iter_mut().find(|a| a.name == SOCKET_RECORD) {
+        marker.value = bytes::Bytes::from_static(b"0").into();
+        record.headers =
+            acyclic_stream::RecordHeaders::new(record.headers.keys().to_vec(), attributes)?;
+        assert!(
+            invalid.socket().is_err(),
+            "socket input rejects unknown version"
+        );
+
+        let mut invalid = delivery.clone();
+        invalid
+            .record
+            .as_mut()
+            .ok_or("socket capture has no record")?
+            .sequence = u64::MAX;
+        if let Trigger::Record { sequence, .. } = &mut invalid.trigger {
+            *sequence = u64::MAX;
+        }
+        assert!(
+            invalid.socket().is_err(),
+            "socket input rejects offset overflow"
+        );
+    }
+    Ok(())
 }
 
 fn actor_socket_open() -> &'static acyclic_actors::sockets::SocketOpen {
