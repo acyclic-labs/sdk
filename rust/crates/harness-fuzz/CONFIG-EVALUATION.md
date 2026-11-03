@@ -24,7 +24,7 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Five retained patches alter the actual production walk or cache. Apply each separately
+Six retained patches alter the actual production walk or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
@@ -33,6 +33,7 @@ source:
 | `config-dependency-stack-scan.patch` | Membership work grows with active depth. This restores the original stack scan, with the same test-only observer counting each comparison. |
 | `config-dependency-finished-active.patch` | A valid shared dependency is falsely rejected by the plain-data oracle. |
 | `config-dependency-ignore-cycle.patch` | A cyclic closure enters the VM before admission. |
+| `config-dynamic-import.patch` | Dynamic import reaches the engine instead of being refused by source admission. |
 | `config-json-object-literal.patch` | A JSON object is incorrectly interpreted as a JavaScript object literal, losing its `__proto__` property. |
 | `config-cache-key.patch` | A changed base or imported value incorrectly reuses an older result. |
 
@@ -51,6 +52,13 @@ copy is introduced, and each imported module retains its original one read.
 Every input also reaches the actual TypeScript and JavaScript source parser.
 Accepted emitted JavaScript must be admitted again with the same resolved
 imports. Arbitrary programs are parsed without running their control flow.
+The input also supplies an encoded string literal and a dynamic import using
+that same literal. The literal must parse; the dynamic import must return the
+public invalid-module error without entering the engine on either surface,
+for both source extensions. A missing loader's later execution error cannot
+satisfy this admission check. The actual guard-removal mutation must fail that
+same oracle. This subsumes the former single dynamic-import error example.
+
 Raw JSON goes through the production evaluator and is compared with
 `serde_json::Value`, preserving all keys, values and array positions. Numbers
 are compared in ECMAScript's double-precision domain, which rounds large
