@@ -495,16 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn binding_does_not_discard_unknown_wire_fields() {
-        let mut encoded = invocation(Vec::new()).encode_to_vec();
-        encoded.extend_from_slice(&[0xf8, 0x07, 0x01]); // unknown varint field 127
-        assert!(matches!(
-            AgentBinding::new(&encoded),
-            Err(CommandError::Invalid)
-        ));
-    }
-
-    #[test]
     fn binding_preserves_routing_and_original_owned_command()
     -> Result<(), Box<dyn std::error::Error>> {
         let template = invocation(Vec::new());

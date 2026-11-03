@@ -181,15 +181,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             .filter(|line| !line.starts_with(prefix))
             .map(|line| format!("{line}\n"))
             .collect::<String>();
-        for (name, bytes) in acyclic_codec_fuzz::agent_controls::seeds()? {
-            save(
-                "agent_controls",
-                &name,
-                &bytes,
-                "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply",
-                &mut manifest,
-            )?;
-        }
+        capture_agent_controls(&mut manifest)?;
         return finish(&manifest, prefix);
     }
     if std::env::args().any(|arg| arg == "--only-agents") {
@@ -391,6 +383,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         &mut manifest,
     )?;
     capture_agents(&mut manifest)?;
+    capture_agent_controls(&mut manifest)?;
     for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
         save(
             "harness_codecs",
@@ -771,6 +764,19 @@ fn agent_prefix() -> String {
         "harness_codecs/agent-v{}-",
         acyclic_harness_core::agent::RECORD_VERSION
     )
+}
+
+fn capture_agent_controls(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_codec_fuzz::agent_controls::seeds()? {
+        save(
+            "agent_controls",
+            &name,
+            &bytes,
+            "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply",
+            manifest,
+        )?;
+    }
+    Ok(())
 }
 
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
