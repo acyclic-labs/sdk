@@ -260,6 +260,11 @@ fn persisted_fact_admitted<T: PartialEq>(
             decode(&bytes[magic.len()..], usize::MAX),
             Err(StreamError::InvalidArgument)
         )
+        // A valid domain with no version or only its first byte must refuse
+        // before payload interpretation or capacity accounting.
+        || [magic.len() - 2, magic.len() - 1].into_iter().any(|end| {
+            !matches!(decode(&bytes[..end], 0), Err(StreamError::Unsupported))
+        })
     {
         return false;
     }
