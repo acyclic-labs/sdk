@@ -328,6 +328,56 @@ fn snapshot_transitions(snapshot: &e::Snapshot) {
     assert!(replay.outcome().is_none());
 }
 
+// Receipt fields are fuzz mutations of the real envelope, not publication
+// authority. The original journal tests retain that separate obligation.
+fn snapshot_confirmation(record: &Record) {
+    let original = record.commit_id;
+    let mut different = *original.as_bytes();
+    different[0] ^= 1;
+    let different = acyclic_stream::CommitId::from_bytes(different);
+    for sequence in [0, u64::MAX - 1, u64::MAX] {
+        let mut admitted = record.clone();
+        admitted.sequence = sequence;
+        let before = e::Snapshot::decode(&admitted, &source(), u64::MAX).unwrap();
+        for commit in [original, different] {
+            for next in [0, sequence, sequence.saturating_add(1), u64::MAX] {
+                // Widen before incrementing: no wrapping arithmetic from the
+                // production implementation is reused by this predicate.
+                let accepted = (next == sequence && commit == original)
+                    || (commit != original && u128::from(next) == u128::from(sequence) + 1);
+                let mut changed = before.clone();
+                let result = changed.confirm(next, commit);
+                assert!(
+                    if accepted {
+                        result.is_ok()
+                    } else {
+                        matches!(
+                            result,
+                            Err(e::SnapshotError::Transition(e::protocol::Refusal::Stale))
+                        )
+                    },
+                    "snapshot receipt admission changed",
+                );
+                if accepted {
+                    let mut confirmed = admitted.clone();
+                    confirmed.sequence = next;
+                    confirmed.commit_id = commit;
+                    assert_eq!(
+                        changed,
+                        e::Snapshot::decode(&confirmed, &source(), u64::MAX).unwrap(),
+                        "confirmed snapshot lost receipt custody",
+                    );
+                } else {
+                    assert_eq!(
+                        changed, before,
+                        "refused confirmation changed snapshot custody"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn source() -> StreamPath {
     StreamPath::new("corpus/agent/conversation").unwrap()
 }
@@ -466,6 +516,7 @@ pub(super) fn check(bytes: &[u8]) {
     };
     epoch(snapshot.epoch());
     snapshot_transitions(&snapshot);
+    snapshot_confirmation(&record);
     let state = snapshot.state();
     assert!(
         matches!(
