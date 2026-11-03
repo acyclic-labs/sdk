@@ -41,7 +41,11 @@ fuzz_target!(|data: &[u8]| {
     match &command {
         AgentCommand::ClientFiles { paths, .. } => {
             assert!(!paths.is_empty());
-            assert_eq!(paths.len(), paths.iter().collect::<BTreeSet<_>>().len());
+            assert_eq!(
+                paths.len(),
+                paths.iter().collect::<BTreeSet<_>>().len(),
+                "client files admitted duplicate paths"
+            );
             for path in paths {
                 assert!(validate_content_path(path, &mut None).is_ok());
             }

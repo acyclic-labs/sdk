@@ -70,11 +70,13 @@ pub enum AgentReply {
     },
     /// Requested session files at one committed generation.
     ClientFiles {
+        /// Exactly the requested paths at the selected committed generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         snapshot: acyclic_harness_core::client_files::ClientFiles,
     },
     /// Exact generation produced by the conditional publication.
     ClientFilesPublished {
+        /// Committed generation returned by the original filesystem publisher.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         generation: acyclic_harness_core::resources::GenerationRef,
     },

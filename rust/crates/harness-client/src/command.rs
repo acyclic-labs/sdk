@@ -133,22 +133,30 @@ pub enum AgentCommand {
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
+        /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Stable UI-session identity within that agent.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         session: acyclic_harness_core::OperationId,
+        /// Distinct relative file paths; no directory scan is performed.
         paths: Vec<String>,
+        /// Wait for a generation different from this committed snapshot.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
         after: Option<acyclic_harness_core::resources::GenerationRef>,
     },
     /// Atomic conditional publication to that same session volume.
     PublishClientFiles {
+        /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Stable UI-session identity within that agent.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         session: acyclic_harness_core::OperationId,
+        /// Caller-retained identity of this conditional publication.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation: acyclic_harness_core::OperationId,
+        /// Distinct paths with their original source preconditions.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
         changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
     },

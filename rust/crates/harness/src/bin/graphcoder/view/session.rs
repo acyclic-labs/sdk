@@ -185,15 +185,7 @@ mod tests {
                 after: None,
             };
             let reply = connection.execute(&command).await?;
-            let mut bytes = acyclic_harness_client::PreparedCommand::new(&command)?
-                .command()
-                .to_vec();
-            bytes.push(0);
-            bytes.extend(acyclic_harness_client::encode_agent_reply(
-                &Ok(reply),
-                &command,
-            )?);
-            println!("CLIENT_FILES_CORPUS {}", serde_json::to_string(&bytes)?);
+            capture("CLIENT_FILES_CORPUS", &command, reply)?;
             println!("SESSION_LAYOUT_CORPUS {}", original.text);
         }
         drop(ui);
@@ -220,7 +212,20 @@ mod tests {
                 .is_err()
         );
         let replacement = serde_json::json!({"version":2,"open_view":"history"}).to_string();
-        ui_create(&resumed, Some(original.file.clone()), replacement).await?;
+        let command = acyclic_harness_client::AgentCommand::PublishClientFiles {
+            agent: connection.root().clone(),
+            session: resumed.client_session(),
+            operation: OperationId::new(),
+            changes: vec![ClientFileChange {
+                path: "layout.json".into(),
+                expected: Some(original.file.clone()),
+                text: replacement,
+            }],
+        };
+        let reply = connection.execute(&command).await?;
+        if std::env::var_os("ACYCLIC_CAPTURE_CLIENT_FILES").is_some() {
+            capture("CLIENT_FILES_PUBLISH_CORPUS", &command, reply)?;
+        }
         let error = Session::open(&resumed)
             .await
             .err()
@@ -230,6 +235,23 @@ mod tests {
                 .to_string()
                 .contains("unsupported layout.json version")
         );
+        Ok(())
+    }
+
+    fn capture(
+        label: &str,
+        command: &acyclic_harness_client::AgentCommand,
+        reply: acyclic_harness_client::AgentReply,
+    ) -> Result<(), Failure> {
+        let mut bytes = acyclic_harness_client::PreparedCommand::new(command)?
+            .command()
+            .to_vec();
+        bytes.push(0);
+        bytes.extend(acyclic_harness_client::encode_agent_reply(
+            &Ok(reply),
+            command,
+        )?);
+        println!("{label} {}", serde_json::to_string(&bytes)?);
         Ok(())
     }
 
