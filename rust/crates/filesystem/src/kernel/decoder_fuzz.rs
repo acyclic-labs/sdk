@@ -7,10 +7,10 @@ use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
 
 /// Re-encodes an admitted value and requires the encoding to decode to it.
 /// `PLANTED` flips one canonical byte: the negative control for this oracle.
-fn canonical<T: PartialEq + std::fmt::Debug, const PLANTED: bool>(
+pub(crate) fn canonical<T: PartialEq + std::fmt::Debug, E: std::fmt::Debug, const PLANTED: bool>(
     value: &T,
-    encoded: Result<Vec<u8>, FsError>,
-    decode: impl FnOnce(&[u8]) -> Result<T, FsError>,
+    encoded: Result<Vec<u8>, E>,
+    decode: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Vec<u8> {
     let mut canonical = encoded.expect("an admitted value has a canonical encoding");
     if PLANTED {
@@ -38,7 +38,7 @@ fn decode<const PLANTED: bool>(
     Ok(match kind {
         0 => {
             let value = decode_file_metadata(bytes, limits, observe)?;
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 encode_file_metadata(value, |_| Ok::<_, FsError>(()), allocation_error),
                 |bytes| decode_file_metadata(bytes, limits, &mut |_| Ok::<_, FsError>(())),
@@ -46,7 +46,7 @@ fn decode<const PLANTED: bool>(
         }
         1 => {
             let value = decode_generation_root(bytes, limits, observe)?;
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 encode_generation_root(&value, |_| Ok::<_, FsError>(()), allocation_error),
                 |bytes| decode_generation_root(bytes, limits, |_| Ok::<_, FsError>(())),
@@ -54,7 +54,7 @@ fn decode<const PLANTED: bool>(
         }
         2 => {
             let value = decode_file_table_page(bytes, limits, observe)?;
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 encode_file_table_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
                 |bytes| decode_file_table_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
@@ -62,7 +62,7 @@ fn decode<const PLANTED: bool>(
         }
         3 => {
             let value = decode_tree_page(bytes, limits, observe)?;
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 encode_tree_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
                 |bytes| decode_tree_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
@@ -70,7 +70,7 @@ fn decode<const PLANTED: bool>(
         }
         4 => {
             let value = decode_extent_page(bytes, limits, observe)?;
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 encode_extent_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
                 |bytes| decode_extent_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
@@ -84,7 +84,7 @@ fn decode<const PLANTED: bool>(
                     persistent_btree::PageRef::Internal(children)
                 }
             };
-            canonical::<_, PLANTED>(
+            canonical::<_, FsError, PLANTED>(
                 &value,
                 bindings::encode_binding_page(
                     &page,
@@ -100,8 +100,12 @@ fn decode<const PLANTED: bool>(
 
 /// Fuzz bytes, limits, cancellation and injected before-effect decoder failures.
 pub fn check(input: &[u8]) {
+    records::check(input);
     let _ = check_inner::<false, false>(input);
 }
+
+/// Fixed-record admission shared with the codec corpus executable.
+pub mod records;
 
 fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -> bool {
     let Some((&kind, input)) = input.split_first() else {
@@ -449,7 +453,10 @@ mod tests {
             for number in [0, 1] {
                 let mut input = vec![kind, 255, 255, 0, 0, 0];
                 input.extend_from_slice(&fixture(kind, b"a", number));
-                assert!(check_inner::<false, false>(&input));
+                assert!(
+                    check_inner::<false, false>(&input),
+                    "original filesystem page writer refused kind {kind}"
+                );
                 let panic =
                     std::panic::catch_unwind(|| check_inner::<false, true>(&input)).unwrap_err();
                 let message = panic

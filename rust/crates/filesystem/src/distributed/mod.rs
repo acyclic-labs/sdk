@@ -165,6 +165,9 @@ pub mod state_record;
 mod state_tests;
 pub use placement::AuthorityPlacement;
 mod records;
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+#[doc(hidden)]
+pub use records::codec_fuzz as record_codec_fuzz;
 mod reservations;
 use records::*;
 mod accounting;

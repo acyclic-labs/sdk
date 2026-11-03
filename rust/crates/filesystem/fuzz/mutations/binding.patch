@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/bindings.rs
++++ b/rust/crates/filesystem/src/kernel/bindings.rs
+@@ -524,7 +524,7 @@
+     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+ ) -> Result<BindingPage, E> {
+     let mut decoder = Decoder::new(
+-        bytes,
++        if std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("binding") { &[] } else { bytes },
+         DOMAIN,
+         VERSION,
+         limits.maximum_page_object_bytes(),

@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/generation.rs
++++ b/rust/crates/filesystem/src/kernel/generation.rs
+@@ -138,7 +138,7 @@
+     E: From<CanonicalDecodeError>,
+ {
+     let mut decoder = Decoder::new(
+-        bytes,
++        if std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("generation") { &[] } else { bytes },
+         DOMAIN,
+         VERSION,
+         limits.maximum_object_bytes,

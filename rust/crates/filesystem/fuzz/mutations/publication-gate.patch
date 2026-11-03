@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/distributed/records.rs
++++ b/rust/crates/filesystem/src/distributed/records.rs
+@@ -8,7 +8,7 @@
+     }
+     let operation = value
+         .strip_prefix(PUBLICATION_GATE_ACTIVE)
+-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
++        .and_then(|bytes| <[u8; 16]>::try_from(if std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("publication-gate") { bytes.get(..16).unwrap_or(bytes) } else { bytes }).ok())
+         .ok_or_else(|| {
+             AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
+         })?;

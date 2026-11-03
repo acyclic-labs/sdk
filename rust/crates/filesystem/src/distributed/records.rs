@@ -172,3 +172,28 @@ pub(super) fn decode_record<'a>(
     StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
 }
+
+pub(super) fn encode_lineage_generation(
+    generation: GenerationId,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+    work.stream_bytes(
+        LINEAGE_DOMAIN,
+        &[generation.object_id().to_bytes().as_slice()],
+    )
+}
+
+pub(super) fn encode_publication_gate(
+    operation: Option<OperationId>,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+    match operation {
+        Some(operation) => work.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()]),
+        None => Ok(acyclic_stream::OwnedBytes::from_static(
+            PUBLICATION_GATE_FREE,
+        )),
+    }
+}
+
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+pub mod codec_fuzz;

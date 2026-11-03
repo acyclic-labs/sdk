@@ -64,7 +64,12 @@ mod regular_mutation;
 mod retention;
 mod search;
 pub(crate) mod sort;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "fuzzing",
+    all(feature = "native-watch", not(target_arch = "wasm32"))
+))]
 mod source_state;
 mod transfer;
 mod tree;
@@ -299,6 +304,6 @@ pub use volume::encode_volume_created;
 pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "test-support"))]
 #[doc(hidden)]
 pub mod decoder_fuzz;

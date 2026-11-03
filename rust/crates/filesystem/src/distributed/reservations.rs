@@ -33,11 +33,7 @@ fn request(
     conditions.push(CommitCondition::Absent {
         path: work.path(placement, authority, "/retirement", None)?,
     });
-    let body = if snapshot.is_some() {
-        work.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])?
-    } else {
-        acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE)
-    };
+    let body = encode_publication_gate(snapshot.map(|_| operation), work)?;
     let mut mutations = work.vec(1)?;
     work.append_record(&mut mutations, gate, [body])?;
     let domain: &[u8] = if snapshot.is_some() {

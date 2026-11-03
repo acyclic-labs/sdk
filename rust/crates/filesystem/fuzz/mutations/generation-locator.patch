@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/distributed/records.rs
++++ b/rust/crates/filesystem/src/distributed/records.rs
+@@ -104,7 +104,7 @@
+         };
+         Self {
+             lineage: word(lineage),
+-            changes: word(changes),
++            changes: word(if std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("generation-locator") { lineage } else { changes }),
+         }
+     }
+ 

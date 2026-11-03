@@ -426,10 +426,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 conditions.push(CommitCondition::Absent {
                     path: locator.clone(),
                 });
-                let entry = work.stream_bytes(
-                    LINEAGE_DOMAIN,
-                    &[generation.object_id().to_bytes().as_slice()],
-                )?;
+                let entry = encode_lineage_generation(generation, work)?;
                 work.append_record(mutations, lineage, [entry])?;
                 let location = GenerationLocator {
                     lineage: tail.saturating_add(1),

@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/distributed/records.rs
++++ b/rust/crates/filesystem/src/distributed/records.rs
+@@ -76,7 +76,7 @@
+     bytes
+         .strip_prefix(LINEAGE_DOMAIN)
+         .and_then(|bytes| ObjectId::try_from(bytes).ok())
+-        .filter(|id| id.kind == crate::ObjectKind::GenerationRoot)
++        .filter(|id| std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("lineage") || id.kind == crate::ObjectKind::GenerationRoot)
+         .map(GenerationId::from_root)
+         .ok_or(AuthorityStoreError::CorruptStatic(
+             "invalid Stream generation-lineage record",
