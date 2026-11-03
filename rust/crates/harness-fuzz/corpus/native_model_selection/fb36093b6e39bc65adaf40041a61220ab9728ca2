@@ -1,0 +1,2 @@
+model = "vendor/quoted \"model\"/line\nnext"
+endor/quoted \"model\"/e'
