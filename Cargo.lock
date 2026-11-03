@@ -1327,7 +1327,6 @@ dependencies = [
  "futures",
  "loom",
  "proptest",
- "thiserror 2.0.21",
 ]
 
 [[package]]

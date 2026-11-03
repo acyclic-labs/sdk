@@ -98,7 +98,7 @@ impl MemoryStream {
             return Err(StreamError::Capacity);
         }
         let _publication = self.publication.lock().await;
-        #[cfg(loom)]
+        #[cfg(all(loom, feature = "local"))]
         if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
             let previous = std::mem::replace(&mut *self.state.write().await, decoded);
             std::mem::forget(previous);
