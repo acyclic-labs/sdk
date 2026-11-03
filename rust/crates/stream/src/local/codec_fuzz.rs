@@ -99,11 +99,8 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
         // The checksum parser admits the enclosing frame independently of
         // command semantics, as recovery does. Arbitrary bytes reach both.
         if let Some(command) = frame.command.get(FRAME_TIME_BYTES..) {
-            if let Ok(command) = decode_command(command) {
-                let canonical = command.encode_to_vec();
-                if decode_command(&canonical).is_err() {
-                    return false;
-                }
+            if !crate::codec_fuzz::command(command) {
+                return false;
             }
         }
     }
@@ -114,6 +111,19 @@ pub(crate) fn frame(command: &WriteRequest) -> Result<Vec<u8>, StreamError> {
     PreparedFrame::encode(command, 42, None)
         .map(|frame| frame.encoded)
         .map_err(|_| StreamError::InvalidArgument)
+}
+
+#[cfg(test)]
+pub(crate) fn repeated_command_frame(command: &WriteRequest) -> Result<Vec<u8>, StreamError> {
+    let encoded = command.encode_to_vec();
+    let payload = crate::persistence::header(&encoded, b"ACYCLIC-STREAM-COMMAND-V", b"1\0")?;
+    // Repeat the real writer's protobuf operation, then frame it with the
+    // production checksum writer. A valid frame need not be a canonical command.
+    let mut frame = Vec::new();
+    JOURNAL_FRAME
+        .encode(&[&42u64.to_le_bytes(), &encoded, payload], &mut frame)
+        .map_err(|_| StreamError::InvalidArgument)?;
+    Ok(frame)
 }
 
 pub(crate) fn header() -> Result<Vec<u8>, StreamError> {
