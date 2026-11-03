@@ -1,7 +1,10 @@
 {
   "id": "fs-status",
   "workspace": {
-    "kind": ["git", "plain"],
+    "kind": [
+      "git",
+      "plain"
+    ],
     "files": {}
   },
   "model": {
@@ -20,7 +23,7 @@
       },
       {
         "when": {
-          "tool_result": "Status"
+          "tool_result": "fs supports child diff and merge only"
         },
         "text": [
           "done"
@@ -38,7 +41,10 @@
   "assert": {
     "requests": 2,
     "tool_contains": [
-      "Status"
+      "use shell for other git commands"
+    ],
+    "tool_errors": [
+      "fs supports child diff and merge only"
     ]
   }
 }

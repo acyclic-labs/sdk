@@ -41,6 +41,97 @@ struct CallLog<'a> {
     output_bytes: u64,
 }
 
+/// console.log lines the program printed, returned beside its result: a
+/// model that prints a value expects to read it. Lines beyond the render
+/// budget are counted in `logs_omitted`, never silently dropped.
+#[derive(Default)]
+struct ProgramLogs {
+    /// Each retained line with its exact JSON-encoded size in the result.
+    lines: Vec<(Value, usize)>,
+    bytes: usize,
+    omitted: u64,
+}
+
+impl ProgramLogs {
+    /// The `,"logs":[]` and `,"logs_omitted":N` fields themselves.
+    const FIELDS: usize = 48;
+
+    fn observe(
+        &mut self,
+        values: &serde_json::value::RawValue,
+        maximum: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if self.omitted > 0 {
+            self.omitted += 1;
+            return Ok(());
+        }
+        let invalid = || {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript log arguments are not a JSON array",
+            )
+        };
+        let values: Vec<&serde_json::value::RawValue> =
+            serde_json::from_str(values.get()).map_err(|_| invalid())?;
+        let mut line = String::new();
+        for (index, value) in values.into_iter().enumerate() {
+            if index > 0 {
+                line.push(' ');
+            }
+            // Strings print as their text, like console.log; other values
+            // print as their JSON encoding.
+            match serde_json::from_str::<std::borrow::Cow<'_, str>>(value.get()) {
+                Ok(text) => line.push_str(&text),
+                Err(_) => line.push_str(value.get()),
+            }
+        }
+        let cost = with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(line.as_str(), u64::MAX, work)
+        })? as usize
+            + 1;
+        if self.bytes + cost + Self::FIELDS > maximum {
+            self.omitted = 1;
+            return Ok(());
+        }
+        self.bytes += cost;
+        stock_vec_push(&mut self.lines, (Value::String(line), cost), io)
+    }
+
+    /// Adds the retained lines to the program's output, keeping the whole
+    /// projected output within the render budget.
+    fn attach(self, output: &mut Value, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
+        let Self {
+            mut lines,
+            mut bytes,
+            mut omitted,
+        } = self;
+        if lines.is_empty() && omitted == 0 {
+            return Ok(());
+        }
+        let result = with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(&*output, u64::MAX, work)
+        })? as usize;
+        while result + bytes + Self::FIELDS > maximum {
+            let Some((_, cost)) = lines.pop() else { break };
+            bytes -= cost;
+            omitted += 1;
+        }
+        let Some(fields) = output.as_object_mut() else {
+            return Ok(());
+        };
+        fields.insert(
+            "logs".into(),
+            Value::Array(lines.into_iter().map(|(line, _)| line).collect()),
+        );
+        if omitted > 0 {
+            fields.insert("logs_omitted".into(), Value::from(omitted));
+        }
+        Ok(())
+    }
+}
+
 type CallResult<'a> =
     std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
 
@@ -364,6 +455,7 @@ impl StockExecution<'_> {
             )));
             let mut ordinal = 0_u64;
             let mut log_ordinal = 0_u64;
+            let mut logs = ProgramLogs::default();
             let mut inner_context = Vec::new();
             let program = loop {
                 tokio::select! {
@@ -390,6 +482,7 @@ impl StockExecution<'_> {
                                 // Borrow the engine's JSON without allocating a second value tree.
                                 let values = serde_json::from_str(&arguments.value).map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log arguments are not JSON"))?;
                                 let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
+                                logs.observe(values, maximum, self.io)?;
                                 let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}", parent.operation_id), work))?;
                                 #[cfg(feature = "filesystem")]
                                 let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
@@ -454,7 +547,7 @@ impl StockExecution<'_> {
             {
                 return Err(error.into());
             }
-            let value = match program {
+            let mut value = match program {
                 Ok(value) => {
                     serde_json::json!({"value": value})
                 }
@@ -478,6 +571,7 @@ impl StockExecution<'_> {
                 maximum as u64,
                 self.io,
             )?;
+            logs.attach(&mut value, maximum, self.io)?;
             let mut context = Vec::new();
             for message in stock_into_iter(inner_context, self.io)? {
                 let ModelContent::Text(text) = message.content else {

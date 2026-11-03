@@ -8,47 +8,44 @@
     }
   },
   "model": {
-    "steps": []
+    "steps": [
+      {
+        "when": {
+          "user": "hello"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
   },
   "inputs": [
     {
       "mode": "headless",
       "text": "hello",
-      "exit": 1,
-      "outcome": {
-        "completion": "failed",
-        "error": "conflict: discovered skill names are repeated"
-      }
-    },
-    {
-      "mode": "jsonl",
-      "operation": "00000000-0000-0000-0000-000000000002",
-      "text": "hello again",
-      "exit": 0,
-      "outcome": {
-        "completion": "failed",
-        "error": "conflict: discovered skill names are repeated"
-      }
+      "answer": "done"
     },
     {
       "mode": "jsonl",
       "args": [
         "--operation",
-        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000002",
         "--input-format",
         "jsonl"
       ],
-      "stdin": "{\"prompt\":\"first\",\"id\":\"first\"}\n{\"prompt\":\"/nope\",\"id\":\"typo\"}\n{\"prompt\":\"later\",\"id\":\"later\"}\n",
-      "exit": 0,
+      "stdin": "{\"prompt\":\"/repeated\",\"id\":\"ambiguous\"}\n",
+      "exit": 1,
       "stdout_contains": [
-        "\"id\":\"first\"",
-        "\"id\":\"typo\"",
-        "\"id\":\"later\"",
-        "discovered skill names are repeated"
+        "\"id\":\"ambiguous\"",
+        "ambiguous skill: repeated"
       ]
     }
   ],
   "assert": {
-    "requests": 0
+    "requests": 1,
+    "model_contains": [
+      "First declaration",
+      "Second declaration"
+    ]
   }
 }

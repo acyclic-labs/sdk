@@ -484,8 +484,10 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         let value = result(&model);
         assert_eq!(logs(&journal)[0]["tool"], "example.echo");
         assert_eq!(logs(&journal)[0]["ok"], approved);
+        // The model reads what the program printed beside its outcome.
+        assert_eq!(value["logs"], json!(["before approval"]));
         if approved {
-            assert_eq!(value["value"], 42);
+            assert_eq!(value["value"], json!({"value": 42}));
         } else {
             assert!(
                 value["error"]
@@ -516,7 +518,7 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         else {
             panic!("settled inner call did not return its original receipt");
         };
-        assert_eq!(crate::tools::code_mode::output(&replayed.value)?, &value);
+        assert_eq!(replayed.value["output"], value);
         assert_eq!(
             log_entries(&journal, "code.log").as_array().unwrap().len(),
             1
@@ -593,7 +595,10 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
         allowed()?,
     )?;
     executor.execute(input(), journal.as_ref()).await?;
-    assert_eq!(result(&model), 7);
+    assert_eq!(
+        result(&model),
+        json!({"value": 7, "logs": ["before {\"value\":42}", "after"]})
+    );
     assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
     let printed = log_entries(&journal, "code.log");
     assert_eq!(printed.as_array().unwrap().len(), 2);
@@ -736,9 +741,9 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
         );
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
         if code.starts_with('(') {
-            assert_eq!(value, 1);
+            assert_eq!(value, json!({"value": 1, "logs": ["encoding"]}));
         } else {
-            assert_eq!(value["error"], "failed");
+            assert_eq!(value, json!({"error": "failed", "logs": ["diagnostic"]}));
         }
     }
     Ok(())
@@ -852,6 +857,7 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "await tools['example.echo']({value:42}); 'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
+        "for (let i = 0; i < 100; i++) await console.log('y'.repeat(10000)); 1",
     ] {
         let (mut executor, model, echo) = executor(code, allowed()?, true)?;
         executor.limits.render_bytes = 65_536;
@@ -859,7 +865,13 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
         executor.execute(input(), &journal).await?;
         let value = result(&model);
         assert!(serde_json::to_vec(&value).unwrap().len() <= 65_536);
-        if code.starts_with("let") {
+        if code.starts_with("for") {
+            // Printed lines share the result's budget; the rest are counted.
+            let kept = value["logs"].as_array().unwrap().len() as u64;
+            assert!(kept > 0);
+            assert_eq!(value["value"], 1);
+            assert_eq!(value["logs_omitted"].as_u64().unwrap() + kept, 100);
+        } else if code.starts_with("let") {
             assert_eq!(value, 4_000_000);
             assert_eq!(logs(&journal).as_array().unwrap().len(), 400);
         } else if code.starts_with("await") {

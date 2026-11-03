@@ -12,7 +12,9 @@ pub struct FsCommand {
 
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
-        [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
+        [command, branch] if command == "diff" && super::agents::branch_child(branch).is_some() => {
+            Some(branch)
+        }
         _ => None,
     }
 }
@@ -78,7 +80,7 @@ mod tests {
             name in "[a-z0-9_-]{1,32}",
             extra in prop::collection::vec(".{0,16}", 0..3),
         ) {
-            let branch = if agent { format!("agents/{name}") } else { name };
+            let branch = if agent { crate::tools::child_branch(&name) } else { name };
             let mut args = vec![command.to_owned(), branch.clone()];
             args.extend(extra);
             let selected = agent_diff(&args);

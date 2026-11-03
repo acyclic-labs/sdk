@@ -281,7 +281,7 @@ impl HostWorkspace {
             self.workspace.store.clone(),
         )
         .register_branch_workspace(
-            format!("agents/{reference}"),
+            crate::tools::child_branch(reference),
             view.workspace().id(),
             None,
             false,
