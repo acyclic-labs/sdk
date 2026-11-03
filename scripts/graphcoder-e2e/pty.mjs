@@ -115,7 +115,9 @@ export async function pty(processes, binary, fixture, input, capture) {
         cause: new AggregateError(errors, "terminal action and completion failures"),
       });
     }
-    assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
+    // A refused start reports only through its termination record.
+    const cause = result.termination?.execution_failure;
+    assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${cause ? JSON.stringify(cause) : ""}${result.stderr}\n${result.stdout}`);
     if (!input.killed) {
       assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
       assert.equal(result.code, input.exit ?? 0, result.stderr + visible);

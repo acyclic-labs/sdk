@@ -1,6 +1,5 @@
-//! Real production custody selection in isolated child processes, without an
-//! interactive credential store or fixture backend.
-#![cfg(not(feature = "test-support"))]
+//! Real custody selection in isolated child processes, without an interactive
+//! credential store. Every build honours the same explicit policy.
 
 use acyclic_native_runtime::{
     private_file::PublicationStage,
