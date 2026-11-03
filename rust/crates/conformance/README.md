@@ -57,11 +57,18 @@ a sample with different required work refuses before changing that cohort.
 `--samples` accepts any positive count and defaults to 200. Each reported
 quantile includes its actual sample count; below 100 observations, nearest-rank
 p99 is the sample maximum, without an independently established tail guarantee.
-Run the same quantile and cohort admission controls without calibration, storage
+Run cohort admission and encoding controls without calibration, storage
 setup or model calls:
 
 ```sh
 cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+```
+
+The report quantile constructor has an independent nearest-rank property over
+generated cohorts, invalid values and signed zeros:
+
+```sh
+cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-quantiles --test local_hotpath_quantiles
 ```
 
 These are single-operation latency measurements, not throughput or concurrency

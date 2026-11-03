@@ -15,6 +15,7 @@ mod proofs;
 #[cfg(feature = "local-hotpath-proofs")]
 #[path = "local_hotpath/proofs_resources.rs"]
 mod proofs_resources;
+#[path = "local_hotpath/quantiles.rs"]
 mod quantiles;
 #[path = "local_hotpath/report.rs"]
 mod report;
@@ -30,7 +31,7 @@ acyclic_test_support::counting_allocator!();
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile and cohort admission controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the cohort admission and encoding controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
         );
         return;
     }
