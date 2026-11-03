@@ -22,7 +22,8 @@ fn version<T>(bytes: &[u8], offset: usize, decode: impl Fn(&[u8]) -> Result<T, I
     ));
 }
 
-fn framing<T>(bytes: &[u8], decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
+/// Require exact framing of admitted bytes through the owning production decoder.
+pub fn framing<T>(bytes: &[u8], decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
     let mut alias = bytes.to_vec();
     alias.push(0);
     assert!(

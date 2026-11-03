@@ -26,7 +26,6 @@ copy a codec into a model. The obligations are:
 | `credit_debits_preserve_both_balances_or_refuse_without_mutation` | Data on a nonzero channel spends exactly its actual encoder width and one frame; insufficient credit or a zero channel changes neither balance. Control frames spend no data credit. |
 | `version_admission_borrows_payload_and_refuses_before_decoding` | Arbitrary domain/version prefixes either return the exact borrowed payload or a typed refusal. The shared primitive and Stream projection agree; exactly one appropriate refusal constructor runs on failure and neither runs on success. Old and unknown headers refuse even without a body. |
 | `bounded_resource_pairs_round_trip_and_refuse_other_versions` | Opaque four-byte accounts and IDs preserve every bit through the versioned resource codec; old versions and unversioned fields refuse before field parsing. |
-| `bounded_actor_triples_round_trip_and_refuse_resource_encodings` | Admitted four-byte account, namespace and ID triples round-trip; Actor and Resource grammars are disjoint, and old/unknown Actor versions refuse before fields. |
 | `usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions` | Every admitted 40-byte checkpoint has one encoding and a representable signed USN; truncations and old/unknown versions refuse before fields. |
 | `log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds` | Both four/eight-byte log prefixes preserve every length bit under arbitrary configured bounds, including reversed bounds. Narrow overflows, out-of-domain lengths and truncated prefixes refuse; every admitted prefix has one canonical spelling. |
 | `full_frame_extents_refuse_overflow_without_clamping` | Arbitrary body lengths and both prefix widths either retain the exact mathematical frame size or refuse integer/prefix/platform overflow. Maximum queries use the same checked operation. |
@@ -102,3 +101,19 @@ old and unknown versions refuse without consuming a record field; a current
 truncated header is malformed, and a full current header preserves the tag.
 The synchronous header performs fixed scalar work with no allocation, IO or
 wait. This harness is unexecuted and does not prove multipart replay or storage.
+
+The actor identity harness now lives beside the owning Auth codec and shares
+its exact framing oracle with both addressing fuzzers. It covers independent
+nonempty field lengths through four bytes, actual constructor admission,
+round trips, Actor/Resource grammar separation, trailing/truncated-field refusal
+and unsupported-version refusal before fields. The length bound applies only
+to the proof. Run it independently of the other codec crates:
+
+```sh
+cargo kani -p acyclic-auth --features test-support --harness bounded_actor_triples_round_trip_and_refuse_resource_encodings
+```
+
+Its source and shared oracle do not establish an executed Kani result. The kept
+`addressing-resource-tail` and `addressing-actor-tail` fuzz controls exercise
+actual guard omissions through that same framing oracle; they do not substitute
+for this proof's verification or its own counterexample qualification.
