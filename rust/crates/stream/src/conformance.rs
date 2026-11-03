@@ -370,7 +370,9 @@ async fn verify_read_open_failures(
     Ok(())
 }
 
-async fn verify_stale_tail_condition(
+/// Rejects a stale fork without spending its key or publishing its destination.
+/// The supplied source must contain exactly two records.
+pub async fn verify_stale_tail_condition(
     provider: &(impl StreamProvider + ?Sized),
     source: StreamPath,
 ) -> Result<(), Failure> {

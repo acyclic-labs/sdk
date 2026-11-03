@@ -71,7 +71,7 @@ async fn survives_cut(barrier: bool) -> Result<u64> {
     Ok(provider.tail(path()).await?)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_receipt_covers_a_deferred_record_across_a_power_cut() -> Result {
     assert_eq!(survives_cut(true).await?, 2);
     Ok(())
@@ -79,7 +79,7 @@ async fn a_receipt_covers_a_deferred_record_across_a_power_cut() -> Result {
 
 /// Negative control: the acknowledgement alone, made under deferred
 /// durability, is lost by the same cut.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn negative_control_a_deferred_acknowledgement_is_lost_by_a_power_cut() -> Result {
     assert_eq!(survives_cut(false).await?, 1);
     Ok(())
@@ -120,7 +120,7 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
     Ok(foreign.tail(path()).await?)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_scoped_deferral_cannot_defer_a_foreign_authority() -> Result {
     assert_eq!(foreign_provider_survives_cut(true).await?, 2);
     assert_eq!(foreign_provider_survives_cut(false).await?, 1);
@@ -197,7 +197,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
     Ok(meter)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_publication_workers_preserve_provider_scope_and_both_device_prefixes() -> Result {
     for entry in 0..3 {
         for scoped in [false, true] {
@@ -305,14 +305,14 @@ async fn survives_barrier_cut(receipt: bool) -> Result<u64> {
 }
 
 #[cfg(target_vendor = "apple")]
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn barrier_needs_a_device_flush_before_a_receipt_survives_power_loss() -> Result {
     assert_eq!(survives_barrier_cut(true).await?, 2);
     Ok(())
 }
 
 #[cfg(target_vendor = "apple")]
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn negative_control_barrier_acknowledgement_is_lost_by_power_loss() -> Result {
     assert_eq!(survives_barrier_cut(false).await?, 1);
     Ok(())
@@ -320,7 +320,7 @@ async fn negative_control_barrier_acknowledgement_is_lost_by_power_loss() -> Res
 
 /// Model the ordered-only completion available on Apple on every platform.
 /// Every phase-barrier adapter must upgrade that cut to device-flushed proof.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> Result {
     let mut proofs = [false; 3];
     for (entry, proof) in proofs.iter_mut().enumerate() {
