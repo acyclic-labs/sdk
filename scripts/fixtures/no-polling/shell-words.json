@@ -1,0 +1,26 @@
+{
+  "producer": "/bin/sh",
+  "method": "Execute the captured script on standard input; set -- projects the parsed word without executing a wait.",
+  "records": [
+    {
+      "capture": "set -- sl\\eep; printf \"%s\\n\" \"$@\"",
+      "word": "sl\\eep",
+      "stdout": "sleep\n"
+    },
+    {
+      "capture": "set -- sl\\\neep; printf \"%s\\n\" \"$@\"",
+      "word": "sl\\\neep",
+      "stdout": "sleep\n"
+    },
+    {
+      "capture": "set -- s\\l\\e\\e\\p; printf \"%s\\n\" \"$@\"",
+      "word": "s\\l\\e\\e\\p",
+      "stdout": "sleep\n"
+    },
+    {
+      "capture": "set -- \\sleep; printf \"%s\\n\" \"$@\"",
+      "word": "\\sleep",
+      "stdout": "sleep\n"
+    }
+  ]
+}

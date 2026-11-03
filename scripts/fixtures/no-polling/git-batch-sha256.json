@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "producer": {
+    "version": "git version 2.46.0.windows.1",
+    "revision": "9d1fcb3878cb8264f2fa64216ae363a66004095690ae17ea4704c3c8e843a8ff",
+    "objectFormat": "sha256",
+    "command": [
+      "git",
+      "cat-file",
+      "--batch"
+    ],
+    "input": "9d1fcb3878cb8264f2fa64216ae363a66004095690ae17ea4704c3c8e843a8ff:empty-source.mjs\n9d1fcb3878cb8264f2fa64216ae363a66004095690ae17ea4704c3c8e843a8ff:source with spaces.mjs\n9d1fcb3878cb8264f2fa64216ae363a66004095690ae17ea4704c3c8e843a8ff:missing source.mjs\n",
+    "expectedCommand": [
+      "git",
+      "show",
+      "<revision>:<file>"
+    ]
+  },
+  "files": [
+    "empty-source.mjs",
+    "source with spaces.mjs",
+    "missing source.mjs"
+  ],
+  "bytes": "NDczYTBmNGMzYmU4YTkzNjgxYTI2N2UzYjFlOWE3ZGNkYTExODU0MzZmZTE0MWY3NzQ5MTIwYTMwMzcyMTgxMyBibG9iIDAKCmRiYWNlY2ZhYWYzMWVhOTY5Y2Y2MDI1MzkxMjcyM2U3OGMyZmMzNWE4YzgyYTBlMGFlZWMxZTIxNmE4M2E0ZTUgYmxvYiAzNjMKaW1wb3J0IHtzdXBwb3J0ZWRTb3VyY2V9IGZyb20gJy4vc291cmNlLXBvbGljeS9pbmRleC5tanMnOwoKZXhwb3J0IGZ1bmN0aW9uIHNvdXJjZUluU2NvcGUoZmlsZSkgewogLy8gRXhhY3QgZGlzcG9zaXRpb25zIGFyZSBkZWNsYXJhdGl2ZSBwb2xpY3ksIG5ldmVyIGV4ZWN1dGFibGUgc291cmNlLgogcmV0dXJuIGZpbGUgIT09ICdzY3JpcHRzL25vLXBvbGxpbmctZGlzcG9zaXRpb25zLmpzb24nICYmIHN1cHBvcnRlZFNvdXJjZShmaWxlKQogICYmIChmaWxlID09PSAncGFja2FnZS5qc29uJyB8fCAvXig/OnJ1c3RcL2NyYXRlc1wvfHR5cGVzY3JpcHRcL3BhY2thZ2VzXC98c2NyaXB0c1wvfHBsdWdpblwvKS8udGVzdChmaWxlKSk7Cn0KCjlkMWZjYjM4NzhjYjgyNjRmMmZhNjQyMTZhZTM2M2E2NjAwNDA5NTY5MGFlMTdlYTQ3MDRjM2M4ZTg0M2E4ZmY6bWlzc2luZyBzb3VyY2UubWpzIG1pc3NpbmcK",
+  "sources": [
+    [
+      "empty-source.mjs",
+      ""
+    ],
+    [
+      "source with spaces.mjs",
+      "import {supportedSource} from './source-policy/index.mjs';\n\nexport function sourceInScope(file) {\n // Exact dispositions are declarative policy, never executable source.\n return file !== 'scripts/no-polling-dispositions.json' && supportedSource(file)\n  && (file === 'package.json' || /^(?:rust\\/crates\\/|typescript\\/packages\\/|scripts\\/|plugin\\/)/.test(file));\n}\n"
+    ]
+  ]
+}

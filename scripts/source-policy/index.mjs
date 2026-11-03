@@ -4,25 +4,30 @@ import ts from 'typescript-parser';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
-const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b');
+// Case-insensitive candidates cover PowerShell in both sources and child programs.
+const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_(?:for|until|timeout(?:_while|_ms)?)|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil|(?:sqlite3_)?busy_(?:timeout|handler)|PeriodicReader|with_batch_exporter|with_scheduled_delay|(?:http2_)?keep_?alive_interval|set_tcp_keepalive)$/i;
+const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
+const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
 const loop = new Set(['for', 'while', 'loop', 'do']);
+const embeddedLoop = new RegExp('\\b(?:' + [...loop].join('|') + ')\\b', 'i');
+const embeddedKind = spelling => embeddedCandidate(spelling) ? 'embedded-timer-or-retry'
+ : embeddedLoop.test(spelling) ? 'embedded-loop' : undefined;
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
 const opening = new Set(['(', '[', '{']);
 const closing = new Set([')', ']', '}']);
 const bindingEnds = new Set([';', ',', ')', ']', '}']);
 const statementStarts = new Set(['let', 'const', 'fn', 'return']);
+const cFamily = /\.(?:[ch](?:pp|xx)?|cc|hh|cs)$/;
 const classes = new Set([
  'caller-deadline', 'transient-transport-backoff', 'retryable-tool', 'retryable-model',
  'idempotent-identity', 'event-wait', 'finite-work', 'negative-control',
 ]);
 
 export class SourceSyntaxError extends Error {
- constructor(file, diagnostic, parsed) {
-  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
-  super(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+ constructor(message) {
+  super(message);
   this.name = 'SourceSyntaxError';
  }
 }
@@ -30,20 +35,23 @@ export class SourceSyntaxError extends Error {
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
 
 // Host identifiers and quoted child programs can spell the same operation with
-// Unicode escapes. Conservatively decode escapes across wrapper quoting: a
+// Unicode, shell or PowerShell escapes. Decode across wrapper quoting: a
 // wrapper must not turn a readiness timer into an approved ordinary identifier.
 function escapedSpelling(source) {
- return source.replace(/\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2}))/g,
-  (escape, braced, short, long, byte) => {
-   const point = Number.parseInt((braced ?? short ?? long ?? byte).replaceAll('_', ''), 16);
+ // Consume a backslash run once even when no Unicode escape follows it.
+ return source.replace(/`(.)|\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(\r?\n|.))?/g,
+  (escape, powershell, braced, short, long, byte, shell) => {
+   if (powershell !== undefined) return powershell;
+   if (shell !== undefined) return shell === '\n' || shell === '\r\n' ? '' : shell;
+   const digits = braced ?? short ?? long ?? byte;
+   if (digits === undefined) return escape;
+   const point = Number.parseInt(digits.replaceAll('_', ''), 16);
    return point <= 0x10ffff ? String.fromCodePoint(point) : escape;
   });
 }
 
-export function sourceInScope(file) {
- // This declarative file is validated as exact dispositions, never executed.
- if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+export function supportedSource(file) {
+ return cFamily.test(file) || /\.(?:rs|[cm]?[jt]s|[jt]sx|py|sh|bash|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
@@ -66,7 +74,11 @@ function scriptTokens(file, source) {
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
- if (diagnostics.length) throw new SourceSyntaxError(file, diagnostics[0], parsed);
+ if (diagnostics.length) {
+  const diagnostic = diagnostics[0];
+  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
+  throw new SourceSyntaxError(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+ }
  /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];
@@ -114,33 +126,54 @@ function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const python = file.endsWith('.py');
  const powershell = file.endsWith('.ps1');
- const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
- const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
- const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
+ const shell = /\.(?:sh|bash)$/.test(file);
+ const yaml = /\.ya?ml$/.test(file);
+ const whitespace = yaml ? /^[ \t\r\n]+/ : /^\s+/;
+ const wordComments = powershell || shell;
+ const escape = powershell ? '`' : shell ? '\\' : undefined;
+ const continuation = powershell ? '`\n' : '\\\n';
+ const separator = powershell ? /^[;|&(){},]$/ : /^[;|&()<>]$/;
+ const hashComments = /\.(?:py|sh|bash|ps1|toml|ya?ml)$/.test(file);
+ const escapedIdentifiers = cFamily.test(file);
+ const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
+ const blockOpen = powershell ? '<#' : '/*';
+ const blockClose = powershell ? '#>' : '*/';
  const wordPattern = escapedIdentifiers
   ? /^(?:[A-Za-z_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[A-Za-z0-9_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/
+  : powershell ? /^`?[A-Za-z_$](?:`?[A-Za-z0-9_$])*/
+  : shell ? /^(?:[A-Za-z_$]|\\[A-Za-z_$])(?:[A-Za-z0-9_$]|\\[A-Za-z0-9_$]|\\\n)*/
   : /^[A-Za-z_$][A-Za-z0-9_$]*/;
  const out = [];
  let at = 0;
  let line = 1;
- const malformed = message => new Error(`${file}:${line}: ${message}`);
+ let yamlFlow = 0;
+ let wordBoundary = true;
+ const malformed = message => new SourceSyntaxError(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
   if (kind) out.push({value: spelling ?? value, kind, line, start: at});
+  // A hash inside an unquoted argument is data. Escaped separators stay in
+  // that argument; a continued line preserves the preceding boundary.
+  if (wordComments && value !== continuation && !(powershell && value === '`\r\n')) {
+   wordBoundary = !kind || (kind === 'literal' ? powershell && wordBoundary : kind === 'punctuation' && separator.test(value));
+  }
   line += (value.match(/\n/g) ?? []).length;
   at = end;
  };
  while (at < source.length) {
   const tail = source.slice(at);
-  if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
-  if (hashComments && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
+  const blank = tail.match(whitespace);
+  if (blank) { emit(at + blank[0].length); continue; }
+  if (hashComments && tail.startsWith('#') && (!wordComments || wordBoundary)) {
+   emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue;
+  }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
-  if (slashComments && tail.startsWith('/*')) {
+  if ((slashComments || (powershell && wordBoundary)) && tail.startsWith(blockOpen)) {
    let depth = 1;
    let end = at + 2;
    while (end < source.length && depth) {
-    if (rust && source.startsWith('/*', end)) { depth++; end += 2; }
-    else if (source.startsWith('*/', end)) { depth--; end += 2; }
+    if (rust && source.startsWith(blockOpen, end)) { depth++; end += 2; }
+    else if (source.startsWith(blockClose, end)) { depth--; end += 2; }
     else end++;
    }
    if (depth) throw malformed('unterminated block comment');
@@ -162,6 +195,22 @@ function nativeTokens(source, file) {
    emit(end.index + end[0].length, 'literal'); continue;
   }
   const quote = tail[0];
+  if (yaml && !'[]{} ,#&*!|>\'"%@`'.includes(quote) && !/^[-?:](?:[ \t\r\n]|$)/.test(tail)) {
+   // Quotes and unseparated hashes inside plain scalars are data. Only YAML
+   // separation or a flow delimiter returns control to the quoted scanner.
+   let end = at;
+   while (end < source.length) {
+    const character = source[end];
+    const next = source[end + 1];
+    if (character === '\n' || character === '\r' || (yamlFlow && ',[]{}'.includes(character))
+     || (character === '#' && end > at && /[ \t]/.test(source[end - 1]))
+     || (character === ':' && (next === undefined || /[ \t\r\n]/.test(next) || (yamlFlow && ',[]{}'.includes(next))))) break;
+    end++;
+   }
+   if (end > at) { emit(end, 'literal'); continue; }
+  }
+  if (yaml && (quote === '[' || quote === '{')) yamlFlow++;
+  if (yaml && (quote === ']' || quote === '}')) yamlFlow--;
   if (python && (tail.startsWith('"""') || tail.startsWith("'''"))) {
    const delimiter = tail.slice(0, 3);
    let end = at + 3;
@@ -174,16 +223,23 @@ function nativeTokens(source, file) {
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + 1;
    while (end < source.length) {
-    if (powershell && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
+    if ((powershell || (yaml && quote === "'")) && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
     if (source[end] === quote) break;
-    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1) : (source[end] === '\\' ? 2 : 1);
+    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1)
+     : yaml && quote === "'" ? 1 : (source[end] === '\\' ? 2 : 1);
    }
    if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
   }
   const word = tail.match(wordPattern);
-  emit(at + (word ? word[0].length : 1), word ? 'word' : 'punctuation',
-   word && escapedIdentifiers ? escapedSpelling(word[0]) : undefined);
+  let spelling;
+  if (word && (powershell || shell || escapedIdentifiers)) {
+   spelling = escapedSpelling(word[0]);
+   if (powershell) spelling = spelling.toLowerCase();
+  }
+  const width = word ? word[0].length : escape && tail[0] === escape
+   ? powershell && tail.startsWith('`\r\n') ? 3 : Math.min(2, tail.length) : 1;
+  emit(at + width, word ? 'word' : 'punctuation', spelling);
  }
  return out;
 }
@@ -237,11 +293,10 @@ export function pollingUnit(file, source) {
  const sites = [];
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
-  const spelling = t.kind === 'literal' ? escapedSpelling(t.value) : t.value;
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (embeddedTemporal.test(spelling) || policyName.test(spelling)) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' ? embeddedKind(t.value) ?? embeddedKind(escapedSpelling(t.value))
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
@@ -254,14 +309,14 @@ export function pollingSites(file, source) {
  return pollingUnit(file, source).sites;
 }
 
-export function validateDispositions(dispositions) {
+export function validateDispositions(dispositions, {inScope = supportedSource} = {}) {
  if (!Array.isArray(dispositions)) throw new Error('no-polling dispositions must be an array');
  const seen = new Set();
  const fields = new Set(['file', 'fingerprint', 'classification', 'producer', 'terminal', 'negativeControl']);
  for (const item of dispositions) {
   if (!item || typeof item !== 'object' || Object.keys(item).length !== fields.size || Object.keys(item).some(key => !fields.has(key))
-   || typeof item.file !== 'string' || !sourceInScope(item.file) || /[\r\n]/.test(item.file)
-   || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !classes.has(item.classification)
+   || typeof item.file !== 'string' || !inScope(item.file) || /[\r\n]/.test(item.file)
+   || typeof item.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !classes.has(item.classification)
    || typeof item.producer !== 'string' || !item.producer.trim()
    || typeof item.terminal !== 'string' || !item.terminal.trim()
    || typeof item.negativeControl !== 'string' || !item.negativeControl.trim()) {
@@ -273,8 +328,8 @@ export function validateDispositions(dispositions) {
  }
 }
 
-export function newPollingSites(file, before, after, dispositions = []) {
- validateDispositions(dispositions);
+export function newPollingSites(file, before, after, dispositions = [], policy = {}) {
+ validateDispositions(dispositions, policy);
  const retained = new Map();
  for (const site of pollingSites(file, before)) retained.set(site.fingerprint, (retained.get(site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) {

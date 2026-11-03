@@ -1,0 +1,150 @@
+{
+  "producer": "PowerShell System.Management.Automation.Language.Parser.ParseInput",
+  "version": "7.6.9",
+  "records": [
+    {
+      "source": "Write-Output https://example.invalid/#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 48
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output a<#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 26
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output a`\"#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 27
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output a\"value\"#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 32
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output a`;#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 27
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output \"value\"# Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        }
+      ],
+      "comments": [
+        "# Start-Sleep 1"
+      ]
+    },
+    {
+      "source": "Write-Output value # Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        }
+      ],
+      "comments": [
+        "# Start-Sleep 1"
+      ]
+    },
+    {
+      "source": "Write-Output value;# Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        }
+      ],
+      "comments": [
+        "# Start-Sleep 1"
+      ]
+    },
+    {
+      "source": "Write-Output value`\n#fragment; Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        },
+        {
+          "name": "Start-Sleep",
+          "start": 31
+        }
+      ],
+      "comments": []
+    },
+    {
+      "source": "Write-Output `\n# Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Write-Output",
+          "start": 0
+        }
+      ],
+      "comments": [
+        "# Start-Sleep 1"
+      ]
+    },
+    {
+      "source": "<# the producer's \"buffer\" #> Start-Sleep 1",
+      "commands": [
+        {
+          "name": "Start-Sleep",
+          "start": 30
+        }
+      ],
+      "comments": [
+        "<# the producer's \"buffer\" #>"
+      ]
+    }
+  ]
+}

@@ -60,6 +60,8 @@ thread_local! {
 pub fn capture_mount_clock_callbacks()
 -> impl FnOnce(u64, bool) -> Result<Vec<u8>, super::MountSourceError> + Send {
     let clock = Clock::capture();
+    #[cfg(target_os = "linux")]
+    let root_times = super::fuse::shared_root_times();
     move |host_millis, restore_host_callback| {
         struct Restore(Option<u64>);
         impl Drop for Restore {
@@ -75,6 +77,17 @@ pub fn capture_mount_clock_callbacks()
             |_| crate::FsError::from(crate::kernel::CanonicalDecodeError::AllocationFailed),
         )
         .expect("canonical metadata trace");
+        #[cfg(target_os = "linux")]
+        for timestamp in root_times {
+            // Check the original shared-session constructor, before callbacks
+            // leave the creating scope, against the captured provider clock.
+            assert_eq!(timestamp, clock.now(), "shared root escaped its clock");
+            bytes.extend_from_slice(
+                &super::system_time_ns(timestamp)
+                    .expect("canonical shared root time")
+                    .to_le_bytes(),
+            );
+        }
         bytes.extend_from_slice(
             &super::adapter::content_change_time(&clock)
                 .unwrap()

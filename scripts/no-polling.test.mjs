@@ -4,8 +4,10 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {newPollingSites, pollingSites, SourceSyntaxError, sourceInScope, validateDispositions} from './no-polling.mjs';
-import {newProjectPollingSites, projectPollingSites} from './no-polling-project.mjs';
+import {checkNoPolling} from './check-no-polling.mjs';
+import {newPollingSites, pollingSites} from './source-policy/index.mjs';
+import {sourceInScope} from './no-polling-scope.mjs';
+import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
 
 const rust = 'rust/crates/example/src/lib.rs';
 const script = 'typescript/packages/example/test/control.ts';
@@ -42,6 +44,67 @@ test('PowerShell here-strings retain embedded child waits without consuming late
  assert.doesNotThrow(() => pollingSites('scripts/test-terminal-region-screen.ps1',
   readFileSync(new URL('./test-terminal-region-screen.ps1', import.meta.url), 'utf8')));
  assert.deepEqual(pollingSites(file, 'Write-Output "a`"b"; Write-Output \'it\'\'s here\''), []);
+ for (const comment of ['<# the producer\'s "buffer" #>', '<# Start-Sleep 1\n"ignored"\n#>']) {
+  assert.deepEqual(pollingSites(file, comment), []);
+  const source = comment + ' Start-Sleep -Seconds 1';
+  assert.deepEqual(pollingSites(file, source).filter(site => site.kind === 'timer-or-readiness').map(site => site.start),
+   [source.lastIndexOf('Sleep')]);
+ }
+ assert.throws(() => pollingSites(file, '<# unfinished'), /unterminated block comment/);
+});
+
+test('PowerShell casing preserves wait, loop and alias review', () => {
+ // Deliberately bad source edits; no external PowerShell output is fabricated.
+ const file = 'scripts/control.ps1';
+ for (const source of ['START-SLEEP -Seconds 1', 'Start-S`leep -Seconds 1', 'Start-`Sleep -Seconds 1', 'WHILE (-not $ready) { Step }']) {
+  assert.ok(newPollingSites(file, '', source).length, source);
+ }
+ const original = '$Pause = [System.Threading.Thread]::Sleep';
+ const source = original + '; $PAUSE.Invoke(1)';
+ assert.deepEqual(pollingSites(file, source).filter(site => site.kind === 'timer-or-readiness').map(site => site.start),
+  ['$Pause', 'Sleep', '$PAUSE'].map(spelling => source.indexOf(spelling)));
+ const accepted = pollingSites(file, original).map(site => disposition(site, 'caller-deadline',
+  'original caller deadline', 'original caller cancellation', 'remove the caller deadline'));
+ assert.ok(newPollingSites(file, original, source, accepted).length);
+ for (const source of ['runHost("START-SLEEP -Seconds 1")', 'runHost("Start-S`leep -Seconds 1")']) {
+  assert.ok(pollingSites(script, source).some(site => site.kind === 'embedded-timer-or-retry'), source);
+ }
+ assert.deepEqual(pollingSites(file, '# START-SLEEP 1\nWrite-Output "ordinary"'), []);
+});
+
+test('YAML plain scalar hashes preserve later flow settings', () => {
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-comments.json', import.meta.url), 'utf8'));
+ for (const {source, keys} of captured.records) {
+  const expected = keys.filter(key => key.value === 'timeout').map(key => key.start);
+  for (const extension of ['yaml', 'yml']) {
+   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source).map(site => site.start), expected, source);
+  }
+ }
+});
+
+test('embedded host loops without timers require exact review', () => {
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-scripts.json', import.meta.url), 'utf8'));
+ for (const {source, program} of captured.records) {
+  assert.ok(pollingSites('scripts/control.sh', program).some(site => site.kind === 'loop'));
+  for (const extension of ['yaml', 'yml']) {
+   const file = `scripts/control.${extension}`;
+   const sites = pollingSites(file, source);
+   assert.ok(sites.some(site => site.kind === 'embedded-loop'), source);
+   const accepted = sites.map(site => disposition(site, 'finite-work', 'original finite input',
+    'input exhausted', 'replace finite input with readiness probe'));
+   assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+   assert.ok(newPollingSites(file, '', source.replace('ready', 'otherReady'), accepted).length);
+  }
+  for (const file of [script, rust, 'scripts/control.py', 'scripts/control.ps1']) {
+   const wrapped = file.endsWith('.rs') ? `fn child() { command.arg(r#"${program}"#); }`
+    : file.endsWith('.py') ? 'compile(' + JSON.stringify(program) + ', "child", "exec")'
+    : file.endsWith('.ps1') ? "Invoke-Expression '" + program + "'"
+    : 'runHost(' + JSON.stringify(program) + ')';
+   assert.ok(pollingSites(file, wrapped).some(site => site.kind === 'embedded-loop'), wrapped);
+  }
+ }
+ assert.deepEqual(pollingSites('scripts/control.yaml', '# while ! ready; do step; done\nvalue: ordinary'), []);
+ assert.deepEqual(pollingSites(script, 'runHost("before meanwhile doable loopback")'), []);
 });
 
 test('new direct and indirect readiness mutations are rejected', () => {
@@ -183,48 +246,6 @@ test('a legitimate helper requires an exact caller disposition rather than a hel
  }
 });
 
-test('module side effects and missing local producers remain reviewable dependencies', () => {
- const helper = 'typescript/packages/example/test/helper.ts';
- const before = new Map([[helper, 'while (!ready()) step();'], [script, 'export const value = 1;']]);
- const after = new Map(before).set(script, "import './helper.js'; export const value = 1;");
- assert.ok(newProjectPollingSites(before, after).some(site => site.file === script && site.kind === 'polling-module-initialization'));
- const missing = new Map([[script, "import {proceed} from './missing.js'; export function operation() { return proceed(); }"]]);
- assert.ok(newProjectPollingSites(new Map(), missing).some(site => site.kind === 'unresolved-local-helper'));
- const cyclicModules = new Map([
-  [helper, "import './other.js'; export const first = 1;"],
-  ['typescript/packages/example/test/other.ts', "import './helper.js'; export const second = 2;"],
-  [script, "import {first} from './helper.js'; export const result = first;"],
- ]);
- assert.deepEqual(newProjectPollingSites(new Map(), cyclicModules), []);
-});
-
-test('malformed historical source cannot authorize current waits or hide malformed current source', () => {
- const helper = 'typescript/packages/example/test/helper.ts';
- const caller = "import {settle} from './helper.js'; export function operation() { return settle(); }";
- // Deliberately malformed source input; no external compiler output is fabricated.
- const before = new Map([[helper, 'export function settle() { return originalEvent; }}'], [script, caller]]);
- const repaired = new Map(before).set(helper, 'export function settle() { return originalEvent; }');
- assert.deepEqual(newProjectPollingSites(before, repaired), []);
- const polling = new Map(repaired).set(helper, 'export function settle() { return Bun.sleep(10); }');
- const refused = newProjectPollingSites(before, polling);
- assert.ok(refused.some(site => site.file === helper && site.kind === 'timer-or-readiness'));
- assert.ok(refused.some(site => site.file === script && site.kind === 'polling-helper-reference'));
- assert.throws(() => newProjectPollingSites(before, before), SourceSyntaxError);
- const malformed = new Map(before).set(helper, 'export function settle() { return Bun.sleep(10); }}');
- assert.throws(() => newProjectPollingSites(before, malformed), SourceSyntaxError);
- const brokenNative = new Map([
-  ['scripts/broken.py', '\n"unclosed'],
-  ['rust/crates/example/src/broken.rs', '\n/* unclosed'],
- ]);
- assert.throws(() => projectPollingSites(brokenNative), error => {
-  assert.ok(error instanceof AggregateError);
-  assert.equal(error.errors.length, 2);
-  assert.match(error.message, /scripts\/broken.py:2: unterminated quoted string/);
-  assert.match(error.message, /rust\/crates\/example\/src\/broken.rs:2: unterminated block comment/);
-  return true;
- });
-});
-
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {
  for (const declaration of [
   "import {setTimeout as pause} from 'node:timers/promises';",
@@ -248,24 +269,64 @@ test('comments and Future polling remain distinct from time and readiness rechec
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));
 });
 
-test('host language sources cannot hide a wait behind a non-comment slash', () => {
+test('host language sources cannot hide a wait behind non-comment syntax', () => {
  for (const [file, source] of [
   ['scripts/control.py', 'value = 6 // 2; time.sleep(1)'],
   ['scripts/control.sh', 'printf https://example.invalid; sleep 1'],
   ['scripts/control.ps1', 'Write-Output https://example.invalid; Start-Sleep 1'],
+  ['scripts/control.sh', 'printf https://example.invalid/#fragment; sleep 1'],
+  ['scripts/control.sh', 'printf "value"#fragment; sleep 1'],
   ['scripts/control.cs', 'class Control { void Wait() { System.Threading.Thread.Sleep(1); } }'],
+  ['scripts/control.cs', 'class Control { async Task Run() { await System.Threading.Tasks.Task.Delay(1000); } }'],
+  ['scripts/control.c', 'void run(void) { clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0); }'],
+  ...['cc', 'cpp', 'cxx', 'h', 'hh', 'hpp', 'hxx'].map(extension => [
+   `scripts/control.${extension}`, '// The producer\'s "buffer"\nvoid run() { std::this_thread::sleep_for(std::chrono::seconds(1)); }',
+  ]),
+  ['scripts/control.c', 'void run(void) { thrd_sleep(&duration, 0); }'],
   ['scripts/control.cs', '/* outer /* inner */ class Control { void Wait() { System.Threading.Thread.Sleep(1); } } // */'],
   ['scripts/control.c', '/* outer /* inner */ void wait(void) { sleep(1); } // */'],
  ]) {
   assert.ok(sourceInScope(file));
   assert.ok(newPollingSites(file, '', source).length, file);
  }
+ for (const [extension, source] of [
+  ['sh', 'printf value # sleep 1'],
+  ['sh', 'printf value;# sleep 1'],
+ ]) assert.deepEqual(pollingSites(`scripts/control.${extension}`, source), [], source);
+ // Captured from the real PowerShell parser; command extents independently
+ // establish which hashes are data and which begin comments.
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/powershell-comments.json', import.meta.url), 'utf8'));
+ for (const {source, commands} of captured.records) {
+  const expected = commands.filter(command => command.name === 'Start-Sleep').map(command => command.start + command.name.indexOf('Sleep'));
+  assert.deepEqual(pollingSites('scripts/control.ps1', source).map(site => site.start), expected, source);
+ }
 });
 
 test('quoted host programs and native wait deadlines require exact review', () => {
  // Intentional policy mutations, not fabricated OS output or provider captures.
+ for (const source of [
+  'condition.wait_for(lock, duration);',
+  'condition.wait_until(lock, deadline);',
+  'SleepConditionVariableCS(condition, lock, duration);',
+  'SleepConditionVariableSRW(condition, lock, duration, flags);',
+ ]) {
+  const file = 'scripts/control.cpp';
+  const sites = pollingSites(file, source);
+  assert.ok(sites.some(site => site.kind === 'timer-or-readiness'), source);
+  assert.ok(pollingSites(script, 'runHost(' + JSON.stringify(source) + ')')
+   .some(site => site.kind === 'embedded-timer-or-retry'), source);
+  const accepted = sites.map(site => disposition(site, 'caller-deadline',
+   'original caller supplies deadline or duration', 'original condition notification or native wait failure',
+   'change the original caller duration to a readiness interval'));
+  assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+  assert.ok(newPollingSites(file, '', source.replace('lock', 'otherLock'), accepted).length);
+ }
  for (const [file, source] of [
   ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { Thread.Sleep(1); } }\''],
+  ['scripts/control.ps1', 'Add-Type \'class Control { async Task Run() { await Task.Delay(1000); } }\''],
+  [rust, 'fn child() { command.arg(r#"clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0);"#); }'],
+  [rust, 'fn child() { command.arg(r#"std::this_thread::sleep_for(std::chrono::seconds(1));"#); }'],
+  [script, 'runHost("thrd_sleep(&duration, 0);");'],
   ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { ready.WaitOne(25); } }\''],
   ['scripts/control.cs', 'void Run() { Compile("WaitForSingleObject(handle, 1000)"); }'],
   [script, 'runHost("SpinWait.SpinUntil(ready, 100)");'],
@@ -284,6 +345,11 @@ test('quoted host programs and native wait deadlines require exact review', () =
 });
 
 test('escaped host identifiers and embedded child programs cannot conceal readiness waits', () => {
+ const shell = JSON.parse(readFileSync(new URL('./fixtures/no-polling/shell-words.json', import.meta.url), 'utf8'));
+ for (const {word, stdout} of shell.records) {
+  assert.equal(stdout, 'sleep\n');
+  assert.deepEqual(pollingSites('scripts/control.sh', word + ' 1').map(site => site.start), [0], word);
+ }
  // Policy mutations exercise the original source checker, not a fake OS result.
  for (const [file, source, kind] of [
   ['scripts/control.cs', String.raw`class Control { void Run() { Thread.\u0053le\u0065p(1); } }`, 'timer-or-readiness'],
@@ -307,14 +373,6 @@ test('escaped host identifiers and embedded child programs cannot conceal readin
  assert.ok(newPollingSites(file, '', source.replace('handle', 'otherHandle'), accepted).length);
  assert.deepEqual(pollingSites(file, String.raw`// Thread.\u0053leep(1)
  class Control { void \u004Aoin() { completed.\u0043omplete(); } }`), []);
-});
-
-test('unchanged baseline sites do not authorize another occurrence', () => {
- const source = 'async function operation() { await Bun.sleep(1); }\n';
- assert.deepEqual(newPollingSites(script, source, source), []);
- const repeated = source.repeat(4);
- assert.ok(newPollingSites(script, source, repeated).length);
- assert.ok(newPollingSites(script, repeated, repeated + source).length);
 });
 
 test('legitimate deadline and transport sites require exact typed dispositions', () => {
@@ -368,31 +426,105 @@ test('event and finite-work loops have no file or helper exemption', () => {
  const distant = 'loop { let values = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]; receiver.recv()?; }';
  assert.ok(newPollingSites(rust, distant, distant.replace('receiver.recv()?', 'ready()')).length);
  assert.throws(() => newPollingSites(rust, '', source, [{...accepted[0], file: 'rust/crates/*', fingerprint: '*'}]), /invalid exact/);
- assert.throws(() => newPollingSites(rust, '', source, [{...accepted[0], terminal: ''}]), /invalid exact/);
- assert.throws(() => newPollingSites(rust, '', source, [...accepted, ...accepted]), /duplicate/);
 });
 
 test('scope covers native adapters, plugins and scripts as well as both language packages', () => {
  for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json', 'plugin/identity/src/lib.rs', 'plugin/tests/hosts/readiness.py', 'plugin/tests/hosts/wait.mjs', 'plugin/package.json']) assert.ok(sourceInScope(file));
  assert.equal(sourceInScope('docs/no-polling.md'), false);
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
- assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);
  assert.ok(pollingSites('typescript/packages/client/settings.json', '{"poll_interval": 10}').length);
 });
 
-test('the entry point compares real Git objects and rejects modified and untracked sources', () => {
+test('shared policy covers consumer paths and configured temporal dependencies', () => {
+ // Source mutations mirror dependency schedules, not provider/tool output.
+ for (const source of [
+  'PeriodicReader::builder(exporter).build();',
+  'use metrics::PeriodicReader as Reader; Reader::builder(exporter).build();',
+  'provider.with_batch_exporter(exporter);',
+  'reader.with_interval(period);',
+  'batch.with_scheduled_delay(period);',
+  'client.http2_keepalive_interval(Some(period));',
+  'server.http2_keep_alive_interval(period);',
+  'client.keep_alive_interval(period);',
+  'socket.set_tcp_keepalive(&keepalive);',
+  'client.retry_config(RetryConfig::standard());',
+  'retry.with_initial_backoff(period);',
+  'keepalive.with_retries(0);',
+ ]) {
+  const file = 'lib/application/src/config.rs';
+  const before = new Map();
+  const after = new Map([[file, source]]);
+  const sites = newProjectPollingSites(before, after);
+  assert.ok(sites.length, source);
+  const accepted = sites.map(site => disposition(site, 'caller-deadline',
+   'original caller policy', 'original caller terminal', 'change original policy'));
+  assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
+  assert.ok(newProjectPollingSites(before, new Map([[file, source + source]]), accepted).length);
+ }
+ const source = 'printf value#fragment; sl\\eep 1';
+ for (const file of ['ops/control.sh', 'ops/control.bash']) {
+  assert.ok(newProjectPollingSites(new Map(), new Map([[file, source]])).length);
+ }
+ const helper = 'lib/control.mjs', caller = 'svc/start.mjs';
+ const before = new Map([[helper, 'export const pause = ms => new Promise(done => setTimeout(done, ms));'],
+  [caller, "import {pause} from '../lib/control.mjs';"]]);
+ const after = new Map(before).set(caller, before.get(caller) + ' await pause(25);');
+ assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller));
+});
+
+test('SQLite busy policies require review at the original fixture boundary', () => {
+ const file = 'rust/crates/conformance/src/bin/qualify/filesystem_cases.rs';
+ const source = readFileSync(file, 'utf8');
+ const boundary = source.indexOf('connection.busy_timeout(');
+ assert.notEqual(boundary, -1);
+ const call = boundary + 'connection.'.length;
+ assert.ok(pollingSites(file, source).some(site => site.start === call), 'original fixture busy policy is reviewable');
+ for (const [file, before, after] of [
+  [rust, 'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::ZERO) }',
+   'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_timeout(std::time::Duration::from_secs(2)) }'],
+  [rust, 'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_handler(None) }',
+   'fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> { connection.busy_handler(Some(|_| true)) }'],
+  ['lib/storage/control.c', 'int configure(sqlite3 *db) { return sqlite3_busy_timeout(db, 0); }',
+   'int configure(sqlite3 *db) { return sqlite3_busy_timeout(db, 2000); }'],
+  ['lib/storage/control.c', 'int configure(sqlite3 *db) { return sqlite3_busy_handler(db, 0, 0); }',
+   'int configure(sqlite3 *db) { return sqlite3_busy_handler(db, keep_trying, 0); }'],
+ ]) {
+  const sites = pollingSites(file, before);
+  assert.ok(sites.length, before);
+  const accepted = sites.map(site => disposition(site, 'finite-work',
+   'original SQLite fixture connection boundary', 'immediate SQLite result with busy retries disabled',
+   'restore a nonzero busy timeout or a retrying handler'));
+  assert.deepEqual(newPollingSites(file, '', before, accepted), []);
+  assert.ok(newPollingSites(file, before, after, accepted).length);
+  assert.ok(pollingSites('scripts/control.mjs', 'runHost(' + JSON.stringify(before) + ')')
+   .some(site => site.kind === 'embedded-timer-or-retry'), before);
+ }
+ const alias = 'use sqlite::sqlite3_busy_handler as handler; handler(db, callback, state);';
+ const aliasSites = pollingSites('lib/storage/control.rs', alias);
+ assert.ok(aliasSites.some(site => site.start === alias.indexOf('handler(db')));
+});
+
+test('the entry point compares real Git objects and rejects modified and untracked sources', async () => {
  const root = mkdtempSync(join(tmpdir(), 'sdk-no-polling-'));
  const checker = resolve('scripts/check-no-polling.mjs');
  const absent = process.platform === 'win32' ? 'NUL' : '/dev/null';
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent, GIT_CONFIG_COUNT: '0'};
  const git = args => execFileSync('git', args, {cwd: root, env, maxBuffer: Infinity});
  const write = (file, source) => { mkdirSync(dirname(join(root, file)), {recursive: true}); writeFileSync(join(root, file), source); };
- const check = (...args) => {
+ let nodeStarts = 0;
+ const checkCli = (...args) => {
+  nodeStarts++;
   try {
    return {status: 0, output: execFileSync(process.execPath, [checker, ...args], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
   } catch (error) {
    return {status: error.status, output: String(error.stdout) + String(error.stderr)};
   }
+ };
+ const check = async (...args) => {
+  let output = '';
+  const emit = line => { output += line + '\n'; };
+  const status = await checkNoPolling(args, {cwd: root, env, logger: {log: emit, error: emit}});
+  return {status, output};
  };
  try {
   // The fixture invokes Git itself; no Git response or object header is mocked.
@@ -406,66 +538,57 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const plugin = 'plugin/tests/ready.mjs';
   const beforePlugin = 'export async function ready() {}\n';
   write(plugin, beforePlugin);
+  const deleted = 'plugin/tests/deleted.mjs';
+  write(deleted, 'export const removed = true;\n');
   write('scripts/no-polling-dispositions.json', '[]\n');
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
-  assert.equal(check('HEAD').status, 0);
-  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n');
-  const pluginTimer = check('HEAD');
-  assert.notEqual(pluginTimer.status, 0);
-  assert.match(pluginTimer.output, /file=plugin\/tests\/ready.mjs:1/);
-  write(plugin, "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function ready() { await settle(); }\n");
-  const pluginHelper = check('HEAD');
-  assert.notEqual(pluginHelper.status, 0);
-  assert.match(pluginHelper.output, /file=plugin\/tests\/ready.mjs:1 kind=polling-helper-reference/);
-  write(plugin, beforePlugin);
+  rmSync(join(root, deleted));
+  assert.equal(checkCli('HEAD').status, 0);
+  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n'
+   + "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function indirect() { await settle(); }\n");
   const pluginChild = 'plugin/tests/hosts/child.py';
   write(pluginChild, 'import time\nwhile not ready():\n time.sleep(.01)\n');
-  const pluginUntracked = check('HEAD');
-  assert.notEqual(pluginUntracked.status, 0);
-  assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
+  const native = 'scripts/control.hpp';
+  write(native, 'inline void wait() { std::this_thread::sleep_for(std::chrono::seconds(1)); }\n');
+  write(rust, 'fn current() { std::thread::sleep(duration); }\n');
+  write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
+  write(script, 'setTimeout(probe, 1);\n');
+  const modified = checkCli('HEAD');
+  assert.notEqual(modified.status, 0);
+  for (const diagnostic of [
+   /file=plugin\/tests\/ready.mjs:1 kind=timer-or-readiness/,
+   /file=plugin\/tests\/ready.mjs:2 kind=polling-helper-reference/,
+   /file=plugin\/tests\/hosts\/child.py:2 kind=loop/,
+   /file=scripts\/control.hpp:1 kind=timer-or-readiness/,
+   /file=rust\/crates\/example\/src\/lib.rs:1 kind=timer-or-readiness/,
+   /file=typescript\/packages\/example\/test\/caller.ts:1 kind=polling-helper-reference/,
+   /file=typescript\/packages\/example\/test\/control.ts:1 kind=timer-or-readiness/,
+  ]) assert.match(modified.output, diagnostic);
+  assert.match(modified.output, /recovery command: node scripts\/check-no-polling.mjs "HEAD"/);
   const censusPath = join(root, 'census.json');
-  const inventoried = check('--inventory', censusPath);
+  const inventoried = await check('--inventory', 'census.json');
   assert.equal(inventoried.status, 0, inventoried.output);
   const census = JSON.parse(readFileSync(censusPath, 'utf8'));
   assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
-  assert.equal(census.files, 5);
-  const siteOrder = (a, b) => a.file.localeCompare(b.file) || a.fingerprint.localeCompare(b.fingerprint);
-  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map([
-   [rust, readFileSync(join(root, rust), 'utf8')],
-   [helper, readFileSync(join(root, helper), 'utf8')],
-   [caller, readFileSync(join(root, caller), 'utf8')],
-   [plugin, beforePlugin],
-   [pluginChild, readFileSync(join(root, pluginChild), 'utf8')],
-  ])).sort(siteOrder));
+  assert.equal(census.files, 7);
   assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
   const preserved = readFileSync(censusPath, 'utf8');
-  assert.notEqual(check('--inventory', censusPath).status, 0);
+  assert.notEqual((await check('--inventory', 'census.json')).status, 0);
   assert.equal(readFileSync(censusPath, 'utf8'), preserved);
-  rmSync(join(root, pluginChild));
-  write(rust, 'fn current() { std::thread::sleep(duration); }\n');
-  const modified = check('HEAD');
-  assert.notEqual(modified.status, 0);
-  assert.match(modified.output, /step=no-polling file=rust\/crates\/example\/src\/lib.rs:1/);
-  assert.match(modified.output, /recovery command: node scripts\/check-no-polling.mjs "HEAD"/);
-  write(rust, 'fn current() {}\n');
-  write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
-  const indirect = check('HEAD');
-  assert.notEqual(indirect.status, 0);
-  assert.match(indirect.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=polling-helper-reference/);
-  write(caller, beforeCaller);
   git(['rm', '-q', '--', helper]);
-  const missingProducer = check('HEAD');
+  const missingProducer = await check('HEAD');
   assert.notEqual(missingProducer.status, 0);
   assert.match(missingProducer.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=unresolved-local-helper/);
-  git(['restore', '--staged', '--worktree', '--', helper]);
-  write(script, 'setTimeout(probe, 1);\n');
-  const untracked = check('HEAD');
-  assert.notEqual(untracked.status, 0);
-  assert.match(untracked.output, /step=no-polling file=typescript\/packages\/example\/test\/control.ts:1/);
-  const missingBase = check('missing-source-baseline');
+  const missingBase = await check('missing-source-baseline');
   assert.notEqual(missingBase.status, 0);
   assert.match(missingBase.output, /step=no-polling.*recovery command:/s);
+  for (const args of [[], ['HEAD', 'extra-argument'], ['--inventory']]) {
+   const invalid = await check(...args);
+   assert.equal(invalid.status, 1);
+   assert.match(invalid.output, /step=no-polling expected one baseline Git revision.*recovery command:/s);
+  }
+  assert.equal(nodeStarts, 2, 'one CLI acceptance and one CLI refusal; remaining cases reuse the same entry point');
  } finally {
   assert.equal(resolve(dirname(root)), resolve(tmpdir()));
   rmSync(root, {recursive: true, force: true});

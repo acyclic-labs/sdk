@@ -1,0 +1,206 @@
+{
+  "producer": "PyYAML yaml.compose",
+  "version": "5.4.1",
+  "records": [
+    {
+      "source": "settings: [https://example.invalid/#fragment, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 47
+        }
+      ]
+    },
+    {
+      "source": "settings: {url: https://example.invalid/#fragment, timeout: 1}",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "url",
+          "start": 11
+        },
+        {
+          "value": "timeout",
+          "start": 51
+        }
+      ]
+    },
+    {
+      "source": "settings: [{url: path#fragment}, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "url",
+          "start": 12
+        },
+        {
+          "value": "timeout",
+          "start": 34
+        }
+      ]
+    },
+    {
+      "source": "settings: value # timeout: 1",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        }
+      ]
+    },
+    {
+      "source": "settings: [\"value\", {timeout: 1}] # the producer's \"buffer\"",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 21
+        }
+      ]
+    },
+    {
+      "source": "url: https://example.invalid/#user's-section",
+      "keys": [
+        {
+          "value": "url",
+          "start": 0
+        }
+      ]
+    },
+    {
+      "source": "settings: [https://example.invalid/#user's-section, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 53
+        }
+      ]
+    },
+    {
+      "source": "settings: [word\"inside, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 25
+        }
+      ]
+    },
+    {
+      "source": "settings: path,'part # timeout: 1",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        }
+      ]
+    },
+    {
+      "source": "settings: path:part'quote",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        }
+      ]
+    },
+    {
+      "source": "settings: [\"value\", {timeout: 1}]# the producer's buffer",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 21
+        }
+      ]
+    },
+    {
+      "source": "settings: ['owner''s', {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 24
+        }
+      ]
+    },
+    {
+      "source": "settings: ['backslash\\', {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 26
+        }
+      ]
+    },
+    {
+      "source": "settings: [value\u00a0#owner's-section, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 36
+        }
+      ]
+    },
+    {
+      "source": "settings: [\u00a0#owner's-section, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 31
+        }
+      ]
+    },
+    {
+      "source": "settings: [value\u2003#owner's-section, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 36
+        }
+      ]
+    }
+  ]
+}

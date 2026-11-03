@@ -30,7 +30,7 @@ test("npm view tolerates an unpublished or partially visible field", () => {
 // These are the deleted source mechanisms, not fabricated registry responses.
 // Reintroducing either cadence must fail even behind its old helper name.
 test("the source rule rejects the deleted registry visibility windows", async () => {
-  const { newPollingSites } = await import("./no-polling.mjs");
+  const { newPollingSites } = await import("./source-policy/index.mjs");
   const { readFileSync } = await import("node:fs");
   for (const [file, removed] of [
     ["publish-npm-packages.mjs", `
