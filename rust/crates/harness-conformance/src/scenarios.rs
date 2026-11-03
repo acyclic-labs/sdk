@@ -16,7 +16,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut selected = "local".to_owned();
     let mut filter = None;
     let mut report = None;
-    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios");
+    let mut root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
     while let Some(flag) = arguments.next() {
         let value = arguments
             .next()

@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
 fn corpus() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios")
+    acyclic_test_support::source_path("rust/crates/harness/tests/scenarios")
 }
 
 async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
@@ -116,7 +116,7 @@ fn cli_reports_are_deterministic_and_empty_selection_fails()
     let directory = tempfile::tempdir()?;
     let report = directory.path().join("report.json");
     let command = |filter: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_scenarios"))
+        std::process::Command::new(acyclic_test_support::cargo_binary!("scenarios"))
             .env("CODEX_HOME", directory.path().join("codex"))
             .args(["--substrate", "local", "--filter", filter, "--report"])
             .arg(&report)
@@ -200,7 +200,7 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         assert_eq!(report.skipped, 0);
         assert!(!report.success());
     }
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_scenarios"))
+    let output = std::process::Command::new(acyclic_test_support::cargo_binary!("scenarios"))
         .args(["--substrate", "local", "--corpus"])
         .arg(directory.path())
         .arg("--report")

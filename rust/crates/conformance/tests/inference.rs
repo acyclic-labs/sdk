@@ -2,8 +2,9 @@
 
 async fn captured_backend()
 -> acyclic_harness_core::Result<impl acyclic_harness_core::model::conformance::Backend> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures/inference/llamacpp/manifest.json");
+    let path = acyclic_test_support::source_path(
+        "rust/crates/conformance/fixtures/inference/llamacpp/manifest.json",
+    );
     acyclic_conformance::inference::replay::captured(&path)
 }
 

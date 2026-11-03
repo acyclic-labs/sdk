@@ -30,7 +30,7 @@ async fn original_orphan_script_receives_its_admitted_listener_endpoint() {
     )
     .unwrap();
     let mut server = Server(
-        Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
+        Command::new(acyclic_test_support::cargo_binary!("harness-mock-model"))
             .args([
                 "--script",
                 script.to_str().unwrap(),
@@ -117,7 +117,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     );
     std::fs::write(&script, json!({"cases":cases}).to_string()).unwrap();
     let mut server = Server(
-        Command::new(env!("CARGO_BIN_EXE_harness-mock-model"))
+        Command::new(acyclic_test_support::cargo_binary!("harness-mock-model"))
             .args([
                 "--script",
                 script.to_str().unwrap(),

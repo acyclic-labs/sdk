@@ -17,7 +17,7 @@ fn restore(
     destination: &Path,
 ) -> Result<std::process::Output> {
     Ok(acyclic_native_runtime::process_output(
-        ProcessCommand::new(env!("CARGO_BIN_EXE_qualify"))
+        ProcessCommand::new(acyclic_test_support::cargo_binary!("qualify"))
             .arg("restore-gen")
             .arg(store)
             .arg(volume)

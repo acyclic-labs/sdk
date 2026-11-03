@@ -96,7 +96,7 @@ impl Substrate for Streams {
 }
 
 fn cases() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scenarios")
+    acyclic_test_support::source_path("rust/crates/harness-conformance/scenarios")
 }
 
 #[tokio::test]
