@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
++++ b/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
+@@ -445,7 +445,7 @@
+         &mut |_| Ok::<_, CanonicalDecodeError>(()),
+         std::convert::identity,
+     )?;
+-    decoder.finish()?;
++    decoder.finish().map_err(|_| CanonicalDecodeError::Truncated)?;
+     Ok(record)
+ }
+ 
