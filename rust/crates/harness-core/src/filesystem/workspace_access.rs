@@ -14,6 +14,9 @@ pub struct WorkspaceAccess {
     scope: Scope,
     ceiling: crate::Capabilities,
     volume: Option<VolumeRef>,
+    // Embedded hosts create this runtime together with the access handle.
+    // Delegated access keeps only its original weak admission port.
+    _owner: Option<crate::core::AuthorityRoot>,
 }
 
 impl WorkspaceAccess {
@@ -30,7 +33,14 @@ impl WorkspaceAccess {
             scope: scope.copy(&mut None)?,
             ceiling: ceiling.clone(),
             volume: volume.cloned(),
+            _owner: None,
         })
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    pub(in crate::filesystem) fn with_owner(mut self, owner: crate::core::AuthorityRoot) -> Self {
+        self._owner = Some(owner);
+        self
     }
 
     /// Recheck revocation, the current policy revision, and both grant ceilings.

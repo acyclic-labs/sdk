@@ -321,7 +321,14 @@ where
                         "local guest enrollment requires native custody".into(),
                     )
                 })?;
-                owner_mount_options(&workspace, issuer, None, writable, work).await?
+                owner_mount_options(
+                    &workspace,
+                    std::borrow::Cow::Borrowed(issuer),
+                    None,
+                    writable,
+                    work,
+                )
+                .await?
             }
         };
         let source = workspace.native_source(&options).await?;
