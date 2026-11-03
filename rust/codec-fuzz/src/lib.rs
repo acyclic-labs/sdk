@@ -478,7 +478,7 @@ pub fn actor_seeds()
         "invocation writer must be admitted"
     );
     let mut seeds = vec![(
-        "invocation",
+        "invocation-v2",
         invocation_bytes,
         "Invocation::record and wire_codec::record_wire",
     )];
@@ -543,7 +543,7 @@ pub fn actor_seeds()
     assert_eq!(state.epoch(), 0);
     assert!(state.subscriptions().is_empty());
     assert_eq!(state.encode(), bytes);
-    seeds.push(("state", bytes, "local::Store::create state encoder"));
+    seeds.push(("state-v2", bytes, "local::Store::create state encoder"));
     let delivery = guest::Delivery {
         actor,
         epoch: 1,
@@ -573,7 +573,7 @@ pub fn actor_seeds()
         participant: None,
     };
     for (name, alarm) in [
-        ("transition", guest::AlarmChange::Keep),
+        ("transition-state-v2", guest::AlarmChange::Keep),
         (
             "transition-set-zero",
             guest::AlarmChange::Set {

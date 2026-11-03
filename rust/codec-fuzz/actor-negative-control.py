@@ -24,14 +24,16 @@ def run(step, expected, diagnostic="invocation writer must be admitted"):
     if not valid:
         raise RuntimeError(f"{step}: expected {expected}; recovery after correcting the "
                            f"reported source or oracle: python3 actor-negative-control.py"
-                           f"{' --alarms' if sys.argv[1:] == ['--alarms'] else ''}")
+                           f" {' '.join(sys.argv[1:])}")
 
 
 def main():
+    if sys.argv[1:] == ["--capture"]:
+        return capture()
     if sys.argv[1:] == ["--alarms"]:
         return alarms()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -101,16 +103,20 @@ def alarms():
         production.write_bytes(source.replace(*plants[1]))
         run("same oracle detects production lost Clear", "rejected", diagnostic)
         production.write_bytes(source)
-        capture = ["cargo", "run", "--locked", "--example", "capture", "--",
-                   "--only-actors", "--extend-goldens"]
-        result = subprocess.run(capture, cwd=ROOT)
-        if result.returncode:
-            raise RuntimeError("original alarm writer capture failed; recovery after "
-                               "correcting the reported failure: python3 actor-negative-control.py --alarms")
-        run("original production and captured alarm branches", "accepted")
+        capture()
     finally:
         for path, value in original.items():
             path.write_bytes(value)
+
+
+def capture():
+    command = ["cargo", "run", "--locked", "--example", "capture", "--",
+               "--only-actors", "--extend-goldens"]
+    result = subprocess.run(command, cwd=ROOT)
+    if result.returncode:
+        raise RuntimeError("original alarm writer capture failed; recovery after "
+                           "correcting the reported failure: python3 actor-negative-control.py --capture")
+    run("original production and captured alarm branches", "accepted")
 
 
 if __name__ == "__main__":
@@ -119,5 +125,5 @@ if __name__ == "__main__":
     except Exception as error:
         print(f"STEP Actors negative control failed: {error}; recovery after correcting "
               "the reported failure: python3 actor-negative-control.py"
-              f"{' --alarms' if sys.argv[1:] == ['--alarms'] else ''}", file=sys.stderr)
+              f" {' '.join(sys.argv[1:])}", file=sys.stderr)
         sys.exit(1)

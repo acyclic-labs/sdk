@@ -186,13 +186,9 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     if std::env::args().any(|arg| arg == "--only-actors") {
         let prefix = "actor_codecs/";
-        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
-            .lines()
-            .filter(|line| !line.starts_with(prefix))
-            .map(|line| format!("{line}\n"))
-            .collect::<String>();
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
         capture_actors(&mut manifest)?;
-        return finish(&manifest, prefix);
+        return finish_latest(&manifest, prefix);
     }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
@@ -215,18 +211,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 &mut manifest,
             )?;
         }
-        // Keep prior captures as refusal inputs, without duplicate provenance.
-        let mut seen = std::collections::HashSet::new();
-        let manifest = manifest
-            .lines()
-            .rev()
-            .filter(|line| seen.insert(line.split('\t').next().unwrap_or(line)))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|line| format!("{line}\n"))
-            .collect::<String>();
-        return finish(&manifest, "object_persistence/");
+        return finish_latest(&manifest, "object_persistence/");
     }
     if std::env::args().any(|arg| arg == "--only-protobuf") {
         golden_controls()?;
@@ -807,6 +792,21 @@ fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Keep prior captures as refusal inputs, without duplicate provenance.
+fn finish_latest(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
+    let mut seen = std::collections::HashSet::new();
+    let manifest = manifest
+        .lines()
+        .rev()
+        .filter(|line| seen.insert(line.split('\t').next().unwrap_or(line)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+    finish(&manifest, replaced_prefix)
+}
+
 fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
         let path = Path::new("../../compatibility/frames/golden.hex");
@@ -867,7 +867,6 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
 
 fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
-    use acyclic_stream::{CommitId, StreamPath};
     use bytes::Bytes;
     for (name, bytes) in acyclic_codec_fuzz::auth_addressing::seeds()? {
         save(
