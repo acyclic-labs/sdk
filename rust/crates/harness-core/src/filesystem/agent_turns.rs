@@ -665,7 +665,7 @@ where
         Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), None)
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), None, None)
             .await
     }
 
@@ -674,7 +674,7 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None).await?;
+        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None, None).await?;
         Ok(journal)
     }
 
@@ -796,6 +796,7 @@ where
         admitted: AdmittedAgent<'_>,
         external: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
+        stop: Option<acyclic_actors::guest::CancellationToken>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings,
@@ -808,7 +809,7 @@ where
             grants: mut capabilities,
             verifier,
             private,
-        } = admitted.authority(external).await?;
+        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external)).await?;
         // The turn's reader and writer take no content bound of their own:
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
@@ -844,9 +845,11 @@ where
                 // workload retains its original ceiling and cannot mint this grant.
                 inherited.extend(capabilities.iter().map(str::to_owned));
                 capabilities = Capabilities::new(inherited);
-                scope = issuer
-                    .issue(None, "agent", &capabilities, scope.agent())
-                    .await?;
+                scope = crate::core::until_turn_stopped(
+                    stop.clone(),
+                    issuer.issue(None, "agent", &capabilities, scope.agent()),
+                )
+                .await?;
                 reader = FilesystemContentVerifier::new(
                     Arc::clone(&self.host),
                     &verifier,
@@ -1739,7 +1742,11 @@ where
                     .filter_map(|settled| settled.steering.clone())
                     .collect();
                 if !transcripts.is_empty() {
-                    let authority = self.admit(agent)?.authority(&transcripts).await?;
+                    let authority = crate::core::until_turn_stopped(
+                        Some(stop.clone()),
+                        self.admit(agent)?.authority(&transcripts),
+                    )
+                    .await?;
                     let reader = FilesystemContentVerifier::new(
                         Arc::clone(&self.host),
                         &authority.verifier,
@@ -1769,7 +1776,7 @@ where
                     .cloned()
                     .collect();
                 let (journal, bindings, files) = self
-                    .journal(admitted, &external, Some(&mut context))
+                    .journal(admitted, &external, Some(&mut context), Some(stop.clone()))
                     .await?;
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
