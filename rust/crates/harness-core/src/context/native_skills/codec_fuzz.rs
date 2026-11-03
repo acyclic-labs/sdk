@@ -18,8 +18,11 @@ pub fn check(bytes: &[u8]) {
         let mut wrong = serde_json::to_value(resource).unwrap();
         wrong["kind"] = "workspace".into();
         assert!(
-            decode_materialized(&serde_json::to_vec(&wrong).unwrap()).is_err(),
-            "foreign skill receipt kind admitted"
+            matches!(
+                decode_materialized(&serde_json::to_vec(&wrong).unwrap()),
+                Err(Error::Storage(reason)) if reason.contains("typed resource kind mismatch")
+            ),
+            "foreign skill receipt kind admitted or refusal changed"
         );
     }
 
@@ -31,8 +34,11 @@ pub fn check(bytes: &[u8]) {
         )]),
         Err(_) => {
             assert!(
-                retained::decode_records(bytes, "absent").is_err(),
-                "malformed skill record admitted"
+                matches!(
+                    retained::decode_records(bytes, "absent"),
+                    Err(Error::Storage(reason)) if !reason.is_empty()
+                ),
+                "malformed skill record admitted or refusal changed"
             );
             return;
         }
@@ -43,26 +49,44 @@ pub fn check(bytes: &[u8]) {
 
     // Derive single-record, changed-sibling and nested-batch inputs from the
     // original writer record. These are mutations, not captured wire fixtures.
-    if let Some(record) = reference.get(selected) {
+    if let Some(record) = reference.get(selected)
+        && !matches!(record, RetainedSource::Batch(_))
+    {
+        let single = serde_json::to_vec(record).unwrap();
+        let selected = blake3::hash(&single).to_string();
         check_selection(
-            &serde_json::to_vec(record).unwrap(),
-            selected,
-            &HashMap::from([(selected.to_owned(), record)]),
+            &single,
+            &selected,
+            &HashMap::from([(selected.clone(), record)]),
         );
-        let mut changed = serde_json::to_value(&reference).unwrap();
-        changed.as_object_mut().unwrap().insert(
-            "changed-sibling".into(),
-            serde_json::to_value(record).unwrap(),
-        );
-        let changed = serde_json::json!({ "Batch": changed });
+        // Build one defect at a time from an admitted original record. A fuzzed
+        // bundle may have several unrelated defects with unordered diagnostics.
+        let changed = serde_json::json!({ "Batch": {
+            (&selected): record,
+            "changed-sibling": record,
+        } });
         assert!(
-            retained::decode_records(&serde_json::to_vec(&changed).unwrap(), selected).is_err(),
-            "changed skill sibling admitted"
+            matches!(
+                retained::decode_records(&serde_json::to_vec(&changed).unwrap(), &selected),
+                Err(Error::Conflict(reason)) if reason == "retained skill source changed"
+            ),
+            "changed skill sibling admitted or refusal changed"
         );
-        let nested = serde_json::json!({ "Batch": { (selected): { "Batch": {} } } });
+        let absent = serde_json::json!({ "Batch": {} });
         assert!(
-            retained::decode_records(&serde_json::to_vec(&nested).unwrap(), selected).is_err(),
-            "nested skill batch admitted"
+            matches!(
+                retained::decode_records(&serde_json::to_vec(&absent).unwrap(), &selected),
+                Err(Error::Conflict(reason)) if reason == "retained skill source is absent"
+            ),
+            "missing skill source admitted or refusal changed"
+        );
+        let nested = serde_json::json!({ "Batch": { (&selected): { "Batch": {} } } });
+        assert!(
+            matches!(
+                retained::decode_records(&serde_json::to_vec(&nested).unwrap(), &selected),
+                Err(Error::Invalid(reason)) if reason == "nested retained skill batch"
+            ),
+            "nested skill batch admitted or refusal changed"
         );
     }
 }
