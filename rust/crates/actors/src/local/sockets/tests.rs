@@ -9,6 +9,10 @@ use acyclic_stream::{BoxProviderFuture, LocalStream, MemoryStream};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+thread_local! {
+    pub(super) static LEDGER_ENCODINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")
 }
@@ -466,6 +470,65 @@ async fn records<P: StreamProvider + ?Sized>(
 
 #[tokio::test]
 async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
+    for count in [1, 2 * PAGE as usize + 1] {
+        let provider = Arc::new(ControlledStream::default());
+        let sockets = Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(HeldCloseExecutor::default()),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let shared = &sockets.shared;
+        for index in 0..count {
+            admitted_close_fixture(&sockets, &format!("paged-{index}")).await?;
+        }
+        LEDGER_ENCODINGS.set(0);
+        let allocation = provider.pause_write(false);
+        let mut compact = Box::pin(shared.compact());
+        assert!(futures::poll!(&mut compact).is_pending());
+        assert!(provider.pause.lock().unwrap().is_none());
+        let first_page = provider.pause_write(false);
+        allocation.send(()).map_err(|_| "lost allocation request")?;
+        assert!(futures::poll!(&mut compact).is_pending());
+        assert!(provider.pause.lock().unwrap().is_none());
+        assert_eq!(
+            LEDGER_ENCODINGS.get(),
+            count.min(PAGE as usize),
+            "compaction encoded beyond its current page"
+        );
+        first_page.send(()).map_err(|_| "lost page request")?;
+        compact.await?;
+        assert_eq!(LEDGER_ENCODINGS.get(), count);
+        assert_eq!(shared.live.load(Ordering::Acquire), count);
+        assert_eq!(shared.written.load(Ordering::Acquire), count);
+        let mut contents = [Vec::new(), Vec::new()];
+        for from in (0..count).step_by(PAGE as usize) {
+            for (segment, records) in [1, 2].into_iter().zip(&mut contents) {
+                records.extend(
+                    provider
+                        .read(ReadRequest {
+                            key: None,
+                            path: shared.layout.segment(segment)?,
+                            from: from as u64,
+                            limit: PAGE,
+                            at_least: RevisionCut::default(),
+                        })
+                        .await?
+                        .map_ok(|record| record.value)
+                        .try_collect::<Vec<_>>()
+                        .await?,
+                );
+            }
+        }
+        for records in &mut contents {
+            records.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        }
+        assert_eq!(
+            contents[0], contents[1],
+            "compaction changed original writer bytes"
+        );
+    }
+
     for (committed, lose_reply) in [(false, false), (true, false), (true, true)] {
         let provider = Arc::new(ControlledStream::default());
         let executor = Arc::new(HeldCloseExecutor::default());

@@ -20,11 +20,14 @@ CONTROLS = (
 )
 
 
-def run(diagnostic=None):
-    command = ["cargo", "test", "--locked", "-p", "acyclic-actors", "--features",
-               "model-checking", "--lib", MODEL, "--", "--exact", "--nocapture"]
-    environment = dict(os.environ, RUSTC_WORKSPACE_WRAPPER=str(
-        ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh")))
+def run(diagnostic=None, model=MODEL, instrumented=True, recovery=RECOVERY):
+    command = ["cargo", "test", "--locked", "-p", "acyclic-actors"]
+    environment = dict(os.environ)
+    if instrumented:
+        command.extend(["--features", "model-checking"])
+        environment["RUSTC_WORKSPACE_WRAPPER"] = str(
+            ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"))
+    command.extend(["--lib", model, "--", "--exact", "--nocapture"])
     print("STEP actual socket model: " + repr(command), flush=True)
     with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True) as process:
@@ -37,12 +40,46 @@ def run(diagnostic=None):
     valid = (status == 0 and "1 passed; 0 failed" in output
              if diagnostic is None else
              status != 0 and "0 passed; 1 failed" in output
-             and MODEL in output and diagnostic in output)
+             and model in output and diagnostic in output)
     if not valid:
-        raise RuntimeError("socket model did not establish the expected source verdict; recovery: " + RECOVERY)
+        raise RuntimeError("socket check did not establish the expected source verdict; recovery: " + recovery)
+
+
+def compaction_pages(before=None):
+    """Restore eager encoding; the retained page-work and byte oracle must fail."""
+    original = SOURCE.read_bytes()
+    source = original.decode().replace("\r\n", "\n")
+    recovery = "inspect original diagnostics, correct source or command, then python3 scripts/qualify-actors-sockets.py --compaction-pages"
+    start = source.index("    async fn compact(&self)")
+    end = source.index("    /// Commit the Open", start)
+    current = source[start:end]
+    if before is None:
+        anchor = "        });\n        let segment = self.layout.segment(next)?;"
+        if current.count(anchor) != 1:
+            raise RuntimeError("compaction encoding anchor changed; recovery: " + recovery)
+        eager = current.replace(anchor, "        }).collect::<Vec<_>>().into_iter();\n        let segment = self.layout.segment(next)?;")
+    else:
+        prior_start = before.index("    async fn compact(&self)")
+        prior_end = before.index("    /// Commit the Open", prior_start)
+        eager = before[prior_start:prior_end]
+    model = "local::sockets::tests::compaction_keeps_only_open_sockets_for_recovery"
+    print("Socket production sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        print("STEP actual production eager compaction encoding", flush=True)
+        SOURCE.write_bytes((source[:start] + eager + source[end:]).encode())
+        run("compaction encoded beyond its current page", model, False, recovery)
+        SOURCE.write_bytes(original)
+        run(model=model, instrumented=False, recovery=recovery)
+    finally:
+        SOURCE.write_bytes(original)
 
 
 def main():
+    if sys.argv[1:] == ["--compaction-pages"]:
+        compaction_pages()
+        return
+    if sys.argv[1:]:
+        raise RuntimeError("unknown socket qualification argument; recovery: python3 scripts/qualify-actors-sockets.py [--compaction-pages]")
     original = SOURCE.read_bytes()
     source = original.decode().replace("\r\n", "\n")
     if any(source.count(anchor) != 1 for _, anchor, _, _ in CONTROLS):

@@ -217,6 +217,8 @@ impl Layout {
 }
 
 fn ledger_record(kind: LedgerKind) -> AppendRecord {
+    #[cfg(all(test, not(loom)))]
+    tests::LEDGER_ENCODINGS.with(|count| count.set(count.get() + 1));
     LedgerWire { kind: Some(kind) }.encode_to_vec().into()
 }
 
@@ -1036,18 +1038,20 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             &mut BTreeSet::new(),
         )
         .await?;
-        let records: Vec<AppendRecord> = live
-            .iter()
-            .map(|(connection, target)| {
-                ledger_record(LedgerKind::Opened(OpenedWire {
-                    connection: connection.clone(),
-                    actor: target.actor.encode().into(),
-                    inbox: target.inbox.as_str().into(),
-                }))
-            })
-            .collect();
+        let count = live.len();
+        let mut records = live.into_iter().map(|(connection, target)| {
+            ledger_record(LedgerKind::Opened(OpenedWire {
+                connection,
+                actor: target.actor.encode().into(),
+                inbox: target.inbox.as_str().into(),
+            }))
+        });
         let segment = self.layout.segment(next)?;
-        for (page, chunk) in records.chunks(PAGE as usize).enumerate() {
+        for page in 0.. {
+            let chunk: Vec<_> = records.by_ref().take(PAGE as usize).collect();
+            if chunk.is_empty() {
+                break;
+            }
             let written = commit(
                 &self.store,
                 executor,
@@ -1058,7 +1062,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 ])?,
                 vec![append(
                     segment.clone(),
-                    chunk.to_vec(),
+                    chunk,
                     vec![CommitCondition::Tail {
                         path: segment.clone(),
                         expected: (page * PAGE as usize) as u64,
@@ -1076,8 +1080,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         }
         ledger.epochs = settled_tail;
         ledger.segment = next;
-        self.written.store(records.len(), Ordering::Release);
-        self.live.store(records.len(), Ordering::Release);
+        self.written.store(count, Ordering::Release);
+        self.live.store(count, Ordering::Release);
         Ok(())
     }
 
