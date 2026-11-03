@@ -35,7 +35,9 @@ async function captureCancellationControl(run, host) {
   // them. Cancellation must not discard that already-written diagnostic.
   const spawned = ({process}) => {
     spawns++;
-    process.stdout.on('data', bytes => { observed.push(bytes); stop.abort(reason); });
+    process.once('spawn', () => {
+      process.stdout.on('data', bytes => { observed.push(bytes); stop.abort(reason); });
+    });
   };
   subscribe('child_process', spawned);
   try {
