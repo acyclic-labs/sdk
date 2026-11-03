@@ -23,18 +23,12 @@ fn checked_model(scenario: fn(bool), diagnostic: &str) {
     );
 }
 
-// The shim's admission waits are Loom condition-variable steps, so these
-// finite futures finish in one poll. Avoid a thread-local executor, which
-// cannot be nested across Loom's generator-backed threads.
 fn complete<F: Future>(future: F) -> F::Output {
-    match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("model operation did not finish"),
-    }
+    crate::sync::owned::block_on(future)
 }
 
-// Both variants call the production serialization function and its cfg(loom)
-// mutex shim. The negative control releases ownership before publication.
+// Both variants call the production serialization function and owned mutex.
+// The negative control releases ownership before publication.
 fn publication(broken: bool) {
     let state = StateArc::new(AsyncMutex::new((0, Some(0))));
     let commands: Vec<_> = (0..2)

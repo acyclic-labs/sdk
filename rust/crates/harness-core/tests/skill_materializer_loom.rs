@@ -5,31 +5,7 @@
 #[path = "../src/context/skill_materializer.rs"]
 mod skill_materializer;
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    use std::{
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
-    };
-
-    struct Unpark(loom::thread::Thread);
-    impl Wake for Unpark {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-
-    // Tokio may clone a waker while holding its uninstrumented wait-list lock.
-    // Clone/drop only std::Arc here; the model event is the actual wake.
-    let waker = Waker::from(Arc::new(Unpark(loom::thread::current())));
-    let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => return value,
-            Poll::Pending => loom::thread::park(),
-        }
-    }
-}
+use crate::sync::owned::block_on;
 
 fn schedule<const SERIALIZE: bool>() {
     use loom::sync::{

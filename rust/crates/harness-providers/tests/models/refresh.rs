@@ -1,3 +1,6 @@
+#[path = "../../../harness-core/src/sync/owned.rs"]
+mod owned;
+
 mod refresh {
     include!("../../src/refresh.rs");
     pub fn ticket<F: Copy>(state: &Refresh<F>) -> u64 {
@@ -30,14 +33,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 fn complete<T>(operation: impl Future<Output = T>) -> T {
-    let mut operation = std::pin::pin!(operation);
-    match operation
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("unexpected suspension outside the modeled mutex"),
-    }
+    owned::block_on(operation)
 }
 
 fn sharing_model(fail: bool, broken: bool) {

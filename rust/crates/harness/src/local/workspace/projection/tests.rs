@@ -3,10 +3,7 @@ use loom::{sync::Mutex, thread};
 use std::task::{Context, Poll, Waker};
 
 fn complete<F: Future>(future: F) -> F::Output {
-    match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("modeled projection unexpectedly pending"),
-    }
+    crate::sync::owned::block_on(future)
 }
 
 fn joined<T>(worker: thread::JoinHandle<T>) -> T {
