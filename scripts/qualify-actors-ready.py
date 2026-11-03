@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify the actual ready queue and its retained Loom oracles."""
+"""Qualify the actual ready queue, activation path and retained oracles."""
 import hashlib
 import os
 from pathlib import Path
@@ -14,27 +14,64 @@ BASE = ["cargo", "test", "--locked", "-p", "acyclic-actors", "--features",
 RECOVERY = "inspect original diagnostics, correct source or command, then python3 scripts/qualify-actors-ready.py"
 
 
-def run(arguments, expected, diagnostic=None):
-    command = BASE + arguments + ["--", "--nocapture"]
-    print("STEP ready queue model: " + repr(command), flush=True)
-    environment = dict(os.environ, RUSTC_WORKSPACE_WRAPPER=str(
-        ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh")))
+def run(arguments, expected, diagnostic=None, *, model=True):
+    base = BASE if model else ["cargo", "test", "--locked", "--all-features",
+                               "-p", "acyclic-actors", "--lib"]
+    command = base + arguments + ["--"] + ([] if model else ["--exact"]) + ["--nocapture"]
+    print("STEP actual ready/activation oracle: " + repr(command), flush=True)
+    environment = dict(os.environ)
+    if model:
+        environment["RUSTC_WORKSPACE_WRAPPER"] = str(
+            ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"))
     result = subprocess.run(command, cwd=ROOT, env=environment,
                             capture_output=True, text=True)
     output = result.stdout + result.stderr
     print(output, flush=True)
     if expected == "positive":
-        valid = result.returncode == 0 and "6 passed; 0 failed" in output
+        valid = result.returncode == 0 and f"{6 if model else 1} passed; 0 failed" in output
     else:
         valid = (result.returncode != 0 and "0 passed; 1 failed" in output
                  and arguments[0] in output and diagnostic in output)
     if not valid:
-        raise RuntimeError("ready queue model did not establish " + expected
+        raise RuntimeError("ready/activation oracle did not establish " + expected
                            + "; recovery: inspect the original command and diagnostic, "
-                           "correct source or command, then python3 scripts/qualify-actors-ready.py")
+                           "correct source or command, then python3 scripts/qualify-actors-ready.py"
+                           + ("" if model else " --activation"))
+
+
+def activation():
+    source = ROOT / "rust/crates/actors/src/conformance.rs"
+    oracle = ROOT / "rust/crates/actors/src/local/runtime/tests.rs"
+    original = source.read_bytes()
+    original_oracle = oracle.read_bytes()
+    anchor = b'Some(format!("r{sequence}"))'
+    probe = b') -> Result<acyclic_stream::Record, StreamError> {\n    provider'
+    normalized = original_oracle.replace(b"\r\n", b"\n")
+    if original.count(anchor) != 1 or normalized.count(probe) != 1:
+        raise RuntimeError("activation producer anchor changed; recovery: " + RECOVERY + " --activation")
+    name = "local::runtime::tests::foreign_created_actors_activate_without_placement_or_scan"
+    print("Activation producer sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    print("Activation oracle sha256=" + hashlib.sha256(original_oracle).hexdigest(), flush=True)
+    try:
+        source.write_bytes(original.replace(anchor, b'Some(format!("wrong{sequence}"))'))
+        run([name], "unchanged-oracle rejection",
+            "foreign-created actor published another first delivery", model=False)
+        source.write_bytes(original)
+        oracle.write_bytes(normalized.replace(probe, probe.replace(
+            b"    provider", b"    let _ = provider.tail(path.clone()).await;\n    provider")))
+        run([name], "unchanged-oracle rejection",
+            "first-publication observation must not probe a head", model=False)
+        oracle.write_bytes(original_oracle)
+        run([name], "positive", model=False)
+    finally:
+        source.write_bytes(original)
+        oracle.write_bytes(original_oracle)
 
 
 def main():
+    if sys.argv[1:] == ["--activation"]:
+        activation()
+        return
     original = SOURCE.read_bytes()
     source = original.replace(b"\r\n", b"\n")
     controls = {
