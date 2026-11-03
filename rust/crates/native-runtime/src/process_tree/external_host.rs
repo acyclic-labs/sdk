@@ -1407,60 +1407,42 @@ mod tests {
         }
     }
 
-    #[test]
-    fn process_host_options_stop_at_the_literal_executable() {
-        let executable = std::env::current_exe().unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let receipt = directory.path().join("completion.json");
-        let parsed = Invocation::parse([
-            "--completion".into(),
-            receipt.clone().into_os_string(),
-            "--custody".into(),
-            directory.path().as_os_str().to_owned(),
-            "--inherit-input".into(),
-            executable.clone().into_os_string(),
-            "--completion".into(),
-            "literal & % child argument".into(),
-        ])
-        .unwrap();
-        assert_eq!(parsed.executable, executable.as_os_str());
-        assert_eq!(parsed.completion.as_deref(), Some(receipt.as_path()));
-        assert_eq!(parsed.custody.as_deref(), Some(directory.path()));
-        assert!(parsed.inherit_input);
-        assert_eq!(
-            parsed.arguments,
-            ["--completion", "literal & % child argument"]
-        );
-    }
-
-    #[test]
-    fn process_host_rejects_relative_and_duplicate_receipt_admission() {
-        let executable = std::env::current_exe().unwrap().into_os_string();
-        let receipt = std::env::temp_dir().join("receipt.json").into_os_string();
-        for arguments in [
-            vec!["--completion".into(), "relative".into(), executable.clone()],
-            vec!["--custody".into(), "relative".into(), executable.clone()],
-            vec![
-                "--completion".into(),
-                receipt.clone(),
-                "--completion".into(),
-                receipt,
-                executable,
-            ],
-        ] {
-            assert_eq!(
-                Invocation::parse(arguments).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
-        }
-    }
-
     proptest::proptest! {
         #[test]
-        fn process_host_argument_fuzz(arguments in proptest::collection::vec(
-            proptest::prelude::any::<String>(), 0..32,
-        )) {
-            let _ = Invocation::parse(arguments.into_iter().map(OsString::from));
+        fn process_host_argument_fuzz(
+            arguments in proptest::collection::vec(proptest::prelude::any::<String>(), 0..32),
+            inherit_input in proptest::prelude::any::<bool>(),
+            literal in proptest::prelude::any::<bool>(),
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("endpoint").into_os_string();
+            let executable = std::env::current_exe().unwrap().into_os_string();
+            let tail: Vec<OsString> = arguments.into_iter().map(OsString::from).collect();
+            let mut command: Vec<OsString> = ["--completion".into(), path.clone(),
+                "--control".into(), path.clone(), "--custody".into(), path.clone(),
+                "--invocation".into(), "original-parser-control".into()].into();
+            if inherit_input { command.push("--inherit-input".into()); }
+            if literal { command.push("--".into()); }
+            command.push(executable.clone());
+            command.extend(tail.clone());
+            let parsed = Invocation::parse(command).unwrap();
+            proptest::prop_assert_eq!(parsed.executable, executable.clone());
+            proptest::prop_assert_eq!(parsed.arguments, tail);
+            proptest::prop_assert_eq!(parsed.inherit_input, inherit_input);
+            proptest::prop_assert_eq!(parsed.control.as_deref(), Some(Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.completion.as_deref(), Some(Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.custody.as_deref(), Some(Path::new(&path)));
+            proptest::prop_assert_eq!(parsed.invocation.as_deref(), Some("original-parser-control"));
+            // The same admission predicate rejects missing, relative and
+            // duplicate paths for every endpoint, not only completion files.
+            for option in ["--completion", "--control", "--custody", "--lease"] {
+                for refused in [vec![option.into()],
+                    vec![option.into(), "relative".into(), executable.clone()],
+                    vec![option.into(), path.clone(), option.into(), path.clone(), executable.clone()]] {
+                    proptest::prop_assert_eq!(Invocation::parse(refused).unwrap_err().kind(),
+                        io::ErrorKind::InvalidInput);
+                }
+            }
         }
     }
 

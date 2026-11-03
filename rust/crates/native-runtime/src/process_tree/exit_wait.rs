@@ -2,11 +2,13 @@
 use super::*;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-/// Readiness for one original child, without signal or reaping authority.
+/// Readiness for one original child, without signal authority.
 ///
-/// Opening observes a cached status before acquiring the pidfd. Once opened,
+/// Opening uses `Child::try_wait` once: an exited child's status is retained
+/// by that original owner, without opening a possibly reused numeric PID.
+/// Once opened,
 /// the descriptor stays bound to that process even if its owner reaps it.
-/// Dropping this watch only closes its descriptor; it never stops the child.
+/// Waiting and dropping the watch never signal or reap the child.
 #[cfg(target_os = "linux")]
 pub struct ChildExitWatch(ExitWatch<'static>);
 
