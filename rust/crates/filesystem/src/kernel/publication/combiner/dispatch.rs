@@ -60,7 +60,9 @@ impl Ticket {
             let notified = self.group.signal.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            accounting.check()?;
+            // A leader's custody is with its owned group until the reply
+            // restores it below, so this waiter observes cancellation only.
+            accounting.check_cancelled()?;
             let (phase, abort_cause) = {
                 let state = self
                     .group

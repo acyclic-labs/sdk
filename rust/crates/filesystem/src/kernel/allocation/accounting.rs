@@ -9,6 +9,12 @@ impl<'a> KernelAccounting<'a> {
             Self::NativeOriginal { cancellation, .. } => cancellation,
         }
     }
+    /// Observes cancellation without entering the ledger. A waiter whose
+    /// custody is handed to an owned authority task neither charges nor
+    /// inspects counters until that task restores it.
+    pub(crate) fn check_cancelled(&self) -> Result<(), crate::FsError> {
+        self.cancellation().check().map_err(Into::into)
+    }
     pub(super) fn ensure_active(&self) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { allocations, .. } => allocations.ensure_active(),
