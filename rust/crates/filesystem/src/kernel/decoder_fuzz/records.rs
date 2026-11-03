@@ -151,7 +151,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
     Ok(seeds)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     #[test]
     fn original_writer_records_and_arbitrary_bytes_share_the_oracle() {
