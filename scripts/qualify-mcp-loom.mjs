@@ -181,7 +181,24 @@ export function qualifyNativeRetirementMutations(run = runCommand) {
   }, run);
 }
 
-function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation }, run) {
+export function qualifyCaptureCursorMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "CaptureCursor", selector: "--capture-cursor-mutations",
+    source: "checkout_tools/capture", model: "checkout_tools/capture/tests",
+    test: "local::checkout_tools::capture::tests::cursor_custody_follows_actual_capture_admission",
+    mutations: [[
+      "    before_effect().await?;\n    let (physical, view) = selected;",
+      "    drop(slot.take());\n    before_effect().await?;\n    let (physical, view) = selected;",
+      "capture consumed its cursor before admission",
+    ], [
+      "let mut cursor = match slot.take() {",
+      "let mut cursor = match slot.replace(Cursor::open(physical, policy)?) {",
+      "capture retained its cursor after consumed cancellation",
+    ]],
+  }, run);
+}
+
+function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation, mutations = [mutation] }, run) {
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
@@ -190,7 +207,7 @@ function qualifyNativeSourceMutation({ name, selector, source, model, test, muta
   const root = "../rust/crates/harness/src/local/";
   return qualifySourceMutationsLoom({
     name, recovery, source: `${root}${source}.rs`, model: `${root}${model}.rs`,
-    mutations: [mutation], qualify, restored: run => qualify(run),
+    mutations, qualify, restored: run => qualify(run),
   }, run);
 }
 
@@ -448,6 +465,7 @@ const fixedModels = {
   "--native-cancellation-mutations": qualifyNativeCancellationMutations,
   "--native-publication-mutations": qualifyNativePublicationMutations,
   "--native-retirement-mutations": qualifyNativeRetirementMutations,
+  "--capture-cursor-mutations": qualifyCaptureCursorMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
