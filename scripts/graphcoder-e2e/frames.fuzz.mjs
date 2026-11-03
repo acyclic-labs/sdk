@@ -14,9 +14,12 @@ function admission(visible, text, kind, reason, schedule) {
   const history = new FailureHistory();
   const wrongKind = kind === "task_failure" ? "query_failure" : "task_failure";
   const prefix = reason.slice(0, 1 + (schedule[0] ?? 0) % reason.length);
-  const expected = { [kind]: prefix };
+  const expected = kind === "refusal" ? { contains: [prefix] } : { [kind]: prefix };
   assert.equal(history.unexpected(visible), text);
-  for (const condition of [{ [wrongKind]: prefix }, { [kind]: "" }, { [kind]: reason + " changed" }]) {
+  const rejected = kind === "refusal"
+    ? [{ task_failure: prefix }, { query_failure: prefix }, { contains: [""] }, { contains: [reason + " changed"] }]
+    : [{ [wrongKind]: prefix }, { [kind]: "" }, { [kind]: reason + " changed" }];
+  for (const condition of rejected) {
     assert.equal(history.unexpected(visible, condition), text);
     history.accept(visible, condition);
     assert.equal(history.unexpected(visible), text, "unadmitted failures cannot enter handled history");
@@ -62,6 +65,10 @@ export async function fuzz(schedule) {
     const notice = query.visible.slice(query.visible.lastIndexOf("\n") + 1);
     assert.equal(queryFailure(query.visible), notice);
     admission(query.visible, notice, "query_failure", notice, schedule);
+    // Derive the action-status marker from the captured query reason; this
+    // exercises admission semantics without claiming another native capture.
+    const refused = "\u2717 " + notice;
+    admission(query.visible.slice(0, -notice.length) + refused, refused, "refusal", notice, schedule);
     assert.equal(queryFailure(notice + "\nordinary status"), undefined,
       "transcript text cannot stand in for the original status row");
   } finally { frames.dispose(); screen.dispose(); }

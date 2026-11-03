@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { TerminalFrames } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
@@ -125,18 +125,6 @@ test("screen assertions observe complete synchronized frames at every fragmentat
     assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
     frames.dispose(); screen.dispose();
   }
-});
-
-test("refused actions require named admission across subsequent actions", () => {
-  const history = new FailureHistory();
-  // A refused action fails the awaited step unless that step names it; an
-  // informational status line never does.
-  const refused = "âœ— storage failure: diff command: unsupported";
-  assert.equal(history.unexpected(refused, { contains: ["LARGE_DIFF_READY"] }), refused);
-  assert.equal(history.unexpected(refused, { contains: ["diff command"] }), undefined);
-  history.accept(refused, { contains: ["diff command"] });
-  assert.equal(history.unexpected(refused, { contains: ["next"] }), undefined);
-  assert.equal(history.unexpected("Feedback saved locally (1 this session)", {}), undefined);
 });
 
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
@@ -376,7 +364,7 @@ test("real process captures preserve UTF-8 at every byte boundary", async t => {
   const processes = new Processes();
   t.after(() => processes.close());
   const child = processes.start(process.execPath, ["-e", "require('node:readline').createInterface({input:process.stdin}).on('line',line=>process.stdout.write(Buffer.from(line,'hex')))"]);
-  const text = "hÃ© Î» ðŸ™‚", bytes = Buffer.from(text);
+  const text = "hé λ 🙂", bytes = Buffer.from(text);
   const output = child.child.stdout.iterator({ destroyOnReturn: false });
   const receive = async (output, remaining) => {
     while (remaining > 0) {
