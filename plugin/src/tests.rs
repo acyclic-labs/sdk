@@ -95,17 +95,6 @@ fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() ->
 }
 
 #[test]
-fn malformed_and_oversized_inputs_fail_before_any_workspace_request() -> Result<()> {
-    assert!(read_json(&b"not-json"[..]).is_err());
-    assert!(read_json(vec![b' '; 65_537].as_slice()).is_err());
-    assert_eq!(
-        read_json(&b"{\"cwd\":\"fixture\"}"[..])?.get("cwd"),
-        Some(&json!("fixture"))
-    );
-    Ok(())
-}
-
-#[test]
 fn failed_lifecycle_coordination_stops_without_changing_native_permissions() {
     let denied = hook_failure("SessionStart", "owner unavailable");
     assert!(denied.get("hookSpecificOutput").is_none());

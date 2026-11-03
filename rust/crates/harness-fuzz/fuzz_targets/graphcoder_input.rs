@@ -23,7 +23,9 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 approved,
             } => {
                 assert_eq!(fields["approve"].as_str(), Some(approve.as_str()));
-                assert_eq!(fields["binding"], serde_json::to_value(binding).unwrap());
+                let original: acyclic_harness::interaction::ApprovalBinding =
+                    serde_json::from_value(fields["binding"].clone()).unwrap();
+                assert_eq!(binding, original);
                 assert_eq!(fields["approved"].as_bool(), Some(approved));
                 &["approve", "binding", "approved"]
             }
