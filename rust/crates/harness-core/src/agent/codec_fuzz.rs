@@ -166,9 +166,14 @@ pub fn check(bytes: &[u8]) {
     if let Ok(InboxRecord::Spawn(spawn)) = InboxRecord::decode(bytes) {
         let input =
             records::decode_record::<serde_json::Value>(bytes).expect("admitted spawn payload");
+        // The production serde reader admits both named and positional
+        // structs. Keep this projection independent of SpawnRequest while
+        // reading its fifth field in either representation.
+        let spawn_input = input.get("spawn").expect("admitted spawn variant");
         let selected: Option<super::HistorySelection> = serde_json::from_value(
-            input
-                .pointer("/spawn/history")
+            spawn_input
+                .get("history")
+                .or_else(|| spawn_input.get(4))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
@@ -279,24 +284,45 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         "brief".into(),
         &mut None,
     )?;
-    seeds.push((
-        "spawn-history",
-        written(&InboxRecord::Spawn(super::SpawnRequest {
-            by: Sender::Agent {
-                path: state.path.clone(),
-            },
-            id: IntentId::try_from("captured-spawn")?,
-            brief: Box::new(file.clone()),
-            profile: super::CreationConfig {
-                context: super::SpawnContext::Fork,
-                template: Some(file.clone()),
-            },
-            history: Some(super::HistorySelection {
-                conversation: 23,
-                checkpoint: Some(17),
-            }),
-        }))?,
-    ));
+    let spawn = InboxRecord::Spawn(super::SpawnRequest {
+        by: Sender::Agent {
+            path: state.path.clone(),
+        },
+        id: IntentId::try_from("captured-spawn")?,
+        brief: Box::new(file.clone()),
+        profile: super::CreationConfig {
+            context: super::SpawnContext::Fork,
+            template: Some(file.clone()),
+        },
+        history: Some(super::HistorySelection {
+            conversation: 23,
+            checkpoint: Some(17),
+        }),
+    });
+    seeds.push(("spawn-history", written(&spawn)?));
+    // Capture every named/positional combination at the two struct boundaries
+    // used by the independent history projection. All fields come from the
+    // same typed record and every byte goes through the actual record writer.
+    for (name, positional_spawn, positional_history) in [
+        ("spawn-positional", true, false),
+        ("spawn-history-positional", false, true),
+        ("spawn-and-history-positional", true, true),
+    ] {
+        let mut input = serde_json::to_value(&spawn)?;
+        let fields = input["spawn"].as_object_mut().expect("named spawn writer");
+        if positional_history {
+            let history = fields.get_mut("history").expect("written history");
+            *history = serde_json::json!([history["conversation"], history["checkpoint"]]);
+        }
+        if positional_spawn {
+            input["spawn"] = ["by", "id", "brief", "profile", "history"]
+                .map(|field| fields.remove(field).expect("written spawn field"))
+                .into();
+        }
+        let bytes = records::seal(&input)?;
+        assert_eq!(InboxRecord::decode(&bytes)?, spawn);
+        seeds.push((name, bytes));
+    }
     for (name, mode) in [
         ("restore-files", super::RestoreMode::Files),
         ("restore-context", super::RestoreMode::Context),
