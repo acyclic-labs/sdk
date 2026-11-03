@@ -385,6 +385,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-lease-path-proof",
  "acyclic-stream",
  "futures",
  "libfuzzer-sys",

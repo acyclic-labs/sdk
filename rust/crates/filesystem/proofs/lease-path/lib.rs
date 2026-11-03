@@ -3,6 +3,33 @@
 #[path = "../../src/operation_window/lease_path/encoding.rs"]
 mod encoding;
 
+/// Checks the production writer against independent standard formatting.
+///
+/// The input is two 16-byte identities, a little-endian expiry and an initial
+/// buffer byte. This is a formatter-input corpus, not a persisted wire format.
+pub fn check_formatter_input(data: &[u8; 41]) {
+    let workspace = std::array::from_fn(|i| data[i]);
+    let lease = std::array::from_fn(|i| data[16 + i]);
+    let expiry = u64::from_le_bytes(std::array::from_fn(|i| data[32 + i]));
+    let hex = |identity: [u8; 16]| {
+        identity
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let expected = format!(
+        "fs/operation-windows-v1/{}/leases/{}/{expiry}",
+        hex(workspace),
+        hex(lease)
+    );
+    let mut text = [data[40]; encoding::MAX_ENCODED_BYTES];
+    let length = encoding::length(expiry);
+    encoding::write(workspace, lease, expiry, length, &mut text);
+    assert_eq!(length, expected.len());
+    assert_eq!(&text[..length], expected.as_bytes());
+    assert!(text[length..].iter().all(|&byte| byte == data[40]));
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::encoding;
@@ -67,10 +94,17 @@ mod proofs {
 
 #[cfg(test)]
 mod tests {
-    use super::encoding;
+    use super::{check_formatter_input, encoding};
 
     #[test]
     fn production_formatter_preserves_identities_expiry_and_exact_write_range() {
+        for input in [
+            include_bytes!("../../fuzz/corpus/paths/lease-zero"),
+            include_bytes!("../../fuzz/corpus/paths/lease-distinct-max"),
+            include_bytes!("../../fuzz/corpus/paths/lease-decimal-boundary"),
+        ] {
+            check_formatter_input(input);
+        }
         // The independent standard formatter covers every identity byte value
         // at every position and every decimal-width boundary. Vary positions
         // and the two identities separately so permutations cannot disappear.
@@ -80,26 +114,14 @@ mod tests {
             expiries.extend([boundary - 1, boundary, boundary + 1]);
         }
         for value in 0..=u8::MAX {
-            let workspace = std::array::from_fn(|i| value.wrapping_add(i as u8));
-            let lease = std::array::from_fn(|i| value.wrapping_sub(17 * i as u8));
-            let hex = |identity: [u8; 16]| {
-                identity
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            };
+            let mut input = [0xa5; 41];
+            for i in 0..16 {
+                input[i] = value.wrapping_add(i as u8);
+                input[16 + i] = value.wrapping_sub(17 * i as u8);
+            }
             for &expiry in &expiries {
-                let expected = format!(
-                    "fs/operation-windows-v1/{}/leases/{}/{expiry}",
-                    hex(workspace),
-                    hex(lease)
-                );
-                let mut text = [0xa5; encoding::MAX_ENCODED_BYTES];
-                let length = encoding::length(expiry);
-                encoding::write(workspace, lease, expiry, length, &mut text);
-                assert_eq!(length, expected.len());
-                assert_eq!(&text[..length], expected.as_bytes());
-                assert!(text[length..].iter().all(|&byte| byte == 0xa5));
+                input[32..40].copy_from_slice(&expiry.to_le_bytes());
+                check_formatter_input(&input);
             }
         }
     }
