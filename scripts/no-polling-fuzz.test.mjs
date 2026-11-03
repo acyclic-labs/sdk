@@ -47,6 +47,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: policy.validateDispositions}),
   {name: 'AssertionError', message: /Missing expected exception/});
+ const fingerprint = await mutant('./source-policy/index.mjs',
+  "typeof item.fingerprint !== 'string' || ", '');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: fingerprint.validateDispositions}),
+  {name: 'AssertionError', message: /invalid disposition field: fingerprint/});
  const manifest = await mutant('./source-policy/project.mjs',
   'throw new SourceSyntaxError(`${file}: ${error.message}`);', 'throw new Error(`${file}: ${error.message}`);');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: manifest.projectPollingSites}),

@@ -316,7 +316,7 @@ export function validateDispositions(dispositions, {inScope = supportedSource} =
  for (const item of dispositions) {
   if (!item || typeof item !== 'object' || Object.keys(item).length !== fields.size || Object.keys(item).some(key => !fields.has(key))
    || typeof item.file !== 'string' || !inScope(item.file) || /[\r\n]/.test(item.file)
-   || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !classes.has(item.classification)
+   || typeof item.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !classes.has(item.classification)
    || typeof item.producer !== 'string' || !item.producer.trim()
    || typeof item.terminal !== 'string' || !item.terminal.trim()
    || typeof item.negativeControl !== 'string' || !item.negativeControl.trim()) {

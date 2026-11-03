@@ -230,8 +230,10 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  assert.ok(newProjectPollingSites(invalidPredecessor, currentWait).some(site => site.file === caller),
   'malformed predecessor authorized a current wait');
  for (const field of ['file', 'fingerprint', 'classification', 'producer', 'terminal', 'negativeControl']) {
-  const invalid = {...accepted[0], [field]: ''};
-  assert.throws(() => validate([invalid]), /invalid exact/);
+  for (const value of ['', null, false, 0, [], [accepted[0][field]], {}]) {
+   const invalid = {...accepted[0], [field]: value};
+   assert.throws(() => validate([invalid]), /invalid exact/, 'invalid disposition field: ' + field);
+  }
  }
  assert.throws(() => validate([accepted[0], accepted[0]]), /duplicate/);
  const source = 'async function operation() { await Bun.sleep(1); }\n';
