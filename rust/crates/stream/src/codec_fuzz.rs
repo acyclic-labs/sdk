@@ -324,7 +324,12 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
 #[tokio::test]
 async fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
     for (name, bytes) in seeds().await? {
-        assert!(check(&bytes), "shared persistence oracle rejected {name}");
+        for length in [bytes.len(), bytes.len().saturating_sub(1)] {
+            assert!(
+                check(&bytes[..length]),
+                "shared persistence oracle rejected {name} at {length} bytes"
+            );
+        }
     }
     Ok(())
 }
