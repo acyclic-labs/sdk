@@ -2,5 +2,5 @@ file	sha256	provenance
 claude-code-completed.jsonl	a4c4a86ed094e949983389230343a95ba9129df847235366541a9b6cda75d7ae	../harness/src/local/host_process/fixtures/README.md
 codex-completed.jsonl	570f3b075daf21ce326fb22b28df4f512f1d21436d9152ec339ff0a147e9a160	../harness/src/local/host_process/fixtures/README.md
 derived-transitions.jsonl	6bc9fdedf582fbf478417bb843a05b6713210ae1f0e89078562e358728fc9590	derived mutation; NATIVE-ANSWER.md
-malformed-derived.jsonl	b29bf7de84a527a23146bc0cd965c8b5c763a339fe570b5cf6b802183851bc6d	derived mutation; NATIVE-ANSWER.md
+malformed-derived.jsonl	925be82f91ef0e67e52cd1e27f14b49561363c2a41d9add7a86d35be89fae3d5	derived mutation; NATIVE-ANSWER.md
 pi-assistant-error.jsonl	02b1bdc90f4ace0499a89dbcc3c8dc407eb805f9d16f4c51e71b64b90aba1fd7	../harness/src/local/host_process/fixtures/README.md
