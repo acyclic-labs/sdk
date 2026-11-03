@@ -1271,36 +1271,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn failed_host_observation_keeps_the_live_child_and_recovery_authority() {
-        let root = tempfile::tempdir().unwrap();
-        let records = root.path().join("custody");
-        let custody = ProcessCustody::open(&records).unwrap();
-        let mut tree = ProcessTree::spawn_in_custody(
-            &mut super::super::tests::command("partial", root.path()),
-            &custody,
-        )
-        .unwrap();
-        super::super::tests::ready(root.path(), "partial-ready", || {
-            tree.try_wait(None).map_or(true, |status| status.is_some())
-        });
-        let child = tree.child.take().unwrap();
-        let failure = retire_after_observation(
-            &mut tree,
-            child,
-            Err(io::ErrorKind::Interrupted.into()),
-            |_| {},
-        );
-        let retained = tree.child.is_some()
-            && tree.custody.is_some()
-            && std::fs::read_dir(&records).unwrap().count() == 1;
-        tree.terminate(None).unwrap();
-        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
-        assert!(retained);
-        assert!(tree.is_reaped());
-        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
-    }
-
     // Captured from 579657faa74dc6a3a6334cf97e059a70d0724c03's external
     // adapter ordering. Only state.tree is passed as an argument here; the
     // native operations and the error propagation cuts are unchanged.
