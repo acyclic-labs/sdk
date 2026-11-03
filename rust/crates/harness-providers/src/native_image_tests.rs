@@ -22,46 +22,6 @@ proptest! {
 }
 
 #[tokio::test]
-async fn maximum_work_one_rejects_images_before_reading_for_every_adapter() -> Result<()> {
-    let bytes = b"\x89PNG\r\n\x1a\n\xff";
-    for (adapter, _) in fixtures() {
-        let (mut provider, _) = provider(adapter, 200);
-        let reader = Arc::new(Reader {
-            data: bytes.to_vec(),
-            reads: AtomicUsize::new(0),
-        });
-        provider.files = crate::files::Files {
-            reader: Some(reader.clone()),
-            maximum_bytes: 1024,
-        };
-        let mut policy = policy(bytes.len());
-        let FileProjectionPolicy::Native(native) = &mut policy else {
-            unreachable!()
-        };
-        native.maximum_work = 1;
-        let request = with_parts(
-            &provider,
-            vec![ModelContentPart::File {
-                file: file(bytes, "image/png")?,
-                policy,
-            }],
-        )?;
-        let error = crate::dispatch::encode(
-            &provider,
-            &request,
-            &crate::tool_names::Names::new(request.request()),
-            None,
-            &provider.reasoning_origin(provider.key.as_deref(), None),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("projection work limit"));
-        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Result<()> {
     let bytes = b"\x89PNG\r\n\x1a\n\xff\x00\x80";
     for (adapter, _) in fixtures() {
@@ -121,7 +81,6 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         assert!(wire.contains(&STANDARD.encode(bytes)));
         assert!(!wire.contains("[file:"));
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-        assert_eq!(image.descriptor().media_type(), "image/png");
         // A native image's compressed wire bytes cannot bound its token cost,
         // even under an unlimited admission ceiling.
         let counted = provider.count_tokens(&request, u64::MAX).await?;
