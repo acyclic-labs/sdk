@@ -109,10 +109,12 @@ pub fn check(bytes: &[u8]) -> bool {
         // Canonicality after successful decoding cannot detect rejection of
         // valid writer output. Use the same request factory as the corpus,
         // varying its record values and fork position with this input.
-        let Ok(commands) = commands(Some(value.clone())) else {
-            return false;
+        let commands = match commands(Some(value.clone())) {
+            Ok(commands) => Some(commands),
+            Err(StreamError::LimitExceeded) => None,
+            Err(_) => return false,
         };
-        for (_, command) in commands {
+        for (_, command) in commands.into_iter().flatten() {
             let command = match command.validated() {
                 Ok(command) => command,
                 Err(StreamError::LimitExceeded) => continue,
@@ -248,17 +250,27 @@ fn commands(
         AppendRequest, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey, OwnedBytes,
         StreamPath, WriteRequest,
     };
+    let headers = match &value {
+        None => crate::RecordHeaders::default(),
+        Some(value) => crate::RecordHeaders::new(
+            vec![value.slice(..value.len().min(crate::MAX_RECORD_KEY_BYTES))],
+            vec![crate::Attribute {
+                name: "topic".into(),
+                value: value.clone(),
+            }],
+        )?,
+    };
     Ok([
         (
             "append",
             WriteRequest::Append(AppendRequest {
                 path: StreamPath::new("codec/events")?,
-                records: vec![
-                    value
+                records: vec![crate::AppendRecord {
+                    value: value
                         .clone()
-                        .unwrap_or_else(|| OwnedBytes::from_static(b"persisted codec corpus"))
-                        .into(),
-                ],
+                        .unwrap_or_else(|| OwnedBytes::from_static(b"persisted codec corpus")),
+                    headers: headers.clone(),
+                }],
                 if_tail: Some(0),
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"append"))?,
             }),
@@ -286,11 +298,11 @@ fn commands(
                 conditions: Vec::new(),
                 mutations: vec![CommitMutation::Append {
                     path: StreamPath::new("codec/events")?,
-                    records: vec![
-                        value
-                            .unwrap_or_else(|| OwnedBytes::from_static(b"committed codec corpus"))
-                            .into(),
-                    ],
+                    records: vec![crate::AppendRecord {
+                        value: value
+                            .unwrap_or_else(|| OwnedBytes::from_static(b"committed codec corpus")),
+                        headers,
+                    }],
                 }],
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
             }),
