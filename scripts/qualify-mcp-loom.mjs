@@ -136,21 +136,35 @@ export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
 }
 
 export function qualifyNativeScopeMutations(run = runCommand) {
-  const recovery = "node scripts/qualify-mcp-loom.mjs --native-scope-mutations";
+  return qualifyNativeScopeSourceMutation("--native-scope-mutations",
+    "failed_scope_entry_retires_the_projections_it_entered", [
+      "let _ = leave_all(std::mem::take(&mut claims.entries)).await;",
+      "claims.entries.clear();",
+      "failed later entry stranded the earlier projection",
+    ], run);
+}
+
+export function qualifyNativeCancellationMutations(run = runCommand) {
+  return qualifyNativeScopeSourceMutation("--native-cancellation-mutations",
+    "cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head", [
+      "claim.source.abandon(claim.entered).await",
+      "{ drop(claim.entered); Ok::<(), Error>(()) }",
+      "cancelled command exposed unverified physical bytes",
+    ], run);
+}
+
+function qualifyNativeScopeSourceMutation(selector, test, mutation, run) {
+  const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery,
-      filter: "local::workspace::volumes::publication_tests::failed_scope_entry_retires_the_projections_it_entered",
+      filter: `local::workspace::volumes::publication_tests::${test}`,
     });
   return qualifySourceMutationsLoom({
     name: "NativeScope", recovery,
     source: "../rust/crates/harness/src/local/workspace/volumes.rs",
     model: "../rust/crates/harness/src/local/workspace/volumes/publication_tests.rs",
-    mutations: [[
-      "let _ = leave_all(std::mem::take(&mut claims.entries)).await;",
-      "claims.entries.clear();",
-      "failed later entry stranded the earlier projection",
-    ]],
+    mutations: [mutation],
     qualify, restored: run => qualify(run),
   }, run);
 }
@@ -218,7 +232,6 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
-      "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
     ],
     env: loomEnvironment(), targetCfg: [],
   });
@@ -409,6 +422,7 @@ const fixedModels = {
   "--projection-mutations": qualifyProjectionMutationsLoom,
   "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
   "--native-scope-mutations": qualifyNativeScopeMutations,
+  "--native-cancellation-mutations": qualifyNativeCancellationMutations,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

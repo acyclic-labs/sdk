@@ -126,10 +126,14 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     );
     drop(preflight);
     let mut next = Box::pin(native_scope(mounts, async |claims| {
-        assert!(cleaned.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            cleaned.load(std::sync::atomic::Ordering::Acquire),
+            "next entrant outran physical cleanup"
+        );
         assert_eq!(
             std::fs::read(scratch.destination.join("data")).map_err(storage)?,
-            b"acknowledged"
+            b"acknowledged",
+            "cancelled command exposed unverified physical bytes"
         );
         assert_eq!(published(scratch, "/data").await?, b"acknowledged");
         write_projected(&scratch.destination.join("data"), b"next verified")?;

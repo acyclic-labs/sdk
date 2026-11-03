@@ -185,7 +185,7 @@ test("fs Session qualification instruments real provider and Session locks and r
 
 test("hook qualification requires every retained checkout and projection model", () => {
   /** @type {Array<[typeof qualifyHookLifecycleLoom, string, number]>} */
-  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 9]];
+  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 8]];
   for (const [qualify, target, count] of hooks) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
