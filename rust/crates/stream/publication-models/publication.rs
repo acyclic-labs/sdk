@@ -29,7 +29,10 @@ fn lock_negative_control_retains_an_unpolled_reader_reservation() {
 #[test]
 fn watch_publication_cancellation_and_loss_match_tokio() {
     for steps in 0u16..256 {
-        loom::model(move || query_sync::parity::watch(steps));
+        loom::model(move || query_sync::parity::watch(steps, false));
+    }
+    for steps in 0u16..512 {
+        loom::model(move || query_sync::parity::watch(steps, true));
     }
 }
 mod cursor {

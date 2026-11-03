@@ -111,7 +111,7 @@ pub(crate) fn negative() {
 // The same bounded operation traces run against Tokio and the substituted
 // watch, including cancellation of pending changed futures and publisher loss.
 #[cfg(loom)]
-pub(crate) fn watch(steps: u16) {
+pub(crate) fn watch(steps: u16, extended: bool) {
     #[derive(Debug, PartialEq, Eq)]
     enum Event {
         Changed(Poll<bool>),
@@ -126,8 +126,9 @@ pub(crate) fn watch(steps: u16) {
             let mut sender = Some(sender);
             let mut events = Vec::new();
             let mut steps = $steps;
-            for _ in 0..4 {
-                match steps & 3 {
+            let (mask, shift, count) = if extended { (7, 3, 3) } else { (3, 2, 4) };
+            for _ in 0..count {
+                match steps & mask {
                     0 => {
                         let mut changed = Box::pin(first.changed());
                         events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
@@ -144,19 +145,32 @@ pub(crate) fn watch(steps: u16) {
                         let mut changed = Box::pin(second.changed());
                         events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
                     }
-                    _ => {
+                    3 => {
                         if spare.is_some() {
                             drop(spare.take());
                         } else {
                             drop(sender.take());
                         }
                     }
+                    4 => events.push(Event::Value(*first.borrow_and_update())),
+                    5 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            events.push(Event::Value(sender.send_replace(7)));
+                        }
+                    }
+                    6 => {
+                        let mut changed = Box::pin(second.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    _ => {
+                        spare = sender.as_ref().or(spare.as_ref()).cloned();
+                    }
                 }
                 if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
                     events.push(Event::Value(*sender.borrow()));
                     events.push(Event::Receivers(sender.receiver_count()));
                 }
-                steps >>= 2;
+                steps >>= shift;
             }
             drop((sender, spare));
             // An unseen final publication precedes the terminal result. A
