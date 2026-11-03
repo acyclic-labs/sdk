@@ -1,0 +1,1 @@
+import type { Hidden } from './missing.ts'; import input from 'sys/input.json'; export default ({input} satisfies Record<string, unknown>);
