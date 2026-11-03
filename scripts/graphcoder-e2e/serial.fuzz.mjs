@@ -53,17 +53,24 @@ export function fuzz(data) {
   assert.throws(() => collectPartitions(changed, bundles, "linux", coverage, binding), /definitions/);
   const missing = bundles.map(bundle => structuredClone(bundle)); delete missing[0].binding;
   assert.throws(() => collectPartitions(cases, missing, "linux", coverage, binding), /identity/);
-  const missingRuntime = bundles.map(bundle => structuredClone(bundle));
-  for (const bundle of missingRuntime) delete bundle.binding.executables.NODE;
-  assert.throws(() => collectPartitions(cases, missingRuntime, "linux", coverage, binding), /Node identity/);
-  // Agreement between partitions cannot turn absent provenance into a digest.
-  // Both bundles carry the same malformed value, so equality alone accepts it.
-  for (const source of [[], [hash("source")], { "serial.mjs": null },
-    { "serial.mjs": true }, { "serial.mjs": "not-a-sha256" }, { "": hash("source") }]) {
-    const invalid = bundles.map(bundle => structuredClone(bundle));
-    for (const bundle of invalid) bundle.binding.source = source;
-    assert.throws(() => collectPartitions(cases, invalid, "linux", coverage, binding), /acceptance source/);
-  }
+  // Malformed intended and observed identities agree after the actual JSON
+  // boundary. Structural admission must reject them independently of equality.
+  const rejectBinding = (edit, message) => {
+    const intended = structuredClone(binding); edit(intended);
+    const expected = JSON.parse(JSON.stringify(intended));
+    const invalid = bundles.map(bundle => JSON.parse(JSON.stringify({ ...bundle, binding: expected })));
+    assert.throws(() => collectPartitions(cases, invalid, "linux", coverage, expected),
+      { code: "ERR_ASSERTION", message });
+  };
+  for (const key of ["binary", "mock", "cases"])
+    rejectBinding(value => value[key] = null, /missing partition .* identity/);
+  rejectBinding(value => delete value.executables.NODE, /Node identity/);
+  for (const executables of [null, [], { ...binding.executables, E2E_BUN: null },
+    { ...binding.executables, "": hash("executable") }])
+    rejectBinding(value => value.executables = executables, /executable identit/);
+  for (const source of [{}, [hash("source")], null, true,
+    { "serial.mjs": null }, { "serial.mjs": "not-a-sha256" }, { "": hash("source") }])
+    rejectBinding(value => value.source = source, /acceptance source/);
   const red = structuredClone(bundles); red[1].receipts[0].code = 1;
   assert.equal(collectPartitions(cases, red, "linux", coverage, binding).pass, false);
   for (const status of ["refused", "incomplete"]) {
