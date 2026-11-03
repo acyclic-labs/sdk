@@ -1,19 +1,9 @@
-//! Device flushes per settled reply turn, counted at the original file calls.
-//! A steady reply turn buys exactly three, each for a public guarantee:
-//! - one ordering barrier: the turn's object bytes precede every log frame
-//!   that names them, so no durable frame names missing bytes;
-//! - one drain of a filesystem authority publication at the turn's end, so
-//!   the generation the settlement names is durable before it is named;
-//! - one drain of the settlement commit, the turn's acknowledgement.
-//!
-//! Model events, payloads and journal cuts inside the turn add none: the
-//! dispatch phase defers them to its barrier. The count is exact, so a new
-//! per-event or per-payload flush, or a lost acknowledgement drain, fails.
+//! Original file calls through the hosted actor's committed reply settlement.
+//! Private model payloads need an ordering barrier before their publication;
+//! their deferred journal frames share the dispatch phase's device drain.
+//! History adds neither. One independent durable commit adds exactly one drain.
 use super::*;
 use acyclic_harness::{model::ModelEvent, test_support::ScriptedEvent};
-
-/// (ordering barriers, device drains) of one steady text reply turn.
-const REPLY_TURN_FLUSHES: (usize, usize) = (1, 2);
 
 fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
     writes.iter().fold((0, 0), |(barriers, drains), write| {
@@ -72,17 +62,20 @@ fn turns(
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+        let (agents, root) = entry(harness.agents()).await?;
         let mut cuts = [0; 3];
         for (turn, expected) in expected.iter().enumerate() {
             if turn > 0 {
                 cuts[turn - 1] = schedule.durable_writes().len();
             }
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
+            // The reply is observable before its serving delivery retires.
+            // Wait on that same actor's delivery lock and committed checkpoint,
+            // while its ordinary continuous runtime remains running.
+            entry(agents.drain(root)).await?;
         }
-        cuts[2] = schedule.durable_writes().len();
         if extra {
             use acyclic_stream::StreamProviderExt as _;
-            let (agents, _) = entry(harness.agents()).await?;
             agents
                 .provider()
                 .append(acyclic_stream::AppendRequest {
@@ -94,12 +87,13 @@ fn turns(
                 .await
                 .map_err(storage)?;
         }
+        cuts[2] = schedule.durable_writes().len();
         Ok(cuts)
     })
 }
 
-/// Flushes of the second and third settled turns; the third window runs to
-/// the end of all accepted work. Every physical boundary is released at once.
+/// Matching second and third settlement windows. Teardown still drains every
+/// accepted worker, but belongs to neither reply. Release each original boundary.
 fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2]> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -121,7 +115,7 @@ fn measure(replies: [ScriptedTurn; 3], extra: bool) -> Result<[(usize, usize); 2
         let writes = schedule.durable_writes();
         Ok([
             flushes(&writes[cuts[0]..cuts[1]]),
-            flushes(&writes[cuts[1]..]),
+            flushes(&writes[cuts[1]..cuts[2]]),
         ])
     })
 }
@@ -131,27 +125,16 @@ fn text(reply: &str) -> ScriptedTurn {
 }
 
 #[test]
-fn a_reply_turn_flushes_once_at_its_settlement() -> Result<()> {
+fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> Result<()> {
     let [second, third] = measure([text("one"), text("two"), text("three")], false)?;
     // History length never adds a flush.
     assert_eq!(second, third, "reply-turn flushes grew with history");
-    assert_eq!(third, REPLY_TURN_FLUSHES, "reply-turn flushes changed");
-    Ok(())
-}
-
-#[test]
-fn negative_control_one_more_durable_commit_is_counted() -> Result<()> {
-    let [_, third] = measure([text("one"), text("two"), text("three")], true)?;
+    let [_, extra] = measure([text("one"), text("two"), text("three")], true)?;
     assert_eq!(
-        third,
-        (REPLY_TURN_FLUSHES.0, REPLY_TURN_FLUSHES.1 + 1),
+        extra,
+        (third.0, third.1 + 1),
         "the oracle missed an eager commit's drain"
     );
-    Ok(())
-}
-
-#[test]
-fn streamed_events_add_no_flush_to_a_reply_turn() -> Result<()> {
     // Equal text in 2 or 32 content deltas; only the event count differs.
     let streamed = |parts: usize| {
         let mut events: Vec<ScriptedEvent> = (0..parts)
@@ -171,10 +154,13 @@ fn streamed_events_add_no_flush_to_a_reply_turn() -> Result<()> {
         }));
         ScriptedTurn::Events(events)
     };
-    let [_, short] = measure([text("one"), text("two"), streamed(2)], false)?;
-    let [_, long] = measure([text("one"), text("two"), streamed(32)], false)?;
-    assert_eq!(short, long, "each streamed event paid its own flush");
-    assert_eq!(long, REPLY_TURN_FLUSHES);
+    let [short, long] = measure([text("one"), streamed(2), streamed(32)], false)?;
+    assert_eq!(short.1, long.1, "each streamed event paid its own drain");
+    assert_eq!(
+        short.0 + 30,
+        long.0,
+        "each additional private payload needs one publication ordering barrier"
+    );
     Ok(())
 }
 
