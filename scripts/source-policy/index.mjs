@@ -26,9 +26,8 @@ const classes = new Set([
 ]);
 
 export class SourceSyntaxError extends Error {
- constructor(file, diagnostic, parsed) {
-  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
-  super(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+ constructor(message) {
+  super(message);
   this.name = 'SourceSyntaxError';
  }
 }
@@ -75,7 +74,11 @@ function scriptTokens(file, source) {
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
- if (diagnostics.length) throw new SourceSyntaxError(file, diagnostics[0], parsed);
+ if (diagnostics.length) {
+  const diagnostic = diagnostics[0];
+  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
+  throw new SourceSyntaxError(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+ }
  /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];
@@ -145,7 +148,7 @@ function nativeTokens(source, file) {
  let line = 1;
  let yamlFlow = 0;
  let wordBoundary = true;
- const malformed = message => new Error(`${file}:${line}: ${message}`);
+ const malformed = message => new SourceSyntaxError(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
   if (kind) out.push({value: spelling ?? value, kind, line, start: at});

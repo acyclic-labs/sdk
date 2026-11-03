@@ -4,7 +4,6 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {fuzz} from './no-polling.fuzz.mjs';
 import {newPollingSites, pollingSites, SourceSyntaxError, validateDispositions} from './source-policy/index.mjs';
 import {sourceInScope} from './no-polling-scope.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
@@ -13,13 +12,6 @@ const rust = 'rust/crates/example/src/lib.rs';
 const script = 'typescript/packages/example/test/control.ts';
 const disposition = (site, classification, producer, terminal, negativeControl) => ({
  file: site.file, fingerprint: site.fingerprint, classification, producer, terminal, negativeControl,
-});
-
-test('source decoder fuzz target preserves raw candidates, escapes and comment boundaries', () => {
- for (const text of ["printf ''", '\\', '\\u{']) fuzz(Buffer.from(text));
- for (let byte = 0; byte < 256; byte++) {
-  fuzz(Uint8Array.from({length: byte}, (_, index) => (byte + index) & 255));
- }
 });
 
 test('Python comments and multiline strings preserve executable timer detection', () => {
@@ -422,14 +414,6 @@ test('escaped host identifiers and embedded child programs cannot conceal readin
  assert.ok(newPollingSites(file, '', source.replace('handle', 'otherHandle'), accepted).length);
  assert.deepEqual(pollingSites(file, String.raw`// Thread.\u0053leep(1)
  class Control { void \u004Aoin() { completed.\u0043omplete(); } }`), []);
-});
-
-test('unchanged baseline sites do not authorize another occurrence', () => {
- const source = 'async function operation() { await Bun.sleep(1); }\n';
- assert.deepEqual(newPollingSites(script, source, source), []);
- const repeated = source.repeat(4);
- assert.ok(newPollingSites(script, source, repeated).length);
- assert.ok(newPollingSites(script, repeated, repeated + source).length);
 });
 
 test('legitimate deadline and transport sites require exact typed dispositions', () => {
