@@ -89,7 +89,7 @@ pub(crate) fn sync_descriptor_requested_once(
     requested: crate::Durability,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    let (syscall, identity) = ("fsync", descriptor.as_raw_fd() as u64);
+    let (syscall, identity) = ("fsync", u64::from(descriptor.as_raw_fd().cast_unsigned()));
     #[cfg(windows)]
     let (syscall, identity) = (
         "FlushFileBuffers",
@@ -142,7 +142,7 @@ pub(crate) fn sync_data_descriptor_once(
     observe_sync(
         requested,
         "fdatasync",
-        descriptor.as_raw_fd() as u64,
+        u64::from(descriptor.as_raw_fd().cast_unsigned()),
         || {
             // SAFETY: the borrowed descriptor stays open for this one flush.
             if unsafe { libc::fdatasync(descriptor.as_raw_fd()) } == 0 {

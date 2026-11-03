@@ -23,7 +23,31 @@ struct Capture<H> {
     wakes: CaptureWakes,
 }
 
+type CaptureTurn<H> = (pump::Turn, Capture<H>, [Vec<u8>; 2]);
+
 impl<H: CaptureHandler> Capture<H> {
+    fn start(
+        tree: ProcessTree,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+        streaming: bool,
+    ) -> Result<CaptureTurn<H>, CaptureOutcome<H>> {
+        let (tree, mut pump, handler, wakes) =
+            tree.start_capture(schedule, max_bytes, input, handler)?;
+        if streaming {
+            pump.stream_output();
+        }
+        Ok(Self {
+            tree,
+            pump,
+            handler,
+            wakes,
+        }
+        .turn(streaming))
+    }
+
     fn check(mut self) -> (io::Result<()>, Self) {
         let checked = (|| {
             for wake in self.wakes.as_slice() {
@@ -35,7 +59,7 @@ impl<H: CaptureHandler> Capture<H> {
         (checked, self)
     }
 
-    fn turn(mut self, streaming: bool) -> (pump::Turn, Self, [Vec<u8>; 2]) {
+    fn turn(mut self, streaming: bool) -> CaptureTurn<H> {
         let turn = pump::handled_turn(
             &mut self.pump,
             &mut self.tree,
@@ -141,22 +165,7 @@ impl ProcessTree {
         // The initial output credit is the new, empty channel. Setup and the
         // first pipe turn share one worker submission with the owner callbacks.
         let started = crate::run_blocking_io(
-            move || {
-                self.start_capture(schedule, max_bytes, input, handler).map(
-                    |(tree, mut pump, handler, wakes)| {
-                        if streaming {
-                            pump.stream_output();
-                        }
-                        Capture {
-                            tree,
-                            pump,
-                            handler,
-                            wakes,
-                        }
-                        .turn(streaming)
-                    },
-                )
-            },
+            move || Capture::start(self, schedule, max_bytes, input, handler, streaming),
             None,
         )?
         .await?;
@@ -205,21 +214,20 @@ impl ProcessTree {
             } else {
                 None
             };
-            let (turn, bytes) = match initial.take() {
-                Some(initial) => initial,
-                None => {
-                    let (turn, returned, bytes) =
-                        crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
-                    capture = returned;
-                    (turn, bytes)
-                }
+            let (turn, bytes) = if let Some(initial) = initial.take() {
+                initial
+            } else {
+                let (turn, returned, bytes) =
+                    crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
+                capture = returned;
+                (turn, bytes)
             };
             let [stdout, stderr] = bytes;
             let yielded = !stdout.is_empty() || !stderr.is_empty();
-            if let Some(permit) = permit {
-                if yielded {
-                    permit.send(ProcessChunk { stdout, stderr });
-                }
+            if let Some(permit) = permit
+                && yielded
+            {
+                permit.send(ProcessChunk { stdout, stderr });
             }
             match turn {
                 pump::Turn::Done(result) => break result,

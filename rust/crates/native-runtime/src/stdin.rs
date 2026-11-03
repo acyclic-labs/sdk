@@ -118,7 +118,9 @@ impl AsyncRead for Stdin {
             }
         }
         let read = (this.current.len() - this.consumed).min(buf.remaining());
-        let chunk = &mut this.current[this.consumed..this.consumed + read];
+        let Some(chunk) = this.current.get_mut(this.consumed..this.consumed + read) else {
+            return Poll::Ready(Err(io::ErrorKind::InvalidData.into()));
+        };
         buf.put_slice(chunk);
         chunk.zeroize();
         this.consumed += read;

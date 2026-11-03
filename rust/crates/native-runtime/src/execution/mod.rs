@@ -94,7 +94,7 @@ impl Grant {
         self.read
             .binary_search_by(|root| root.path.as_path().cmp(path))
             .ok()
-            .map(|index| &self.read[index])
+            .and_then(|index| self.read.get(index))
     }
 }
 
@@ -196,7 +196,7 @@ impl BoundPath {
                     crate::NativeOperationKind::Read,
                     || requested.verify(&child),
                 )?;
-                return Ok(true);
+                Ok(true)
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -395,10 +395,10 @@ impl ExecutionGrant {
         for path in &requested.policy.read {
             // An already granted root needs only its original object proof.
             // An overlapping ancestor may require an unavailable subtree proof.
-            if let Some(root) = self.policy.read_root(&path.path) {
-                if root.contains(path, meter)? {
-                    continue;
-                }
+            if let Some(root) = self.policy.read_root(&path.path)
+                && root.contains(path, meter)?
+            {
+                continue;
             }
             if self.policy.workspace.contains(path, meter)? {
                 continue;

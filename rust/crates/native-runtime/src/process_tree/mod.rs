@@ -382,7 +382,7 @@ impl ProcessTree {
                 if let Some(boundary) = boundary {
                     boundary.install(&mut native)?;
                 }
-                return platform::spawn_controlled(&mut native, meter, slot);
+                platform::spawn_controlled(&mut native, meter, slot)
             }
             #[cfg(windows)]
             platform::spawn_controlled(command, meter, slot)

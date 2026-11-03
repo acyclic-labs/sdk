@@ -36,6 +36,7 @@ pub(super) fn sync_owned_file(
     sync_file_target(SyncTarget::Owned(file), durability, meter)
 }
 
+#[derive(Clone, Copy)]
 enum SyncTarget<'a> {
     Borrowed(&'a File),
     Owned(&'a NativeFilePayload),
@@ -169,7 +170,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
             #[cfg(target_os = "linux")]
             {
                 use std::os::fd::AsFd as _;
-                return crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability);
+                crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability)
             }
             #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
             {
@@ -195,15 +196,20 @@ fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
     {
         use std::os::fd::AsRawFd as _;
         let file = File::open(path)?;
-        crate::held_sync::observe_sync(Durability::Full, "syncfs", file.as_raw_fd() as u64, || {
-            // SAFETY: syncfs acts only on this live descriptor.
-            #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
-            if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        })
+        crate::held_sync::observe_sync(
+            Durability::Full,
+            "syncfs",
+            u64::from(file.as_raw_fd().cast_unsigned()),
+            || {
+                // SAFETY: syncfs acts only on this live descriptor.
+                #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
+                if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            },
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -471,18 +477,15 @@ pub(crate) fn write_all_in_place(
                 if let Some(meter) = meter {
                     meter.admit_write(0)?;
                 }
+                let offset =
+                    libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
                 #[allow(
                     unsafe_code,
                     reason = "writes the validated borrowed range on a held descriptor"
                 )]
                 // SAFETY: the validated range and borrowed payload remain live through pwrite.
                 let count = unsafe {
-                    libc::pwrite(
-                        file.as_raw_fd(),
-                        chunk.as_ptr().cast(),
-                        length,
-                        offset as libc::off_t,
-                    )
+                    libc::pwrite(file.as_raw_fd(), chunk.as_ptr().cast(), length, offset)
                 };
                 if count < 0 {
                     return Err(io::Error::last_os_error());

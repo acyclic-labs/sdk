@@ -103,7 +103,8 @@ impl LogFrame {
             .ok_or(io::ErrorKind::InvalidInput)?;
         let (prefix, width) = self.prefix(body).ok_or(io::ErrorKind::InvalidInput)?;
         let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
-        let bytes = self.frame_bytes(body).ok_or(io::ErrorKind::InvalidInput)? as usize;
+        let bytes = usize::try_from(self.frame_bytes(body).ok_or(io::ErrorKind::InvalidInput)?)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
         let end = out
             .len()
             .checked_add(bytes)
@@ -133,7 +134,10 @@ impl LogFrame {
         let Some(_) = self.frame_bytes(length) else {
             return false;
         };
-        let Some((body, tail)) = bytes[width..].split_at_checked(length as usize) else {
+        let Some((body, tail)) = bytes
+            .get(width..)
+            .and_then(|body| body.split_at_checked(usize::try_from(length).ok()?))
+        else {
             return false;
         };
         tail.get(..Self::CHECKSUM_BYTES)
