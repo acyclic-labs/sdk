@@ -83,12 +83,12 @@ fn json_equivalent(left: &Value, right: &Value) -> bool {
 }
 
 async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
+    let text = String::from_utf8_lossy(bytes);
+    let specifier = serde_json::to_string(&text).map_err(|error| error.to_string())?;
     let tree = Files {
-        input: Vec::new(),
+        input: specifier.as_bytes().to_vec(),
         cycle: false,
     };
-    let specifier = serde_json::to_string(&String::from_utf8_lossy(bytes))
-        .map_err(|error| error.to_string())?;
     let dynamic = format!("export default import({specifier});");
     // Parse arbitrary programs without executing their untrusted control flow.
     // Accepted TypeScript must emit JavaScript admitted by the same production
@@ -117,6 +117,53 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             .await;
             if !matches!(refusal, Err(Error::Invalid(_))) || VM_ENTRIES.get() != entries {
                 return Err("dynamic import escaped source admission".into());
+            }
+        }
+        // Resolve generated names through the actual closure and QuickJS
+        // linker, rather than restating the resolver's implementation. The
+        // input remains data; only this fixed import program is executed.
+        let depth = usize::from(bytes.first().copied().unwrap_or_default() % 8);
+        let importer = format!("{}{path}", "directory/".repeat(depth));
+        let relative = format!(
+            "{}sys/input.json",
+            if depth == 0 {
+                "./".into()
+            } else {
+                "../".repeat(depth)
+            }
+        );
+        for name in ["sys/input.json", relative.as_str()] {
+            let name = serde_json::to_string(name).map_err(|error| error.to_string())?;
+            let source = format!("import input from {name}; export default input;");
+            let actual = evaluate_cached(
+                &importer,
+                source.as_bytes(),
+                &tree,
+                &Value::Null,
+                Surface::Data,
+                &Cache::default(),
+            )
+            .await
+            .map_err(|error| format!("static import admission: {error}"))?;
+            if actual.value != Value::String(text.to_string()) || actual.form != Form::Value {
+                return Err("static import changed its original data".into());
+            }
+        }
+        // A root escape or noncanonical name must fail before any tree read
+        // or VM entry, even when the engine could normalize it to a held file.
+        for name in [
+            format!("{}sys/input.json", "../".repeat(depth + 1)),
+            "input.json".into(),
+            "/sys/input.json".into(),
+            "./a/../../input.json".into(),
+            "sys//input.json".into(),
+            "sys/./input.json".into(),
+            "sys/a/../input.json".into(),
+        ] {
+            let name = serde_json::to_string(&name).map_err(|error| error.to_string())?;
+            let source = format!("import input from {name}; export default input;");
+            if strip(&importer, source.as_bytes()).is_ok() {
+                return Err("noncanonical static import escaped source admission".into());
             }
         }
         if let Ok(module) = strip(path, bytes) {

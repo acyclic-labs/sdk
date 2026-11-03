@@ -24,7 +24,7 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Seven retained patches alter the actual production source admission, walk or cache. Apply each separately
+Nine retained patches alter the actual production source admission, walk or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
@@ -36,6 +36,8 @@ source:
 | `config-dynamic-import.patch` | Dynamic import reaches the engine instead of being refused by source admission. |
 | `config-json-object-literal.patch` | A JSON object is incorrectly interpreted as a JavaScript object literal, losing its `__proto__` property. |
 | `config-transform-output.patch` | TypeScript transformation output is discarded, incorrectly refusing the required valid typed literal. |
+| `config-import-root-escape.patch` | An import escaping the original tree root is incorrectly admitted. |
+| `config-import-directory.patch` | A legitimate nested import loses its original directory and fails actual module linking. |
 | `config-cache-key.patch` | A changed base or imported value incorrectly reuses an older result. |
 
 The cache mutation removes the production key comparison. It uses the same
@@ -81,3 +83,13 @@ branch coverage, or unbounded evaluator capacity. The existing
 instruction and memory limits are unchanged. Current runtime, fuzz campaign
 and source coverage results must be recorded separately; their presence here
 is not a pass claim.
+
+The same property also executes fixed static-import programs through the real
+closure and QuickJS linker. Input bytes remain a JSON string in the original
+`sys/input.json` reader. Generated importer depths exercise relative imports
+and direct `sys/` imports for both source extensions; the result must retain
+that entire string. Root escapes and noncanonical segments must be rejected
+by the production strip boundary before any tree read or VM entry. This
+subsumes the resolver-only example test. The two import patches mutate actual
+root-underflow admission and importer-directory retention, never an alternate
+resolver or a test-only fault switch.
