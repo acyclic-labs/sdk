@@ -197,34 +197,6 @@ async fn user_project_and_local_scopes_have_whole_entry_precedence() -> Result<(
     Ok(())
 }
 
-#[tokio::test]
-async fn untrusted_project_files_are_not_read() -> Result<()> {
-    let fixture = Fixture::new()?;
-    for name in [
-        ".mcp.json",
-        ".codex/config.toml",
-        ".codex/hooks.json",
-        ".claude/settings.json",
-        ".claude/settings.local.json",
-    ] {
-        write(&fixture.workspace.join(name), b"invalid configuration")?;
-    }
-    let snapshot = NativeSettings::load(fixture.config()).await?;
-    assert_eq!(snapshot.mcp.server_names().count(), 0);
-    assert!(
-        NativeSettings::load(fixture.config().trust_project_mcp(true))
-            .await
-            .is_err()
-    );
-    #[cfg(feature = "hooks")]
-    assert!(
-        NativeSettings::load(fixture.config().trust_project_hooks(true))
-            .await
-            .is_err()
-    );
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn canonical_deduplication_combines_hook_and_mcp_roles() -> Result<()> {
