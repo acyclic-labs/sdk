@@ -154,7 +154,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let next = || HostAction::Session {
         parent: parent.clone(),
         reference: "child".into(),
-        action: SessionAction::Next,
+        action: SessionAction::Next {},
         next: false,
     };
     let first = fixture.owner.dispatch(operation, next()).await?;
@@ -181,7 +181,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(recovered, expected);
     let first = recovered;
     assert!(matches!(
-        fixture.session("child", SessionAction::Next).await,
+        fixture.session("child", SessionAction::Next {}).await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(fixture.owner.dispatch(operation, next()).await?, first);
@@ -260,7 +260,7 @@ not json naming a session_id
         Some(&json!(diagnostic)),
         "owner restart must preserve the complete native outcome"
     );
-    let next = fixture.session("child", SessionAction::Next).await?;
+    let next = fixture.session("child", SessionAction::Next {}).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
     assert_eq!(
@@ -301,7 +301,7 @@ not json naming a session_id
         .await?;
     assert!(
         fixture
-            .session("child", SessionAction::Next)
+            .session("child", SessionAction::Next {})
             .await?
             .is_null()
     );
@@ -313,7 +313,7 @@ not json naming a session_id
             },
         )
         .await?;
-    let final_turn = fixture.session("child", SessionAction::Next).await?;
+    let final_turn = fixture.session("child", SessionAction::Next {}).await?;
     let final_claim = claim(&final_turn)?;
     // Use the original staged event log as an attachment, not a fabricated file.
     let mut output = crate::executor::TurnOutput::new(String::new(), json!({"native": host}), 1);
@@ -392,7 +392,7 @@ not json naming a session_id
         )
         .await?;
     assert_eq!(sent.pointer("/results/0/outcome"), Some(&expected));
-    let after = fixture.session("child", SessionAction::Next).await?;
+    let after = fixture.session("child", SessionAction::Next {}).await?;
     assert_eq!(after["turn"], 4);
     assert_eq!(after["prompt"], "after complete output");
     assert_eq!(
@@ -449,7 +449,7 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
             },
         )
         .await?;
-    let turn = fixture.session("active", SessionAction::Next).await?;
+    let turn = fixture.session("active", SessionAction::Next {}).await?;
     let interrupt = SessionAction::Control {
         control: Control::Interrupt,
     };
@@ -514,7 +514,7 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
         prompt: "claimed".into(),
     };
     fixture.session("claimed", spawn).await?;
-    fixture.session("claimed", SessionAction::Next).await?;
+    fixture.session("claimed", SessionAction::Next {}).await?;
     let behind = SessionAction::Send {
         prompt: "behind".into(),
     };
@@ -614,7 +614,7 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         3,
         "waiting children stay resident"
     );
-    let turn = fixture.session("settled", SessionAction::Next).await?;
+    let turn = fixture.session("settled", SessionAction::Next {}).await?;
     native_write(&cwd(&turn)?.join("kept.txt"), b"kept")?;
     let outcome = crate::Outcome::Failed {
         message: "settled after write".into(),
@@ -652,7 +652,7 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         1,
         "a missing native reference must not reattach a retired child view"
     );
-    let observed = fixture.session("settled", SessionAction::Observe).await?;
+    let observed = fixture.session("settled", SessionAction::Observe {}).await?;
     assert_eq!(
         fixture.owner.views().unwrap().len(),
         2,
@@ -666,7 +666,7 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         prompt: "again".into(),
     };
     fixture.session("settled", send).await?;
-    fixture.session("settled", SessionAction::Next).await?;
+    fixture.session("settled", SessionAction::Next {}).await?;
     let agents = HostAction::Agents {
         task: fixture.parent.clone(),
     };
@@ -678,7 +678,7 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
     );
     assert!(
         fixture
-            .session("settled", SessionAction::Next)
+            .session("settled", SessionAction::Next {})
             .await
             .is_err(),
         "a resident claimed child keeps exclusive custody"
@@ -754,7 +754,7 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         snapshot()?.is_empty(),
         "dropping dispatch retires its observation"
     );
-    let turn = fixture.session("child", SessionAction::Next).await?;
+    let turn = fixture.session("child", SessionAction::Next {}).await?;
     assert_eq!(turn["prompt"], "first");
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
@@ -779,7 +779,7 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         fixture.session("child", second).await?["reply"]["kind"],
         "pending"
     );
-    let running = fixture.session("child", SessionAction::Next).await?;
+    let running = fixture.session("child", SessionAction::Next {}).await?;
     assert_eq!(running["prompt"], "second");
     // A cancel drops the prompt queued behind the claimed turn at once.
     let cancel = SessionAction::Control {
@@ -811,7 +811,7 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
         (&accepted["task"], &accepted["cwd"])
     );
     assert!(
-        fixture.session("child", SessionAction::Next).await.is_err(),
+        fixture.session("child", SessionAction::Next {}).await.is_err(),
         "a competitor's plain claim is refused"
     );
     // A replayed acceptance re-hands the identical claim under the fence.
