@@ -14,6 +14,13 @@ async function withMissingHost(action) {
 
 test('missing native host retains its OS cause and joins accepted terminal work', async () => {
   await withMissingHost(async host => {
+    for (const stdio of ['ipc', ['pipe', 'ipc', 'pipe'], ['pipe', 'pipe', 'pipe', 'pipe']]) {
+      await assert.rejects(commandProcess(process.execPath, ['--version'], {host, stdio}), error => {
+        assert.ok(error instanceof TypeError);
+        assert.match(error.message, /^step=process-stdio-admission; recovery=/);
+        return true;
+      });
+    }
     const input = new PassThrough();
     let entered, release, terminalCause, terminalCalls = 0, outputCalls = 0, settled = false;
     const terminalSeen = new Promise(resolve => { entered = resolve; });
