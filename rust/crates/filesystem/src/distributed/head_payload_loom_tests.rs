@@ -124,11 +124,14 @@ impl StreamProvider for ModelStream {
                     .iter()
                     .any(|path| path.as_str().ends_with("/records")),
         );
-        *self.call(self.inner.heads(request)).await
+        // Construct the nested provider phase outside this coroutine's poll
+        // frame. Its result is already boxed by call; only the final public
+        // response moves back through this adapter.
+        *crate::heap_future::in_heap(|| self.call(self.inner.heads(request))).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.observe_records(request.path.as_str().ends_with("/records"));
-        *self.call(self.inner.read(request)).await
+        *crate::heap_future::in_heap(|| self.call(self.inner.read(request))).await
     }
     fn write(
         &self,

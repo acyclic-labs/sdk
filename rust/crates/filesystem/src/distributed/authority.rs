@@ -119,7 +119,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         ),
         AuthorityStoreError,
     > {
-        crate::heap_future::in_frame(self.authority_require_live(authority, work)).await?;
+        self.authority_require_live(authority, work).await?;
         self.snapshot_payload::<RETAIN>(authority, work).await
     }
 
