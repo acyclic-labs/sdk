@@ -72,6 +72,7 @@ impl Fixture {
         admission: TurnAdmission,
         allowed: bool,
         label: &str,
+        expected: &str,
     ) -> Result {
         let executors = Arc::new(Executors(AtomicUsize::new(0)));
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
@@ -100,8 +101,17 @@ impl Fixture {
             &crate::conformance::fixtures::request("next")?,
         )
         .await?;
-        if host.runtime().drain().await.is_empty() {
-            return Err(format!("{label} did not reach the admission/history sentinel").into());
+        vectors::drain(&host).await?;
+        // Decided turn failures settle through the original agent commit.
+        // Runtime errors represent unsettled deliveries, not admission refusals.
+        let Phase::Done {
+            outcome: AgentOutcome::Failed { message },
+        } = host.state(&self.path).await?.phase
+        else {
+            return Err(format!("{label} did not publish its terminal failure").into());
+        };
+        if message != expected {
+            return Err(format!("{label}: unexpected terminal failure: {message}").into());
         }
         if allowed && self.provider.history_reads.load(Ordering::SeqCst) == 0 {
             return Err(format!("{label}: valid admission did not read nonempty history").into());

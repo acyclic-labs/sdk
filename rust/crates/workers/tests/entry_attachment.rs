@@ -582,8 +582,8 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     ));
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::Relaxed),
-        2,
-        "each payload uses its original credential producer; no descriptor or retain follows"
+        1,
+        "one admitted batch resolves one credential; refusal prevents descriptor and retention calls"
     );
     restored_selection(&durable).await
 }

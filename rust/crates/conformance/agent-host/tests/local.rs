@@ -142,15 +142,3 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
     }
     Ok(())
 }
-
-#[tokio::test]
-#[ignore = "on-demand scale qualification: creates 1,000 and 10,000 agents"]
-async fn agent_scale() -> Result {
-    let samples = acyclic_agent_host_conformance::scale(
-        &native().await?,
-        acyclic_agent_host_conformance::Scale::default(),
-    )
-    .await?;
-    println!("AGENT_SCALE {samples:?}");
-    Ok(())
-}

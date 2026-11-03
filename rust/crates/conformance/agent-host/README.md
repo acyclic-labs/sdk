@@ -50,14 +50,15 @@ exactly one registration per provisioned agent and leave none ready after the
 global drain. It does not measure physical memory or allocations inside a
 provider. Reported control traffic remains visible even if the dispatch check passes.
 
-Run the native 1,000 versus 10,000 idle-agent vector explicitly:
+Run the shared dispatch and registration control on native and guest handlers:
 
 ```sh
-cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::agent_scale -- --ignored --nocapture
+cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::shared_benchmark_and_scale_check_native_and_guest_work -- --exact --nocapture
 ```
 
-No CI workflow or merge-gate step invokes this workload. Downstream adapters can
-call the same public `bench` and `scale` functions with their own `Backend`.
+This control covers the same workload at two populations and rejects extra work,
+misbound counters and missing turns. Downstream adapters can call the same public
+`bench` and `scale` functions with their own `Backend` and selected populations.
 
 To execute browser tests after compiling them, use the workspace's pinned `wasm-bindgen-test-runner` and Chrome driver:
 
