@@ -1,7 +1,6 @@
 //! Pins the CLI's wire JSON to Cloud's recorded Global handler tests.
 
-#[path = "support/binary.rs"]
-mod binary;
+use super::binary;
 
 #[test]
 fn cloud_identity_contract() -> Result<(), Box<dyn std::error::Error>> {

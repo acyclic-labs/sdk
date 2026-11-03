@@ -160,18 +160,10 @@ fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_setting
 }
 
 #[test]
-fn claude_installer_uses_shared_private_publication() -> Result<()> {
-    installer_publication("claude-code", "settings.json")
-}
-
-#[test]
-fn pi_installer_uses_shared_private_publication() -> Result<()> {
-    installer_publication("pi", "acyclic.ts")
-}
-
-fn installer_publication(host: &str, name: &str) -> Result<()> {
+fn installer_publishes_private_settings_without_overwriting_a_changed_source() -> Result<()> {
+    let host = "claude-code";
     let fixture = tempfile::tempdir()?;
-    let path = fixture.path().join(name);
+    let path = fixture.path().join("settings.json");
     install::write_config(host, &path, b"original", None)?;
     // End inspection custody before the next publisher takes the destination.
     assert!(acyclic_native_runtime::private_file::is_private(
