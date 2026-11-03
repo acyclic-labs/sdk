@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failureReport, publishReport, summarizeCases, verifyReport } from "./report.mjs";
+import { failureReport, finishCase, publishReport, retainCapture, summarizeCases, verifyReport } from "./report.mjs";
 
 test("case summaries retain every attempted row with one identity visit regardless of population", () => {
   // Generated internal report rows exercise accounting, not measured intervals.
@@ -75,7 +75,25 @@ test("request evidence failure still publishes original case failures and cannot
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("failure reports retain operands omitted by the original assertion stack", async () => {
+test("failure reports retain arbitrary failures and operands omitted by the original assertion stack", async () => {
+  // Generated thrown values exercise the shared reporter, not provider wire.
+  const unknown = Object.create(null);
+  Object.defineProperty(unknown, "stack", { enumerable: true, get() { assert.fail("diagnostic invoked an arbitrary getter"); } });
+  Object.defineProperty(unknown, Symbol.toPrimitive, { value() { assert.fail("diagnostic coerced an arbitrary failure"); } });
+  const inputs = [[undefined, "undefined"], [null, "null"], [false, "false"], [0, "0"],
+    ["", "''"], [Symbol("callback refusal"), "Symbol(callback refusal)"], [unknown, "stack: [Getter]"]];
+  const captures = [], pending = [];
+  for (const [failure, representation] of inputs) {
+    const report = failureReport(failure);
+    assert.equal(typeof report.error, "string");
+    assert.ok(report.error.includes(representation), "the original thrown value must survive diagnostic formatting");
+    pending.push(retainCapture(Promise.reject(failure), captures));
+  }
+  const result = await finishCase({ case: "original", status: "pass" }, pending, ["repeat original case"]);
+  assert.equal(result.status, "fail", "capture rejection cannot become an accepted case");
+  assert.deepEqual(result.capture_failures, inputs.map(([failure]) => failureReport(failure)));
+  assert.deepEqual(captures, [], "refused captures cannot publish a completed result");
+
   const actual = { bytes: "a".repeat(20_000), tail: "original actual tail", unknown: undefined,
     count: 2n, get untouched() { throw new Error("diagnostic invoked a getter"); } };
   actual.self = actual;
@@ -133,7 +151,7 @@ test("cancellation during either original report write retains a failed terminal
     for (const boundary of ["before", "publish", "file", "none"]) {
       const signal = new AbortController(), report = { pass: true, results: [] };
       const snapshots = [], path = join(root, boundary + ".json");
-      const reason = new Error("caller cancelled at " + boundary);
+      const reason = boundary === "file" ? Object.create(null) : new Error("caller cancelled at " + boundary);
       if (boundary === "before") signal.abort(reason);
       const io = {
         publish: async text => {
@@ -152,7 +170,7 @@ test("cancellation during either original report write retains a failed terminal
       assert.deepEqual(JSON.parse(await readFile(path, "utf8")), report);
       assert.deepEqual(snapshots.at(-1), report);
       assert.equal(snapshots.length, ["publish", "file"].includes(boundary) ? 2 : 1);
-      if (!expected) assert.equal(report.cancellation, reason.message);
+      if (!expected) assert.match(report.cancellation, boundary === "file" ? /null prototype/ : /caller cancelled at/);
       if (snapshots.length === 2) assert.equal(snapshots[0].pass, true);
     }
   } finally {
