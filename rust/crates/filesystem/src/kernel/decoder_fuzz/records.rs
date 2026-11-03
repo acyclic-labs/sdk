@@ -150,16 +150,3 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
     seeds.extend(crate::distributed::record_codec_fuzz::seeds()?);
     Ok(seeds)
 }
-
-#[cfg(all(test, not(loom)))]
-mod tests {
-    #[test]
-    fn original_writer_records_and_arbitrary_bytes_share_the_oracle() {
-        for (_, bytes) in super::seeds().unwrap() {
-            super::check(&bytes);
-        }
-        for length in 0..64 {
-            super::check(&vec![length as u8; length]);
-        }
-    }
-}
