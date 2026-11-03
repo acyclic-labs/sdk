@@ -18,7 +18,8 @@ for (const persistent of [false, true]) {
     const path = "client/watermarks";
     const appended = fromBinary(AppendResponseSchema, await stream.dispatch("append",
       toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-        path, ifTail: 0n, records: [{ value: new TextEncoder().encode("one") }],
+        path, ifTail: 0n, idempotencyKey: new TextEncoder().encode("initial-watermark"),
+        records: [{ value: new TextEncoder().encode("one") }],
       }))));
     if (appended.outcome.case !== "committed") throw new Error("initial append did not commit");
     const tail = appended.outcome.value.tail;

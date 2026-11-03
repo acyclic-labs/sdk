@@ -100,6 +100,8 @@ struct Health<'a> {
 struct Issue<'a> {
     stream: &'a str,
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 fn depth(pos: &Pos) -> usize {
@@ -277,10 +279,15 @@ impl WasmExplorer {
                 .issues()
                 .map(|(stream, issue)| Issue {
                     stream: stream.as_str(),
-                    kind: match issue {
+                    kind: match &issue {
                         ReadIssue::AccessDenied => "accessDenied",
                         ReadIssue::RetentionLost => "retentionLost",
                         ReadIssue::HierarchyChanged => "hierarchyChanged",
+                        ReadIssue::Refused(_) => "refused",
+                    },
+                    code: match issue {
+                        ReadIssue::Refused(error) => Some(error.code()),
+                        _ => None,
                     },
                 })
                 .collect(),
@@ -366,6 +373,20 @@ impl WasmExplorer {
     #[wasm_bindgen(js_name = jumpEnd)]
     pub fn jump_end(&self) {
         self.state.borrow_mut().explorer.jump_end();
+    }
+
+    /// Acknowledges a displayed source issue before the next drive retries it.
+    /// Renew authority before acknowledging an access denial.
+    ///
+    /// # Errors
+    /// Rejects an invalid stream path.
+    #[wasm_bindgen(js_name = acknowledgeIssue)]
+    pub fn acknowledge_issue(&self, stream: &str) -> Result<(), JsValue> {
+        let stream = StreamPath::new(stream).map_err(error)?;
+        let mut state = self.state.borrow_mut();
+        state.explorer.reader().acknowledge_issue(&stream);
+        state.wake();
+        Ok(())
     }
 
     /// The browser's online state changed.
