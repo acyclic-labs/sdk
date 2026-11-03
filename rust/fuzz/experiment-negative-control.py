@@ -26,10 +26,10 @@ CASES = {
     ),
     "observation-identity": (
         "experiments/mod.rs",
-        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
-        "        let mut row: ObservationFile = crate::executor::json::decode_object(bytes)?;\n"
-        "        row.arm = 0;\n"
-        "        Self::admit(row)",
+        "        Ok(serde_json::from_slice(bytes)?)",
+        "        let mut row: Self = serde_json::from_slice(bytes)?;\n"
+        "        row.0.arm = 0;\n"
+        "        Ok(row)",
         "observation-known", "independent observation invariant: identity field arm",
     ),
     "scorer-distinct": (
@@ -83,8 +83,8 @@ CASES = {
         "independent report invariant: cost sum",
     ),
     "report-refusal": (
-        "experiments/reports.rs", "let known_cost_usd = if let Some(cost) = cost_usd {",
-        "self.assigned = assigned;\n        let known_cost_usd = if let Some(cost) = cost_usd {",
+        "experiments/reports.rs", "        admit_cost(cost_usd)?;",
+        "        self.assigned = assigned;\n        admit_cost(cost_usd)?;",
         "trials-priced", "independent report invariant: refusal preserves report",
     ),
     "pair-population": (
@@ -101,12 +101,10 @@ CASES = {
     ),
     "pair-unscored-cost": (
         "experiments/mod.rs",
-        "    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {\n"
-        "        self.check_pair(baseline)?;\n",
-        "    pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {\n"
-        "        self.check_pair(baseline)?;\n"
-        "        if self.0.score.is_none() && baseline.0.score.is_none() {\n"
-        "            return Ok(None);\n"
+        "    fn cost(&self) -> Option<f64> {\n",
+        "    fn cost(&self) -> Option<f64> {\n"
+        "        if self.row.score.is_none() && self.baseline.score.is_none() {\n"
+        "            return None;\n"
         "        }\n",
         "trials-priced", "independent pairing invariant: matched measurements",
     ),

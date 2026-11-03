@@ -3,6 +3,7 @@
 
 use acyclic_harness_core::experiments::{
     Error, Observation,
+    plan::PairAssignment,
     probes::{Decision, Scorer},
     reports::AssignedTrials,
     stats::{Cluster, PairedStats, required_clusters},
@@ -530,6 +531,21 @@ fuzz_target!(|bytes: &[u8]| {
     }
     scorer(bytes);
     decision(bytes);
+    if let Ok(assignment) = serde_json::from_slice::<PairAssignment>(bytes) {
+        object(
+            bytes,
+            |input| serde_json::from_slice::<PairAssignment>(input).is_ok(),
+            1,
+            &["version", "population", "replicate"],
+            &["version", "population", "replicate"],
+        );
+        let canonical = serde_json::to_vec(&assignment).expect("admitted assignment encodes");
+        assert_eq!(
+            serde_json::from_slice::<PairAssignment>(&canonical)
+                .expect("canonical assignment admits"),
+            assignment
+        );
+    }
     // Retain both original files in the scorer-newline-decision corpus protocol.
     if let Some(separator) = bytes.iter().position(|byte| *byte == b'\n') {
         let (source, tail) = bytes.split_at(separator);

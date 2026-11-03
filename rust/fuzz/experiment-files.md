@@ -145,8 +145,15 @@ the unit test's duplicate direct-residual assertions; its large common-offset
 and power-planning checks remain.
 No provider payload is fabricated or relabeled.
 
-The target excludes the separate assignment/streaming analysis formats and
-implements no decoder. The library remains the single parser and scorer.
+The target also retains the version-1 `PairAssignment` admission boundary.
+Assignments use the same object schema property for version, required/unknown
+fields, duplicate fields and surplus input, followed by canonical re-admission.
+The original assignment corpus contains authored declarations produced with
+ordered PowerShell hash tables and `ConvertTo-Json -Compress`, using population
+bytes 0 through 31 and replicate zero. The original observation seeds include
+unknown values and known zero cost. These are authored inputs, not provider
+recordings. Streaming analysis remains separate. The library remains the single
+parser and scorer; the target implements no decoder.
 The original scorer-newline-decision inputs use the same scorer and decision
 properties as standalone files. The former two-assignment report fold is
 subsumed by the generated public trial histories, which cover all four outcomes,
