@@ -19,6 +19,7 @@ fn publication_grants(
         &crate::Capabilities::new([
             volume.capability(VolumeOperation::Write, &mut None)?,
             volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Delete, &mut None)?,
         ]),
         Some(agent),
         &mut None,

@@ -731,6 +731,41 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
         std::fs::read(directory.path().join("one")).map_err(storage)?,
         b"first\n"
     );
+    // Neither ordinary write authority nor removal authority for another volume
+    // may remove this source, even though the owning publisher can do so.
+    let write_only = Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .filter(|label| !label.starts_with(VolumeOperation::Delete.capability_prefix())),
+    );
+    let foreign_delete = Capabilities::new(
+        write_only.iter().map(str::to_owned).chain([harness
+            .seed
+            .0
+            .capability(VolumeOperation::Delete, &mut None)?]),
+    );
+    for ceiling in [&write_only, &foreign_delete] {
+        assert!(matches!(
+            publisher
+                .stage_changes(
+                    &harness.project,
+                    OperationId::new(),
+                    &[crate::conversation::ContentChange::DeleteExpected { source }],
+                    crate::conversation::ContentAccess {
+                        ceiling: Some(ceiling),
+                        io: None
+                    },
+                )?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(
+            std::fs::read(directory.path().join("one")).map_err(storage)?,
+            b"first\n"
+        );
+    }
     let task = task_for(harness.signed.capabilities().clone())?;
     let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-refusal")?;
     let invalid = ToolInvocation {
