@@ -20,11 +20,11 @@ with quote, backslash, NUL and invalid UTF-8 bytes in the imported JSON value.
 Run the existing shared property without a separate graph implementation:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation_and_reject_corrupt_cache -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation -- --exact --nocapture
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Three retained patches alter the actual production walk. Apply each separately
+Four retained patches alter the actual production walk or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
@@ -33,6 +33,11 @@ source:
 | `config-dependency-stack-scan.patch` | Membership work grows with active depth. This restores the original stack scan, with the same test-only observer counting each comparison. |
 | `config-dependency-finished-active.patch` | A valid shared dependency is falsely rejected by the plain-data oracle. |
 | `config-dependency-ignore-cycle.patch` | A cyclic closure enters the VM before admission. |
+| `config-cache-key.patch` | A changed base or imported value incorrectly reuses an older result. |
+
+The cache mutation removes the production key comparison. It uses the same
+known-value and cold/warm/fresh oracle as the positive inputs, replacing the
+one-off test that manually overwrote a retained cache value.
 
 These patches are never linked into the shipped library. The membership
 observer is compiled only for tests and the existing `test-support` feature.
