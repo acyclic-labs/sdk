@@ -16,6 +16,7 @@ const bytes = new TextEncoder();
 const tokenInput = (token: string) => bytes.encode(text.replace(/("key":\[)\d+/u, (_match, prefix) => prefix + token));
 const token = fc.oneof(
   fc.bigInt({ min: -(2n ** 80n), max: 2n ** 80n }).map(String),
+  fc.bigInt({ min: -(2n ** 80n), max: 2n ** 80n }).map(value => JSON.stringify(String(value))),
   fc.integer({ min: -400, max: 400 }).map(exponent => `1e${exponent}`),
   fc.string().map(value => JSON.stringify(value)),
 );
@@ -60,11 +61,15 @@ test("external JSON bytes preserve engine tokens or refuse before rounding", () 
       assert.throws(() => contracts.decodeClientJson(input),
         "external JSON input admission disagrees with engine token oracle");
     } else {
-      assert.deepEqual(contracts.decodeClientJson(input), expected,
+      let actual: unknown;
+      assert.doesNotThrow(() => { actual = contracts.decodeClientJson(input); },
+        "external JSON input was refused despite engine token admission");
+      assert.deepEqual(actual, expected,
         "external JSON input lost original token precision or value");
     }
   }), {
     seed: 1, numRuns: 1000, includeErrorInReport: true,
-    examples: [[tokenInput(String(2n ** 64n))], [tokenInput(String(-(2n ** 63n) - 1n))]],
+    examples: [[tokenInput(String(2n ** 64n))], [tokenInput(String(-(2n ** 63n) - 1n))],
+      [tokenInput(JSON.stringify(String(2n ** 64n)))]],
   });
 });

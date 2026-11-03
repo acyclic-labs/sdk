@@ -8,7 +8,8 @@ const args = process.argv.slice(2);
 const red = args.includes("--red");
 const retirement = args.includes("--retirement");
 const bytes = args.includes("--bytes");
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : ""}${red ? " --red" : ""}`;
+const quoted = args.includes("--quoted");
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects Map entries before evaluating their values";
@@ -22,9 +23,9 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes"].includes(arg))
-  || new Set(args).size !== args.length || retirement && bytes) {
-  fail("arguments", "expected one control (--retirement or --bytes) and optional --red once each");
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted"].includes(arg))
+  || new Set(args).size !== args.length || retirement && bytes || quoted && !(bytes && red)) {
+  fail("arguments", "expected one control (--retirement or --bytes), optional --red, and --quoted only with --bytes --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
@@ -34,11 +35,12 @@ try {
   if (bytes && red) {
     try { original = readFileSync(production, "utf8"); }
     catch (error) { fail("read production integer guard", String(error)); }
-    const entrance = "    reject_out_of_range_integer_tokens(bytes)?;";
+    const entrance = quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
     if (original.split(entrance).length !== 2) fail("integer guard mutation", "expected exactly one production guard entrance");
-    const planted = original.replace(entrance, "");
+    const planted = original.replace(entrance, quoted ? "        if false && quoted {" : "");
     mutation = {
       removed: entrance.trim(),
+      replacement: quoted ? "if false && quoted {" : "",
       original_sha256: createHash("sha256").update(original).digest("hex"),
       planted_sha256: createHash("sha256").update(planted).digest("hex"),
     };
@@ -60,7 +62,8 @@ try {
   process.stdout.write(output);
   const expected = red
     ? result.status !== 0 && result.signal === null && output.includes(bytes
-      ? "external JSON input admission disagrees with engine token oracle" : retirement
+      ? quoted ? "external JSON input was refused despite engine token admission"
+        : "external JSON input admission disagrees with engine token oracle" : retirement
         ? "JavaScript refusal retained original input" : "canonical admission revisited an appended Map entry")
       && /0 pass\b/u.test(output) && /1 fail\b/u.test(output)
     : result.status === 0 && /1 pass\b/u.test(output) && /0 fail\b/u.test(output);
@@ -89,7 +92,7 @@ try {
     result: red ? "expected semantic red" : "pass", mutation,
     artifacts: artifacts.map(path => ({ path, sha256: hash(path) })),
   }, null, 2)}\n`;
-  const receiptName = bytes ? `javascript-json-bytes-${red ? "red" : "fixed"}.json`
+  const receiptName = bytes ? `javascript-json-bytes-${quoted ? "quoted-" : ""}${red ? "red" : "fixed"}.json`
     : retirement ? `javascript-json-retirement-${red ? "red" : "fixed"}.json`
     : red ? "javascript-json-qualification.json" : "javascript-json-fixed-qualification.json";
   try { writeFileSync(new URL(`../${receiptName}`, import.meta.url), receipt); }
