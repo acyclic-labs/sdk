@@ -81,12 +81,12 @@ CASES = {
     ),
     "observation-both-omission": (
         "experiments/mod.rs",
-        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
+        "        Ok(serde_json::from_slice(bytes)?)",
         "        let value: serde_json::Value = serde_json::from_slice(bytes)?;\n"
         "        if value.get(\"score\").is_none() && value.get(\"cost_usd\").is_none() {\n"
         "            return Err(Error::Statistics(\"missing measurements\"));\n"
         "        }\n"
-        "        Self::admit(crate::executor::json::decode_object(bytes)?)",
+        "        Ok(serde_json::from_slice(bytes)?)",
         "observation-known", "independent admission invariant: both measurements optional",
     ),
     "scorer-distinct": (
