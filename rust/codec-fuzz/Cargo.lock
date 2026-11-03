@@ -97,6 +97,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-inference",
  "acyclic-machines",
+ "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-proto-build",

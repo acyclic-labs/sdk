@@ -153,6 +153,22 @@ snapshots must refuse a live wait without source progress or settlement.
 These are SDK writer captures, not hosted traffic or
 evidence of authentication, dispatch, restart or distributed progress.
 
+Capture cache facts, summary references and epoch snapshots through their original
+writers with `cargo run --locked --example capture -- --only-resources --extend-goldens`.
+The existing `harness_codecs` target checks their public decoders, round trips,
+unsupported versions, mandatory portable text, native provenance and snapshot
+source/range/preparation identity. Its genesis envelope comes from a real
+`MemoryStream` commit/read; fuzz mutations replace only the value. These internal
+writer captures do not qualify stream authentication, hosted transport, provider
+cache attribution or physical producer retirement.
+
+Run the retained production mutations with
+`python3 mutations/resource-codecs.py`. It first captures and checks the writer
+inputs, then removes each production admission guard while keeping the fuzz
+oracle unchanged. A compiler or tool failure does not count as mutant rejection.
+Corpus capture, executed coverage and mutation results must be recorded separately;
+the presence of a target does not establish complete format or state coverage.
+
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
