@@ -374,14 +374,6 @@ impl Executor {
         drop((tasks, driver, roots));
     }
 
-    pub(super) fn spawn<F>(self: &Arc<Self>, future: F) -> TaskHandle<F::Output>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        self.spawn_owned(None, future)
-    }
-
     /// Spawns a task whose accounting owner retires only after its output is
     /// delivered or dropped.
     pub(super) fn spawn_owned<F>(

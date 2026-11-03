@@ -285,8 +285,7 @@ impl Drop for Finished {
         let driver = {
             let mut state = lock(&self.0.state);
             state.phase = Phase::Finished;
-            let driver = state.take_start_waiter();
-            driver
+            state.take_start_waiter()
         };
         self.0.changed.notify_one();
         if let Some(driver) = driver {

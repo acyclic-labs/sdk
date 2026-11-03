@@ -457,14 +457,14 @@ struct Filter<const N: usize> {
 const fn element<T>(items: &[T], index: usize) -> &T {
     match items.split_at_checked(index) {
         Some((_, [item, ..])) => item,
-        _ => panic!("execution filter index exceeds its counted capacity"),
+        _ => unreachable!("execution filter index is within its counted constant capacity"),
     }
 }
 
 const fn element_mut<T>(items: &mut [T], index: usize) -> &mut T {
     match items.split_at_mut_checked(index) {
         Some((_, [item, ..])) => item,
-        _ => panic!("execution filter index exceeds its counted capacity"),
+        _ => unreachable!("execution filter index is within its counted constant capacity"),
     }
 }
 

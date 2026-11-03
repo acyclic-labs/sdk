@@ -215,7 +215,7 @@ fn script(seed: u64) -> io::Result<Vec<(u64, &'static str)>> {
     runtime.block_on(executor.run(async {
         let tasks: Vec<_> = (0..4)
             .map(|id| {
-                executor.spawn(async move {
+                executor.spawn_owned(None, async move {
                     yield_once().await;
                     id
                 })
@@ -360,7 +360,7 @@ fn draining_inside_a_root_keeps_the_external_driver() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let executor = Executor::new(71);
     runtime.block_on(executor.run(async {
-        let task = executor.spawn(async {
+        let task = executor.spawn_owned(None, async {
             yield_once().await;
             37
         });
@@ -396,7 +396,7 @@ fn dropped_task_handles_detach_and_retire() -> io::Result<()> {
     let executor = Executor::new(73);
     runtime.block_on(executor.run(async {
         let (finished, waiting) = oneshot::channel();
-        drop(executor.spawn(async move {
+        drop(executor.spawn_owned(None, async move {
             yield_once().await;
             finished.send(91).unwrap();
         }));
@@ -414,7 +414,7 @@ fn cancellation_of_the_root_keeps_owned_work_drivable() -> io::Result<()> {
     runtime.block_on(async {
         let (finished, mut waiting) = oneshot::channel();
         let mut root = Box::pin(executor.run(async {
-            drop(executor.spawn(async {
+            drop(executor.spawn_owned(None, async {
                 yield_once().await;
                 finished.send(57).unwrap();
             }));
