@@ -1189,7 +1189,10 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
     };
     assert_eq!(slo.evaluate(&snapshot)?.success, None);
     snapshot.ok = 1;
-    snapshot.latency_ns[4] = 1; // [8,15] ns crosses the requested threshold.
+    *snapshot
+        .latency_ns
+        .get_mut(4)
+        .ok_or("missing latency bucket")? = 1; // [8,15] ns crosses the requested threshold.
     let verdict = slo.evaluate(&snapshot)?;
     assert_eq!((verdict.success, verdict.latency), (Some(true), None));
     slo.latency
@@ -1198,7 +1201,10 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
         .maximum_ns = 15;
     assert_eq!(slo.evaluate(&snapshot)?.latency, Some(true));
     snapshot.err = 1;
-    snapshot.latency_ns[5] = 1;
+    *snapshot
+        .latency_ns
+        .get_mut(5)
+        .ok_or("missing latency bucket")? = 1;
     let verdict = slo.evaluate(&snapshot)?;
     assert_eq!(
         (verdict.success, verdict.latency),
