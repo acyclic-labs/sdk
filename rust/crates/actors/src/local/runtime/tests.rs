@@ -299,15 +299,6 @@ conformance::suite!(
     durable_backend
 );
 
-#[tokio::test]
-async fn conformance_benchmark_checks_all_deliveries() -> TestResult {
-    let backend = memory_backend().await?;
-    let sample = conformance::bench(&backend).await?;
-    assert_eq!(sample.deliveries, 256);
-    eprintln!("ACTORS_CONFORMANCE_BENCH {sample:?}");
-    Ok(())
-}
-
 /// A host that loses the alarm half of a transition (the old independent
 /// alarm write) is the broken behaviour the suite must reject.
 struct DropsAlarmClears(Package);

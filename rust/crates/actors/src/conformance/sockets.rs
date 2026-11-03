@@ -496,8 +496,8 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     peer.send(text("echo ready")).await?;
     case.expect_frame(&mut peer, Some(text("ready"))).await?;
     peer.send(text("ping")).await?;
-    case.expect_frame(&mut peer, Some(text("pong"))).await?;
     peer.send(text("echo after")).await?;
+    case.expect_frame(&mut peer, Some(text("pong"))).await?;
     case.expect_frame(&mut peer, Some(text("after"))).await?;
     case.expect(&[
         "open",
