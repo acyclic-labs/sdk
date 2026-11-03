@@ -5,6 +5,8 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
 
 struct Call {
