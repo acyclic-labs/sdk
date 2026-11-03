@@ -457,14 +457,16 @@ struct Filter<const N: usize> {
 const fn element<T>(items: &[T], index: usize) -> &T {
     match items.split_at_checked(index) {
         Some((_, [item, ..])) => item,
-        _ => panic!("execution filter index exceeds its counted capacity"),
+        // Counting and emission share the generator, so this index exists.
+        _ => unreachable!(),
     }
 }
 
 const fn element_mut<T>(items: &mut [T], index: usize) -> &mut T {
     match items.split_at_mut_checked(index) {
         Some((_, [item, ..])) => item,
-        _ => panic!("execution filter index exceeds its counted capacity"),
+        // Counting and emission share the generator, so this index exists.
+        _ => unreachable!(),
     }
 }
 

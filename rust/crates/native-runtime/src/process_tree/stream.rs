@@ -79,6 +79,43 @@ impl<H: CaptureHandler> Capture<H> {
         drop(self.tree);
         CaptureOutcome::new(self.handler, result)
     }
+
+    async fn reserve(
+        mut self,
+        sender: &mpsc::Sender<ProcessChunk>,
+    ) -> io::Result<(io::Result<mpsc::Permit<'_, ProcessChunk>>, Self)> {
+        let reserved = loop {
+            match sender.try_reserve() {
+                Ok(permit) => break Ok(permit),
+                Err(mpsc::error::TrySendError::Closed(_)) => break Err(receiver_lost()),
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+            }
+            let control = match self.pump.arm_control(self.wakes.as_slice()) {
+                Ok(control) => control,
+                Err(error) => break Err(error),
+            };
+            let reserved = match control {
+                Some(control) => {
+                    control_first(async { control.await.into_result() }, sender.reserve()).await
+                }
+                None => Ok(Some(sender.reserve().await)),
+            };
+            match reserved {
+                Ok(Some(Ok(permit))) => break Ok(permit),
+                Ok(Some(Err(_))) => break Err(receiver_lost()),
+                Err(error) => break Err(error),
+                Ok(None) => {
+                    let (checked, returned) =
+                        crate::run_blocking_io(move || self.check(), None)?.await?;
+                    self = returned;
+                    if let Err(error) = checked {
+                        break Err(error);
+                    }
+                }
+            }
+        };
+        Ok((reserved, self))
+    }
 }
 
 /// The output receiver and original cleanup owner of one process tree.
@@ -174,43 +211,16 @@ impl ProcessTree {
             Err(outcome) => return Ok(outcome),
         };
         let mut initial = Some((turn, bytes));
-        let result = 'capture: loop {
+        let result = loop {
             // Reserve before touching either pipe. The other wait contains
             // only control/deadline sources, so a full pipe cannot spin it.
             let permit = if let Some(sender) = sender.as_ref() {
-                Some(loop {
-                    match sender.try_reserve() {
-                        Ok(permit) => break permit,
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            break 'capture Err(receiver_lost());
-                        }
-                        Err(mpsc::error::TrySendError::Full(_)) => {}
-                    }
-                    let control = match capture.pump.arm_control(capture.wakes.as_slice()) {
-                        Ok(control) => control,
-                        Err(error) => break 'capture Err(error),
-                    };
-                    let reserved = match control {
-                        Some(control) => {
-                            control_first(async { control.await.into_result() }, sender.reserve())
-                                .await
-                        }
-                        None => Ok(Some(sender.reserve().await)),
-                    };
-                    match reserved {
-                        Ok(Some(Ok(permit))) => break permit,
-                        Ok(Some(Err(_))) => break 'capture Err(receiver_lost()),
-                        Err(error) => break 'capture Err(error),
-                        Ok(None) => {
-                            let (checked, returned) =
-                                crate::run_blocking_io(move || capture.check(), None)?.await?;
-                            capture = returned;
-                            if let Err(error) = checked {
-                                break 'capture Err(error);
-                            }
-                        }
-                    }
-                })
+                let (reserved, returned) = capture.reserve(sender).await?;
+                capture = returned;
+                match reserved {
+                    Ok(permit) => Some(permit),
+                    Err(error) => break Err(error),
+                }
             } else {
                 None
             };
