@@ -666,5 +666,29 @@
       "retained_bytes": 16725,
       "scope": "Same public NativeSettings loader, inactive versus active MCP declarations across four source roles retaining hooks; only new inactive-MCP source mutation run, original six controls retained at823. Source branch maps, configured-model file admission, physical aliases, IO/worker loss, process custody and other platforms remain open"
     }
-  ]
+  ],
+  "io_qualification": {
+    "source_commit": "6c1e65a3a13361239a1397f1a0189fc912c8edac",
+    "source_tree": "4cfa7de4f52b7a2d55d6a2c8f5a01b78dc2dd7ef",
+    "sources": {
+      "rust/crates/harness-core/src/native_settings.rs": "7f7e5873459a627ec6608ffb32b08aefecfd774298ef38e957ebf86dbb316535",
+      "rust/crates/harness-core/src/native_settings/model.rs": "d0af1fbee68b0ccc0008d403bfe48629494779667ca2f6b4e71be4f7bcbebcfe",
+      "rust/crates/harness-fuzz/fuzz_targets/native_settings.rs": "14301c9a798e7ee0117af9b9386aafbe9e7766f81514bddf11ad74e154dcb73b",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "a5f2e890269a3940e7adde7630104fb6565228a13382c9f8655d584c8c8015b4"
+    },
+    "result": "pass",
+    "negative_controls": [
+      "Actual NativeSettings selected-file open/read failures suppressed",
+      "Actual configured-model selected-file open/read failures suppressed"
+    ],
+    "oracle": "Original real directory open/read failure classification and cause retained through both public entry points; project trust still prevents reads",
+    "restoration": "Both source mutations hit the unchanged semantic assertion; exact original source restored before replay",
+    "replayed_files": 512,
+    "replayed_bytes": 19849,
+    "replay_seconds": 3,
+    "instrumented_edges": 5932,
+    "features": 13173,
+    "new_campaign_runs": 0,
+    "scope": "Linux x86_64 selected-file native failure propagation only; original campaign and other controls retain original source qualification. Canonicalization failures, worker loss, physical source branch maps and other platforms remain open. This oracle shares the production error mapper and does not independently prove that mapper."
+  }
 }
