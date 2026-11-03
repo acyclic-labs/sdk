@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
-import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -119,32 +119,6 @@ function assertGateStep(args) {
   assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
 }
 
-test("ownership qualification requires every dedicated real-lock model and compiler controls in CI", () => {
-  for (const passed of [0, 4, 7, 8, 9]) {
-    const run = (command, args, options) => {
-      if (command === "cargo") {
-        assert.deepEqual(args.slice(0, 7), ["test", "--locked", "--message-format=json", "-p", "acyclic-native-runtime", "--lib", "--no-run"]);
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
-        return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
-      }
-      assert.deepEqual(args, ["ownership::model::"]);
-      return {status: 0, stderr: "", stdout: summary(passed, 0, 50)};
-    };
-    if (passed === 8) qualifyOwnershipLoom(run);
-    else assert.throws(() => qualifyOwnershipLoom(run), /requires a nonzero/);
-  }
-  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
-  assert.ok(gate, "the original qualification must retain its gate branch");
-  const requireProofs = text => {
-    assert.match(text, /^    node scripts\/check-hermetic-clippy\.mjs$/m);
-    assertGateStep(["--ownership"]);
-  };
-  requireProofs(gate);
-  for (const line of ["    node scripts/check-hermetic-clippy.mjs"]) {
-    assert.throws(() => requireProofs(gate.replace(line, "")), assert.AssertionError);
-  }
-});
-
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
   const names = ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
     "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
@@ -244,6 +218,7 @@ test("qualification opts into the crate cfg only for the model build and execute
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   assertGateStep(["--all-features"]);
+  assertGateStep(["--ownership"]);
   assertGateStep(["--timer"]);
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];

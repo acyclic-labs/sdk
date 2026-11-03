@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select the retained wake-token, final-owner or host model with --wake, --owners or --host.
+Select wake-token, final-owner, host or shared ownership with --wake, --owners, --host or --ownership.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--wake", "--owners", "--host")):
-        raise RuntimeError("arguments: expected evidence directory and optional model; recovery: pass /tmp/native-signal-control [--wake|--owners|--host]")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--ownership")):
+        raise RuntimeError("arguments: expected evidence directory and optional model; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--ownership]")
     mode = sys.argv[2] if len(sys.argv) == 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -23,11 +23,13 @@ def main():
     wake = root / "rust/crates/native-runtime/src/wake.rs"
     owners = root / "rust/crates/native-runtime/src/health/owners.rs"
     host = root / "rust/crates/native-runtime/src/testing/host.rs"
+    ownership = root / "rust/crates/native-runtime/src/ownership/mod.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
         "--owners": ("owner_count_loom.rs", (owners, owners.parent / "owners/model.rs"), "--native-owner"),
         "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
+        "--ownership": ("../src/ownership/model.rs", (ownership,), "--ownership"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -36,12 +38,22 @@ def main():
     command = ["node", "scripts/qualify-mcp-loom.mjs", selection]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
-    def run(label, failure=None):
-        result = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    def run(label, failure=None, test=None):
+        selected = command
+        if test:
+            # Reuse the one qualification builder and its original environment;
+            # select the unchanged oracle that decides this specific defect.
+            selected = ["node", "--input-type=module", "-e", """
+import { spawnSync } from 'node:child_process';
+import { qualifyOwnershipLoom } from './scripts/qualify-mcp-loom.mjs';
+qualifyOwnershipLoom((command, args, options) => spawnSync(command,
+  command === 'cargo' ? args : [process.argv[1], '--exact', '--nocapture'], options));
+""", "ownership::model::" + test]
+        result = subprocess.run(selected, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = output / (label + ".log")
         log.write_bytes(result.stdout)
         text = result.stdout.decode(errors="replace")
-        report["steps"].append({"step": label, "argv": command, "exit": result.returncode, "log_sha256": digest(result.stdout)})
+        report["steps"].append({"step": label, "argv": selected, "exit": result.returncode, "log_sha256": digest(result.stdout)})
         print(f"{label}: exit={result.returncode}; log={log}", flush=True)
         # Keep the original compiler/model diagnostic in the caller's transcript
         # even when this disposable checkout's evidence directory is removed.
@@ -78,17 +90,40 @@ def main():
              b"let parked_driver = { state.waiting_start = false; None::<Waker> };",
              "deadlock; threads ="),
         ]
+    elif mode == "--ownership":
+        mutations = [
+            ("cleanup-order", ownership,
+             b"    _owner: Owner,\n    fences: crate::sync::Mutex<Vec<Fence>>,",
+             b"    fences: crate::sync::Mutex<Vec<Fence>>,\n    _owner: Owner,",
+             "cleanup deleted a reopened store", "cleanup_precedes_reopen_under_every_interleaving"),
+            ("fence-retention", ownership,
+             b"            .push(fence);", b"            .clear();\n        drop(fence);",
+             "fence released before shared cleanup", "concurrent_fence_registration_survives_last_store_release"),
+            ("failed-initialization", ownership,
+             b"if result.is_ok() {", b"if true {",
+             "failed initialization retained its reopen fence", "failed_initialization_releases_its_fence_after_physical_work"),
+            ("release-order", ownership,
+             b"struct SharedOwner<Owner, Fence> {\n", b"struct SharedOwner<Owner, Fence> {\n    release: ReleaseSignal,\n",
+             "release preceded physical owner or retained-fence cleanup", "release_waits_for_the_actual_owner_and_retained_fence"),
+        ]
     try:
-        for label, path, before, after, failure in mutations:
+        for mutation in mutations:
+            label, path, before, after, failure, *test = mutation
             original = originals[path]
             if original.count(before) != 1:
                 raise RuntimeError(f"{label}: expected exactly one production match; recovery: inspect {path} and update the exact mutation")
             mutant = original.replace(before, after)
+            if mode == "--ownership" and label == "release-order":
+                # Move the actual field; do not create a second signal.
+                tail = b"    // Last: signal after the owner's destructor and every retained fence.\n    release: ReleaseSignal,\n"
+                if mutant.count(tail) != 1:
+                    raise RuntimeError("release-order: field anchor changed; recovery: inspect SharedOwner before updating the retained mutation")
+                mutant = mutant.replace(tail, b"")
             (output / (label + "-mutant.rs")).write_bytes(mutant)
             report["steps"].append({"mutation": label, "path": str(path.relative_to(root)), "sha256": digest(mutant)})
             try:
                 path.write_bytes(mutant)
-                run(label, failure)
+                run(label, failure, test[0] if test else None)
             finally:
                 path.write_bytes(original)
         run("positive")
