@@ -13,11 +13,12 @@ pub fn frame(name: &str) -> Result<Vec<u8>, &'static str> {
     if matches.next().is_some() {
         return Err("golden frame name is duplicated");
     }
-    if hex.len() % 2 != 0 {
+    let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
         return Err("golden frame hex is truncated");
     }
-    hex.as_bytes()
-        .chunks_exact(2)
+    pairs
+        .iter()
         .map(|pair| {
             let pair = std::str::from_utf8(pair).map_err(|_| "golden frame hex is not ASCII")?;
             u8::from_str_radix(pair, 16).map_err(|_| "golden frame hex is invalid")
