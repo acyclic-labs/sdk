@@ -1,7 +1,7 @@
 //! Addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
-    ActorReference, CanonicalHost, IdentityError, ResourceIdentity, RouteError, RoutePattern,
-    WorkerRoute, select_route, validate_dns_label,
+    ActorReference, CanonicalHost, IdentityError, NamespaceId, ResourceIdentity, RouteError,
+    RoutePattern, WorkerRoute, select_route, validate_actor_id, validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
@@ -164,6 +164,18 @@ pub fn check(bytes: &[u8]) {
             .take(128)
             .map(|byte| b'a' + byte % 26)
             .collect();
+        for invalid in [b"".as_slice(), &[b'a'; 129], b"/", b"\0", b"\xff"] {
+            assert_eq!(
+                NamespaceId::new(invalid),
+                Err(IdentityError::InvalidNamespace),
+                "namespace name aliases must refuse"
+            );
+            assert_eq!(
+                validate_actor_id(invalid),
+                Err(IdentityError::InvalidActorId),
+                "actor name aliases must refuse"
+            );
+        }
         let value = ActorReference::new(bytes, b"fuzz", &name).unwrap();
         assert_eq!(
             ActorReference::decode(&value.encode()),

@@ -139,6 +139,12 @@ and an account plus generated legal actor name to the real actor writer. Their
 outputs must decode to the original values, so rejecting valid writer output
 cannot evade the checks gated on successful decoding. The actor name generator
 obeys the public 128-byte name grammar; it does not bound opaque resource fields.
+The same oracle sends empty, 129-byte, slash, NUL and non-UTF-8 names through the
+owning namespace constructor and actor-name validator, requiring their exact
+typed refusals. `python3 negative-control.py addressing-name-length` removes
+the shared name-length guard; `addressing-name-character` admits a slash through
+the actual shared character guard. Both must trip the unchanged namespace
+refusal assertion. Existing golden namespace/legacy/actor vectors are retained.
 `python3 negative-control.py addressing-resource-admission` and
 `addressing-actor-admission` make each production reader expect a different
 version from its unchanged writer. Each must trip its forward admission check.
