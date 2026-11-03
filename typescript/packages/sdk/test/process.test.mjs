@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {fork, spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {subscribe, unsubscribe} from 'node:diagnostics_channel';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {createConnection, createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -66,6 +66,50 @@ async function terminalControls(run, host) {
     assert.equal(result.failures.find(({phase}) => phase === 'terminal')?.error, terminalFailure);
     assert.equal(result.failures.find(({phase}) => phase === 'status')?.error,
       closeThrows ? statusFailure : undefined);
+  }
+}
+
+async function exitBeforeOutputControl(run, host) {
+  // The deployment consumer publishes the original nonzero terminal before
+  // releasing its accepted last append. Use its actual child/input ordering
+  // and a real read-only descriptor, rather than a synthetic sink refusal.
+  const directory = await mkdtemp(join(tmpdir(), 'process-last-append-'));
+  const path = join(directory, 'output');
+  await writeFile(path, 'original output', {flag: 'wx'});
+  const file = await open(path, 'r');
+  const input = new PassThrough();
+  const released = Promise.withResolvers();
+  let terminal, outputFailure, status, completed;
+  try {
+    completed = run(process.execPath, ['-e',
+      'process.stdout.write("held last append");process.stdin.once("data",()=>process.exit(23));'], {
+      host, input, signal: AbortSignal.timeout(2000),
+      async onOutput(_stream, bytes) {
+        input.end('exit');
+        await released.promise;
+        try { await file.writeFile(bytes); }
+        catch (error) { outputFailure = error; throw error; }
+      },
+      onTerminal(observed) { terminal = observed; released.resolve(); },
+      onClose({code}) { status = code; },
+    });
+    const result = await completed;
+    assert.equal(terminal.exitCode, 23,
+      'the original nonzero exit must release its accepted last append before any deadline');
+    assert.equal(status, 23);
+    assert.equal(outputFailure?.code, 'EBADF');
+    assert.ok(result.failures.some(({error}) => error === outputFailure));
+    assert.equal(result.failures.some(({phase}) => phase === 'abort'), false);
+    assert.ok(result.completion.process_tree_retired);
+    assert.equal(await readFile(path, 'utf8'), 'original output');
+  } finally {
+    released.resolve();
+    input.destroy();
+    try { await completed; }
+    finally {
+      await file.close();
+      await rm(directory, {recursive: true, force: true});
+    }
   }
 }
 
@@ -286,6 +330,7 @@ if (mode === 'signal-owner') {
   assert.ok(unfinishedInput.destroyed, 'original exit must close an input producer that has no terminal');
 
   await terminalControls(commandProcess, host);
+  await exitBeforeOutputControl(commandProcess, host);
   // These are omissions in the actual shipped source. The identical public
   // topology/oracle must reject both ways terminal failures can be lost.
   const production = await processSource();

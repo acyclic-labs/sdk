@@ -33,7 +33,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     ? `\\\\.\\pipe\\acyclic-process-${invocation}` : join(directory, 'control');
   const receipt = join(directory, 'completion');
   const server = createServer();
-  let control, stopped = false, child, result, closed, terminalCompletion;
+  let control, stopped = false, child, result, closed, terminalCompletion, completionRead;
   let inputClosed = Promise.resolve(), outputClosed = Promise.resolve();
   let terminalReported = false, rootClosed = false;
   const failures = new Map(); // One original cause per fixed phase/stream.
@@ -87,7 +87,34 @@ export async function commandProcess(program, args, {host, signal, input, env, c
       child.once('error', error => fail('spawn', error));
       child.once('close', (code, signal) => resolve({code, signal}));
     });
-    child.once('exit', () => { rootClosed = true; endInput(); });
+    const readCompletion = async hostStatus => {
+      try {
+        const completion = decodeCompletion(await readFile(receipt, 'utf8'), invocation);
+        if (hostStatus.signal !== null || hostStatus.code === null
+          || (hostStatus.code >>> 0) !== completion.host_exit_code) {
+          throw Object.assign(new Error('step=process-host-close; recovery=retain the original host exit and completion receipt'),
+            {code: 'PROCESS_HOST_STATUS_MISMATCH', hostStatus, completion});
+        }
+        result = {code: completion.root_status?.code ?? null,
+          signal: signalNames.get(completion.root_status?.signal) ?? null, completion};
+        if (!completion.process_tree_retired || completion.failure) fail('retirement', Object.assign(
+          new Error('step=process-retirement; recovery=inspect the original completion before reusing its custody'),
+          {code: 'PROCESS_HOST_FAILED', cause: completion.failure, completion}));
+      } catch (error) {
+        retain('retirement', error);
+        result = {code: null, signal: null, hostStatus};
+      }
+      if (failures.size || result.code !== 0) terminal(result.code, result.signal,
+        failures.size ? 'failed' : result.signal ? `signal ${result.signal}` : `process exit ${result.code}`);
+    };
+    child.once('exit', (code, signal) => {
+      rootClosed = true;
+      endInput();
+      // The native owner has already retired the tree and published its receipt.
+      // Nonzero terminal observers may release an accepted output write, so
+      // observe that original exit before joining the write or stdio close.
+      completionRead = readCompletion({code, signal});
+    });
     const output = async (stream, source) => {
       try {
         for await (const bytes of source) {
@@ -108,23 +135,8 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     signal?.addEventListener('abort', aborted, {once: true});
     if (signal?.aborted) aborted();
     const hostStatus = await closed;
+    await (completionRead ?? readCompletion(hostStatus));
     await Promise.all([inputClosed, outputClosed]);
-    try {
-      const completion = decodeCompletion(await readFile(receipt, 'utf8'), invocation);
-      if (hostStatus.signal !== null || hostStatus.code === null
-        || (hostStatus.code >>> 0) !== completion.host_exit_code) {
-        throw Object.assign(new Error('step=process-host-close; recovery=retain the original host exit and completion receipt'),
-          {code: 'PROCESS_HOST_STATUS_MISMATCH', hostStatus, completion});
-      }
-      result = {code: completion.root_status?.code ?? null,
-        signal: signalNames.get(completion.root_status?.signal) ?? null, completion};
-      if (!completion.process_tree_retired || completion.failure) fail('retirement', Object.assign(
-        new Error('step=process-retirement; recovery=inspect the original completion before reusing its custody'),
-        {code: 'PROCESS_HOST_FAILED', cause: completion.failure, completion}));
-    } catch (error) {
-      retain('retirement', error);
-      result = {code: null, signal: null, hostStatus};
-    }
     try { onClose?.(result); } catch (error) { retain('status', error); }
     terminal(result.code, result.signal, failures.size ? 'failed'
       : result.code === 0 ? 'completed' : result.signal ? `signal ${result.signal}` : `process exit ${result.code}`);

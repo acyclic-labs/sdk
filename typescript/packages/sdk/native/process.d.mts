@@ -28,6 +28,7 @@ export interface ProcessOptions {
   /** Accepted writes must settle; cancellation remains armed through their join. */
   onOutput?: (stream: 'stdout' | 'stderr', bytes: Buffer, active: boolean) => void | Promise<void>;
   onClose?: (result: Omit<ProcessResult, 'failures'>) => void;
+  /** Nonzero exits and failures can precede accepted output completion. Returned work is joined. */
   onTerminal?: (result: {exitCode: number | null; signal: NodeJS.Signals | null; cause: string}) => void | Promise<void>;
 }
 export function commandProcess(program: string, args: string[], options: ProcessOptions): Promise<ProcessResult>;
