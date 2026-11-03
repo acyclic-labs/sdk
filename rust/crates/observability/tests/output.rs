@@ -82,7 +82,11 @@ async fn native_delivery_case(owned: bool, terminal: &str) -> io::Result<()> {
         "cancel" => receiver.close(),
         "reader-loss" => {
             drop(reader);
-            let error = delivery.as_mut().await.unwrap_err();
+            let error = delivery
+                .as_mut()
+                .await
+                .err()
+                .ok_or_else(|| io::Error::other("reader loss unexpectedly accepted"))?;
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert!(matches!(receiver.fail(error), OutputFailure::Write(_)));
             assert!(
@@ -91,11 +95,7 @@ async fn native_delivery_case(owned: bool, terminal: &str) -> io::Result<()> {
             drop(delivery);
             drop(record);
             assert_eq!(output.stats().retained, 0);
-            let terminal = output.terminal_stats();
-            assert_eq!(terminal.published, Some(1));
-            assert_eq!(terminal.writer_accepted, Some(0));
-            assert_eq!(terminal.incomplete, Some(1));
-            assert_eq!(terminal.pending, 0);
+            assert_incomplete_output(&output);
             return Ok(());
         }
         _ => unreachable!(),
@@ -176,6 +176,10 @@ async fn terminal_failure_cases() -> io::Result<()> {
     assert!(matches!(cause, Some(OutputFailure::Formatting)));
     assert_eq!(output.terminal_stats().published, Some(0));
 
+    producer_loss_cases().await
+}
+
+async fn producer_loss_cases() -> io::Result<()> {
     // One original record remains queued and another is held by the caller.
     // Neither consumer loss nor record drop can manufacture write completion.
     let (output, mut receiver) = TextOutput::channel(vec![
@@ -406,7 +410,8 @@ async fn retire_delivery(
                     .ok_or_else(|| io::Error::other("original owner absent"))?,
             )
             .await
-            .unwrap_err();
+            .err()
+            .ok_or_else(|| io::Error::other("partial attempt unexpectedly accepted"))?;
         assert_eq!(
             error.kind(),
             io::ErrorKind::InvalidInput,
@@ -428,4 +433,12 @@ async fn retire_delivery(
         writer.shutdown().await?;
     }
     Ok(())
+}
+
+fn assert_incomplete_output(output: &TextOutput) {
+    let terminal = output.terminal_stats();
+    assert_eq!(terminal.published, Some(1));
+    assert_eq!(terminal.writer_accepted, Some(0));
+    assert_eq!(terminal.incomplete, Some(1));
+    assert_eq!(terminal.pending, 0);
 }
