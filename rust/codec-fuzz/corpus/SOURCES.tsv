@@ -1852,6 +1852,7 @@ actor_codecs/socket-ledger-epoch-fenced	6	cfdbbdd4664518fcc682cfbd0b1892f8c45428
 actor_codecs/socket-ledger-epoch-recovered	6	55e1930c9dc378186940654f4d6d19e77d22dabeda0e88f07d807c182c0bbf3b	local::Sockets::open/commit_open/commit_close -> LocalStream
 actor_codecs/socket-ledger-opened	108	ec6dcefe10c43a934c4f6825b02b297ede811ae83a0e06089da094e94059bc24	local::Sockets::open/commit_open/commit_close -> LocalStream
 actor_codecs/socket-ledger-closed	8	0a2a11f692fb0ddf6b2aa222e6d3280d9a9be6ed3d8be355fd3f9b96519a4685	local::Sockets::open/commit_open/commit_close -> LocalStream
+actor_codecs/socket-ledger-exhausted-zero-frontier	13	738e8afa7051218cf4b21bfa93a78257dbcaf9af6c09449546ded637be0a4b4d	local::sockets::epoch_record
 actor_codecs/socket-ledger-exhausted	24	9499245d7b75a10f680f47b5732ce17ef12cdb8bf6208e3f96f7bf60ce51c696	local::sockets::epoch_record
 actor_codecs/socket-ledger-last-incarnation	24	250dda37b343a1877f7bb0d8ff68265759babd88fc1719f0b0a4b61788d57862	local::sockets::epoch_record
 actor_codecs/socket-ledger-invalid-frontier	15	78f37df85e9855de658d6369266423f408e2f47beccf688c7bbc4925b290662a	local::sockets::epoch_record
