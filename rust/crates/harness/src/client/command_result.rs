@@ -104,7 +104,8 @@ mod tests {
                 ),
                 (
                     Error::InteractionRejected(InteractionRejection::Cancelled),
-                    [("cancelled", 2); 3],
+                    // An interaction refusal is settled; uncertain cleanup takes precedence.
+                    [("cancelled", 2), ("indeterminate", 4), ("failed", 1)],
                 ),
                 (Error::Cancelled, [("cancelled", 2); 3]),
                 (
