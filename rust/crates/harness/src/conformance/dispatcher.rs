@@ -61,25 +61,19 @@ pub(super) async fn until(
 }
 
 async fn checkpoint(provider: &Observed, cut: u64) -> Result {
-    use futures::TryStreamExt as _;
     // Locate the original dispatcher publication, rather than reconstructing
     // its private address or manufacturing its durable state.
     let path = provider
         .take_commits()
-        .into_iter()
-        .flat_map(|request| request.mutations)
-        .find_map(|mutation| match mutation {
-            CommitMutation::Append { path, records }
-                if records.iter().any(|record| {
-                    State::decode(record.value.as_ref())
-                        .is_ok_and(|state| state.cursor("activation").is_some())
-                }) =>
-            {
-                Some(path)
-            }
-            _ => None,
-        })
+        .iter()
+        .find_map(cursor_publication)
+        .map(|(path, _)| path.clone())
         .ok_or("dispatcher state was not published")?;
+    saved_cursor(provider, path, cut).await
+}
+
+async fn saved_cursor(provider: &Observed, path: StreamPath, cut: u64) -> Result {
+    use futures::TryStreamExt as _;
     let mut changes = acyclic_stream::records_only(
         provider
             .follow(acyclic_stream::FollowRequest::new(path, 0))
@@ -148,8 +142,9 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             .await?;
         host.send(&agent, &fixtures::sender(), &fixtures::request("once")?)
             .await?;
-        // First commit creates dispatcher state; second advances its cursor.
-        provider.arm(1, fault);
+        // Actor deliveries and dispatcher writes interleave. Select the
+        // original cursor publication by its state, never its global ordinal.
+        provider.arm_matching(cursor_advance, fault);
         let error = until(&host, std::future::pending())
             .await
             .expect_err("cursor crash did not interrupt discovery");
@@ -161,12 +156,24 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             return Err(format!("cursor crash lost its original publication: {error}").into());
         };
         let failed = publication.request().clone();
+        let (path, cut) = cursor_publication(&failed)
+            .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);
         drop(provider);
         let reopened = Arc::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, reopened.clone())?;
-        until(&host, output(&host, &agent, 0, b"once")).await?;
-        if matches!(fault, Fault::Before) && reopened.take_commits().first() != Some(&failed) {
+        until(&host, async {
+            output(&host, &agent, 0, b"once").await?;
+            saved_cursor(&reopened, path.clone(), cut).await
+        })
+        .await?;
+        if matches!(fault, Fault::Before)
+            && reopened
+                .take_commits()
+                .iter()
+                .find(|request| cursor_advance(request))
+                != Some(&failed)
+        {
             return Err("uncommitted cursor did not retry its exact request/key".into());
         }
         if vectors::values(&*reopened, agent.conversation()?).await? != [b"once".to_vec()] {
@@ -174,4 +181,23 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         }
     }
     Ok(())
+}
+
+fn cursor_advance(request: &acyclic_stream::CommitRequest) -> bool {
+    cursor_publication(request).is_some_and(|(_, cursor)| cursor > 0)
+}
+
+fn cursor_publication(request: &acyclic_stream::CommitRequest) -> Option<(&StreamPath, u64)> {
+    request
+        .mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            CommitMutation::Append { path, records } => records.iter().find_map(|record| {
+                State::decode(record.value.as_ref())
+                    .ok()?
+                    .cursor("activation")
+                    .map(|cursor| (path, cursor))
+            }),
+            _ => None,
+        })
 }

@@ -13,6 +13,11 @@ pub(crate) enum Fault {
     Refuse,
 }
 
+enum FaultAt {
+    Index(usize),
+    Matching(fn(&CommitRequest) -> bool),
+}
+
 pub(crate) struct Observed {
     pub inner: Arc<dyn StreamProvider>,
     pub requests: RequestLedger,
@@ -22,7 +27,7 @@ pub(crate) struct Observed {
     calls: AtomicUsize,
     commit_count: AtomicUsize,
     capture: Option<Mutex<Capture>>,
-    fault: Mutex<Option<(usize, Fault)>>,
+    fault: Mutex<Option<(FaultAt, Fault)>>,
     crash: Mutex<Option<(usize, Fault)>>,
 }
 
@@ -66,7 +71,12 @@ impl Observed {
 
     pub fn arm(&self, offset: usize, fault: Fault) {
         let next = self.commit_count() + offset;
-        *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some((next, fault));
+        *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some((FaultAt::Index(next), fault));
+    }
+
+    pub fn arm_matching(&self, matches: fn(&CommitRequest) -> bool, fault: Fault) {
+        *self.fault.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((FaultAt::Matching(matches), fault));
     }
 
     pub fn commit_count(&self) -> usize {
@@ -148,7 +158,10 @@ impl Observed {
         };
         let fault = {
             let mut fault = self.fault.lock().unwrap_or_else(|e| e.into_inner());
-            if fault.as_ref().is_some_and(|(at, _)| *at == index) {
+            if fault.as_ref().is_some_and(|(at, _)| match at {
+                FaultAt::Index(at) => *at == index,
+                FaultAt::Matching(matches) => matches(request),
+            }) {
                 fault.take().map(|(_, fault)| fault)
             } else {
                 None
