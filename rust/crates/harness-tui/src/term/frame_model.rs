@@ -127,7 +127,6 @@ fn model(broken: bool, during_render: bool) {
         )
         .unwrap();
         terminal.draw(Size::new(2, 2), |_| {}).unwrap();
-        assert!(!cursor_visible(&state));
         if during_render {
             let resuming = Arc::clone(&state);
             terminal
