@@ -26,7 +26,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             // Preserve the replay boundary's retirement and admission checks
             // even though its authenticated record no longer needs another read.
             if RECHECK || !cfg!(all(test, loom)) {
-                self.authority_require_live(authority, work).await?;
+                crate::heap_future::in_frame(self.authority_require_live(authority, work)).await?;
             }
             work.check()?;
             if snapshot.head.sequence.get() != record.sequence {

@@ -15,6 +15,18 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+/// Polls a nested phase in its own frame without allocating or changing its wakeups.
+/// The caller's pinned future retains all of the phase's state and custody.
+pub(crate) async fn in_frame<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|context| poll_frame(future.as_mut(), context)).await
+}
+
+#[inline(never)]
+fn poll_frame<T>(future: Pin<&mut dyn Future<Output = T>>, context: &mut Context<'_>) -> Poll<T> {
+    future.poll(context)
+}
+
 // The future and everything it captures die before its allocation charge.
 pub(crate) struct OwnedFuture<F: ?Sized, A> {
     future: Pin<Box<F>>,

@@ -250,6 +250,18 @@ fn shared_registry_descriptor_serializes_threads_before_the_kernel_lock() {
         .map_err(|(error, _)| error)
         .unwrap();
         let registry = registry::shared(&mut &work).unwrap();
+        let before = work.receipt();
+        let cached = registry::shared(&mut &work).unwrap();
+        assert!(
+            crate::sync::native::Arc::ptr_eq(&registry, &cached),
+            "each mount reopened the registry directory and lock"
+        );
+        assert_eq!(
+            work.receipt(),
+            before,
+            "sharing re-traversed the registry path"
+        );
+        drop(cached);
         let active = loom::sync::Arc::new(loom::sync::Mutex::new(0_u8));
         let peer = {
             let registry = registry.clone();

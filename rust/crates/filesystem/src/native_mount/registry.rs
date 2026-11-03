@@ -179,38 +179,35 @@ impl Drop for RegistryHold<'_> {
     }
 }
 
+#[cfg(not(loom))]
+static SHARED: crate::sync::native::Mutex<Option<crate::sync::native::Arc<Registry>>> =
+    crate::sync::native::Mutex::new(None);
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref SHARED: crate::sync::native::Mutex<Option<crate::sync::native::Arc<Registry>>> =
+        crate::sync::native::Mutex::new(None);
+}
+
 /// This process's registry, opened by the first caller and charged to it.
-/// A failed open is not kept: the next caller opens it again. Models give
-/// each caller its own descriptor, as other processes have, and share one
-/// registry between their threads explicitly.
+/// A failed open is not kept: the next caller opens it again. Models retain
+/// this same per-process cache for each execution; separate-process fixtures
+/// open their own registry explicitly.
 pub(super) fn shared<W: crate::native_host::NativeHostWork>(
     work: &mut W,
 ) -> Result<crate::sync::native::Arc<Registry>, NativeMountError>
 where
     NativeMountError: From<W::Error>,
 {
-    #[cfg(loom)]
-    {
-        let (directory, file) = open_with_directory(work)?;
-        return Ok(crate::sync::native::Arc::new(Registry::new(
-            directory, file,
-        )));
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(registry) = shared.as_ref() {
+        return Ok(crate::sync::native::Arc::clone(registry));
     }
-    #[cfg(not(loom))]
-    {
-        static SHARED: std::sync::Mutex<Option<std::sync::Arc<Registry>>> =
-            std::sync::Mutex::new(None);
-        let mut shared = SHARED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(registry) = shared.as_ref() {
-            return Ok(std::sync::Arc::clone(registry));
-        }
-        let (directory, file) = open_with_directory(work)?;
-        let registry = std::sync::Arc::new(Registry::new(directory, file));
-        *shared = Some(std::sync::Arc::clone(&registry));
-        Ok(registry)
-    }
+    let (directory, file) = open_with_directory(work)?;
+    let registry = crate::sync::native::Arc::new(Registry::new(directory, file));
+    *shared = Some(crate::sync::native::Arc::clone(&registry));
+    Ok(registry)
 }
 
 fn open_in_directory<W: crate::native_host::NativeHostWork>(
