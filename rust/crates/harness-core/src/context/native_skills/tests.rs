@@ -67,7 +67,9 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
     for skill in &skills {
         let digest = hex::encode(skill.source.generation.as_resource().key());
         let path = sources.directory.join(format!("{digest}.json"));
-        let record = retained::read_record(&std::fs::read(&path).map_err(storage)?, &digest)?;
+        let record = retained::decode_records(&std::fs::read(&path).map_err(storage)?, &digest)?
+            .remove(&digest)
+            .ok_or_else(|| Error::Conflict("retained skill source is absent".into()))?;
         assert_eq!(records.retain(&sources.journal, record)?, skill.source);
         std::fs::remove_file(&path).map_err(storage)?;
         paths.push(path);
@@ -142,5 +144,27 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         handoffs,
         "cached sibling reads must not submit more I/O work"
     );
+    #[cfg(feature = "test-support")]
+    {
+        let bytes = std::fs::read(&paths[0]).map_err(storage)?;
+        codec_fuzz::check(&bytes);
+        sources.retain_materialized(&skills[0].source.generation, &skills[0].source.generation)?;
+        assert_eq!(
+            sources.materialized(&skills[0].source.generation)?,
+            Some(skills[0].source.generation.clone())
+        );
+        let receipt = std::fs::read(sources.directory.join(format!(
+            "{}.body.json",
+            hex::encode(skills[0].source.generation.as_resource().key())
+        )))
+        .map_err(storage)?;
+        codec_fuzz::check(&receipt);
+        if let Some(directory) = std::env::var_os("ACYCLIC_RETAINED_SKILL_CORPUS") {
+            let directory = PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).map_err(storage)?;
+            std::fs::write(directory.join("native-batch.json"), bytes).map_err(storage)?;
+            std::fs::write(directory.join("materialized.json"), receipt).map_err(storage)?;
+        }
+    }
     Ok(())
 }
