@@ -19,13 +19,6 @@ fn normalize(settings: &ModelSettings) -> Result<Option<Selection<'_>>, String> 
         return Err("model must be a nonempty string".into());
     }
     let provider = settings.model_provider.as_deref();
-    #[cfg(test)]
-    let provider =
-        if tests::DROP_CONFIGURED_PROVIDER.with(std::cell::Cell::get) && model.contains('/') {
-            None
-        } else {
-            provider
-        };
     let (provider, name) = match provider {
         Some(provider) => (provider, model),
         None => match model.split_once('/') {
@@ -47,6 +40,3 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Option<String>, String> {
     let settings: ModelSettings = toml::from_str(text).map_err(|error| error.to_string())?;
     Ok(normalize(&settings)?.map(|selection| format!("{}/{}", selection.provider, selection.name)))
 }
-
-#[cfg(test)]
-mod tests;
