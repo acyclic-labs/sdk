@@ -3,7 +3,7 @@ use super::resource;
 use crate::access::{Action, PathTrie};
 use crate::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, VolumeId, WorkBudget};
 use acyclic_stream::session::{ResourceFollowRequest, ResourceProvider, ResourceSubscription};
-use acyclic_stream::{FollowUpdate, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{FollowUpdate, StreamError, StreamProvider};
 use futures::{StreamExt, future};
 use std::sync::{Arc, Mutex};
 
@@ -132,13 +132,7 @@ where
                 let _ = deadline_tx.send(trie.valid_until());
                 *opened.trie.lock().map_err(|_| StreamError::AccessDenied)? = Some(trie.clone());
                 opened.validate()?;
-                let scope = fs.authority_actor_scope();
-                let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
-                let path = StreamPath::new(
-                    crate::publication_changes::changes_path_text(scope, volume_id, &mut text)
-                        .ok_or(StreamError::AccessDenied)?
-                        .to_owned(),
-                )?;
+                let path = super::changes_path(&fs, volume_id)?;
                 let filter = request
                     .authorization
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;

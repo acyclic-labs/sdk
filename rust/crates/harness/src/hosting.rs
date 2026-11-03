@@ -444,6 +444,34 @@ where
                     settled,
                 })
             }
+            AgentCommand::ClientFiles {
+                agent,
+                session,
+                paths,
+                after,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFiles {
+                    snapshot: self
+                        .bound
+                        .client_files(agent, *session, paths, after.as_ref(), MAX_READ_BYTES)
+                        .await?,
+                })
+            }
+            AgentCommand::PublishClientFiles {
+                agent,
+                session,
+                operation,
+                changes,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFilesPublished {
+                    generation: self
+                        .bound
+                        .publish_client_files(agent, *session, *operation, changes)
+                        .await?,
+                })
+            }
             AgentCommand::Read {
                 agent,
                 target,
@@ -1168,6 +1196,7 @@ where
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
+                | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
@@ -1178,6 +1207,7 @@ where
                 | AgentCommand::Spawn { .. }
                 | AgentCommand::Fork { .. }
                 | AgentCommand::Decide { .. }
+                | AgentCommand::PublishClientFiles { .. }
                 | AgentCommand::Stage { .. }
                 | AgentCommand::Staged { .. } => false,
             };

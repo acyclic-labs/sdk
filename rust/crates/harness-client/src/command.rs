@@ -130,6 +130,28 @@ pub enum AgentCommand {
     },
     /// Discover the root admitted by this session's credential.
     Root {},
+    /// Snapshot explicit paths in a named client session; wait on its original
+    /// filesystem publication producer when `after` is still current.
+    ClientFiles {
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        session: acyclic_harness_core::OperationId,
+        paths: Vec<String>,
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+    },
+    /// Atomic conditional publication to that same session volume.
+    PublishClientFiles {
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        session: acyclic_harness_core::OperationId,
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        operation: acyclic_harness_core::OperationId,
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
+    },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
         /// Exact recipient; selection changes cannot retarget a prepared command.
@@ -416,6 +438,44 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::ClientFiles { paths, .. } => {
+                if paths.is_empty() {
+                    return Err(CommandError::Invalid);
+                }
+                let mut unique = std::collections::BTreeSet::new();
+                for path in paths {
+                    if !unique.insert(path) {
+                        return Err(CommandError::Invalid);
+                    }
+                    acyclic_harness_core::conversation::validate_content_path(path, &mut None)
+                        .map_err(|_| CommandError::Invalid)?;
+                }
+                Ok(())
+            }
+            Self::PublishClientFiles { changes, .. } => {
+                if changes.is_empty() {
+                    return Err(CommandError::Invalid);
+                }
+                let mut unique = std::collections::BTreeSet::new();
+                for change in changes {
+                    if !unique.insert(&change.path) {
+                        return Err(CommandError::Invalid);
+                    }
+                    acyclic_harness_core::conversation::validate_content_path(
+                        &change.path,
+                        &mut None,
+                    )
+                    .map_err(|_| CommandError::Invalid)?;
+                    if change
+                        .expected
+                        .as_ref()
+                        .is_some_and(|file| file.path() != change.path)
+                    {
+                        return Err(CommandError::Invalid);
+                    }
+                }
+                Ok(())
+            }
             Self::Spawn { role, .. } | Self::Fork { role, .. } if role.is_empty() => {
                 Err(CommandError::Invalid)
             }
@@ -483,6 +543,8 @@ impl AgentCommand {
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
+            | Self::ClientFiles { agent, .. }
+            | Self::PublishClientFiles { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
@@ -495,6 +557,8 @@ impl AgentCommand {
         match self {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
+            Self::ClientFiles { .. } => "client_files",
+            Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",
             Self::Compact { .. } => "compact",
@@ -757,7 +821,9 @@ mod tests {
             AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
         // Escapes expand text up to sixfold, and multibyte characters must
         // never split: each part is cut on the encoded, escaped length.
-        let text = "line \"quoted\" \u{1} é 🦀\n".repeat(400_000);
+        let text =
+            "line \"quoted\" \u{1} ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€šÃ‚Â¦ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬\n"
+                .repeat(400_000);
         let command = AgentCommand::Prompt {
             agent: agent.clone(),
             id: IntentId::try_from("prompt-1")?,
