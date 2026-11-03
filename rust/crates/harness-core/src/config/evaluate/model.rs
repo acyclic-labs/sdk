@@ -5,17 +5,36 @@ use std::cell::Cell;
 
 thread_local! {
     static VM_ENTRIES: Cell<usize> = const { Cell::new(0) };
+    static DEPENDENCY_CHECKS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(super) fn entered() {
     VM_ENTRIES.set(VM_ENTRIES.get().wrapping_add(1));
 }
 
-struct Files(Vec<u8>);
+pub(super) fn dependency_checked() {
+    DEPENDENCY_CHECKS.set(DEPENDENCY_CHECKS.get().wrapping_add(1));
+}
+
+struct Files {
+    input: Vec<u8>,
+    cycle: bool,
+}
 
 impl Tree for Files {
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
-        Box::pin(async move { Ok((path == "sys/input.json").then(|| self.0.clone())) })
+        Box::pin(async move {
+            Ok(match path {
+                "sys/input.json" => Some(self.input.clone()),
+                "sys/a.ts" => Some(b"import b from './b.ts'; import input from './input.json'; export default [b, input];".to_vec()),
+                "sys/b.ts" => Some(if self.cycle {
+                    b"import a from './a.ts'; export default a;".to_vec()
+                } else {
+                    b"import input from './input.json'; export default input;".to_vec()
+                }),
+                _ => None,
+            })
+        })
     }
 }
 
@@ -42,8 +61,9 @@ fn agrees(
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let cache = Cache::default();
-    let mode = bytes.first().copied().unwrap_or_default() % 12;
+    let mode = bytes.first().copied().unwrap_or_default() % 13;
     let pending = mode == 11 && bytes.get(1).copied().unwrap_or_default() & 1 == 0;
+    let cycle = mode == 12 && bytes.get(1).copied().unwrap_or_default() & 1 != 0;
     let literal = json!({
         "text": String::from_utf8_lossy(bytes),
         "bytes": bytes,
@@ -55,7 +75,10 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
             let base_revision = if mode == 1 || mode == 2 { revision } else { 0 };
             let base = json!({"base": base_revision, "nested": {"base": base_revision}});
             let imported = json!({"imported": revision, "value": literal});
-            let tree = Files(serde_json::to_vec(&imported).map_err(|error| error.to_string())?);
+            let tree = Files {
+                input: serde_json::to_vec(&imported).map_err(|error| error.to_string())?,
+                cycle,
+            };
             let encoded = serde_json::to_string(&literal).map_err(|error| error.to_string())?;
             let (source, value, form, functions) = match mode {
                 0 => (
@@ -158,6 +181,12 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     Form::Value,
                     false,
                 ),
+                12 => (
+                    "import a from 'sys/a.ts'; import b from 'sys/b.ts'; export default [a, b];".to_owned(),
+                    json!([[imported, imported], imported]),
+                    Form::Value,
+                    false,
+                ),
                 _ => (
                     if pending {
                         "await new Promise(() => {}); export default null;".to_owned()
@@ -169,9 +198,11 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     false,
                 ),
             };
-            let expected = (mode < 4 || mode == 7 || (mode == 11 && !pending))
-                .then(|| (value.clone(), form))
-                .filter(|_| !(functions && surface == Surface::Data));
+            let expected =
+                (mode < 4 || mode == 7 || (mode == 11 && !pending) || (mode == 12 && !cycle))
+                    .then(|| (value.clone(), form))
+                    .filter(|_| !(functions && surface == Surface::Data));
+            let dependency_checks = DEPENDENCY_CHECKS.get();
             let cold = observed(
                 evaluate_cached("agent.ts", source.as_bytes(), &tree, &base, surface, &cache).await,
             );
@@ -212,8 +243,16 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 )
                 .await,
             );
-            if VM_ENTRIES.get() != entries.wrapping_add(1) {
-                return Err("fresh evaluation did not enter QuickJS exactly once".into());
+            if VM_ENTRIES.get() != entries.wrapping_add(usize::from(!cycle)) {
+                return Err("fresh evaluation entered QuickJS before closure admission or skipped execution".into());
+            }
+            // The graph has five edges, or reaches its back edge after three.
+            // Cold, warm and fresh each admit the original dependency closure.
+            if mode == 12
+                && DEPENDENCY_CHECKS.get().wrapping_sub(dependency_checks)
+                    != 3 * if cycle { 3 } else { 5 }
+            {
+                return Err("dependency membership work grew with active depth".into());
             }
             if cold != warm || warm != fresh {
                 return Err(format!(
@@ -255,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
-        for mode in 0..12 {
+        for mode in 0..13 {
             let variants = match mode {
                 4 => 8,
                 10 => 16,
@@ -268,7 +307,10 @@ mod tests {
         // Corrupt the actual retained cache entry, then use the same oracle
         // as the positive schedules; no alternate evaluator is involved.
         let cache = Cache::default();
-        let tree = Files(Vec::new());
+        let tree = Files {
+            input: Vec::new(),
+            cycle: false,
+        };
         let base = Value::Null;
         let source = b"export default {admitted: true};";
         let original = evaluate_cached("agent.ts", source, &tree, &base, Surface::Data, &cache)

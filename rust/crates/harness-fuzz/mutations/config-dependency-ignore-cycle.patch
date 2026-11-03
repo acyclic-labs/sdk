@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -183,7 +183,7 @@
+         #[cfg(any(test, feature = "test-support"))]
+         model::dependency_checked();
+         if let Some((_, active)) = modules.get(&next) {
+-            if *active {
++            if *active && next.is_empty() {
+                 return Ok(Err(format!("import cycle through {next}")));
+             }
+             continue;
