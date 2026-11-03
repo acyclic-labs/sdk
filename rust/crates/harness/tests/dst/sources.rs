@@ -75,36 +75,29 @@ fn mount_callbacks_cannot_read_host_clocks_directly() {
         .iter()
         .filter_map(|(path, text)| {
             let path = path.strip_prefix("rust/crates/")?;
-            let parts: Vec<_> = path.split('/').collect();
-            let name = parts.last()?;
+            let mut parts = path.rsplit('/');
+            let name = parts.next()?;
             (path.starts_with("filesystem/src/native_mount/")
-                && !parts
-                    .iter()
-                    .any(|part| *part == "tests" || part.ends_with("_tests"))
-                && *name != "tests.rs"
+                && !parts.any(|part| part == "tests" || part.ends_with("_tests"))
+                && name != "tests.rs"
                 && !name.ends_with("_tests.rs")
                 && !name.starts_with("tests_"))
-            .then(|| (path.to_owned(), (*text).to_owned()))
+            .then_some((path, *text))
         })
         .collect();
-    let scan = |planted: Option<(&str, &str)>| {
-        let added = planted.filter(|(target, _)| files.iter().all(|(path, _)| path != target));
-        mount_clock_violations(
-            files
-                .iter()
-                .map(|(path, text)| match planted {
-                    Some((target, plant)) if path == target => (path.as_str(), plant),
-                    _ => (path.as_str(), text.as_str()),
-                })
-                .chain(added),
-        )
-    };
-    let found = scan(None);
+    let found = mount_clock_violations(files.iter().copied());
     assert!(found.is_empty(), "mount host clock reads: {found:#?}");
+    // The policy is per file. Once the complete baseline passes, each mutation
+    // needs only its changed file and the unchanged required clock seam.
+    let clock = *files
+        .iter()
+        .find(|(path, _)| *path == MOUNT_CLOCK_ALLOWED[0].0)
+        .expect("captured mount clock seam");
+    let scan = |planted: (&str, &str)| mount_clock_violations([clock, planted]);
     // Every escape form must fail, in an existing callback and in a new helper.
     let callback = "filesystem/src/native_mount/fuse/attributes.rs";
     let helper = "filesystem/src/native_mount/fuse/clock_helper.rs";
-    let original = &files.iter().find(|(path, _)| path == callback).unwrap().1;
+    let original = files.iter().find(|(path, _)| *path == callback).unwrap().1;
     for plant in [
         "let started = std::time::Instant::now();",
         "let started = tokio::time::Instant::now();",
@@ -117,16 +110,16 @@ fn mount_callbacks_cannot_read_host_clocks_directly() {
         "unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) };",
     ] {
         let text = format!("{original}\n{plant}");
-        assert_eq!(scan(Some((callback, &text))).len(), 1, "{plant}");
-        assert_eq!(scan(Some((helper, plant))).len(), 1, "new helper: {plant}");
+        assert_eq!(scan((callback, &text)).len(), 1, "{plant}");
+        assert_eq!(scan((helper, plant)).len(), 1, "new helper: {plant}");
     }
     // The seeded seam method stays legal; an extra lifecycle read is not.
     let seam = format!("{original}\nlet now = clock.now();");
-    assert!(scan(Some((callback, &seam))).is_empty());
+    assert!(scan((callback, &seam)).is_empty());
     let lifecycle = "filesystem/src/native_mount/fuse/lifecycle.rs";
-    let text = &files.iter().find(|(path, _)| path == lifecycle).unwrap().1;
+    let text = files.iter().find(|(path, _)| *path == lifecycle).unwrap().1;
     assert_eq!(
-        scan(Some((lifecycle, &format!("{text}\nInstant::now();")))),
+        scan((lifecycle, &format!("{text}\nInstant::now();"))),
         [format!("{lifecycle}: unseeded host clock x1")]
     );
 }
