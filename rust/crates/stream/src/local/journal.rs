@@ -79,7 +79,7 @@ impl Journal {
         // Recovery reads by position, so it holds one descriptor throughout.
         let lease = journal.file.lease()?;
         let length = lease.file().metadata()?.len();
-        let mut header = vec![0_u8; HEADER_BYTES];
+        let mut header = [0; HEADER_BYTES];
         let found = if length < header_bytes {
             None
         } else {
@@ -94,10 +94,11 @@ impl Journal {
             // than a valid header never acknowledged one: its creation or
             // restart was torn, and it starts again.
             None => {
-                lease.file().seek(SeekFrom::Start(0))?;
-                let mut partial = Vec::new();
-                lease.file().read_to_end(&mut partial)?;
-                if !encode_header(limits, epoch)?.starts_with(&partial) {
+                let partial = header
+                    .get_mut(..usize::try_from(length).map_err(|_| LocalStreamError::Corrupt)?)
+                    .ok_or(LocalStreamError::Corrupt)?;
+                lease.file().read_exact(partial)?;
+                if !encode_header(limits, epoch)?.starts_with(partial) {
                     return Err(LocalStreamError::Corrupt);
                 }
                 if !validate_recovery(recovered)? {
