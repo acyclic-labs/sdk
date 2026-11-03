@@ -105,12 +105,11 @@ async function replay(bytes, unique, partition, closedFirst, path) {
 // Exercise the original source and callback failure entrances. The stream is
 // an in-memory adapter; the source cause is an actual filesystem refusal, not
 // a claim about native pipe retirement or transcript write failure.
-async function failure(bytes, mode, sourceError) {
+async function failure(bytes, mode, error) {
   const source = new PassThrough();
   let close, refuse;
   const closed = new Promise((resolve, reject) => { close = resolve; refuse = reject; });
   const consumer = ["key", "listener", "predicate"].includes(mode);
-  const error = consumer ? new Error("generated callback refusal") : sourceError;
   const dispatch = () => { throw error; };
   const spool = new Spool(source, closed, { key: mode === "key" ? dispatch : key });
   const events = [];
@@ -127,7 +126,7 @@ async function failure(bytes, mode, sourceError) {
   const cause = await terminal;
   assert.equal(cause.kind, consumer ? "consumer" : "source");
   assert.equal(cause.detail, error, "failure retains the original object");
-  assert.equal(cause.cause, error, "native error cause remains inspectable");
+  assert.equal(cause.cause, error instanceof Error ? error : undefined, "native Error cause remains inspectable");
   assert.equal(await missing, cause);
   if (predicate) assert.equal(await predicate, cause);
   // Later output and physical completion cannot replace the first terminal.
@@ -273,8 +272,9 @@ export async function fuzz(data) {
     try { readFileSync(join(directory, "absent")); }
     catch (error) { sourceError = error; }
     assert.equal(sourceError?.code, "ENOENT");
-    for (const mode of ["key", "listener", "predicate", "stream", "closed"])
-      await failure(bytes, mode, sourceError);
+    await failure(bytes, "stream", sourceError);
+    for (const error of [sourceError, undefined, null, false, 0, "", Symbol("callback refusal"), Object.create(null)])
+      for (const mode of ["key", "listener", "predicate", "closed"]) await failure(bytes, mode, error);
     await transcriptFailure(directory);
     await withdrawal(directory);
     await persisted(bytes, join(directory, "mutated.jsonl"));
