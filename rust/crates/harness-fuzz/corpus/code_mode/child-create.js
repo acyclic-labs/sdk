@@ -1,0 +1,1 @@
+await tools.spawn({name:"worker", role:"worker", task:"Reply with exactly LIVE_1be30f6eba714a43b5405c552d501b43. Do nothing else."})
