@@ -501,28 +501,28 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
         )?;
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let io = match adapter {
-            0 => None,
-            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
-            _ => Some(PreparationIo::from_native_work(&native)?),
-        };
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
-        let case = InternalPublicationCase {
-            host: &host,
-            volume: &volume,
-            write: &write,
-            read: &read,
-            io: io.as_ref(),
-        };
         for class in [
             InternalContentClass::Interaction,
             InternalContentClass::Execution,
             InternalContentClass::ToolResult,
         ] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = match adapter {
+                0 => None,
+                1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+                _ => Some(PreparationIo::from_native_work(&native)?),
+            };
+            let case = InternalPublicationCase {
+                host: &host,
+                volume: &volume,
+                write: &write,
+                read: &read,
+                io: io.as_ref(),
+            };
             let single_record = case.verify(&workspace, class).await.map_err(|error| {
                 Error::Storage(format!(
                     "adapter {adapter}, family {}: {error:?}",
