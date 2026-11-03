@@ -9,10 +9,13 @@ await ensureModelWasm();
 
 type Snapshot = { input: unknown; expected: unknown };
 const snapshots = fc.memo<Snapshot>(depth => {
+  const numbers = fc.oneof(fc.integer().map(value => value / 2),
+    fc.constantFrom(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, -0))
+    .map(input => ({ input, expected: Number.isInteger(input) ? BigInt(input) : input }));
   const scalar = fc.oneof(fc.constant(null), fc.boolean(), fc.string(),
     fc.bigInt({ min: -(2n ** 63n), max: 2n ** 64n - 1n }))
     .map(value => ({ input: value, expected: value }));
-  const leaf = fc.oneof(scalar, fc.uint8Array({ maxLength: 32 }).map(input => ({
+  const leaf = fc.oneof(scalar, numbers, fc.uint8Array({ maxLength: 32 }).map(input => ({
     input, expected: Array.from(input, byte => BigInt(byte)),
   })));
   if (depth <= 1) return leaf;
