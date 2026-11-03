@@ -132,7 +132,7 @@ def main():
          'foreign snapshot preparation identity admitted'),
         ('snapshot-completion', 'conversation/epochs/snapshot.rs',
          'completion: pending.completion.as_ref().map(SummaryOutcome::completion),',
-         'completion: None,', 'writer snapshot lost epoch or producer custody'),
+         'completion: None,', 'completed snapshot lost producer custody'),
         ('snapshot-failed-completion', 'conversation/epochs/snapshot.rs',
          'Self::Failed => Completion::Failed,', 'Self::Failed => Completion::Ready,',
          'completion reducer lost producer custody'),
