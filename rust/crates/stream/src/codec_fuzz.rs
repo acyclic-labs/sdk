@@ -71,6 +71,21 @@ pub fn session(bytes: &[u8]) -> bool {
     true
 }
 
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
+pub(crate) fn command(bytes: &[u8]) -> bool {
+    match crate::journal::decode_command(bytes) {
+        Ok(command) => command.encode_to_vec() == bytes,
+        Err(_) => true,
+    }
+}
+
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
     #[cfg(feature = "local")]
@@ -85,10 +100,8 @@ pub fn check(bytes: &[u8]) -> bool {
             target_arch = "wasm32"
         )
     ))]
-    if let Ok(command) = crate::journal::decode_command(bytes) {
-        if command.encode_to_vec() != bytes {
-            return false;
-        }
+    if !command(bytes) {
+        return false;
     }
     if let Ok(value) = persistence::decode_observation(bytes, usize::MAX) {
         if persistence::encode_observation(&value, usize::MAX).as_deref() != Ok(bytes) {
@@ -312,6 +325,13 @@ async fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamE
                 "shared persistence oracle rejected {name} at {length} bytes"
             );
         }
+    }
+    for (name, command) in commands()? {
+        let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
+        assert!(
+            check(&frame),
+            "shared persistence oracle rejected repeated {name} frame"
+        );
     }
     Ok(())
 }
