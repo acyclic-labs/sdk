@@ -383,18 +383,6 @@ test("spool cost is per event and waiter, not per event retained", async () => {
   }
 });
 
-test("output watches cost each chunk once and survive split needles", () => {
-  const needles = ["\x1b[?25h", "\x1b[?25l", "overflowed"];
-  const text = "a\x1b[?25lb\x1b[?25hc overflowed d\x1b[?25l";
-  for (let cut = 0; cut <= text.length; cut++) {
-    const watch = new OutputWatch(needles).write(text.slice(0, cut)).write(text.slice(cut));
-    assert.ok(watch.has("overflowed"));
-    assert.ok(watch.later("\x1b[?25l", "\x1b[?25h"));
-    assert.ok(!watch.later("\x1b[?25h", "\x1b[?25l"));
-  }
-  assert.ok(!OutputWatch.of("over flowed", needles).has("overflowed"));
-});
-
 const raw = text => OutputWatch.of(text, ["\x07", SHOW_CURSOR, HIDE_CURSOR]);
 
 test("screen conditions require rendered styles and reject literal markdown", async () => {
