@@ -127,18 +127,13 @@ pub fn assert_stream_invariants(input: &[u8]) {
         let Some((&kind, input)) = input.split_first() else {
             return;
         };
-        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) {
-            let adapter = [
-                Adapter::Anthropic,
-                Adapter::Responses,
-                Adapter::Chat,
-                Adapter::Gemini,
-            ][usize::from(kind) % 4];
-            let before = crate::validate_input(adapter, &body);
-            let encoded = serde_json::to_vec(&body).unwrap();
-            let replay = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(before, crate::validate_input(adapter, &replay));
-        }
+        let adapter = [
+            Adapter::Anthropic,
+            Adapter::Responses,
+            Adapter::Chat,
+            Adapter::Gemini,
+        ][usize::from(kind) % 4];
+        input_round_trip(adapter, input);
         return;
     }
     if kind == b'L' {
@@ -320,6 +315,18 @@ pub fn assert_stream_invariants(input: &[u8]) {
             assert_eq!(restored, event);
         }
     }
+}
+
+pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
+    let Ok(body) = crate::json(input) else {
+        return false;
+    };
+    let before = crate::validate_input(adapter, &body);
+    let encoded = serde_json::to_vec(&body).unwrap();
+    let replay = crate::json(&encoded).unwrap();
+    assert_eq!(body, replay, "input JSON round trip changed literal values");
+    assert_eq!(before, crate::validate_input(adapter, &replay));
+    true
 }
 
 fn catalog_round_trip(input: &[u8]) -> bool {

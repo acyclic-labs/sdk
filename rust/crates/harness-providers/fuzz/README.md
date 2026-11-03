@@ -109,3 +109,25 @@ that emits a replacement for a scalar cut by the byte bound. Apply it from the
 repository root and run that SAME unchanged recorded-refusal control. It must
 fail with `HTTP refusal lost original diagnostic` on the source-derived byte
 mutations. The planted defect changes production decoding, not its oracle.
+
+The `provider_stream` input-validation selector and `http_failure` escape
+generator also use the shared literal-map JSON decoder for admission and replay.
+Their existing controls require both reserved key forms to reach the comparisons;
+equal rejection or a skipped generator cannot qualify accepted input. The HTTP
+variants are explicit ignored-field mutations of the original Gemini refusal,
+and the input-validation values are generated component inputs, not recordings.
+The decoder-only marker example was removed because these controls cover its
+case through the actual fuzz helpers.
+
+`mutations/literal-input-default-decoder.patch` restores default Value admission
+in both helpers. Apply it from the repository root and run:
+
+```sh
+cargo test --locked -p acyclic-harness-providers --features fuzzing --lib -- tests::argument_projection_tests::raw_marker_names_and_non_object_fixtures_are_preserved fuzzing::http_failure::recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking --exact --nocapture
+```
+
+Both unchanged controls must fail at runtime with `accepted literal-key input
+skipped validation` and `accepted literal-key refusal skipped spelling comparison`.
+Restore both source files before running the positive control. This establishes
+generator admission conformance, not complete parser coverage or a sanitizer
+campaign.
