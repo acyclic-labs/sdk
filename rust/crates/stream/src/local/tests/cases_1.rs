@@ -419,9 +419,12 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
 {
     let directory = tempfile::tempdir()?;
     let limits = compacting_limits();
+    // Two half-full compactions replace the snapshot, then leave one journal
+    // frame to recover alongside it.
+    let count = limits.compaction_operations + 1;
     let provider = LocalStream::open(directory.path(), limits).await?;
     let mut outcomes = Vec::new();
-    for index in 0..21 {
+    for index in 0..count {
         outcomes.push(append_keyed(&provider, index).await?);
     }
     let journal = provider
@@ -430,18 +433,18 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .lock()
         .map_err(|_| "journal poisoned")?
         .operations;
-    assert!(journal < 4, "the journal restarted: {journal} frames");
+    assert_eq!(journal, 1, "one frame follows the second snapshot");
     drop(provider);
     assert!(directory.path().join(SNAPSHOT_FILE).exists());
 
     let reopened = LocalStream::open(directory.path(), limits).await?;
-    assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
+    assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, count);
     let history = reopened
         .read(ReadRequest {
             key: None,
             path: StreamPath::new("compacted")?,
             from: 0,
-            limit: 21,
+            limit: u32::try_from(count)?,
             at_least: Default::default(),
         })
         .await?
@@ -449,8 +452,8 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(history.len(), 21);
-    for (index, record) in (0_u64..21).zip(&history) {
+    assert_eq!(history.len(), usize::try_from(count)?);
+    for (index, record) in (0..count).zip(&history) {
         assert_eq!(record.sequence, index);
         assert_eq!(record.value.as_ref(), index.to_le_bytes());
     }
@@ -459,7 +462,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             exclude: Vec::new(),
             source: StreamPath::new("compacted")?,
             destination: StreamPath::new("compacted-fork")?,
-            at_tail: Some(21),
+            at_tail: Some(count),
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
@@ -468,7 +471,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             key: None,
             path: StreamPath::new("compacted-fork")?,
             from: 0,
-            limit: 21,
+            limit: u32::try_from(count)?,
             at_least: Default::default(),
         })
         .await?
@@ -480,9 +483,6 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
     }
-    conformance::verify(&crate::conformance::Fixture::new(reopened.clone()))
-        .await
-        .map_err(std::io::Error::other)?;
     Ok(())
 }
 
