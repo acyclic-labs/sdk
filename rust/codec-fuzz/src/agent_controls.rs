@@ -39,6 +39,13 @@ pub fn check(bytes: &[u8]) {
             );
         }
     }
+    let captured = include_bytes!("../corpus/agent_controls/unknown");
+    let separator = captured.iter().position(|byte| *byte == 0).unwrap();
+    let command = PreparedCommand::decode(&captured[..separator]).unwrap();
+    assert!(
+        unknown(&captured[separator + 1..], &command),
+        "captured writer recovery request refused"
+    );
     if let Ok(command) = PreparedCommand::from_bytes(bytes.to_vec()) {
         assert_eq!(command.command(), bytes);
         let decoded = command.decoded().unwrap();
@@ -81,11 +88,7 @@ pub fn check(bytes: &[u8]) {
         };
         assert!(decode_agent_reply(reply, &foreign).is_err());
     }
-    if let Ok(Err(AgentControlFailure::Unknown(request))) = decode_agent_reply(reply, &command) {
-        let result = Err(AgentError::Unknown(request));
-        assert_eq!(encode_agent_reply(&result, &command).unwrap(), reply);
-        assert!(decode_agent_reply(&with_unknown_field(reply), &command).is_err());
-    }
+    unknown(reply, &command);
     // Typed JSON reaches the actual host writer as well as the wire reader.
     if let Ok(decoded) = serde_json::from_slice::<AgentReply>(reply)
         && let Ok(wire) = encode_agent_reply(&Ok(decoded.clone()), &command)
@@ -106,6 +109,16 @@ fn with_unknown_field(bytes: &[u8]) -> Vec<u8> {
     let mut changed = bytes.to_vec();
     changed.extend_from_slice(&[0xf8, 0x07, 0x01]); // protobuf field 127
     changed
+}
+
+fn unknown(bytes: &[u8], command: &AgentCommand) -> bool {
+    let Ok(Err(AgentControlFailure::Unknown(request))) = decode_agent_reply(bytes, command) else {
+        return false;
+    };
+    let result = Err(AgentError::Unknown(request));
+    assert_eq!(encode_agent_reply(&result, command).unwrap(), bytes);
+    assert!(decode_agent_reply(&with_unknown_field(bytes), command).is_err());
+    true
 }
 
 fn actor_response(call: &AgentCall, bytes: &[u8]) -> bool {

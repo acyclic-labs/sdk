@@ -70,6 +70,13 @@ at `captured writer invocation refused` or `captured writer assembly refused`,
 respectively; reverse each patch before requiring the original corpus to pass.
 These two fixed captures add bounded validation work per fuzz input and no
 shipping work, new parser, transport or fixture producer.
+The retained `unknown` capture must enter the same recovery-request property on
+every input. It requires the owned Unknown variant, exact re-encoding and
+unknown-field refusal. The kept `agent-recovery-reject-all.patch` changes only
+the production Unknown success return to refusal; the same target must fail at
+`captured writer recovery request refused`, then pass after reversal. The
+existing exact-request unit control remains distinct: it compares the decoded
+domain request with the original domain value before encoding.
 Malformed base64 is derived from admitted content while retaining its original
 encoded length and range. Writer inputs include content encoding to JSON field
 names, so wire mutation must preserve those fields. Quiet Usage and Events
