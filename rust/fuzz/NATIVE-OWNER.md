@@ -18,6 +18,8 @@ deterministic fuzz iterations, requires the ordinary corpus test to pass and
 exports native source coverage with its actual corpus. Compiler failures do not
 satisfy the negative control. The original source, oracle and complete lockfile
 semantics are checked and the original bytes restored on every exit.
+Capture and fuzzing write only into the evidence directory's `corpus` directory;
+the retained source corpus must remain unchanged.
 
 The existing nightly-2026-07-01 toolchain, llvm-tools component and cargo-fuzz
 must be installed. Coverage export currently selects Linux x86_64 tools.
@@ -26,6 +28,8 @@ same production defect, without repeating the campaign.
 Append `--coverage-only` to measure the retained corpus without repeating a
 qualified campaign or mutation. Coverage builds stay below `CARGO_TARGET_DIR`
 (or the workspace's `target` directory when that variable is absent).
+Relative target directories are resolved from the workspace root, including
+when the controller is invoked from another directory.
 
 The oracle checks arbitrary wire bytes, current-owner writer round trips,
 corruption, partial records, caller bounds and the original copy refusal.

@@ -40,6 +40,8 @@ def main():
     artifacts.mkdir()
     codec = root / "rust/crates/native-runtime/src" / ("owner_record/mod.rs" if owner else "claim/record.rs")
     oracle = root / "rust/crates/native-runtime/tests" / subdirectory / "oracle.rs"
+    retained = oracle.parent / "corpus"
+    retained_hashes = {path.name: digest(path.read_bytes()) for path in retained.iterdir()}
     original = codec.read_bytes()
     oracle_hash = digest(oracle.read_bytes())
     lock = root / "Cargo.lock"
@@ -73,17 +75,17 @@ def main():
     ordinary = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", target_name, "--", "--nocapture"]
     try:
         if routine or coverage_only:
-            corpus = root / "rust/crates/native-runtime/tests" / subdirectory / "corpus"
+            corpus = retained
             command = ordinary
         else:
             if owner:
-                corpus = root / "rust/crates/native-runtime/tests/owner_codec/corpus"
                 run("capture", ["cargo", "run", "--locked", "-p", "acyclic-native-runtime", "--example", "capture_owner_record", "--", str(corpus)])
             else:
                 capture = output / ("capture-native-claim.exe" if os.name == "nt" else "capture-native-claim")
                 run("compile-capture", ["rustc", "--edition=2024", "rust/fuzz/examples/capture_native_claim.rs", "-o", str(capture)])
                 run("capture", [str(capture), str(corpus)])
             command = ["cargo", toolchain, "fuzz", "run", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", *features, target_name, str(corpus), "--", "-runs=" + ("1000" if owner else "10000"), "-seed=1", "-max_len=8192", "-artifact_prefix=" + str(artifacts) + os.sep]
+        report["corpus_path"] = str(corpus)
         report["corpus"] = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p.read_bytes()), "producer": "owner_record::encode_with" if owner else "claim::record::Record::encode"} for p in sorted(corpus.iterdir())}
         if owner and not routine:
             for path in sorted(corpus.iterdir()):
@@ -107,7 +109,8 @@ def main():
                 result = run("routine-positive", ordinary)
                 if "test result: ok. 1 passed;" not in result:
                     raise RuntimeError("routine-count: expected one ordinary corpus test; recovery: inspect routine-positive.log and restore test discovery")
-            target = Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "native-codec-coverage" / target_name
+            target = (root / Path(os.environ.get("CARGO_TARGET_DIR", "target")) / "native-codec-coverage" / target_name).resolve()
+            report["coverage_target"] = str(target)
             if owner:
                 report["coverage_corpus"] = {}
                 for path in sorted(corpus.iterdir()):
@@ -133,12 +136,13 @@ def main():
         lock.write_bytes(original_lock)
         report["source_restored"] = codec.read_bytes() == original
         report["oracle_unchanged"] = digest(oracle.read_bytes()) == oracle_hash
+        report["retained_corpus_unchanged"] = retained_hashes == {path.name: digest(path.read_bytes()) for path in retained.iterdir()}
         report["lock_semantics_unchanged"] = lock_contents(rewritten_lock) == lock_contents(original_lock)
         report["lock_reordered"] = rewritten_lock != original_lock
         report["lock_restored"] = lock.read_bytes() == original_lock
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    if not all(report[key] for key in ("source_restored", "oracle_unchanged", "lock_semantics_unchanged", "lock_restored")):
-        raise RuntimeError("restore: source/oracle/lock mismatch; recovery: inspect report.json and restore the original checkout before further validation")
+    if not all(report[key] for key in ("source_restored", "oracle_unchanged", "retained_corpus_unchanged", "lock_semantics_unchanged", "lock_restored")):
+        raise RuntimeError("restore: source/oracle/corpus/lock mismatch; recovery: inspect report.json and restore the original checkout before further validation")
     print("NATIVE_CODEC_REPORT " + json.dumps(report, sort_keys=True), flush=True)
 
 
