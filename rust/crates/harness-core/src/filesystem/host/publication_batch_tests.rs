@@ -693,18 +693,22 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 ceiling: Some(delete),
                 io: io.as_ref(),
             };
-            for change in [
-                add("delete-cannot-create"),
-                ContentChange::UpdateExpected {
+            for changes in [
+                &[add("delete-cannot-create")] as &[_],
+                &[ContentChange::UpdateExpected {
                     source: first,
                     bytes: b"delete-cannot-write",
-                },
+                }],
+                &[
+                    ContentChange::DeleteExpected { source: first },
+                    add("delete-cannot-authorize-a-later-create"),
+                ],
             ] {
                 let denied = async {
                     host.put_changes(
                         &volume,
                         &write,
-                        &[change],
+                        changes,
                         &IdempotencyKey::new("conditional-delete-denied")?,
                         64,
                         delete_access,
