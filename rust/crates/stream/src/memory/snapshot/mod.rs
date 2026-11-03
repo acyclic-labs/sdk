@@ -42,7 +42,7 @@ fn invalid() -> StreamError {
     StreamError::InvalidArgument
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(feature = "test-support", all(test, feature = "local")))]
 pub(crate) fn check_codec(bytes: &[u8]) -> bool {
     if let Ok(state) = decode(bytes) {
         let canonical = encode(&state);
