@@ -14,10 +14,13 @@ corpus = root / "corpus/retained_skill_records"
 recovery = "python3 rust/crates/harness-fuzz/qualify_retained_skill_records.py"
 capture_and_campaign = sys.argv[1:] == ["--capture-and-campaign"]
 refusal_contract = sys.argv[1:] == ["--refusal-contract"]
+sibling_validation = sys.argv[1:] == ["--sibling-validation"]
 if capture_and_campaign:
     recovery += " --capture-and-campaign"
 elif refusal_contract:
     recovery += " --refusal-contract"
+elif sibling_validation:
+    recovery += " --sibling-validation"
 test = "context::native_skills::tests::retained_records_share_one_sync_on_the_native_io_service"
 native = ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib",
           "--features", "filesystem-local,native-execution,test-support", test, "--", "--exact"]
@@ -36,12 +39,12 @@ def run(step, command, cwd, env=None):
 
 
 def main():
-    if sys.argv[1:] and not (capture_and_campaign or refusal_contract):
-        fail("qualification arguments", "expected no arguments, --capture-and-campaign or --refusal-contract")
+    if sys.argv[1:] and not (capture_and_campaign or refusal_contract or sibling_validation):
+        fail("qualification arguments", "expected no arguments, --capture-and-campaign, --refusal-contract or --sibling-validation")
     mutations = [
         (core / "context/native_skills/retained.rs",
          b"    for (key, record) in &batch {\n        validate_record(record, key)?;\n    }\n",
-         b"", "changed skill sibling admitted"),
+         b"", "changed sibling must reject the whole physical bundle"),
         (core / "resources/typed.rs",
          b'                if resource.kind() != ResourceKind::$kind {\n'
          b'                    return Err(serde::de::Error::custom("typed resource kind mismatch"));\n'
@@ -57,7 +60,8 @@ def main():
     mutations.append(refusal_mutation)
     # A retained source-mutation result need not be compiled a second time when
     # only capture/campaign admission changes.
-    for source, needle, replacement, assertion in (mutations[-1:] if refusal_contract else [] if capture_and_campaign else mutations):
+    selected = mutations[:1] if sibling_validation else mutations[-1:] if refusal_contract else [] if capture_and_campaign else mutations
+    for source, needle, replacement, assertion in selected:
         original = source.read_bytes()
         if b"\r\n" in original:
             needle = needle.replace(b"\n", b"\r\n")
@@ -72,13 +76,13 @@ def main():
             source.write_bytes(original)
 
     env = {**os.environ}
-    if not refusal_contract:
+    if not (refusal_contract or sibling_validation):
         env["ACYCLIC_RETAINED_SKILL_CORPUS"] = str(corpus)
     result = run("native writer and admission", native, repository, env)
     if result.returncode != 0 or "test result: ok. 1 passed; 0 failed; 0 ignored;" not in result.stdout:
         fail("native writer and admission", f"exit {result.returncode}; exact native control required")
-    if refusal_contract:
-        print("PASS: actual refusal metadata mutation rejected; restored native contract passed.")
+    if refusal_contract or sibling_validation:
+        print("PASS: actual selected source mutation rejected; restored native contract passed.")
         return
     captures = []
     for name in ["native-batch.json", "materialized.json"]:
