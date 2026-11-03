@@ -58,7 +58,12 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let original = data
         == include_bytes!(
             "../../crates/native-runtime/src/process_tree/external_host/corpus/linux-arguments.json"
-        );
+        )
+        || cfg!(unix)
+            && data
+                == include_bytes!(
+                    "../../crates/native-runtime/src/process_tree/external_host/corpus/linux-endpoints.json"
+                );
     if let Ok(records) = serde_json::from_slice::<Vec<serde_json::Value>>(data) {
         for record in records {
             if let (Some(input), Some(code)) =
@@ -71,7 +76,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 {
                     let admitted = check(input);
                     if original {
-                        assert_eq!(admitted, code == 17);
+                        assert_eq!(
+                            admitted,
+                            code == 17,
+                            "original executable admission changed"
+                        );
                     }
                 }
             }

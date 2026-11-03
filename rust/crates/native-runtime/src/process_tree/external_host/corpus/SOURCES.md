@@ -34,3 +34,23 @@ cargo run --locked -p acyclic-sdk-fuzz --no-default-features --features process-
 
 Passing a file replays that corpus without an open-ended fuzzing campaign.
 The same production duplicate-input-guard removal must fail this replay too.
+
+`linux-endpoints.json` retains 27 additional original argv/output/status records
+from the same shipped executable and integration target on Linux x86_64,
+2026-11-03. Capture source: `5d1144a96f3db5598e85a85329e3d31499849ee3`.
+SHA-256: `c113425a01344bb73972cc251384a7448c6928ce1bc4d59a2582f0191ba3db17`.
+The `PROCESS_HOST_ENDPOINT_CORPUS_BASE64` line preserves the exact JSON bytes.
+No field or byte was rewritten. These records cover missing, relative,
+duplicate and conflicting options. Every invocation refuses before endpoint
+IO; its absolute path uses only the platform's volume root. The existing wire
+control retains successful bound completion, without another success fixture.
+
+The byte target trusts these recorded decisions only for the exact original
+bytes on Unix. Arbitrary or mutated metadata never becomes an admission oracle.
+Replay the file with the command above, substituting `linux-endpoints.json`.
+Removing the real duplicate-endpoint guard must fail this same replay at the
+recorded admission decision. The earlier round-trip-only oracle missed that
+omission: discarding an extra option still produced a canonical invocation.
+The original measured replay covered 68 of 70 parser lines and 107 of 110
+regions. Non-UTF-8 invocation identifiers, direct absolute executables and
+branch instrumentation remain separate coverage obligations.
