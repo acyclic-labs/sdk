@@ -33,8 +33,13 @@ pub struct Observation {
 
 /// Input is a resolved corpus recipe with `expect` removed, plus paths to inspect.
 pub async fn collect(recipe: Value, paths: Vec<String>) -> TestResult<Observation> {
-    let storage = workspace(&BTreeMap::new()).await?;
-    collect_in(recipe, paths, storage).await
+    collect_on(
+        recipe,
+        paths,
+        Fs::memory(),
+        Arc::new(MemoryStream::default()),
+    )
+    .await
 }
 
 /// Uses the host's actual fs and Streams providers for the executor journal,
