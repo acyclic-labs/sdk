@@ -45,6 +45,8 @@ thread_local! {
 
 struct Cutter {
     cut: Option<Cut>,
+    #[cfg(test)]
+    lose_unflushed_ack: bool,
     landed: AtomicUsize,
     crashed: AtomicBool,
     unfaithful: Mutex<Option<CutSimulationError>>,
@@ -67,7 +69,7 @@ impl PersistenceCut for Cutter {
     #[cfg(test)]
     fn written(&self) -> bool {
         let next = Cut::LostAck(self.landed.load(Ordering::SeqCst) + 1);
-        if LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get) && self.cut == Some(next) {
+        if self.lose_unflushed_ack && self.cut == Some(next) {
             self.landed.fetch_add(1, Ordering::SeqCst);
             return !self.fires(next);
         }
@@ -133,6 +135,9 @@ where
     setup(stream.clone()).await;
     let cutter = Arc::new(Cutter {
         cut,
+        // Persistence callbacks run on the owned worker, not the caller thread.
+        #[cfg(test)]
+        lose_unflushed_ack: LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get),
         landed: AtomicUsize::new(0),
         crashed: AtomicBool::new(false),
         unfaithful: Mutex::new(None),
