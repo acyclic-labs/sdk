@@ -5,6 +5,11 @@ mod custodian;
 #[cfg(all(target_arch = "wasm32", feature = "js-credential"))]
 pub mod javascript;
 mod watch;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[path = "../tests/common/credential.rs"]
+pub mod testing;
 pub use action::{CredentialAction, CredentialPending};
 pub use cache::{
     CredentialCache, CredentialCacheError, CredentialLease, CredentialRevision, CredentialSnapshot,
