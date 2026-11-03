@@ -186,7 +186,7 @@ where
                         "execution journal sequence or bound is invalid",
                     ));
                 }
-                #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+                #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
                 acyclic_differential::record(("execution-record-decoded", 1u64));
                 let observation = observations::decode_observation(&record.value, io)?;
                 if observation.operation_id != operation_id {

@@ -69,10 +69,25 @@ impl ModelProvider for ContinuingModel {
     }
 }
 
-#[tokio::test]
-async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
-    let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+#[test]
+fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
+    use acyclic_test_support::differential::{Operation, observe};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let prefix_decodes = |trace: &[Operation]| {
+        trace
+            .iter()
+            .filter(|(kind, _)| *kind == "execution-record-decoded")
+            .count()
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        65_536,
+    ))?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     // Exercise both sides of the message-vector growth boundary and each step
@@ -109,7 +124,18 @@ async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() ->
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
             };
-            let result = executor.execute_progress(input.clone(), journal).await;
+            // Capture the shipped ordinary entry point, including the real
+            // authenticated journal. No fixture substitutes its indexed reads.
+            let (result, _trace) = observe::<_, _, Operation>(
+                || (),
+                |()| runtime.block_on(executor.execute_progress(input.clone(), journal)),
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(
+                prefix_decodes(&_trace),
+                0,
+                "ordinary continuation replayed its journal prefix at {turns} steps ({max_steps:?})"
+            );
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
                 assert!(
                     matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
@@ -135,9 +161,13 @@ async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() ->
                     .expect("persisted terminal append receipt");
                 assert_eq!(cut.version, 1);
                 assert_eq!(cut.operation, input.operation_id);
-                let (_, records) = StockExecution::ordinary(&executor)
-                    .model_records(journal, input.operation_id, turns, ModelPurpose::Response)
-                    .await?;
+                let (_, records) =
+                    runtime.block_on(StockExecution::ordinary(&executor).model_records(
+                        journal,
+                        input.operation_id,
+                        turns,
+                        ModelPurpose::Response,
+                    ))?;
                 let terminal = records
                     .iter()
                     .find(|record| {
@@ -150,13 +180,39 @@ async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() ->
                     .expect("original terminal usage");
                 assert_eq!(cut.sequence, terminal.sequence);
             }
-            let replayed = executor.execute(input.clone(), journal).await?;
+            let (replayed, _trace) = observe::<_, _, Operation>(
+                || (),
+                |()| runtime.block_on(executor.execute(input.clone(), journal)),
+            );
+            let replayed = replayed?;
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(
+                prefix_decodes(&_trace),
+                0,
+                "restored continuation replayed its journal prefix at {turns} steps ({max_steps:?})"
+            );
             assert_eq!(replayed.text, output.text);
             assert_eq!(replayed.steps, output.steps);
             #[cfg(feature = "research")]
             assert_eq!(replayed.journal_cut, output.journal_cut);
             assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
             assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
+            // Read one original record through the same journal's replay
+            // entry point. This control prevents a disconnected observer from
+            // making the zero-prefix assertions pass silently.
+            #[cfg(not(target_arch = "wasm32"))]
+            if turns == 32 {
+                let (record, _trace) = observe::<_, _, Operation>(
+                    || (),
+                    |()| {
+                        runtime.block_on(async {
+                            journal.replay(input.operation_id, 0, 1, None)?.await
+                        })
+                    },
+                );
+                assert_eq!(record?.len(), 1);
+                assert_eq!(prefix_decodes(&_trace), 1);
+            }
         }
     }
     Ok(())
