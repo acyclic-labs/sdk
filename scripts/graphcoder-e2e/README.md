@@ -225,3 +225,5 @@ the original file-backed index and completed transcript history, joining the
 original file stream before cleanup. A generated identifier mutation supplies
 a distinct second range. Its in-memory
 stream adapter does not qualify filesystem transcript failures or native pipes.
+Pending and retained-key cancellation must preserve the caller's original reason
+even when later source EOF or indexed data is available.
