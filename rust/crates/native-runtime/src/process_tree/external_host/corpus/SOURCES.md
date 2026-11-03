@@ -51,6 +51,26 @@ Replay the file with the command above, substituting `linux-endpoints.json`.
 Removing the real duplicate-endpoint guard must fail this same replay at the
 recorded admission decision. The earlier round-trip-only oracle missed that
 omission: discarding an extra option still produced a canonical invocation.
-The original measured replay covered 68 of 70 parser lines and 107 of 110
-regions. Non-UTF-8 invocation identifiers, direct absolute executables and
-branch instrumentation remain separate coverage obligations.
+That original replay covered 68 of 70 parser lines and 107 of 110 regions.
+
+`linux-native-arguments.json` retains two original executable records captured
+on Linux x86_64, 2026-11-03, at source
+`51d1b81b76b812d420e778be2d6abbc66cbabc40` by the same integration target.
+SHA-256: `fab277f8c96965cf230b128bf8ad0906d331a3e1126ad9cfe12acf46d27ea491`.
+The `PROCESS_HOST_NATIVE_ARGUMENTS_JSON` line preserves its original JSON.
+Each `argv` is the exact native OS-string bytes separated by NUL, with no
+trailing separator. The original host refused the invalid UTF-8 identifier
+with status 125 and retained the direct `/bin/false` child's status 1.
+Node cannot pass the former byte sequence, so the capture uses the same host
+executable directly. No field or byte was rewritten.
+
+`linux-invalid-utf8.argv` and `linux-absolute.argv` contain those exact original
+argument bytes, respectively. Their SHA-256 hashes are
+`7e08966bdc2b15ad9b2898bfc3ebc55d34879cd1e7a57eacfdc08846dcfabf18` and
+`f04e2e8870542565585b0f2bbf41942539dd75bf4e549c2f5bfcf8454b4927a3`.
+Replay both files with the byte-target command above. Together with the
+earlier qualified positive profiles, these two new inputs reach all 70 parser
+lines, five functions and 110 regions. The profiles use the same production
+module, byte target and compiler; earlier inputs were not replayed. Branch
+instrumentation, an arbitrary-byte campaign and other native platforms remain
+separate obligations. Fixed-input replay is not a fuzzing campaign.
