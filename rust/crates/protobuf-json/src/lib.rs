@@ -58,23 +58,27 @@ pub fn decode(
     if bytes.len() > maximum {
         return Err(Error::Limit);
     }
-    decode_admitted(descriptor, bytes)
+    decode_admitted(descriptor, bytes, |stage, _| stage)
 }
 
 /// Decode bytes after the caller has performed its own byte admission.
 ///
 /// This lets callers refuse an oversized input before descriptor lookup while
 /// sharing the same complete-input parser without repeating byte admission.
+/// The error adapter receives the original parser error as well as its stage,
+/// so callers can retain their existing diagnostics without another parser.
 ///
 /// # Errors
-/// Returns `Error::Json` for invalid fields/values and `Error::Trailing` for
-/// unconsumed input. This function does not enforce a byte limit.
-pub fn decode_admitted(
+/// Passes `Error::Json` for invalid fields/values and `Error::Trailing` for
+/// unconsumed input to `error`. This function does not enforce a byte limit.
+pub fn decode_admitted<E>(
     descriptor: MessageDescriptor,
     bytes: &[u8],
-) -> Result<DynamicMessage, Error> {
+    error: impl Fn(Error, serde_json::Error) -> E,
+) -> Result<DynamicMessage, E> {
     let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message = DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::Json)?;
-    json.end().map_err(|_| Error::Trailing)?;
+    let message = DynamicMessage::deserialize(descriptor, &mut json)
+        .map_err(|cause| error(Error::Json, cause))?;
+    json.end().map_err(|cause| error(Error::Trailing, cause))?;
     Ok(message)
 }
