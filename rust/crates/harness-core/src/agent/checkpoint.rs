@@ -205,8 +205,8 @@ pub(super) fn check_wire(bytes: &[u8]) {
             "{reason}"
         );
     };
-    let rest: AgentState =
-        super::records::decode_payload(&encoded.state).expect("checkpoint state writer");
+    let rest: AgentState = super::records::decode_payload(&encoded.state)
+        .unwrap_or_else(|_| panic!("checkpoint state writer"));
     for field in 0..5 {
         let mut changed = rest.clone();
         let reason = match field {
