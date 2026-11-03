@@ -5,18 +5,10 @@ use crate::{FsError, ObjectId, ObjectKind, WorkError};
 pub(crate) fn visit_object_references(
     id: ObjectId,
     bytes: &[u8],
+    limits: DecodeLimits,
     work: &mut KernelAccounting<'_>,
     mut visit: impl FnMut(ObjectId) -> Result<(), FsError>,
 ) -> Result<(), FsError> {
-    let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    let limits = DecodeLimits {
-        maximum_object_bytes: bytes.len() as u64,
-        maximum_page_bytes: length,
-        maximum_name_bytes: length,
-        maximum_page_items: length,
-        maximum_page_height: u16::MAX,
-        maximum_visited_pages: length,
-    };
     macro_rules! decode {
         ($decoder:path, $body:expr) => {{
             let mut allocated = 0u64;

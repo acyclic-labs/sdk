@@ -130,6 +130,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 crate::kernel::visit_object_references(
                     id,
                     &bytes,
+                    crate::kernel::DecodeLimits::for_object_bytes(bytes.len()),
                     &mut work.accounting(),
                     |child| {
                         if children.len() == children.capacity() {

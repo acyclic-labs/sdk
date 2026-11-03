@@ -167,6 +167,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             decode(visit_object_references(
                 object,
                 &bytes,
+                self.limits,
                 &mut work,
                 |child| {
                     pending.push(child);

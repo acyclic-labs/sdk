@@ -36,16 +36,22 @@ pub(super) fn children(
         return Ok((Vec::new(), guard(work)?));
     }
     let (mut references, custody) = vector(plaintext.len() / 33, work)?;
-    crate::kernel::visit_object_references(id, plaintext, work, |child| {
-        if id.storage.is_some() && child.storage.is_none() {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        if references.len() == references.capacity() {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        references.push(blob(child));
-        Ok(())
-    })?;
+    crate::kernel::visit_object_references(
+        id,
+        plaintext,
+        crate::kernel::DecodeLimits::for_object_bytes(plaintext.len()),
+        work,
+        |child| {
+            if id.storage.is_some() && child.storage.is_none() {
+                return Err(ObjectStoreError::Corrupt.into());
+            }
+            if references.len() == references.capacity() {
+                return Err(ObjectStoreError::Corrupt.into());
+            }
+            references.push(blob(child));
+            Ok(())
+        },
+    )?;
     Ok((references, custody))
 }
 
