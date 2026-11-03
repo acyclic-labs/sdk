@@ -2,7 +2,6 @@ use super::*;
 use crate::StreamProviderExt as _;
 
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
-    selected_child_tails(provider).await?;
     let paths = [path("coherent/a/state")?, path("coherent/b/state")?];
     let mut previous = None;
     let mut retained_previous = None;
@@ -195,7 +194,9 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     Ok(())
 }
 
-async fn selected_child_tails<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
+    provider: &P,
+) -> Result<(), StreamError> {
     let source = path("selected-child-source")?;
     provider
         .append(AppendRequest {

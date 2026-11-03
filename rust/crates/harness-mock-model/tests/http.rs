@@ -92,7 +92,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     let record = directory.path().join("requests.jsonl");
     let mut cases = serde_json::Map::new();
     for namespace in ["responses", "chat", "anthropic"] {
-        cases.insert(namespace.into(),json!({"count_bytes":true,"steps":[
+        cases.insert(namespace.into(),json!({"bytes_per_token":4,"steps":[
             {"when":{"user":"hello"},"text":["hé","\n**world**"],"tools":[{"id":"call_1","name":"read","arguments":{"path":"a.txt"}}]},
             {"when":{"tool_result":"tool-result"},"text":["done"]}
         ]}));
@@ -158,9 +158,10 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             assert!(stream.contains("call_1"));
             assert!(stream.contains("a.txt"));
             let expected = 64
-                + json!({"messages":[{"role":"user","content":"hello"}]})
+                + (json!({"messages":[{"role":"user","content":"hello"}]})
                     .to_string()
-                    .len() as u64;
+                    .len() as u64)
+                    .div_ceil(4);
             let events: Vec<Value> = stream
                 .lines()
                 .filter_map(|line| line.strip_prefix("data: "))
@@ -191,7 +192,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                 .json::<Value>()
                 .await
                 .unwrap();
-            assert_eq!(count["input_tokens"], 66);
+            assert_eq!(count["input_tokens"], 65);
             let next = client
                 .post(&url)
                 .json(&json!({"messages":[{"role":"tool","content":"tool-result"}]}))

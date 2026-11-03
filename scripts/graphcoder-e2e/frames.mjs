@@ -2,10 +2,23 @@
 export class TerminalFrames {
   #pending = 0;
   #synchronized = false;
-  constructor(terminal) {
+  #boundary = false;
+  #completed = false;
+  constructor(terminal, frame) {
     this.terminal = terminal;
+    this.frame = frame;
     const mode = enabled => parameters => {
-      if (parameters.includes(2026)) this.#synchronized = enabled;
+      if (parameters.includes(2026)) {
+        const completed = this.#synchronized && !enabled;
+        this.#synchronized = enabled;
+        if (completed) {
+          // A pipe chunk can contain several transactions. Observe this one
+          // before parsing the next redraw, while these cells still exist.
+          this.#completed = true;
+          this.#boundary = true;
+          try { this.frame(); } finally { this.#boundary = false; }
+        }
+      }
       return false;
     };
     this.handlers = [
@@ -13,12 +26,13 @@ export class TerminalFrames {
       terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, mode(false)),
     ];
   }
-  ready() { return this.#pending === 0 && !this.#synchronized; }
-  write(bytes, frame) {
+  ready() { return (this.#pending === 0 || this.#boundary) && !this.#synchronized; }
+  write(bytes) {
     this.#pending++;
     return new Promise(resolve => this.terminal.write(bytes, () => {
       this.#pending--;
-      if (this.ready()) frame();
+      if (!this.#completed && this.ready()) this.frame();
+      this.#completed = false;
       resolve();
     }));
   }

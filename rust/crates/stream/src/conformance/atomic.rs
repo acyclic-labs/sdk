@@ -32,10 +32,13 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
     let crate::CommitOutcome::Committed(receipt) = &committed else {
         return Err(StreamError::InvalidResponse);
     };
-    assert_eq!(receipt.appends.len(), 2);
-    assert_eq!(provider.commit(atomic).await?, committed);
-    assert_eq!(provider.tail(first).await?, 1);
-    assert_eq!(provider.tail(second).await?, 1);
+    if receipt.appends.len() != 2
+        || provider.commit(atomic).await? != committed
+        || provider.tail(first).await? != 1
+        || provider.tail(second).await? != 1
+    {
+        return Err(StreamError::InvalidResponse);
+    }
     let observed = provider
         .inspect_idempotency(atomic_key)
         .await?
@@ -43,8 +46,13 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
     let crate::IdempotencyOutcome::Commit(envelope) = observed.outcome else {
         return Err(StreamError::InvalidResponse);
     };
-    assert_eq!(envelope.commit_id, receipt.commit_id);
-    assert_eq!(envelope.mutations.len(), 2);
+    if envelope.commit_id != receipt.commit_id || envelope.mutations.len() != 2 {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(())
+}
+
+pub(super) async fn deadline(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     let deadline_path = StreamPath::new("conformance/deadline")?;
     let request = crate::CommitRequest {
         conditions: vec![crate::CommitCondition::Absent {
@@ -59,13 +67,10 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
         ))?,
         deadline_unix_millis: Some(1),
     };
-    assert_eq!(
-        provider.commit(request).await,
-        Err(StreamError::DeadlineElapsed)
-    );
-    assert_eq!(
-        provider.tail(deadline_path).await,
-        Err(StreamError::NotFound)
-    );
+    if provider.commit(request).await != Err(StreamError::DeadlineElapsed)
+        || provider.tail(deadline_path).await != Err(StreamError::NotFound)
+    {
+        return Err(StreamError::InvalidResponse);
+    }
     Ok(())
 }

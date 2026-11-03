@@ -31,8 +31,9 @@
 //! `token_counter` with `path: "count"`, `adapter` matching the provider adapter,
 //! `response_field: "input_tokens"`, `framing_tokens: 0`. Token requests are
 //! recorded but do not consume steps. Native token-count paths work too.
-//! `count_bytes: true` adds serialized request bytes to both count responses and generation usage for compaction
-//! cases. A step with explicit `when.path: "count"` overrides automatic counting;
+//! `bytes_per_token: 4` counts serialized UTF-8 request bytes in token-sized chunks
+//! (rounded up), added to `input_tokens` in both count responses and generation usage.
+//! A step with explicit `when.path: "count"` overrides automatic counting;
 //! combine `json` and `hold` to suspend preparation until the process is killed.
 //!
 //! Each namespace independently consumes the first unused matching step, exactly
@@ -69,7 +70,7 @@ pub use bindings::{bind_result, load_script};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU64};
 
 /// Independent cases served by one process. URL prefixes select the case.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -86,9 +87,10 @@ pub struct Case {
     /// Fixed count returned by the catalog's token counter endpoint.
     #[serde(default = "tokens")]
     pub input_tokens: u64,
-    /// Add serialized request bytes to the fixed count, to force real compaction.
+    /// Optional deterministic token width for serialized UTF-8 request bytes.
+    /// Zero is rejected; absence retains only the fixed count.
     #[serde(default)]
-    pub count_bytes: bool,
+    pub bytes_per_token: Option<NonZeroU64>,
     /// First matching unused step wins. Unmatched requests fail with HTTP 409.
     pub steps: Vec<Step>,
 }
@@ -286,14 +288,13 @@ impl Engine {
         Self { script, used }
     }
 
-    /// Fixed token count for a known case.
+    /// Deterministic input count for a known case, shared by admission and usage.
     pub fn input_tokens(&self, namespace: &str, body: &Value) -> Option<u64> {
         self.script.cases.get(namespace).map(|case| {
-            case.input_tokens.saturating_add(if case.count_bytes {
-                body.to_string().len() as u64
-            } else {
-                0
-            })
+            case.input_tokens
+                .saturating_add(case.bytes_per_token.map_or(0, |width| {
+                    (body.to_string().len() as u64).div_ceil(width.get())
+                }))
         })
     }
 

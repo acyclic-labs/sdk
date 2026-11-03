@@ -118,12 +118,22 @@ impl Pool {
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
+        let progress = Arc::clone(&route.progress);
+        // Hello carries the first interest without going through subscribe().
+        // Link its physical root while the original cause is still alive;
+        // follows_from retains no caller span across credential/connection I/O.
+        let mut observation = route.observation.in_scope(|| {
+            let observation = Observation::session(0);
+            observation
+                .operation
+                .follows_from_same_subscriber(&route.observation);
+            observation
+        });
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
                 let mut attempt = 0_u32;
                 let outcome = loop {
-                    let mut observation = Observation::session(attempt);
                     let result = observation
                         .operation
                         .clone()
@@ -138,6 +148,7 @@ impl Pool {
                                 identity.clone(),
                                 credentials.clone(),
                                 interest.clone(),
+                                Arc::clone(&progress),
                             )
                             .await
                         })
@@ -156,6 +167,11 @@ impl Pool {
                             }
                             attempt = attempt.saturating_add(1);
                             executor.sleep(10).await;
+                            let retry = Observation::session(attempt);
+                            retry
+                                .operation
+                                .follows_from_same_subscriber(&observation.operation);
+                            observation = retry;
                         }
                     }
                 };
@@ -436,6 +452,7 @@ async fn handshake(
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
     interest: wire::SessionInterest,
+    progress: Arc<Progress>,
 ) -> Result<Ready, StreamError> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
@@ -487,9 +504,22 @@ async fn handshake(
         credit,
         input: Arc::new(input::Window::new()),
     };
+    // Credentials can suspend before the transport consumes its first frame.
+    // Admit only a still-owned first interest through the same queue that
+    // fences link retirement. Later cancellations use removal after Welcome.
     let input: transport::Requests = Box::pin(stream::unfold(
-        Arc::clone(&link.sender),
-        |sender| async move { sender.next().await.ok().map(|frame| (frame, sender)) },
+        (Arc::clone(&link.sender), Some(progress)),
+        |(sender, opening)| async move {
+            let mut frame = sender.next().await.ok()?;
+            if let Some(progress) = opening
+                && progress.cancelled()
+                && let Some(Body::Hello(hello)) = &mut frame.body
+                && let Some(interest) = &mut hello.interest
+            {
+                interest.upsert.clear();
+            }
+            Some((frame, (sender, None)))
+        },
     ));
     let mut response = link.channel.session(input).await?;
     let welcome = response

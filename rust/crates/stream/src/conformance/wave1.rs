@@ -309,21 +309,6 @@ fn provider_failure(case: Case, step: &'static str, source: StreamError) -> Fail
     Failure::Provider { case, step, source }
 }
 
-/// Runs every fixed history against this exact provider in a fresh namespace.
-///
-/// The returned cases completed all assertions through their original provider
-/// operations. Receipt loss here discards a result and resends the same request;
-/// it does not claim a process crash or a transport fault was injected.
-pub async fn verify<P: StreamProvider + ?Sized>(
-    provider: &P,
-    namespace: &StreamPath,
-) -> Result<[Case; 10], Failure> {
-    for case in Case::ALL {
-        verify_case(provider, namespace, case).await?;
-    }
-    Ok(Case::ALL)
-}
-
 /// Runs one named history, unchanged for memory, local, browser and hosted use.
 pub async fn verify_case<P: StreamProvider + ?Sized>(
     provider: &P,

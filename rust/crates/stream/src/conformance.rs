@@ -41,11 +41,6 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
     reason = "one public contract walkthrough"
 )]
 async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
-    absence::verify(provider).await?;
-    views::verify(provider).await?;
-    selected::verify(provider).await?;
-    key_seek::verify(provider).await?;
-    soft::verify(provider).await?;
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;
@@ -337,10 +332,6 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     {
         return Err(StreamError::Unavailable);
     }
-    verify_unspent_conflicts(provider).await?;
-    verify_subtree_fork(provider).await?;
-    verify_page_tails(provider).await?;
-    verify_page_tail_bytes(provider).await?;
     Ok(())
 }
 
@@ -1003,6 +994,48 @@ mod tests {
         Ok(Fixture::new(MemoryStream::new(MemoryLimits::default())))
     }
     suite!(memory_provider_passes_the_public_suite, memory);
+
+    #[tokio::test]
+    async fn public_suite_retains_independent_failures_and_runs_through_final_workload()
+    -> Result<(), Failure> {
+        let backend = memory().await?;
+        let provider = super::Backend::provider(&backend);
+        for name in ["absence/records", super::key_seek::SOURCE] {
+            provider
+                .append(crate::AppendRequest {
+                    path: super::path(name)?,
+                    records: vec![crate::OwnedBytes::from_static(b"already present").into()],
+                    if_tail: Some(0),
+                    idempotency_key: crate::IdempotencyKey::new(name.as_bytes().to_vec())?,
+                })
+                .await?;
+        }
+        let Err(Failure::Cases(failures)) = super::verify(&backend).await else {
+            return Err(Failure::Invariant("suite lost its independent failures"));
+        };
+        assert_eq!(failures.len(), 2);
+        assert!(matches!(
+            failures.as_slice(),
+            [
+                (
+                    "absence",
+                    Failure::Provider(crate::StreamError::Unavailable)
+                ),
+                (
+                    "key_seek",
+                    Failure::Provider(crate::StreamError::Unavailable)
+                ),
+            ]
+        ));
+        use crate::StreamProviderExt as _;
+        assert_eq!(
+            provider
+                .tail(super::path("conformance/budget/value")?)
+                .await?,
+            4
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn shared_benchmark_checks_append_read_follow_and_zero_control() -> Result<(), Failure> {

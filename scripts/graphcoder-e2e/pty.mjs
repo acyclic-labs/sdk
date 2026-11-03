@@ -44,9 +44,10 @@ function expectedTaskFailure(visible, condition) {
 
 export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-  const frames = new TerminalFrames(screen), failures = new FailureHistory();
-  let unsubscribe;
+  const failures = new FailureHistory();
+  let unsubscribe, frames;
   try {
+    frames = new TerminalFrames(screen, frame);
     const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
@@ -58,8 +59,9 @@ export async function pty(processes, binary, fixture, input, capture) {
       try {
         const visible = screenText(screen);
         const action = input.actions[index];
-        if (raw.has(OVERFLOW) || failures.unexpected(visible, action?.when)) {
-          const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(visible, action?.when);
+        if (refusal) {
+          const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
           throw error;
         }
@@ -88,7 +90,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     unsubscribe = fixture.onRequest(frame);
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
-      frames.write(bytes, frame);
+      frames.write(bytes);
     });
     let result;
     try { result = await running.closed; }
@@ -125,7 +127,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     return result;
   } finally {
     unsubscribe?.();
-    frames.dispose();
+    frames?.dispose();
     screen.dispose();
   }
 }
