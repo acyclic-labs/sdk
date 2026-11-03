@@ -10,7 +10,7 @@ await ensureModelWasm();
 type Snapshot = { input: unknown; expected: unknown };
 const snapshots = fc.memo<Snapshot>(depth => {
   const numbers = fc.oneof(fc.integer().map(value => value / 2),
-    fc.constantFrom(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, -0))
+    fc.constantFrom(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER))
     .map(input => ({ input, expected: Number.isInteger(input) ? BigInt(input) : input }));
   const scalar = fc.oneof(fc.constant(null), fc.boolean(), fc.string(),
     fc.bigInt({ min: -(2n ** 63n), max: 2n ** 64n - 1n }))
@@ -82,9 +82,15 @@ test("canonical admission selects entries before evaluating their values", () =>
     "../../../../rust/crates/harness-fuzz/corpus/retained_skill_records/materialized.json", import.meta.url));
   const expected = JSON.parse(receipt.toString(), (_key, value) => typeof value === "number" ? BigInt(value) : value);
   expect(contracts.decodeClientJson(receipt)).toEqual(expected);
+  for (const number of [-0, Number.NaN, Infinity, -Infinity, 2 ** 53, -(2 ** 53)]) {
+    assert.throws(() => contracts.encodeCanonicalJson({ nested: [number] }),
+      "canonical admission accepted an unsafe JavaScript Number");
+  }
   fc.assert(fc.property(snapshots(4), ({ input, expected }) => {
     const canonical = contracts.encodeCanonicalJson(input);
     expect(contracts.decodeClientJson(canonical)).toEqual(expected);
     expect(contracts.encodeCanonicalJson(contracts.decodeCanonicalJson(canonical))).toEqual(canonical);
-  }), { seed: 1, numRuns: 1000 });
+  }), { seed: 1, numRuns: 1000, examples: [[{ input: 0.5, expected: 0.5 }],
+    [{ input: Number.MAX_SAFE_INTEGER, expected: BigInt(Number.MAX_SAFE_INTEGER) }],
+    [{ input: -Number.MAX_SAFE_INTEGER, expected: BigInt(-Number.MAX_SAFE_INTEGER) }]] });
 });
