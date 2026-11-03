@@ -73,9 +73,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let reference =
             super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
                 .map_err(turn)?;
-        if after.is_none() {
-            self.volumes.create_volume(&volume).await.map_err(turn)?;
-        }
+        let initial = if after.is_none() {
+            Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
+        } else {
+            None
+        };
         let waiting = if after.is_some() {
             let workspace = self.volumes.open(&reference, None).await.map_err(turn)?;
             let path = acyclic_fs::session::changes_path(
@@ -117,7 +119,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         } else {
             None
         };
-        let mut selected = self.volumes.resolve(&reference, None).await.map_err(turn)?;
+        let mut selected = match initial {
+            Some(selected) => selected,
+            None => self.volumes.resolve(&reference, None).await.map_err(turn)?,
+        };
         if after == Some(&selected.generation) {
             use futures::TryStreamExt as _;
             let updates = self

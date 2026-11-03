@@ -176,7 +176,7 @@ mod tests {
         assert_ne!(original.file.volume(), harness.scratch());
         if std::env::var_os("ACYCLIC_CAPTURE_CLIENT_FILES").is_some() {
             let command = acyclic_harness_client::AgentCommand::ClientFiles {
-                agent: conversation.agent().clone(),
+                agent: connection.root().clone(),
                 session: conversation.client_session(),
                 paths: paths(),
                 after: None,
