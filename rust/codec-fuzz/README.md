@@ -176,9 +176,16 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | PATCH | Required runtime assertion |
 | --- | --- |
 | `agent-checkpoint-identity.patch` | `checkpoint codec refusal did not precede payload decoding` |
+| `agent-checkpoint-state.patch` | `checkpoint lost the writer's state` |
 | `agent-record-version.patch` | `agent record header refusal changed` |
 | `agent-record-trailing.patch` | `agent record header refusal changed` |
 | `agent-spawn-history.patch` | `agent record lost the writer's input` |
+
+The state mutation changes the production checkpoint decoder. Replaying the
+retained `harness_codecs/agent-v13-state-wait` input through `harness_codecs`
+tests the arbitrary-input writer comparison without running the seed producer.
+The producer checks the same complete state separately; no simulated decoder
+or alternate field-loss implementation is used.
 
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:

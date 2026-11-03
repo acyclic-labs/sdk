@@ -4,15 +4,6 @@ use super::{
     InboxRecord, IntentId, Phase, Progress, Sender, StatusRecord, TurnEffect, checkpoint, records,
 };
 
-// Compare with the writer's input, before any decoder can discard a field.
-fn preserves_written(
-    state: &AgentState,
-    encoded: &[u8],
-    decode: impl FnOnce(&[u8]) -> Result<AgentState, super::Error>,
-) -> Result<bool, super::Error> {
-    Ok(decode(encoded)? == *state)
-}
-
 fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
     if let Ok(value) = T::decode(bytes) {
         let encoded = value.encode().expect("admitted agent record encodes");
@@ -138,9 +129,9 @@ pub fn check(bytes: &[u8]) {
     // expected value; decode/encode/decode alone cannot detect field loss.
     if let Ok(state) = serde_json::from_slice::<AgentState>(bytes) {
         if let Ok(encoded) = checkpoint::encode(&state) {
-            assert!(
-                preserves_written(&state, &encoded, checkpoint::decode)
-                    .expect("written checkpoint decodes"),
+            assert_eq!(
+                checkpoint::decode(&encoded).expect("written checkpoint decodes"),
+                state,
                 "checkpoint lost the writer's state"
             );
         }
@@ -430,27 +421,11 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             state.phase = Phase::Idle;
         }
         let encoded = checkpoint::encode(&state)?;
-        assert!(preserves_written(&state, &encoded, checkpoint::decode)?);
-        // Planted reader defects must fail that SAME writer-input comparison.
-        // Each changes one nonempty field, after the real decoder ran.
-        for loss in 0..5 {
-            assert!(!preserves_written(&state, &encoded, |bytes| {
-                let mut changed = checkpoint::decode(bytes)?;
-                match loss {
-                    0 => changed.conversation_tail = 0,
-                    1 if archived => changed.archive_pending.clear(),
-                    1 => changed.awaiting.clear(),
-                    2 if archived => changed.closed = false,
-                    2 => changed.turn = None,
-                    3 if archived => changed.reported = true,
-                    3 => changed.reserved_children = 0,
-                    _ => changed.phase = Phase::Running,
-                }
-                // The former decode/encode/decode oracle still accepts it.
-                assert_eq!(checkpoint::decode(&checkpoint::encode(&changed)?)?, changed);
-                Ok(changed)
-            })?);
-        }
+        assert_eq!(
+            checkpoint::decode(&encoded)?,
+            state,
+            "checkpoint lost the writer's state"
+        );
         let envelope = checkpoint::from_encoded(encoded.clone())?;
         assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
         seeds.extend([
