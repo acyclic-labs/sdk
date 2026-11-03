@@ -108,3 +108,21 @@ the unreserved handoff with no native work budget. Its volatile journal fixture
 and inline blocking adapter do not qualify native reservation, root ownership,
 physical worker cancellation or OS durability failures. The public reopen and
 emitted-history recovery properties remain separate and are kept.
+
+The latest-consumption model calls the production `Progress::consume_latest`,
+`fence` and `next` on the same cursor lock. Its existing broken branch writes the
+cursor directly; `mutations/progress_generation_fence.patch` instead removes the
+shipping generation check without changing the model or its positive oracle:
+
+```sh
+git apply rust/crates/stream/models/mutations/progress_generation_fence.patch
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::latest_consumption_and_move_fence_share_one_application_cut -- --exact --nocapture
+git apply --reverse rust/crates/stream/models/mutations/progress_generation_fence.patch
+```
+
+The mutant must fail at `a stale delivery cannot advance the fenced resume cut`;
+restored source must pass the same command. This model races one conflated
+consumption against one generation fence. It does not qualify bootstrap or
+checked-record admission, cursor overflow, transport loss, physical restarts or
+multiple placement participants. The sequential generation property and distinct
+strict-record and overflow refusal controls remain separate.
