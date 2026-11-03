@@ -78,6 +78,17 @@ export function fuzzSource(file, data) {
 export function fuzzProject(data, {project = projectPollingSites, validate = validateDispositions} = {}) {
  const variant = (data[0] ?? 0) % 8;
  const word = 'value' + Buffer.from(data).toString('hex');
+ const ordered = values => values.map(site => JSON.stringify(site)).sort();
+ // Distinct Unicode paths can collate equally. A recursive component must keep
+ // exactly the same review identity when the snapshot enumerates them in reverse.
+ const composed = ['\u00e4', '\u00f6', '\u00e9', '\u00c5'][variant % 4];
+ const decomposed = composed.normalize('NFD');
+ const recursive = new Map([
+  [`lib/${composed}.ts`, `import {run as next} from './${decomposed}.js'; export function run() { return next(); }`],
+  [`lib/${decomposed}.ts`, `import {run as next} from './${composed}.js'; export function run() { return next(); }`],
+ ]);
+ assert.deepEqual(ordered(project(recursive)), ordered(project(new Map([...recursive].reverse()))),
+  'snapshot enumeration changed recursive dependency identity');
  const helper = 'lib/helper.ts', barrel = 'lib/barrel.ts', caller = 'svc/consumer.ts';
  const raw = new TextDecoder().decode(new Uint8Array(data));
  // Parser acceptance is determined by the same production unit boundary.
@@ -88,7 +99,6 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  const rawSources = new Map([[helper, raw], [caller, "import * as original from '../lib/helper.js'; export const value = original;"]]);
  if (parsed) {
   const sites = project(rawSources);
-  const ordered = values => values.map(site => JSON.stringify(site)).sort();
   assert.deepEqual(ordered(project(new Map([...rawSources].reverse()))), ordered(sites));
   assert.deepEqual(newProjectPollingSites(rawSources, rawSources), []);
  } else assert.throws(() => project(rawSources), SourceSyntaxError);

@@ -615,11 +615,11 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const census = JSON.parse(readFileSync(censusPath, 'utf8'));
   assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
   assert.equal(census.files, 7);
-  const siteOrder = (a, b) => a.file.localeCompare(b.file) || a.fingerprint.localeCompare(b.fingerprint);
-  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map(
+  const orderedSites = sites => sites.map(site => JSON.stringify(site)).sort();
+  assert.deepEqual(orderedSites(census.sites), orderedSites(projectPollingSites(new Map(
    [rust, helper, caller, plugin, pluginChild, native, script]
     .map(file => [file, readFileSync(join(root, file), 'utf8')]),
-  )).sort(siteOrder));
+  ))));
   assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
   const preserved = readFileSync(censusPath, 'utf8');
   assert.notEqual((await check('--inventory', 'census.json')).status, 0);

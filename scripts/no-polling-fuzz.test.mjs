@@ -20,6 +20,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'if (!unresolved && !component?.hazardous) continue;', 'if (!unresolved) continue;');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: graph.projectPollingSites}),
   {name: 'AssertionError', message: /lost dependency/});
+ const collation = await mutant('./source-policy/project.mjs',
+  'a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0', 'a[0].localeCompare(b[0])');
+ assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: collation.projectPollingSites}),
+  {name: 'AssertionError', message: /snapshot enumeration/});
  const policy = await mutant('./source-policy/index.mjs',
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {validate: policy.validateDispositions}),

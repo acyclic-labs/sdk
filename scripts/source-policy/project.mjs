@@ -76,7 +76,7 @@ function dependencyComponents(nodes) {
   component.hazardous = component.members.some(node => node.hazardous || (node.callable && (component.members.length > 1 || node.edges.has(node))))
    || [...component.edges].some(child => child.hazardous);
   component.fingerprint = digest([
-   component.members.map(node => [node.id, node.unit]).sort((a, b) => a[0].localeCompare(b[0])),
+   component.members.map(node => [node.id, node.unit]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
    [...component.edges].map(child => child.fingerprint).sort(),
   ]);
   for (const parent of component.parents) if (!--parent.remaining) ready.push(parent);
