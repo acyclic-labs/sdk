@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/metadata.rs
++++ b/rust/crates/filesystem/src/kernel/metadata.rs
+@@ -272,7 +272,7 @@
+     observe(super::codec::ReadAllocationStep::BeforeItem)?;
+     let metadata = FileMetadata {
+         posix_mode: decode_u32(&mut decoder, "posix_mode", observe)?,
+-        posix_uid: decode_u32(&mut decoder, "posix_uid", observe)?,
++        posix_uid: decode_u32(&mut decoder, "posix_uid", observe)?.wrapping_add(u32::from(std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("metadata-value"))),
+         posix_gid: decode_u32(&mut decoder, "posix_gid", observe)?,
+         posix_flags: decode_u64(&mut decoder, "posix_flags", observe)?,
+         windows_attributes: decode_u32(&mut decoder, "windows_attributes", observe)?,
