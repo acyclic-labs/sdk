@@ -129,6 +129,20 @@ additional_controls = {
             "project-server",
             b"untrusted project declarations must not enter the snapshot",
         ),
+        (
+            "rust/crates/harness-core/src/native_settings/model.rs",
+            b"if bytes.len() as u64 > self.maximum_file_bytes {",
+            b"if false {",
+            "model-file",
+            b"valid over-bound model settings must be refused",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings/model.rs",
+            b'let path = self.codex_home.join("config.toml");',
+            b'let path = self.home.join(".codex/config.toml");',
+            "model-file",
+            b"model file admission must refine the original parser",
+        ),
     ],
 }
 
