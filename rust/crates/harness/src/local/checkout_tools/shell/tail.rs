@@ -148,9 +148,23 @@ mod tests {
         // Arbitrary chunk boundaries cannot change the retained suffix or
         // exact spill bytes, and storage stays independent of total output.
         #[test]
-        fn chunks_preserve_tail_and_complete_spill(bytes in prop::collection::vec(any::<u8>(), 0..4096), maximum in 0usize..128, chunk in 1usize..256, render in 256u64..1024) {
-            let directory = tempfile::tempdir()?;
+        fn chunks_preserve_tail_and_complete_spill(
+            directory in Just(std::sync::Arc::new(tempfile::tempdir().expect(
+                "step=create shell property directory; recovery=cargo test -p acyclic-harness --features filesystem-local,native-execution --lib local::checkout_tools::shell::tail::tests::chunks_preserve_tail_and_complete_spill"
+            ))),
+            bytes in prop::collection::vec(any::<u8>(), 0..4096), maximum in 0usize..128,
+            chunk in 1usize..256, render in 256u64..1024,
+        ) {
             let path = directory.path().join("output");
+            // Reuse the directory, including while shrinking a failed case.
+            // At most one spill survives until the next case replaces it.
+            match std::fs::remove_file(&path) {
+                Ok(()) => {},
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                Err(error) => return Err(TestCaseError::fail(format!(
+                    "step=retire previous shell property spill: {error}; recovery=inspect {} and rerun cargo test -p acyclic-harness --features filesystem-local,native-execution --lib local::checkout_tools::shell::tail::tests::chunks_preserve_tail_and_complete_spill", path.display()
+                ))),
+            }
             let mut tail = Tail::new(path.clone(), maximum);
             let mut channels = Vec::new();
             for (index, bytes) in bytes.chunks(chunk).enumerate() {

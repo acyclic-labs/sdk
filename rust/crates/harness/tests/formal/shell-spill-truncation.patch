@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/checkout_tools/shell/tail.rs b/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
+index bbe7c77bce..6da8605179 100644
+--- a/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
++++ b/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
+@@ -37,7 +37,7 @@ impl Tail {
+             self.ensure_spill()?;
+         }
+         if let Some(file) = &mut self.spill {
+-            file.write_all(bytes).map_err(|error| io::Error::new(error.kind(), format!("shell spill write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
++            file.write_all(&bytes[..bytes.len().saturating_sub(1)]).map_err(|error| io::Error::new(error.kind(), format!("shell spill write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
+         }
+         let keep = bytes.len().min(self.maximum);
+         let remove = self
