@@ -126,9 +126,22 @@ Apply `mutations/code_mode_nonstring_reply_null.patch` to preserve strings but
 replace other successful reply values with null. The earlier string-only oracle
 passes this mutation; the value-complete differential must reject it at
 `the original host reply must preserve its value and refusal`. Restore the patch
-before collecting original coverage. Arbitrary malformed UTF-8/JSON frames still
-exercise retirement, but complete malformed-JSON semantics and embedded engine
-source coverage remain separate qualification obligations.
+before collecting original coverage.
+
+Arbitrary raw reply frames also ask the original engine whether their text has
+valid JSON syntax, within the same guest execution as the tool call. Invalid
+UTF-8 and malformed JSON must make that call refuse, while its original frame
+and engine credit still retire. This adds no parser, runtime or RPC. Valid JSON
+that is not a reply envelope has a separate semantic obligation; this syntax
+relation does not model JavaScript truthiness or property access. An admitted
+output refusal remains distinct from an accepted malformed frame.
+
+Apply `mutations/code_mode_accept_malformed_json.patch` to swallow the production
+reply parse exception and return a successful null reply. The earlier cleanup
+oracle does not reject valid UTF-8 malformed JSON; the syntax relation must fail
+at `malformed host JSON must retain its parse refusal`. Restore the mutation
+before collecting original coverage. Complete reply-envelope semantics and
+embedded engine source coverage remain separate qualification obligations.
 
 The same property checks bridge copies with the production engine allocator and
 its original ledger. The input varies the actual guest string. It measures the
