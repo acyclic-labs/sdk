@@ -919,9 +919,11 @@ async fn catalog_errors_exit_without_terminal_rendering() {
         }
         let output = graphcoder(&fixture, &catalog, vec!["-p", "hello"], "").await;
         assert!(!output.status.success());
-        // The host API returns the typed error. The CLI only maps its status:
-        // it cannot start a write after the report/shutdown owner has ended.
+        // The host API returns the typed error; the CLI states it once on
+        // stderr before its operation ends, never as terminal rendering.
         assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.starts_with("graphcoder: "), "{stderr}");
+        assert!(!stderr.contains('\u{1b}'), "{stderr}");
     }
 }

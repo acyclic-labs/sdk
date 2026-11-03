@@ -543,7 +543,7 @@ pub async fn run(
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
-            let screen = Screen {
+            let mut screen = Screen {
                 header: view.header(),
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
@@ -582,18 +582,23 @@ pub async fn run(
                 ..Screen::default()
             };
             let area = Rect::from((Position::ORIGIN, size));
-            let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || queries.source().is_some() {
-                overlay_top = overlay_top.min(tail);
-                overlay_top
-            } else {
-                tail.saturating_sub(back)
-            };
+            let scroll = screen.tail_scroll(area, &input).saturating_sub(back);
             let mut areas = screen.areas(area, &input);
+            let panel = overlay.is_some() || queries.source().is_some();
+            if panel {
+                overlay_top = overlay_top.min(areas.overlay_tail(screen.overlay.len()));
+                screen.overlay_scroll = overlay_top;
+            }
             terminal.draw(size, |frame| {
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
             })?;
-            (areas, usize::from(areas.transcript.height).max(1))
+            // Page keys scroll the open panel by its page, else the transcript.
+            let page = if panel {
+                areas.overlay_rows(0)
+            } else {
+                areas.transcript.height
+            };
+            (areas, usize::from(page).max(1))
         };
         // Only inner content cells can advance the query. Reserve the hint;
         // a collapsed panel waits for the existing resize/input event.
@@ -822,6 +827,7 @@ pub async fn run(
                                 if let Some(row) = view.transcript.find(query, before)
                                     .or_else(|| view.transcript.find(query, view.transcript.len()))
                                 {
+                                    let page = usize::from(areas.transcript.height);
                                     view.back = view.transcript.len().saturating_sub(row + page);
                                     view.search = Some((query.to_owned(), row));
                                 }

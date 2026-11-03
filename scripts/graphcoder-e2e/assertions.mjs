@@ -84,13 +84,17 @@ export function subset(actual, expected) {
 // Both provider records and PostToolUse carry the original ToolResult value.
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
+// Every recorded tool failure as the executor renders it to the model
+// (`ToolFailureKind::message`, then ": " or " (<class>): ").
+const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|arguments violated the input schema|was interrupted before its outcome was recorded)[:( ]/;
+
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
   const error = value && typeof value === "object" ? value.error
     ?? (value.version === 2 && Array.isArray(value.context) ? value.output?.error : undefined)
     ?? (Array.isArray(value.settled) ? value.settled.find(child => child.phase?.done?.outcome?.failed)?.phase.done.outcome.failed : undefined)
     ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
       ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
-    : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
+    : typeof value === "string" && TOOL_FAILURE.test(value) ? value : undefined;
   if (error !== undefined && error !== null) assert.ok(
     expectedErrors?.some(text => JSON.stringify(error).includes(text)),
     `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);

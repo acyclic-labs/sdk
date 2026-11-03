@@ -160,6 +160,57 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
 }
 
 #[test]
+fn an_open_panel_docks_above_the_transcript_tail() -> Result<(), Box<dyn std::error::Error>> {
+    // A follow-up turn settles while a live panel stays open: its reply and
+    // the refreshed panel must be on screen together.
+    let transcript = (0..40)
+        .map(|index| Line::from(format!("turn {index:02}")))
+        .collect::<Vec<_>>();
+    let panel = [
+        Line::from("moved/a.txt (added)"),
+        Line::from("+FOLDER_EDIT_E2E"),
+    ];
+    let input = PromptInput::default();
+    let mut viewport = Viewport::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    for (overlay, scroll) in [(&panel[..], 1), (&[][..], 0)] {
+        let screen = Screen {
+            transcript: &transcript,
+            overlay,
+            overlay_title: "Diff",
+            overlay_scroll: scroll,
+            ..Screen::default()
+        };
+        let area = Rect::new(0, 0, 80, 24);
+        let tail = screen.tail_scroll(area, &input);
+        let mut areas = screen.areas(area, &input);
+        terminal.draw(|frame| {
+            areas = screen.render(frame, &input, &mut viewport, tail, 1000);
+        })?;
+        let text = visible(&terminal);
+        assert!(
+            text.contains("turn 39"),
+            "the newest transcript row is hidden"
+        );
+        assert_eq!(text.contains("+FOLDER_EDIT_E2E"), !overlay.is_empty());
+        // The panel scrolls on its own: its first row is scrolled past.
+        assert!(!text.contains("moved/a.txt (added)"));
+        if overlay.is_empty() {
+            assert!(
+                areas
+                    .transcript
+                    .contains((areas.overlay.x, areas.overlay.y).into())
+            );
+        } else {
+            assert!(areas.transcript.intersection(areas.overlay).is_empty());
+            assert_eq!(areas.transcript.y, areas.overlay.bottom());
+            assert_eq!(areas.overlay_tail(panel.len()), 0);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn completion_overlays_above_prompt_and_resize_preserves_input()
 -> Result<(), Box<dyn std::error::Error>> {
     let screen = Screen::default();

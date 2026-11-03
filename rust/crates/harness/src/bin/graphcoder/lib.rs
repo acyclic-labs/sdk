@@ -165,6 +165,11 @@ pub fn main_with(
                 })
                 .transpose()?;
             let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
+            // Text output has no event owner: the returned failure is the
+            // only account of a non-zero exit, so it is never silent.
+            if let (Err(error), None) = (&result, &event_failure) {
+                eprintln!("graphcoder: {error}");
+            }
             if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
                 let recovery =
                     headless::Recovery::capture(generated.then_some(operation.as_str()))?;

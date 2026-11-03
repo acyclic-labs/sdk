@@ -585,6 +585,27 @@ where
             .await
     }
 
+    /// The exact-path fork diff of `volume` from `base` to `current`, as far
+    /// as this authority may list it (see [`FilesystemHost::diff_publication`]).
+    pub async fn diff_publication(
+        &self,
+        volume: &VolumeRef,
+        base: &GenerationRef,
+        current: &GenerationRef,
+    ) -> Result<crate::context::DiffPublication> {
+        self.verify_exact_file(None, None)?;
+        let grant = ContentGrant::verify_directory_read(
+            self.authority.verifier(),
+            self.authority.scope(),
+            volume,
+            "",
+            &mut None,
+        )?;
+        self.host
+            .diff_publication(volume, &grant, base, current)
+            .await
+    }
+
     /// Requires authentic provider metadata funded by this original resource.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn supports_native_directory_list(

@@ -96,34 +96,6 @@
         "when": {
           "user": "PARENT_E2E_TASK"
         },
-        "tools": [
-          {
-            "id": "child-diff",
-            "name": "fs",
-            "arguments": {
-              "command": "diff agents/worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
-        "tools": [
-          {
-            "id": "child-final",
-            "name": "fs",
-            "arguments": {
-              "command": "discard agents/worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
         "text": [
           "done"
         ]
@@ -138,7 +110,7 @@
     }
   ],
   "assert": {
-    "requests": 9,
+    "requests": 7,
     "absent_files": [
       "child.txt"
     ]

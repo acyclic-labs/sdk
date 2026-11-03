@@ -452,7 +452,7 @@ impl SkillPublicationSource {
                 &entry.metadata,
                 self.config,
             )?;
-            let Some(path) = content_path(&facts.path, session)? else {
+            let Some(path) = crate::filesystem::content_path(&facts.path, session)? else {
                 continue;
             };
             for root in std::iter::once(&self.root).chain(&self.roots) {
@@ -554,40 +554,6 @@ async fn gated<T>(
             Ok(value)
         }
     }
-}
-
-fn content_path(
-    path: &acyclic_fs::kernel::NamespacePath,
-    io: &PreparationIo,
-) -> Result<Option<String>> {
-    let mut result = String::new();
-    for name in path.components() {
-        let (text, recorded) = name.unicode_text(io, io.cancellation());
-        recorded?;
-        let text = match text {
-            Ok(text) => text,
-            Err(acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
-                acyclic_fs::kernel::NamespacePathError::NonUnicodeProjection,
-            ))) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if crate::conversation::validate_content_path(&text, &mut None).is_err()
-            || text.contains('/')
-        {
-            return Ok(None);
-        }
-        for part in [if result.is_empty() { "" } else { "/" }, &text] {
-            crate::executor::stock_string_push(
-                &mut result,
-                part,
-                u64::MAX,
-                "context path size overflow",
-                Some(io),
-            )?;
-        }
-        io.release(text.capacity() as u64)?;
-    }
-    Ok(Some(result))
 }
 
 #[cfg(test)]

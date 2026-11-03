@@ -130,6 +130,7 @@ pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservati
 mod host;
 pub(crate) use host::map_error;
 use host::*;
+pub(crate) use host::content_path;
 pub use host::{FilesystemHost, VolumeImportPlan, filesystem_key, workspace_ref};
 pub(crate) mod access;
 pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;

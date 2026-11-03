@@ -106,7 +106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok((page, io.into_native_custody(retained)?))
     }
 
-    async fn select_directory<'io, F, Fut>(
+    pub(super) async fn select_directory<'io, F, Fut>(
         &self,
         request: &DirectoryListing<'_>,
         io: &'io PreparationIo,
@@ -184,22 +184,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
-        let DirectorySelection {
-            workspace,
-            generation,
-            view,
-            data_access,
-        } = self.select_directory(&request, io, guard).await?;
-        let parent = view
+        let selection = self.select_directory(&request, io, guard).await?;
+        let generation = &selection.generation;
+        let parent = selection
+            .view
             .0
             .prepare(request.path)
             .map_err(|_| io.invalid("invalid directory access path"))?;
-        let data_parent = data_access
+        let data_parent = selection
+            .data_access
             .as_ref()
             .map(|(_, view)| view.0.prepare(request.path))
             .transpose()
             .map_err(|_| io.invalid("invalid directory access path"))?;
-        bounded_io::retain(&generation, Some(io)).await?;
+        bounded_io::retain(generation, Some(io)).await?;
         guard().await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", request.path), work)
@@ -266,10 +264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             page.work = spent;
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
-            super::super::access::require_current(&workspace, &view.0, io).await?;
-            if let Some((workspace, view)) = &data_access {
-                super::super::access::require_current(workspace, &view.0, io).await?;
-            }
+            selection.require_current(io).await?;
             request.grant.recheck(Some(io))?;
             return Ok(((reference, page), page_hold));
         }
@@ -312,9 +307,29 @@ fn filter_page(
     (removed, successor)
 }
 
-struct DirectorySelection<'io, A: 'static, O: 'static> {
+pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
-    generation: acyclic_fs::Generation<A, O>,
+    pub(super) generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {
+    /// Whether both policy owners let this selection's caller list `path`.
+    pub(super) fn lists(&self, path: &str, now: u64) -> bool {
+        self.view.0.decide(Action::List, path, now).allowed
+            && self
+                .data_access
+                .as_ref()
+                .is_none_or(|(_, view)| view.0.decide(Action::List, path, now).allowed)
+    }
+
+    /// Linearizes a disclosure from this selection against the current policy.
+    pub(super) async fn require_current(&self, io: &PreparationIo) -> Result<()> {
+        super::super::access::require_current(&self.workspace, &self.view.0, io).await?;
+        if let Some((workspace, view)) = &self.data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
+        }
+        Ok(())
+    }
 }

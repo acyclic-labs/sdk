@@ -53,6 +53,23 @@
         },
         "tools": [
           {
+            "id": "settled-wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "CHILD_E2E_DONE"
+        },
+        "tools": [
+          {
             "id": "send",
             "name": "send",
             "arguments": {
@@ -75,8 +92,7 @@
             "arguments": {
               "agents": [
                 "worker"
-              ],
-              "mode": "all"
+              ]
             }
           }
         ]
@@ -165,7 +181,7 @@
     }
   ],
   "assert": {
-    "requests": 11,
+    "requests": 12,
     "files": {
       "child.txt": "CHILD_E2E_CONTENT\n"
     }

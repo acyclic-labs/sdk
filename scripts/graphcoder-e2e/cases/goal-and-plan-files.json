@@ -69,8 +69,8 @@
   "assert": {
     "requests": 5,
     "model_contains": [
-      "Keep the current goal",
-      "Keep each Markdown plan"
+      "GOAL.md is used only when looping on a goal",
+      "Plans and notes go in"
     ],
     "last_model_contains": [
       "---\\nstatus: active\\n---\\nGOAL_E2E\\n"

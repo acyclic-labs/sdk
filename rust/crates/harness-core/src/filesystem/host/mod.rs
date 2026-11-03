@@ -147,6 +147,7 @@ mod content;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
 mod content_selection;
+mod diff;
 mod directory;
 mod family;
 mod keys;
@@ -160,7 +161,7 @@ mod volume_access;
 pub use import::VolumeImportPlan;
 mod volumes;
 mod workspaces;
-pub(crate) use keys::map_error;
+pub(crate) use keys::{content_path, map_error};
 pub(in crate::filesystem) use keys::{content_metadata_path_io, content_receipt_path_io};
 pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use publication::{
