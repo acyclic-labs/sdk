@@ -1,10 +1,11 @@
 //! Semantic properties of the deployed native reply reducer, without an alternate model.
 use acyclic_harness_core::Outcome;
+use acyclic_native_runtime::lines::LineBuffer;
 use serde_json::Value;
 
 #[path = "../harness/src/local/host_process/children/answer.rs"]
 mod answer;
-use answer::{ANSWER_LIMIT, NativeAnswer};
+use answer::{ANSWER_LIMIT, EVENT_LIMIT, NativeAnswer};
 
 fn copy(answer: &NativeAnswer) -> NativeAnswer {
     NativeAnswer {
@@ -31,18 +32,32 @@ fn prefix(original: &str, retained: &str) {
     }
 }
 
-/// Input is native JSONL. Framing and process custody have separate owning checks;
-/// this oracle starts at the same parsed event boundary as `children::output`.
+/// Original pipe bytes pass through the deployed framer and reducer. Vary read
+/// boundaries, never add an EOF delimiter: incomplete live frames stay pending.
 pub fn check(bytes: &[u8]) -> usize {
+    let (fragmented, accepted) = fold(
+        bytes,
+        bytes.first().map_or(1, |byte| usize::from(*byte) + 1),
+    );
+    let (pages, page_count) = fold(bytes, 8192);
+    same(&fragmented, &pages);
+    assert_eq!(accepted, page_count);
+    accepted
+}
+
+fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
+    let mut frames = LineBuffer::new(EVENT_LIMIT);
     let mut current = NativeAnswer::default();
     let mut accepted = 0;
-    for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(line) = std::str::from_utf8(line) else {
-            // The native line codec reports invalid UTF-8 as framing loss.
+    for line in bytes
+        .chunks(chunk_size)
+        .flat_map(|chunk| frames.push(chunk))
+    {
+        let Ok(line) = line else {
             current.omit();
             continue;
         };
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         accepted += 1;
@@ -175,7 +190,7 @@ pub fn check(bytes: &[u8]) -> usize {
         lost.omit();
         same(&once, &lost);
     }
-    accepted
+    (current, accepted)
 }
 
 /// Preserve the original unique cost control alongside the wider corpus property.
