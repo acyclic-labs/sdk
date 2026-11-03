@@ -186,43 +186,53 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         );
         let executable =
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
-        // Arbitrary non-NUL native values must stay outside the shell, without
-        // interpreting UTF-8 or enumerating credential names in production.
-        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
-            .run(&prop::collection::vec(1u8..=255, 0..32), |value| {
-                let result = std::process::Command::new(&executable)
-                    .args([test_name.as_str(), "--exact", "--nocapture"])
-                    .env(CHILD, &home)
-                    .env("PATH", &bin)
-                    .env("HOME", "ambient-home")
-                    .env("ANTHROPIC_API_KEY", "fixture-only-credential")
-                    .env(
-                        "ACYCLIC_TEST_RENAMED_SECRET",
-                        "fixture-only-renamed-credential",
-                    )
-                    .env("ACYCLIC_VOLUME_DATA", "stale mount")
-                    .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
-                    .env("BASH_ENV", &startup)
-                    .env(
-                        "ACYCLIC_TEST_NATIVE_BYTES",
-                        std::ffi::OsString::from_vec(value),
-                    )
-                    .env(
-                        std::ffi::OsString::from_vec(b"ACYCLIC_TEST_NATIVE_\xff".to_vec()),
-                        std::ffi::OsString::from_vec(b"fixture-native-\xff".to_vec()),
-                    )
-                    .output()
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                prop_assert!(
-                    result.status.success(),
-                    "{}\n{}",
-                    String::from_utf8_lossy(&result.stdout),
-                    String::from_utf8_lossy(&result.stderr)
-                );
-                // A stale selector may succeed after running zero tests.
-                prop_assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
-                Ok(())
-            })
+        // The closed allowlist excludes each ambient key independently. Put all
+        // 32 generated non-NUL native values in one isolated environment; the
+        // same shell observes their absence and the original leak control.
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1))
+            .run(
+                &prop::collection::vec(prop::collection::vec(1u8..=255, 0..32), 32),
+                |values| {
+                    let mut command = std::process::Command::new(&executable);
+                    command
+                        .args([test_name.as_str(), "--exact", "--nocapture"])
+                        .env(CHILD, &home)
+                        .env("PATH", &bin)
+                        .env("HOME", "ambient-home")
+                        .env("ANTHROPIC_API_KEY", "fixture-only-credential")
+                        .env(
+                            "ACYCLIC_TEST_RENAMED_SECRET",
+                            "fixture-only-renamed-credential",
+                        )
+                        .env("ACYCLIC_VOLUME_DATA", "stale mount")
+                        .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+                        .env("BASH_ENV", &startup)
+                        .env(
+                            std::ffi::OsString::from_vec(b"ACYCLIC_TEST_NATIVE_\xff".to_vec()),
+                            std::ffi::OsString::from_vec(b"fixture-native-\xff".to_vec()),
+                        );
+                    for (index, value) in values.into_iter().enumerate() {
+                        let name = if index == 0 {
+                            "ACYCLIC_TEST_NATIVE_BYTES".into()
+                        } else {
+                            format!("ACYCLIC_TEST_NATIVE_BYTES_{index}")
+                        };
+                        command.env(name, std::ffi::OsString::from_vec(value));
+                    }
+                    let result = command
+                        .output()
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    prop_assert!(
+                        result.status.success(),
+                        "{}\n{}",
+                        String::from_utf8_lossy(&result.stdout),
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                    // A stale selector may succeed after running zero tests.
+                    prop_assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+                    Ok(())
+                },
+            )
             .map_err(|error| Error::Invalid(error.to_string()))?;
         return Ok(());
     }
@@ -236,7 +246,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
     let input = ShellInput {
-        command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
+        command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${!ACYCLIC_TEST_NATIVE_BYTES*}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
         timeout_ms: Some(5000), target: None,
     };

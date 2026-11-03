@@ -448,40 +448,6 @@ fn independently_selected_event_budget_still_rejects_excess_observations() -> Re
     Ok(())
 }
 
-#[tokio::test]
-async fn journal_retry_keys_and_sequences_are_operation_scoped() -> Result<()> {
-    let journal = Journal::default();
-    let first = OperationId::from_bytes([20; 16]);
-    let second = OperationId::from_bytes([21; 16]);
-    for (operation_id, digest) in [(first, [1; 32]), (second, [2; 32])] {
-        journal
-            .append(
-                operation_id,
-                "execution:started",
-                &ExecutionEvent::Started {
-                    request_digest: digest,
-                },
-                None,
-            )?
-            .await?;
-    }
-    let replayed_first = journal
-        .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
-        .await?;
-    let [first_entry] = replayed_first.as_slice() else {
-        unreachable!("expected exactly one replayed event for the first operation");
-    };
-    assert_eq!(first_entry.sequence, 1);
-    let replayed_second = journal
-        .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
-        .await?;
-    let [second_entry] = replayed_second.as_slice() else {
-        unreachable!("expected exactly one replayed event for the second operation");
-    };
-    assert_eq!(second_entry.sequence, 1);
-    Ok(())
-}
-
 mod prepared_request_reuse_properties {
     use super::*;
     use proptest::prelude::*;
@@ -749,16 +715,19 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
-    journal
-        .append(
-            operation,
-            "started",
-            &ExecutionEvent::Started {
-                request_digest: [1; 32],
-            },
-            None,
-        )?
-        .await?;
+    let other_operation = OperationId::new();
+    for (operation_id, digest) in [(operation, [1; 32]), (other_operation, [2; 32])] {
+        journal
+            .append(
+                operation_id,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: digest,
+                },
+                None,
+            )?
+            .await?;
+    }
     let failed = |call: &str| ExecutionEvent::ToolFailed {
         step: 0,
         call_id: call.into(),
@@ -783,6 +752,16 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
             .append_if_tail(operation, 1, "tool:0:other:failed", &other, None)?
             .await?
     );
-    assert_eq!(journal.replay(operation, 0, 8, None)?.await?.len(), 2);
+    for (operation_id, digest, count) in [(operation, [1; 32], 2), (other_operation, [2; 32], 1)] {
+        let records = journal.replay(operation_id, 0, 8, None)?.await?;
+        assert_eq!(records.len(), count);
+        assert_eq!(records[0].sequence, 1);
+        assert_eq!(
+            records[0].event,
+            ExecutionEvent::Started {
+                request_digest: digest,
+            }
+        );
+    }
     Ok(())
 }
