@@ -52,6 +52,14 @@ bytes, including refusal and Unknown results, and must reject unknown/duplicate
 protobuf fields and preserve a non-200 Actors status. Its byte source is immediate;
 this exercises response admission without modeling a network or its failures.
 These selectors are not product formats.
+Every input also requires admission of the retained public `command-root` writer
+capture, so refusing all command frames cannot make the conditional oracles pass.
+The kept `negative-controls/agent-command-reject-all.patch` changes only the
+production frame decoder's successful return to refusal. Apply it from the
+repository root, run the same instrumented target and corpus expecting
+`captured writer command refused`, then reverse the patch and require the same
+corpus to pass. This control checks positive admission; it does not replace the
+malformed-input controls.
 Malformed base64 is derived from admitted content while retaining its original
 encoded length and range. Writer inputs include content encoding to JSON field
 names, so wire mutation must preserve those fields. Quiet Usage and Events

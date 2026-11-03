@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-client/src/command.rs b/rust/crates/harness-client/src/command.rs
+index 13e235a1b3..57ef9617b5 100644
+--- a/rust/crates/harness-client/src/command.rs
++++ b/rust/crates/harness-client/src/command.rs
+@@ -664,7 +664,7 @@ impl PreparedCommand {
+         let command: AgentCommand =
+             serde_json::from_slice(bytes).map_err(|_| CommandError::Invalid)?;
+         command.validate()?;
+-        Ok(command)
++        Err(CommandError::Invalid)
+     }
+ 
+     /// Decode a whole command, of any size: a staged command its host
