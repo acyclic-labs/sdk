@@ -2,6 +2,7 @@
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
 Select a retained control with --wake, --owners, --host, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io or --native-terminal.
+An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
 import json
@@ -29,6 +30,7 @@ def main():
     envelope = root / "rust/crates/native-runtime/src/owner_record/mod.rs"
     durability = root / "rust/crates/native-runtime/src/testing/durability.rs"
     blocking = root / "rust/crates/native-runtime/src/blocking/mod.rs"
+    completion = root / "rust/crates/native-runtime/src/completion/state.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -41,7 +43,7 @@ def main():
         "--owner-envelope": ("../src/owner_record/tests.rs", (envelope,), "--native-owner-envelope"),
         "--durability": ("../src/testing/durability/models.rs", (durability,), "--native-durability"),
         "--durability-io": ("../src/testing/durability/tests.rs", (durability,), "--native-durability-io"),
-        "--native-terminal": ("../src/testing/queue_model.rs", (blocking,), "--native-terminal"),
+        "--native-terminal": ("../src/testing/queue_model.rs", (blocking, completion), "--native-terminal"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -176,11 +178,18 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
              b".result = Some(result);",
              b".result = Some(result.map_err(|error| io::Error::new(error.kind(), error.to_string())));",
              "original worker failure cause replaced"),
+            ("terminal-accounting", completion,
+             b"        state.task_pending = false;", b"        state.task_pending = true;",
+             "terminal accounting lost"),
+            ("terminal-wake", completion,
+             b"        let waker = state.waker.take();", b"        let waker = None;",
+             "terminal wake lost"),
         ]
     if len(sys.argv) == 4:
-        mutations = [mutation for mutation in mutations if mutation[0] == sys.argv[3]]
-        if not mutations:
+        selected = set(sys.argv[3].split(","))
+        if not selected <= {mutation[0] for mutation in mutations}:
             raise RuntimeError("selection: unknown mutation; recovery: select a retained mutation name from this controller")
+        mutations = [mutation for mutation in mutations if mutation[0] in selected]
     try:
         for mutation in mutations:
             label, path, before, after, failure, *test = mutation

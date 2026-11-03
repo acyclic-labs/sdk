@@ -169,7 +169,7 @@ fn capacity(fault: Fault) {
     eprintln!("capacity schedules: {}", schedules.load(Ordering::Relaxed));
 }
 
-fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
+fn terminal(drop_observer: bool, disposition: Disposition) {
     let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let orders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let explored = schedules.clone();
@@ -190,11 +190,6 @@ fn terminal(drop_observer: bool, disposition: Disposition, fault: Fault) {
         )
         .unwrap();
         let state = task.state.clone().unwrap();
-        {
-            let mut state = state.lock().unwrap();
-            state.broken_wake = matches!(fault, Fault::Wake);
-            state.broken_accounting = matches!(fault, Fault::Accounting);
-        }
         let job = task.pending.take().unwrap();
         let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
         let flag = Arc::new(Woken(AtomicUsize::new(0)));
@@ -267,8 +262,8 @@ fn physical_completion_races_observer_drop_on_the_real_terminal() {
         Disposition::Failed,
         Disposition::Panicked,
     ] {
-        terminal(false, disposition, Fault::None);
-        terminal(true, disposition, Fault::None);
+        terminal(false, disposition);
+        terminal(true, disposition);
     }
 }
 
@@ -282,42 +277,6 @@ fn broken_capacity_wake_is_detected() {
 #[should_panic(expected = "queue accounting lost")]
 fn broken_capacity_accounting_is_detected() {
     capacity(Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_terminal_wake_is_detected() {
-    terminal(false, Disposition::Returned, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_panicked_terminal_wake_is_detected() {
-    terminal(false, Disposition::Panicked, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal wake lost")]
-fn broken_failed_terminal_wake_is_detected() {
-    terminal(false, Disposition::Failed, Fault::Wake);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Returned, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_panicked_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Panicked, Fault::Accounting);
-}
-
-#[test]
-#[should_panic(expected = "terminal accounting lost")]
-fn broken_failed_terminal_accounting_is_detected() {
-    terminal(true, Disposition::Failed, Fault::Accounting);
 }
 
 /// Result observation and abandonment race the worker's final shared release.
