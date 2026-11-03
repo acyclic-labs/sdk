@@ -68,8 +68,8 @@ def main():
     elif mode == "--host":
         mutations = [
             ("queued-callback-wake", host,
-             b"let parked_driver = state.waiting_start.then(|| state.driver.clone()).flatten();",
-             b"let parked_driver = None::<Waker>;",
+             b"let parked_driver = state.take_start_waiter();",
+             b"let parked_driver = { state.waiting_start = false; None::<Waker> };",
              "deadlock; threads ="),
         ]
     try:
