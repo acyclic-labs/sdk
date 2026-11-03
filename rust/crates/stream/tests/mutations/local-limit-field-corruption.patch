@@ -1,0 +1,35 @@
+--- a/rust/crates/stream/src/local/frames.rs
++++ b/rust/crates/stream/src/local/frames.rs
+@@ -28,3 +28,11 @@
+     .into_iter()
+-    .map(|value| {
++    .enumerate()
++    .map(|(field, value)| {
++        let value = if std::env::var("ACYCLIC_CODEC_LIMIT_FIELD").ok().as_deref()
++            == Some(field.to_string().as_str())
++        {
++            None
++        } else {
++            value
++        };
+         // Zero is outside the admitted finite capacities and denotes None.
+@@ -36,6 +44,15 @@
+     });
+-    let values = memory.chain([
+-        Ok(limits.compaction_operations),
+-        Ok(limits.compaction_bytes),
+-    ]);
++    let compaction_bytes = if std::env::var("ACYCLIC_CODEC_LIMIT_FIELD").ok().as_deref()
++        == Some("compaction-bytes")
++    {
++        0
++    } else {
++        limits.compaction_bytes
++    };
++    let targets = if std::env::var("ACYCLIC_CODEC_LIMIT_FIELD").ok().as_deref() == Some("order") {
++        [Ok(compaction_bytes), Ok(limits.compaction_operations)]
++    } else {
++        [Ok(limits.compaction_operations), Ok(compaction_bytes)]
++    };
++    let values = memory.chain(targets);
+     let mut encoded = [0; LIMITS_BYTES];
