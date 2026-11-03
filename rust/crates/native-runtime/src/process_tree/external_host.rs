@@ -971,7 +971,6 @@ mod tests {
                     } else {
                         assert!(receipt["failure"].is_null());
                     }
-                    println!("host-receipt-capture:{receipt}");
                 }
                 if mode == "failed" {
                     assert_eq!(observation["failed"], true);
