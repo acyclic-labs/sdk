@@ -46,6 +46,25 @@ fn wire_decoders_reject_nil_and_duplicate_capabilities() {
 }
 
 #[test]
+fn all_capability_intents_round_trip_through_the_wire() {
+    let capabilities = [
+        Capability::ElasticCpu,
+        Capability::ElasticMemory,
+        Capability::LiveCheckpoint,
+        Capability::LiveFork,
+        Capability::SuspendResume,
+        Capability::LiveMovement,
+        Capability::DiskFork,
+    ];
+    for capability in capabilities {
+        assert_eq!(
+            decode_capability(encode_capability(capability)),
+            Ok(capability)
+        );
+    }
+}
+
+#[test]
 fn managed_usage_rejects_missing_lineage_authority() {
     let machine =
         MachineId::parse("00000000-0000-0000-0000-000000000001").unwrap_or_else(|_| unreachable!());
