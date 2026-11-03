@@ -13,14 +13,20 @@ test("canonical admission releases JavaScript references after intrinsic failure
   const array = Object.defineProperty([], Symbol.iterator, { get: refuse });
   const map = Object.defineProperty(new Map(), "forEach", { value: refuse });
   const sized = Object.defineProperty(new Map(), "size", { get: refuse });
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  let revokedReason: unknown;
+  try { Array.isArray(revoked.proxy); }
+  catch (caught) { revokedReason = caught; }
   const inputs = [
-    ["prototype", new Proxy({}, { getPrototypeOf: refuse })],
-    ["keys", new Proxy({}, { ownKeys: refuse })],
-    ["array iterator", array],
-    ["Map callback", map],
-    ["Map size", sized],
+    ["prototype", new Proxy({}, { getPrototypeOf: refuse }), reason],
+    ["keys", new Proxy({}, { ownKeys: refuse }), reason],
+    ["array iterator", array, reason],
+    ["Map callback", map, reason],
+    ["Map size", sized, reason],
+    ["revoked array", revoked.proxy, revokedReason],
   ] as const;
-  const outcomes = inputs.map(([step, input]) => {
+  const outcomes = inputs.map(([step, input, expected]) => {
     let error: unknown;
     try { contracts.encodeCanonicalJson(input); }
     catch (caught) { error = caught; }
@@ -30,7 +36,9 @@ test("canonical admission releases JavaScript references after intrinsic failure
     for (let index = 0; index < table.length; ++index) {
       if (Object.is(table.get(index), input)) ++retained;
     }
-    return { step, originalReason: error === reason, retained };
+    const originalReason = expected === reason ? error === reason
+      : error instanceof TypeError && expected instanceof TypeError && error.message === expected.message;
+    return { step, originalReason, retained };
   });
   expect(outcomes.map(({ originalReason }) => originalReason)).toEqual(inputs.map(() => true));
   assert.equal(outcomes.reduce((total, { retained }) => total + retained, 0), 0,
