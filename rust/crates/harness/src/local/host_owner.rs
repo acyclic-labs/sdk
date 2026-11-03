@@ -219,7 +219,7 @@ impl HostWorkspaceOwner {
                     changed.push(parent.clone());
                 }
                 // An observed child's cwd stays resident for the claim that follows.
-                let observe = matches!(action, SessionAction::Observe);
+                let observe = matches!(action, SessionAction::Observe {});
                 let session = {
                     let _locks = self.locks.hold(changed).await;
                     self.session(operation, &parent, &reference, action, next)
