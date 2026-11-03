@@ -96,9 +96,7 @@ fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::erro
     for length in 0..bytes.len() {
         assert!(ActorReference::decode(bytes.get(..length).ok_or("prefix")?).is_err());
     }
-    let mut trailing = bytes.clone();
-    trailing.push(0);
-    assert!(ActorReference::decode(&trailing).is_err());
+    testing::check(&bytes);
     // Without field boundaries these distinct valid triples alias.
     let first = ActorReference::new(b"a", b"bc", b"d")?;
     let second = ActorReference::new(b"ab", b"c", b"d")?;
@@ -148,12 +146,7 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
     for length in 0..encoded.len() {
         assert!(ResourceIdentity::decode(encoded.get(..length).ok_or("prefix")?).is_err());
     }
-    let mut trailing = encoded.clone();
-    trailing.push(0);
-    assert_eq!(
-        ResourceIdentity::decode(&trailing),
-        Err(IdentityError::Malformed)
-    );
+    testing::check(&encoded);
     let mut impossible_length = encoded;
     let length_start = RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len();
     impossible_length
