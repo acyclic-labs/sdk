@@ -214,39 +214,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
-        for code in [
-            "await tools.code({code:'1'})",
-            "await console.log('message')",
-        ] {
-            let tool = crate::tools::catalog()
-                .find(|tool| tool.name == "code")
-                .unwrap()
-                .bind()
-                .unwrap();
-            let definitions = serde_json::to_vec(&vec![tool.definition]).unwrap().into();
-            let (send, mut receive) = tokio::sync::mpsc::channel(1);
-            let (result, ()) = tokio::join!(
-                acyclic_native_runtime::blocking_future(super::run(
-                    code.into(),
-                    definitions,
-                    send,
-                    tokio_util::sync::CancellationToken::new(),
-                    4096,
-                    super::super::allocator::EngineAllocator::new(None),
-                    super::INTERRUPT_BUDGET,
-                )),
-                async move {
-                    let call = receive.recv().await.expect("engine submitted its call");
-                    drop(receive);
-                    drop(call);
-                }
-            );
-            assert!(result.unwrap().is_err());
-        }
-    }
-
-    #[tokio::test]
     async fn protective_interrupt_stops_cpu_bytecode_without_a_host_event() {
         let (send, _receive) = tokio::sync::mpsc::channel(1);
         let result = acyclic_native_runtime::blocking_future(super::run(

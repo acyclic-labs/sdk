@@ -38,3 +38,17 @@ of the allocation-owner mutation. Restore each patch before collecting coverage.
 This validates the original reply codec and custody transfer, not host tool
 admission, journal settlement or authorization. Finite fuzz runs do not establish
 full source branch coverage or C parser coverage.
+
+The same target covers accepted tool and console RPCs whose original reply
+producer is dropped, and a console RPC settled with the original `None` reply.
+These cases cross the production blocking-pool boundary and retain the original
+native ledger. Each request must actually be received before producer retirement;
+the interpreter must refuse, release its credit and finish without another wake.
+The successful console settlement must return null. This subsumes the former
+standalone dispatcher-drop example while adding native custody and variable input.
+
+Apply `mutations/code_mode_retired_reply_succeeds.patch` to turn the production
+oneshot cancellation into an empty successful reply. The unchanged oracle must
+fail at `a retired reply producer must refuse` on the console case. This mutation
+does not strand a future: it exercises the wrong-success failure mode. Restore
+the patch before collecting original coverage.

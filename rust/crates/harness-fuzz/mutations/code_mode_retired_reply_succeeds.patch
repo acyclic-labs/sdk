@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+--- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
++++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
+@@ -74,7 +74,7 @@
+                         None => Request::Log { arguments, reply },
+                     };
+                     send.send(request).await.map_err(|_| rquickjs::Error::Unknown)?;
+-                    receive.await.map(Reply).map_err(|_| rquickjs::Error::Unknown)
++                    Ok::<_, rquickjs::Error>(Reply(receive.await.unwrap_or(None)))
+                 }
+             }))?;
+             let definitions = rquickjs::String::from_str(ctx.clone(), std::str::from_utf8(&definitions).map_err(|_| rquickjs::Error::Unknown)?)?;
