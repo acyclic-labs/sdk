@@ -52,3 +52,15 @@ oneshot cancellation into an empty successful reply. The unchanged oracle must
 fail at `a retired reply producer must refuse` on the console case. This mutation
 does not strand a future: it exercises the wrong-success failure mode. Restore
 the patch before collecting original coverage.
+
+The same receive boundary also admits cancellation for tool and console calls.
+The dispatcher cancels the original token while retaining its original reply
+sender until the interpreter finishes. Reply-sender loss therefore cannot cause
+that completion. The exact interruption and native-credit retirement are checked
+through the original blocking pool, with no timer or readiness loop. The separate
+StockExecution journal-cancellation test retains its distinct terminal-record check.
+
+Apply `mutations/code_mode_cancel_succeeds.patch` to make the production cancellation
+selection return null instead of its interruption. The unchanged oracle must fail
+at `parent cancellation must retain its interruption`. This wrong-success mutation
+keeps the original cancellation wake and introduces no never-settled future.
