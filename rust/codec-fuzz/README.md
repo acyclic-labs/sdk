@@ -160,6 +160,9 @@ both a retained action binding and an explicit absent binding for external hosts
 The shared agent oracle checks record version and checkpoint codec refusals
 before payload decoding. Record checks alter original writer output, including
 short and foreign fixed headers, trailing values and truncated payloads.
+Struct record payloads additionally refuse an unknown field, including the
+payload within an externally tagged variant. This checks admission before a
+reader can silently discard data; it does not cover every nested object.
 Nested spawn history, restore generations and conversation records compare
 the admitted value with the original writer input. Its ordinary writer replay runs
 without a fuzzing toolchain:
@@ -179,6 +182,7 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | `agent-checkpoint-state.patch` | `checkpoint lost the writer's state` |
 | `agent-record-version.patch` | `agent record header refusal changed` |
 | `agent-record-trailing.patch` | `agent record header refusal changed` |
+| `agent-record-unknown-field.patch` | `agent record discarded an unknown payload field` |
 | `agent-spawn-history.patch` | `agent record lost the writer's input` |
 
 The state mutation changes the production checkpoint decoder. Replaying the

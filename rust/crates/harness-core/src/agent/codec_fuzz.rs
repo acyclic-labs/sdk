@@ -35,6 +35,30 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
     }
     let encoded = records::seal(value).expect("admitted record writer");
     assert!(records::decode_record::<T>(&encoded).is_ok());
+    // Struct records and the struct payload of an externally tagged variant
+    // refuse unknown fields. Unit variants have no fields to extend.
+    let mut extended = serde_json::to_value(value).expect("admitted record fields");
+    if let serde_json::Value::Object(fields) = &mut extended {
+        let fields = if fields.len() == 1 {
+            fields
+                .values_mut()
+                .next()
+                .and_then(serde_json::Value::as_object_mut)
+        } else {
+            Some(fields)
+        };
+        if let Some(fields) = fields {
+            fields.insert("__unknown_record_field".into(), serde_json::Value::Null);
+            let bytes = records::seal(&extended).expect("extended record writer");
+            assert!(
+                matches!(
+                    records::decode_record::<T>(&bytes),
+                    Err(super::Error::Record(_))
+                ),
+                "agent record discarded an unknown payload field"
+            );
+        }
+    }
     for version in (0..=records::RECORD_VERSION + 1).chain(std::iter::once(u32::MAX)) {
         let mut changed = encoded.clone();
         changed[..4].copy_from_slice(&version.to_be_bytes());
