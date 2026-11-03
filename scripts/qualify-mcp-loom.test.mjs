@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
-import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor } from "./qualify-mcp-loom.mjs";
+import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
@@ -141,10 +141,12 @@ test("progress qualification requires the cleanup and runnable-wake models and c
 
 test("native progress qualification instruments the real mutex and requires every selected model", () => {
   for (const [qualify, count, pattern, ordinary = false] of [
-    [qualifyNativeProgressLoom, 8, /^testing::(?:(?:queue_)?model::|durability::models::)/],
+    [qualifyNativeProgressLoom, 11, /^(?:testing::(?:(?:queue_)?model::|(?:durability|entropy)::models::)|device_flush::model::)/],
     [run => qualifyNativeHostLoom(run, true), 3, /^testing::host::models::/],
     [qualifyNativeExecutor, 2, /^testing::executor::models::/],
     [run => qualifyNativeExecutor(run, true), 1, /^testing::executor::tests::/, true],
+    [qualifyNativeSources, 1, /^testing::clock::tests::/, true],
+    [run => qualifyNativeSources(run, true), 3, /^(?:testing::entropy::models::|device_flush::model::)/],
   ]) for (const missing of [null, ...Array.from({ length: count }, (_, index) => index + 1)]) {
     let models = 0;
     const run = (command, args, options) => {

@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source or --executor-rounds.
+Select a retained control with --wake, --owners, --host, --host-source, --host-events, --ownership, --claim, --descriptor, --owner-envelope, --durability, --durability-io, --native-terminal, --native-capacity, --native-funding --native-tracker, --executor-source, --executor-rounds, --clock or --core-source.
 An optional comma-separated mutation selection shares one restored positive run.
 """
 import hashlib
@@ -13,8 +13,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds")):
-        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds [mutation]]")
+    if len(sys.argv) not in (2, 3, 4) or (len(sys.argv) >= 3 and sys.argv[2] not in ("--wake", "--owners", "--host", "--host-source", "--host-events", "--ownership", "--claim", "--descriptor", "--owner-envelope", "--durability", "--durability-io", "--native-terminal", "--native-capacity", "--native-funding", "--native-tracker", "--executor-source", "--executor-rounds", "--clock", "--core-source")):
+        raise RuntimeError("arguments: expected evidence directory, optional control and mutation; recovery: pass /tmp/native-signal-control [--wake|--owners|--host|--host-source|--host-events|--ownership|--claim|--descriptor|--owner-envelope|--durability|--durability-io|--native-terminal|--native-capacity|--native-funding|--native-tracker|--executor-source|--executor-rounds|--clock|--core-source [mutation]]")
     mode = sys.argv[2] if len(sys.argv) >= 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -34,6 +34,9 @@ def main():
     admission = root / "rust/crates/native-runtime/src/workers/admission.rs"
     tracker = root / "rust/crates/native-runtime/src/testing.rs"
     executor = tracker.parent / "testing/executor.rs"
+    clock = tracker.parent / "testing/clock.rs"
+    entropy = tracker.parent / "testing/entropy.rs"
+    drain = tracker.parent / "device_flush.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
@@ -53,6 +56,8 @@ def main():
         "--native-tracker": ("../src/testing/model.rs", (tracker,), "--native-tracker"),
         "--executor-source": ("../src/testing/executor/models.rs", (executor,), "--native-executor-source"),
         "--executor-rounds": ("../src/testing/executor/tests.rs", (executor,), "--native-executor-rounds"),
+        "--clock": ("../src/testing/clock.rs", (clock,), "--native-clock"),
+        "--core-source": ("../src/testing/entropy.rs", (entropy, drain), "--native-core-source"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -266,6 +271,28 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
             ("served-round", executor,
              b"        state.served.insert(id);", b"        state.served.remove(&id);",
              "ready task starved within a round", "testing::executor::tests::every_continuously_ready_task_runs_in_each_round"),
+        ]
+    elif mode == "--clock":
+        mutations = [
+            ("elapsed-time", clock,
+             b"self.millis.saturating_add(\n            u64::try_from(now.duration_since(*anchor).as_millis()).unwrap_or(u64::MAX),\n        )",
+             b"self.millis",
+             "wall clock diverged"),
+            ("initial-anchor", clock,
+             b"        self.anchor.get_or_insert_with(tokio::time::Instant::now);",
+             b"        // omitted original initial monotonic anchor",
+             "wall clock diverged"),
+        ]
+    elif mode == "--core-source":
+        mutations = [
+            ("entropy-cursor", entropy,
+             b"        lock(&self.reader).fill(bytes);",
+             b"        let mut reader = lock(&self.reader);\n        reader.set_position(0);\n        reader.fill(bytes);",
+             "duplicate entropy draw", "testing::entropy::models::concurrent_draws_cannot_share_bytes"),
+            ("running-drain", drain,
+             b"        let target = progress.started + 1;",
+             b"        let target = progress.started + u64::from(!progress.draining);",
+             "acknowledged before a covering drain", "device_flush::model::every_acknowledgement_follows_a_drain_that_started_after_its_write"),
         ]
     if len(sys.argv) == 4:
         selected = set(sys.argv[3].split(","))

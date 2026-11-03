@@ -109,6 +109,12 @@ export function qualifyE2eProgressLoom(features = ["--features", "filesystem-loc
   });
 }
 
+const nativeCoreModels = [
+  "testing::entropy::models::concurrent_draws_cannot_share_bytes",
+  "device_flush::model::every_acknowledgement_follows_a_drain_that_started_after_its_write",
+  "device_flush::model::a_failed_drain_acknowledges_nobody_and_strands_nobody",
+];
+
 export function qualifyNativeProgressLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
@@ -122,6 +128,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
       "testing::queue_model::shared_waiter_funding_survives_admission_and_cancellation",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
       "testing::durability::models::concurrent_writers_cannot_clear_the_crash_boundary",
+      ...nativeCoreModels,
     ],
   });
 }
@@ -224,6 +231,14 @@ export function qualifyNativeExecutor(run = runCommand, rounds = false) {
       "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake",
       "testing::executor::models::real_completion_wait_latches_early_and_late_wakes",
     ],
+  });
+}
+
+export function qualifyNativeSources(run = runCommand, core = false) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    ...(core ? { env: loomEnvironment() } : {}),
+    filters: core ? nativeCoreModels : ["testing::clock::tests::automatic_timeout_advancement_cannot_leave_wall_time_behind"],
   });
 }
 
@@ -338,6 +353,8 @@ const fixedModels = {
   "--native-host-source": run => qualifyNativeHostLoom(run, true),
   "--native-executor-source": qualifyNativeExecutor,
   "--native-executor-rounds": run => qualifyNativeExecutor(run, true),
+  "--native-clock": qualifyNativeSources,
+  "--native-core-source": run => qualifyNativeSources(run, true),
   "--native-wake": qualifyNativeWakeLoom,
   "--native-owner": qualifyNativeOwnerLoom,
   "--native-claim": qualifyNativeClaimLoom,
