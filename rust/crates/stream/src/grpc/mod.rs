@@ -23,10 +23,11 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamError, StreamProvider, wire,
+    AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
+#[cfg(test)]
+use crate::{AppendRequest, CommitOutcome, CommitRequest, ForkReceipt};
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;

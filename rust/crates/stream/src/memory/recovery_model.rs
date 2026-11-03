@@ -371,7 +371,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             let registered = if omit_anchor {
                 provider
                     .follow(crate::FollowRequest::new(path, cursor.next))
-                    .map_ok(crate::records_only)
+                    .map_ok(|updates| crate::records_only(updates).boxed())
                     .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor)

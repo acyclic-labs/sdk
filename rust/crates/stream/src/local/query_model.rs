@@ -283,9 +283,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let waker = std::task::Waker::from(pushed.clone());
         let mut context = std::task::Context::from_waker(&waker);
         assert!(
-            std::pin::Pin::new(&mut follow)
-                .poll_next(&mut context)
-                .is_pending()
+            futures::Stream::poll_next(std::pin::Pin::new(&mut follow), &mut context).is_pending()
         );
         // The subscriber is genuinely parked before the production append starts.
         let writer = loom::thread::spawn({

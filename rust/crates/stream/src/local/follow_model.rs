@@ -98,15 +98,18 @@ pub(crate) fn cancellation(retain: bool) {
         .unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(
-            cancelled
-                .as_mut()
-                .poll_next(&mut Context::from_waker(&wake))
-                .is_pending()
+            futures::Stream::poll_next(
+                std::pin::Pin::new(&mut cancelled),
+                &mut Context::from_waker(&wake)
+            )
+            .is_pending()
         );
         assert!(
-            kept.as_mut()
-                .poll_next(&mut Context::from_waker(&wake))
-                .is_pending()
+            futures::Stream::poll_next(
+                std::pin::Pin::new(&mut kept),
+                &mut Context::from_waker(&wake)
+            )
+            .is_pending()
         );
         let dropping = loom::thread::spawn(move || {
             if retain {

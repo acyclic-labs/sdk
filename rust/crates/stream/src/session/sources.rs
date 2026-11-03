@@ -2,9 +2,11 @@
 #[cfg(loom)]
 use super::sync::{AtomicU64, Ordering};
 use super::*;
-use crate::runtime::sources::{ALL, EITHER, LATEST};
+#[cfg(test)]
+use crate::runtime::sources::OPENING;
 #[cfg(any(test, loom))]
-use crate::runtime::sources::{OPENING, Wake};
+use crate::runtime::sources::Wake;
+use crate::runtime::sources::{ALL, EITHER, LATEST};
 #[cfg(any(test, loom))]
 use futures::task::ArcWake;
 #[cfg(any(test, loom))]

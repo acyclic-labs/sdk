@@ -38,6 +38,10 @@ pub use head::{
 };
 pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
 pub use record_frames::record_frames;
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) use revision::selection_for_follow;
 pub use revision::{
     cut_from_wire, cut_proven_by, cut_to_wire, issued_from_wire, opened_to_wire,
