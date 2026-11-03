@@ -6,7 +6,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[5]
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("mode", choices=["request", "dns"])
+parser.add_argument("mode", choices=["request", "dns", "socket-work"])
 MODE = parser.parse_args().mode
 SOURCE = ROOT / f"rust/crates/auth/src/{'authority' if MODE == 'request' else 'socket'}.rs"
 TEST = ROOT / "rust/crates/auth/tests/request_hardening.rs"
@@ -19,6 +19,14 @@ CONTROLS = ([("request_resource_guard", "NonCanonicalResource"),
 COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
            "--test", "main", f"request_hardening::{PROPERTY}",
            "--", "--exact", "--nocapture"]
+PATHS = [SOURCE, TEST, HELPER]
+if MODE == "socket-work":
+    TEST = SOURCE.parent / "socket/tests.rs"
+    PATHS = [SOURCE, TEST]
+    CONTROLS = [("socket_validation_work", "left: 32")]
+    COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
+               "--lib", "socket::tests::destination_validation_is_once_per_grant_not_once_per_rule",
+               "--", "--exact", "--nocapture"]
 
 
 def refuse(step):
@@ -33,7 +41,7 @@ def run(label):
     return result.returncode, output
 
 
-original = {path: path.read_bytes() for path in (SOURCE, TEST, HELPER)}
+original = {path: path.read_bytes() for path in PATHS}
 for guard, denial in CONTROLS:
     try:
         patch = Path(__file__).with_name(f"{guard}.patch")
@@ -41,8 +49,8 @@ for guard, denial in CONTROLS:
             if subprocess.run(command, cwd=ROOT).returncode:
                 refuse(f"{guard} mutation application failed")
         code, output = run(f"ACTUAL_{guard.upper()}_GUARD_REMOVAL")
-        if not code or "0 passed; 1 failed;" not in output or "minimal failing input:" not in output or denial not in output:
-            refuse(f"{guard} mutation missed the public property's guard assertion")
+        if not code or "0 passed; 1 failed;" not in output or denial not in output or (MODE != "socket-work" and "minimal failing input:" not in output):
+            refuse(f"{guard} mutation missed the surviving assertion")
         print("AUTHORIZATION_GUARD_EXPECTED_RED", guard, flush=True)
     finally:
         SOURCE.write_bytes(original[SOURCE])
