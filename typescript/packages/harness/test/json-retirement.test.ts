@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import * as contracts from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureModelWasm } from "../src/wasm-runtime.js";
 
@@ -31,7 +32,9 @@ test("canonical admission releases JavaScript references after intrinsic failure
     }
     return { step, originalReason: error === reason, retained };
   });
-  expect(outcomes).toEqual(inputs.map(([step]) => ({ step, originalReason: true, retained: 0 })));
+  expect(outcomes.map(({ originalReason }) => originalReason)).toEqual(inputs.map(() => true));
+  assert.equal(outcomes.reduce((total, { retained }) => total + retained, 0), 0,
+    "JavaScript refusal retained original input");
   expect(contracts.decodeClientJson(contracts.encodeCanonicalJson({ valid: 7n })))
     .toEqual({ valid: 7n });
 });
