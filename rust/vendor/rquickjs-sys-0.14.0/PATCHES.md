@@ -3,6 +3,10 @@ This is the build source of the published `rquickjs-sys` 0.14.0 crate
 Platform bindings, WebAssembly support and required C sources are retained;
 unrelated upstream examples, tests and development files are omitted.
 
+The archive's `.cargo_vcs_info.json` identifies `sys` at commit
+`d7ef5eeae702fea24c03643064de454f1c1dd4b0`. Its package license is MIT;
+the bundled QuickJS license and wasi-libc dependency notices are retained.
+
 `JS_ToCStringLen2` releases its owned `val` at the shared failure label,
 matching `JS_ToCStringLenUTF16`. Refusing either the narrow or wide UTF-8
 temporary allocation previously leaked the source string reference. The
