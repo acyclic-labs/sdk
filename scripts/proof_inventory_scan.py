@@ -178,7 +178,7 @@ def scan_file(path, root):
                     item['classification'] = 'needs_typed_error_semantic_review'
                 signals.append(item)
     for kind, regex in [
-        ('kani', r'#\[\s*kani::proof\s*\]'),
+        ('kani', r'#\[\s*kani::proof(?:\s*\]|_for_contract\s*\()'),
         ('loom', r'\bloom::(?:model|sync|thread)\b'),
         ('proptest', r'\b(?:proptest::)?proptest\s*!'),
         ('fuzz', r'\bfuzz_target\s*!|\bbolero::check\s*!'),

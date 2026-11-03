@@ -2,13 +2,42 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
+macro_rules! descriptors {
+    ($($file:literal),* $(,)?) => {
+        [$(($file, include_bytes!(concat!("../../../compatibility/descriptors/", $file)).as_slice())),*]
+    };
+}
+
+const WRITERS: &[(&str, &[u8])] = &descriptors![
+    "auth-v1.bin",
+    "actors-v1.bin",
+    "filesystem-v2.bin",
+    "inference-v1.bin",
+    "machines-v1.bin",
+    "objects-v1.bin",
+    "stream-v1.bin",
+    "harness-v2.bin",
+];
+
 fuzz_target!(|bytes: &[u8]| {
-    if bytes.len() > 65_536 {
-        return;
-    }
-    if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, &["sample.proto"]) {
+    assert_eq!(WRITERS.len(), acyclic_proto_build::FAMILIES.len());
+    let index = usize::from(bytes.first().copied().unwrap_or_default()) % WRITERS.len();
+    let ((file, writer), (_, expected_file, roots)) = WRITERS
+        .iter()
+        .zip(acyclic_proto_build::FAMILIES)
+        .nth(index)
+        .unwrap_or_else(|| unreachable!("descriptor family missing"));
+    assert_eq!(file, expected_file);
+    assert_eq!(
+        acyclic_proto_build::canonicalize(writer, roots)
+            .ok()
+            .as_deref(),
+        Some(*writer),
+        "canonical production writer descriptor refused or changed"
+    );
+    if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, roots) {
         assert_eq!(
-            acyclic_proto_build::canonicalize(&canonical, &["sample.proto"])
+            acyclic_proto_build::canonicalize(&canonical, roots)
                 .ok()
                 .as_deref(),
             Some(canonical.as_slice())

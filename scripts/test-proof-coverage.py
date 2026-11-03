@@ -20,6 +20,13 @@ CAPTURES = ROOT / 'scripts/tests/fixtures/proof-policy/entrypoint-discovery-v1'
 
 
 class ProofCoverage(unittest.TestCase):
+    def test_contract_proof_discovery_uses_the_production_formatter(self):
+        source = 'rust/crates/filesystem/proofs/lease-path/lib.rs'
+        proofs = POLICY.scan_file(source, ROOT)['proofs']
+        names = [row['name'] for row in proofs if row['kind'] == 'kani']
+        self.assertIn('every_identity_fits_its_fixed_hex_component', names)
+        self.assertEqual(len(names), len(set(names)))
+
     def test_real_reporting_source_has_eleven_receipt_backed_entries(self):
         result = POLICY.check_review(ROOT, MANIFEST, [SOURCE])
         self.assertEqual((result['changed_rust_files'], result['entries']), (1, 11))
