@@ -2,6 +2,9 @@
 use crate::{StreamError, persistence};
 use prost::Message as _;
 
+#[cfg(feature = "grpc")]
+pub mod status;
+
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 fn session_admission() -> crate::wire::SessionFrame {
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
