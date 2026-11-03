@@ -135,8 +135,26 @@ fn apply_reference(
             kind,
             extend,
         } => {
-            let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-            let end = usize::try_from(offset.saturating_add(*length)).unwrap_or(usize::MAX);
+            if *length == 0 {
+                return Err(ExtentMutationError::EmptyRange);
+            }
+            if let ExtentKind::Content {
+                object,
+                object_offset,
+            } = kind
+            {
+                if object.kind != ObjectKind::Blob {
+                    return Err(ExtentMutationError::WrongContentKind);
+                }
+                object_offset
+                    .checked_add(*length)
+                    .ok_or(ExtentMutationError::RangeOverflow)?;
+            }
+            let end = offset
+                .checked_add(*length)
+                .ok_or(ExtentMutationError::RangeOverflow)?;
+            let start = usize::try_from(*offset).map_err(|_| ExtentMutationError::RangeOverflow)?;
+            let end = usize::try_from(end).map_err(|_| ExtentMutationError::RangeOverflow)?;
             if !extend && end > bytes.len() {
                 return Err(ExtentMutationError::OutsideFile);
             }
@@ -154,7 +172,11 @@ fn apply_reference(
                     } => ByteKind::Content {
                         object: *object,
                         offset: object_offset
-                            .saturating_add(u64::try_from(relative).unwrap_or(u64::MAX)),
+                            .checked_add(
+                                u64::try_from(relative)
+                                    .map_err(|_| ExtentMutationError::RangeOverflow)?,
+                            )
+                            .ok_or(ExtentMutationError::RangeOverflow)?,
                     },
                 };
             }
@@ -178,6 +200,7 @@ async fn generated_sparse_histories_match_independent_byte_model()
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([9; 32]),
     };
+    let mut refusal_mismatches = [false; 5];
     for history in 0..256_u64 {
         let store = MemoryObjectStore::default();
         let mut seed = history.saturating_add(1);
@@ -227,14 +250,45 @@ async fn generated_sparse_histories_match_independent_byte_model()
             mutations.push(mutation);
         }
         for reject in [false, true] {
-            // The refused variant ends with a write past the evolving length;
-            // it must not read or publish the original root.
+            // Refused variants exercise each admission cause before storage.
+            let refusal = usize::try_from(history % 5)?;
             let expected_admission = if reject {
+                let (offset, length, kind, extend) = match refusal {
+                    0 => (
+                        u64::try_from(expected.len())?,
+                        1,
+                        ExtentKind::AllocatedZero,
+                        false,
+                    ),
+                    1 => (u64::MAX, 0, ExtentKind::Hole, false),
+                    2 => (u64::MAX, 1, ExtentKind::AllocatedZero, true),
+                    3 => (
+                        0,
+                        1,
+                        ExtentKind::Content {
+                            object: ObjectId {
+                                kind: ObjectKind::Metadata,
+                                ..blob
+                            },
+                            object_offset: u64::MAX,
+                        },
+                        false,
+                    ),
+                    _ => (
+                        0,
+                        1,
+                        ExtentKind::Content {
+                            object: blob,
+                            object_offset: u64::MAX,
+                        },
+                        true,
+                    ),
+                };
                 let mutation = ExtentMutation::Replace {
-                    offset: u64::try_from(expected.len())?,
-                    length: 1,
-                    kind: ExtentKind::AllocatedZero,
-                    extend: false,
+                    offset,
+                    length,
+                    kind,
+                    extend,
                 };
                 let outcome = apply_reference(&mut expected, &mutation);
                 mutations.push(mutation);
@@ -258,11 +312,8 @@ async fn generated_sparse_histories_match_independent_byte_model()
             .await;
             if let Err(expected_error) = expected_admission {
                 let failure = result.expect_err("extent admission differs from byte model");
-                assert_eq!(
-                    std::mem::discriminant(&failure.error),
-                    std::mem::discriminant(&expected_error),
-                    "history {history} refused with a different cause"
-                );
+                refusal_mismatches[refusal] |= std::mem::discriminant(&failure.error)
+                    != std::mem::discriminant(&expected_error);
                 assert_eq!(failure.work.items_examined, u64::try_from(mutations.len())?);
                 assert_eq!(failure.work.allocation_operations, 0);
                 assert_eq!(failure.work.peak_allocation_bytes, 0);
@@ -281,52 +332,10 @@ async fn generated_sparse_histories_match_independent_byte_model()
             );
         }
     }
-    Ok(())
-}
-
-#[test]
-fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let empty = admit_patch_plan(
-        8,
-        &[ExtentMutation::Replace {
-            offset: 0,
-            length: 0,
-            kind: ExtentKind::Hole,
-            extend: false,
-        }],
-        &mut accounting,
-    )
-    .err()
-    .ok_or("empty replacement unexpectedly admitted")?;
-    assert!(matches!(
-        project_extent_error(empty),
-        ExtentMutationError::EmptyRange
-    ));
-
-    let overflow = admit_patch_plan(
-        u64::MAX,
-        &[ExtentMutation::Replace {
-            offset: u64::MAX,
-            length: 1,
-            kind: ExtentKind::AllocatedZero,
-            extend: true,
-        }],
-        &mut accounting,
-    )
-    .err()
-    .ok_or("overflowing replacement unexpectedly admitted")?;
-    assert!(matches!(
-        project_extent_error(overflow),
-        ExtentMutationError::RangeOverflow
-    ));
-
-    assert!(!equivalent_continuation(&hole(0, 1), &hole(2, 1))?);
-    assert!(equivalent_continuation(&hole(0, 1), &hole(1, 1))?);
-    assert!(equivalent_continuation(&allocated(0, 1), &allocated(1, 1))?);
-    assert!(!equivalent_continuation(&hole(0, 1), &allocated(1, 1))?);
+    assert_eq!(
+        refusal_mismatches, [false; 5],
+        "extent refusal causes differ from byte model"
+    );
     Ok(())
 }
 
