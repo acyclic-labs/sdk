@@ -5,85 +5,105 @@ use super::file_read::OriginalReadAccounting;
 use super::*;
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
 
-fn decode(
+/// Re-encodes an admitted value and requires the encoding to decode to it.
+/// `PLANTED` flips one canonical byte: the negative control for this oracle.
+fn canonical<T: PartialEq + std::fmt::Debug, const PLANTED: bool>(
+    value: &T,
+    encoded: Result<Vec<u8>, FsError>,
+    decode: impl FnOnce(&[u8]) -> Result<T, FsError>,
+) -> Vec<u8> {
+    let mut canonical = encoded.expect("an admitted value has a canonical encoding");
+    if PLANTED {
+        *canonical.last_mut().expect("encodings carry a header") ^= 1;
+    }
+    let decoded = decode(&canonical).expect("a canonical encoding decodes");
+    assert_eq!(
+        &decoded, value,
+        "canonical encoding changes the decoded value"
+    );
+    canonical
+}
+
+/// One persisted page or object kind per selector, in decoder-oracle order.
+const KINDS: u8 = 6;
+
+fn decode<const PLANTED: bool>(
     kind: u8,
     bytes: &[u8],
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), FsError>,
 ) -> Result<Vec<u8>, FsError> {
     let allocation_error = |_| CanonicalDecodeError::AllocationFailed.into();
-    match kind {
+    let items = limits.maximum_page_items;
+    Ok(match kind {
         0 => {
             let value = decode_file_metadata(bytes, limits, observe)?;
-            let canonical =
-                encode_file_metadata(value, |_| Ok::<_, FsError>(()), allocation_error)?;
-            assert_eq!(
-                decode_file_metadata(&canonical, limits, &mut |_| Ok::<_, FsError>(()))?,
-                value
-            );
-            Ok(canonical)
+            canonical::<_, PLANTED>(
+                &value,
+                encode_file_metadata(value, |_| Ok::<_, FsError>(()), allocation_error),
+                |bytes| decode_file_metadata(bytes, limits, &mut |_| Ok::<_, FsError>(())),
+            )
         }
         1 => {
             let value = decode_generation_root(bytes, limits, observe)?;
-            let canonical =
-                encode_generation_root(&value, |_| Ok::<_, FsError>(()), allocation_error)?;
-            assert_eq!(
-                decode_generation_root(&canonical, limits, |_| Ok::<_, FsError>(()))?,
-                value
-            );
-            Ok(canonical)
+            canonical::<_, PLANTED>(
+                &value,
+                encode_generation_root(&value, |_| Ok::<_, FsError>(()), allocation_error),
+                |bytes| decode_generation_root(bytes, limits, |_| Ok::<_, FsError>(())),
+            )
         }
         2 => {
             let value = decode_file_table_page(bytes, limits, observe)?;
-            let canonical = encode_file_table_page(
+            canonical::<_, PLANTED>(
                 &value,
-                limits.maximum_page_items,
-                |_| Ok::<_, FsError>(()),
-                allocation_error,
-            )?;
-            assert_eq!(
-                decode_file_table_page(&canonical, limits, &mut |_| Ok::<_, FsError>(()))?,
-                value
-            );
-            Ok(canonical)
+                encode_file_table_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
+                |bytes| decode_file_table_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
+            )
         }
         3 => {
             let value = decode_tree_page(bytes, limits, observe)?;
-            let canonical = encode_tree_page(
+            canonical::<_, PLANTED>(
                 &value,
-                limits.maximum_page_items,
-                |_| Ok::<_, FsError>(()),
-                allocation_error,
-            )?;
-            assert_eq!(
-                decode_tree_page(&canonical, limits, &mut |_| Ok::<_, FsError>(()))?,
-                value
-            );
-            Ok(canonical)
+                encode_tree_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
+                |bytes| decode_tree_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
+            )
+        }
+        4 => {
+            let value = decode_extent_page(bytes, limits, observe)?;
+            canonical::<_, PLANTED>(
+                &value,
+                encode_extent_page(&value, items, |_| Ok::<_, FsError>(()), allocation_error),
+                |bytes| decode_extent_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
+            )
         }
         _ => {
-            let value = decode_extent_page(bytes, limits, observe)?;
-            let canonical = encode_extent_page(
+            let value = bindings::decode_binding_page(bytes, limits, observe)?;
+            let page = match &value {
+                persistent_btree::Page::Leaf(entries) => persistent_btree::PageRef::Leaf(entries),
+                persistent_btree::Page::Internal(children) => {
+                    persistent_btree::PageRef::Internal(children)
+                }
+            };
+            canonical::<_, PLANTED>(
                 &value,
-                limits.maximum_page_items,
-                |_| Ok::<_, FsError>(()),
-                allocation_error,
-            )?;
-            assert_eq!(
-                decode_extent_page(&canonical, limits, &mut |_| Ok::<_, FsError>(()))?,
-                value
-            );
-            Ok(canonical)
+                bindings::encode_binding_page(
+                    &page,
+                    items,
+                    |_| Ok::<_, FsError>(()),
+                    allocation_error,
+                ),
+                |bytes| bindings::decode_binding_page(bytes, limits, &mut |_| Ok::<_, FsError>(())),
+            )
         }
-    }
+    })
 }
 
 /// Fuzz bytes, limits, cancellation and injected before-effect decoder failures.
 pub fn check(input: &[u8]) {
-    let _ = check_inner::<false>(input);
+    let _ = check_inner::<false, false>(input);
 }
 
-fn check_inner<const OMIT_COMPLETION: bool>(input: &[u8]) -> bool {
+fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -> bool {
     let Some((&kind, input)) = input.split_first() else {
         return false;
     };
@@ -141,7 +161,7 @@ fn check_inner<const OMIT_COMPLETION: bool>(input: &[u8]) -> bool {
         maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
-    let decoded = decode(kind % 5, bytes, limits, &mut |step| {
+    let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, &mut |step| {
         let before = matches!(
             step,
             ReadAllocationStep::BeforeCopy(_)
@@ -303,7 +323,7 @@ mod tests {
                 |_| CanonicalDecodeError::AllocationFailed.into(),
             )
             .unwrap(),
-            _ => encode_extent_page(
+            4 => encode_extent_page(
                 &ExtentPage::Leaf(vec![Extent {
                     offset: 0,
                     length: number % 65 + 1,
@@ -314,6 +334,34 @@ mod tests {
                 |_| CanonicalDecodeError::AllocationFailed.into(),
             )
             .unwrap(),
+            _ => {
+                let binding = |parent: u8, name: String| bindings::Binding {
+                    parent: FileId::from_bytes([parent; 16]),
+                    name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
+                };
+                let first = binding(2, format!("n{number:016x}"));
+                let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];
+                let children = [persistent_btree::Child {
+                    first,
+                    page: ObjectId {
+                        storage: None,
+                        kind: ObjectKind::BindingPage,
+                        digest: Digest::from_bytes([4; 32]),
+                    },
+                }];
+                let page = if number % 2 == 0 {
+                    persistent_btree::PageRef::Leaf(&leaf)
+                } else {
+                    persistent_btree::PageRef::Internal(&children)
+                };
+                bindings::encode_binding_page(
+                    &page,
+                    32,
+                    |_| Ok::<_, FsError>(()),
+                    |_| CanonicalDecodeError::AllocationFailed.into(),
+                )
+                .unwrap()
+            }
         }
     }
 
@@ -330,7 +378,7 @@ mod tests {
 
         #[test]
         fn canonical_round_trips_keep_exact_completed_work_and_denied_effects(
-            kind in 0_u8..5,
+            kind in 0..KINDS,
             payload in prop::collection::vec(any::<u8>(), 0..65),
             number in any::<u64>(),
             maximum in 0_u16..192,
@@ -345,7 +393,7 @@ mod tests {
             ] {
                 let mut input = vec![kind, 255, 255, mode, 0, 0];
                 input.extend_from_slice(&bytes);
-                prop_assert!(check_inner::<false>(&input));
+                prop_assert!(check_inner::<false, false>(&input));
                 input[1..3].copy_from_slice(&maximum.to_le_bytes());
                 input[4] = fault; input[5] = index;
                 check(&input);
@@ -363,7 +411,8 @@ mod tests {
         for mode in [0, 1, 2, 3, 4] {
             let mut input = vec![0, 255, 255, mode, 0, 0];
             input.extend_from_slice(&bytes);
-            let panic = std::panic::catch_unwind(|| check_inner::<true>(&input)).unwrap_err();
+            let panic =
+                std::panic::catch_unwind(|| check_inner::<true, false>(&input)).unwrap_err();
             let message = panic
                 .downcast_ref::<String>()
                 .map(String::as_str)
@@ -373,6 +422,47 @@ mod tests {
                 message.contains("missing copy completion callback"),
                 "{message}"
             );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_committed_corpus_replays_and_admits_its_canonical_binding_pages() {
+        let corpus = concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz/corpus/decoder_work");
+        for entry in std::fs::read_dir(corpus).unwrap() {
+            let path = entry.unwrap().path();
+            let input = std::fs::read(&path).unwrap();
+            let admitted = check_inner::<false, false>(&input);
+            let name = path.file_name().unwrap().to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                "binding-leaf" | "binding-internal" | "binding-sealed-internal"
+            ) {
+                assert!(admitted, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_planted_encoder_byte_is_detected_for_every_kind() {
+        for kind in 0..KINDS {
+            for number in [0, 1] {
+                let mut input = vec![kind, 255, 255, 0, 0, 0];
+                input.extend_from_slice(&fixture(kind, b"a", number));
+                assert!(check_inner::<false, false>(&input));
+                let panic =
+                    std::panic::catch_unwind(|| check_inner::<false, true>(&input)).unwrap_err();
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("");
+                assert!(
+                    message.contains("a canonical encoding decodes")
+                        || message.contains("canonical encoding changes the decoded value"),
+                    "kind {kind}: {message}"
+                );
+            }
         }
     }
 }
