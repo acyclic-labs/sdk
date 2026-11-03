@@ -591,5 +591,12 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         allocation,
         "reply growth must retain the original allocation through cancellation"
     );
+    let live = work.live_allocation_bytes();
+    let buffer_bytes = (input_allocation.1 + allocation.1) as u64;
+    drop(buffers);
+    assert!(
+        live - work.live_allocation_bytes() >= buffer_bytes,
+        "retiring packet storage must release both original-funded allocations"
+    );
     Ok(())
 }
