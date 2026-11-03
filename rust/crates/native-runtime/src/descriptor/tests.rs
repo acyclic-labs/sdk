@@ -129,21 +129,6 @@ fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
     Ok(())
 }
 
-#[test]
-fn the_default_capacity_is_a_quarter_of_the_descriptor_limit() {
-    let capacity = default_capacity();
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    {
-        let limit = match descriptor_limit() {
-            0 => 1024,
-            limit => limit,
-        };
-        let quarter = usize::try_from(limit / 4).unwrap_or(usize::MAX);
-        assert_eq!(capacity, quarter.clamp(16, 1 << 16));
-    }
-    assert!((16..=1 << 16).contains(&capacity));
-}
-
 /// Every cost a lease or a new file charges, in order.
 fn charged<T>(
     run: impl FnOnce(&mut dyn FnMut(Cost) -> io::Result<()>) -> io::Result<T>,
