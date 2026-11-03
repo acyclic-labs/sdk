@@ -121,6 +121,13 @@ pub fn evidence(slo: &Slo, counts: [u64; 3]) -> Result<(), SloError> {
             latency: None
         }
     );
+    snapshot.rpc.get_or_insert_default().push('\0');
+    assert_eq!(
+        slo.evaluate(&snapshot),
+        Err(SloError::WrongOperation),
+        "SLO must refuse evidence from a different RPC selector"
+    );
+    snapshot.rpc.clone_from(&slo.rpc);
     snapshot.operation.push('\0');
     assert_eq!(slo.evaluate(&snapshot), Err(SloError::WrongOperation));
 
