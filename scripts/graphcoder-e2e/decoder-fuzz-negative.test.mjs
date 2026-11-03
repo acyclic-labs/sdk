@@ -23,6 +23,8 @@ test("decoder fuzz oracles reject planted production defects", () => {
       "assert.ok(true,", "assertions"],
     ["assertions.mjs", 'value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)',
       "value.success === false", "assertions"],
+    ["process-report.mjs", 'if (this.#ownerExited && this.#ended) this.#finish("exited");',
+      'if (false) this.#finish("exited");', "report"],
   ];
   for (const [file, before, after, oracle] of mutations) {
     // Mutate the actual imported implementation, never a parallel model. A

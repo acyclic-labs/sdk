@@ -18,6 +18,14 @@ const retained = Buffer.concat([wire(ready), wire(acknowledgement), wire({ gener
 export async function fuzz(data, selection = selected) {
   const bytes = Buffer.from(data);
   const result = await partitions(bytes, selection);
+  for (const ownerExited of [false, true]) {
+    const late = await partitions(bytes, selection, { late: true, ownerExited });
+    if (bytes.length === 0) {
+      assert.equal(late.termination.report_outcome, ownerExited ? "exited" : "write-failed",
+        "a request after the original source ended must settle without another producer");
+      assert.equal(late.termination.report_cause, ownerExited ? undefined : "control-eof-before-request");
+    }
+  }
   const protectedResult = await partitions(Buffer.concat([retained, bytes]), selected);
   assert.equal(protectedResult.capability.ready, true, "retain the original ready observation");
   assert.equal(protectedResult.termination.report_acknowledged, true, "later bytes cannot erase the captured ACK");
@@ -27,10 +35,15 @@ export async function fuzz(data, selection = selected) {
   return result;
 }
 
-async function partitions(bytes, selection) {
+async function partitions(bytes, selection, { late = false, ownerExited = false } = {}) {
   const results = [];
   for (const fragmented of [false, true]) {
     const report = new ProcessReport();
+    const readiness = report.ready.then(() => "ready", error => {
+      assert.ok(["PROCESS_STARTUP_REJECTED", "PROCESS_EXECUTION_FAILED", "REPORT_CONTROL_ENDED"].includes(error.code),
+        "source loss must end readiness with its original typed failure");
+      return error.code;
+    });
     // Selection is trusted test setup, never derived from the untrusted frame.
     Object.assign(report, selection);
     const child = new EventEmitter();
@@ -38,7 +51,8 @@ async function partitions(bytes, selection) {
     let delivery;
     try {
       report.attach(child, channel);
-      const completed = report.request(Number.MAX_SAFE_INTEGER);
+      if (ownerExited) child.emit("exit", 0, null);
+      const completed = late ? undefined : report.request(Number.MAX_SAFE_INTEGER);
       delivery = (async () => {
         for (let offset = 0; offset < bytes.length;) {
           const end = fragmented ? Math.min(bytes.length, offset + 1 + bytes[offset]) : bytes.length;
@@ -48,9 +62,12 @@ async function partitions(bytes, selection) {
         }
         channel.push(null);
       })();
-      await completed;
+      // The actual report drain is the event. No clock, repeated readiness
+      // query or parallel lifecycle model stands in for source completion.
+      if (late) await report.closeTransport(() => {});
+      await (completed ?? report.request(Number.MAX_SAFE_INTEGER));
       await report.closeTransport(() => {});
-      results.push({ capability: report.capability, termination: report.termination });
+      results.push({ capability: report.capability, termination: report.termination, readiness: await readiness });
       assert.ok(report.termination.report_outcome, "source loss must settle the original request");
     } finally {
       await delivery;
