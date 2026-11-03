@@ -1370,6 +1370,9 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn process_host_argument_fuzz(
+            recorded in proptest::sample::select(
+                serde_json::from_str::<Vec<serde_json::Value>>(include_str!(
+                    "external_host/corpus/linux-arguments.json")).unwrap()),
             arguments in proptest::collection::vec(
                 proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64), 0..32),
             inherit_input in proptest::prelude::any::<bool>(),
@@ -1381,6 +1384,12 @@ mod tests {
             order in proptest::prelude::any::<[u8; 5]>(),
             binding in "[a-zA-Z0-9_-]{1,32}",
         ) {
+            // Conformance to the original executable's portable argv, not
+            // another parser model or rewritten installation paths.
+            let original = recorded["arguments"].as_array().unwrap().iter()
+                .map(|value| OsString::from(value.as_str().unwrap()));
+            proptest::prop_assert_eq!(Invocation::parse(original).is_ok(),
+                recorded["code"] == 17);
             let path = std::env::current_exe().unwrap().into_os_string();
             let executable = if literal { "relative-program".into() } else { path.clone() };
             let mut tail: Vec<OsString> = arguments.into_iter().map(|bytes| {
