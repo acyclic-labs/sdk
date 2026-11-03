@@ -662,6 +662,27 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .is_err()
         );
         assert_eq!(host.resolve(&workspace, None).await?, before);
+        let volume_write =
+            crate::Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]);
+        for ceiling in [&create, &volume_write] {
+            let denied = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::DeleteExpected { source: first }],
+                    &IdempotencyKey::new("conditional-delete-without-grant")?,
+                    64,
+                    ContentAccess {
+                        ceiling: Some(ceiling),
+                        io: io.as_ref(),
+                    },
+                    None,
+                )?
+                .await
+                .expect_err("create or write authority cannot authorize deletion");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            assert_eq!(host.resolve(&workspace, None).await?, before);
+        }
         let structured_delete = actions(&[Action::Delete])?;
         let volume_delete =
             crate::Capabilities::new([volume.capability(VolumeOperation::Delete, &mut None)?]);
