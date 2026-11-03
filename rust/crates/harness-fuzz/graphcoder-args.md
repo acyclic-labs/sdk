@@ -24,5 +24,6 @@ LibFuzzer instrumentation reports reached edges for this replay. A replay is not
 a fuzz campaign or complete source branch coverage. Source coverage can be
 collected separately with the existing cargo-fuzz coverage command. Windows's
 native-unit adapter still needs a Windows qualification; Linux evidence does
-not cover it. JSONL request decoding, persisted cursors, output schema admission,
-native config and installed host command parsing are separate boundaries.
+not cover it. [JSONL request decoding](graphcoder-input.md), persisted cursors,
+output schema admission, native config and installed host command parsing are
+separate boundaries.
