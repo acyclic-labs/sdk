@@ -1,12 +1,9 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
-use acyclic_actors::local::State;
+use acyclic_actors::local::{Error, State};
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{
-    CommitMutation, StreamPath, StreamProvider,
-    runtime::{Executor as _, PlatformExecutor},
-};
+use acyclic_stream::{CommitMutation, StreamError, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
 use std::sync::Arc;
@@ -43,20 +40,11 @@ async fn until(
     host: &AgentHost<Observed>,
     work: impl std::future::Future<Output = Result>,
 ) -> Result {
-    let running = async {
-        let running = host.run(|_, _| {});
-        let timeout = PlatformExecutor.sleep(5_000);
-        futures::pin_mut!(running, timeout);
-        match futures::future::select(running, timeout).await {
-            Either::Left((result, _)) => {
-                Err(format!("dispatcher stopped before observation: {result:?}").into())
-            }
-            Either::Right(_) => Err("dispatcher observation timed out".into()),
-        }
-    };
+    let running = host.run(|_, _| {});
     futures::pin_mut!(work, running);
     match futures::future::select(running, work).await {
-        Either::Left((result, _)) => result,
+        Either::Left((Err(error), _)) => Err(error.into()),
+        Either::Left((Ok(never), _)) => match never {},
         Either::Right((result, _)) => result,
     }
 }
@@ -151,13 +139,17 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             .await?;
         // First commit creates dispatcher state; second advances its cursor.
         provider.arm(1, fault);
-        if until(&host, std::future::pending()).await.is_ok() {
-            return Err("cursor crash did not interrupt discovery".into());
-        }
-        let failed = provider
-            .take_commits()
-            .pop()
-            .ok_or("cursor commit was not attempted")?;
+        let error = until(&host, std::future::pending())
+            .await
+            .expect_err("cursor crash did not interrupt discovery");
+        let Some(Error::Unknown {
+            publication,
+            source: StreamError::Unavailable,
+        }) = error.downcast_ref::<Error>()
+        else {
+            return Err(format!("cursor crash lost its original publication: {error}").into());
+        };
+        let failed = publication.request().clone();
         drop(host);
         drop(provider);
         let reopened = Arc::new(Observed::capturing(storage.open().await?));
