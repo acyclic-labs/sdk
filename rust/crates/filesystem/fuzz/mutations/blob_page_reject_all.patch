@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/blob/codec.rs b/rust/crates/filesystem/src/kernel/blob/codec.rs
+--- a/rust/crates/filesystem/src/kernel/blob/codec.rs
++++ b/rust/crates/filesystem/src/kernel/blob/codec.rs
+@@ -187,7 +187,7 @@ pub(crate) fn encode_blob_page_with_accounting(
+ ) -> Result<ReadOwned<Vec<u8>>, FsError> {
+     blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
+     accounting.admit(WorkCounters {
+-        page_writes: 1,
++        page_writes: u64::MAX,
+         ..WorkCounters::UNCHARGED
+     })?;
+     let (value, custody) = crate::kernel::codec::encode_owned(accounting, |observe, _| {
