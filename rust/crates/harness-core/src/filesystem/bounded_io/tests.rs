@@ -80,27 +80,31 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
             let io = PreparationIo::from_native_work(&native)?;
             let mut refused = None;
             let physical = acyclic_test_support::measure(|| {
-                refused = Some(io.decode(
-                    std::marker::PhantomData::<serde_json::Value>,
-                    &bytes[..length],
-                    crate::wire::ErrorCode::Invalid,
-                ));
+                refused = Some(
+                    io.decode(
+                        std::marker::PhantomData::<serde_json::Value>,
+                        &bytes[..length],
+                        crate::wire::ErrorCode::Invalid,
+                    )
+                    .err()
+                    .expect("a strict policy prefix must refuse"),
+                );
             });
             let refusal = refused.expect("decoder ran");
             let retained = match &refusal {
-                Err(Error::NativeJson {
+                Error::NativeJson {
                     code,
                     custody: Some(custody),
                     ..
-                }) => {
+                } => {
                     assert_eq!(*code, crate::wire::ErrorCode::Invalid);
                     assert!(physical.count_total > 0, "allocation observer is active");
                     custody.bytes()
                 }
-                Err(Error::NativeJsonAdmission {
+                Error::NativeJsonAdmission {
                     code: crate::wire::ErrorCode::Invalid,
                     kind: crate::executor::json::JsonInputError::Incomplete,
-                }) => 0,
+                } => 0,
                 _ => {
                     panic!("incomplete policy prefix {length} lost its original native refusal")
                 }
