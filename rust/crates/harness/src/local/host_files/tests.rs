@@ -1344,7 +1344,16 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
         #[cfg(unix)]
         std::os::unix::fs::symlink(&requests, &requests).map_err(storage)?;
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&requests, &requests).map_err(storage)?;
+        {
+            // The shared junction adapter needs no symbolic-link privilege.
+            // Resolve its target while it exists, then move the alias over
+            // that empty placeholder to make the same real directory loop.
+            let alias = directory.join("observation-fault");
+            std::fs::create_dir(&requests).map_err(storage)?;
+            acyclic_fs::test_directory_junction(&alias, &requests).map_err(storage)?;
+            std::fs::remove_dir(&requests).map_err(storage)?;
+            std::fs::rename(&alias, &requests).map_err(storage)?;
+        }
         let cause = std::fs::symlink_metadata(&path).unwrap_err();
         assert_ne!(cause.kind(), std::io::ErrorKind::NotFound);
         let Err(error) = served.touch(&requests, session, touched()) else {
