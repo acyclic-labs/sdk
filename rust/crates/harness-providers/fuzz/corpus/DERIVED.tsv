@@ -1,0 +1,4 @@
+# Explicit ignored-field mutations of retained inputs; these are not captured provider outputs.
+# seed	seed_bytes	seed_sha256	original_seed	original_seed_sha256	mutation
+provider_stream/llamacpp-text-request-literal-extension	335	87834a7173d65910ee0d64b404604f4e7b8a5df5d8c0a54675cb006c9d5d9573	provider_stream/llamacpp-text-request	ec7ba0b76e9a4e58c0a27c0f6cdf0468d033a5f1be5032adb0a6e37e993035d4	insert ignored extra map immediately after original first opening brace; retain every original byte and selector
+http_failure/gemini-signature-literal-extension	493	e30d592839b94a298cc2b25ad42cd0f22f532e8c0ba258f3954f45e3580d9b24	http_failure/gemini-signature	b91cbaaf7e1c93b0f52551a4c3ff099773b8749259f2f67fb77e3870e24f395e	insert ignored extra map immediately after original first opening brace; retain every original byte and selector

@@ -119,6 +119,10 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
         );
         return true;
     }
+    assert!(
+        !matches!(status, 400 | 413) || crate::json(bytes).is_err(),
+        "production-accepted refusal skipped fuzz spelling comparison"
+    );
     false
 }
 
@@ -169,6 +173,8 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/proxy-rate").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/gemini-signature").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/gemini-signature-literal-extension")
+            .as_slice(),
     ] {
         assert_http_failure_invariants(input);
     }
