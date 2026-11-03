@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { collect, collectPartitions, acceptanceBinding } from "./serial.mjs";
+import { collect, collectPartitions, acceptanceBinding, partition } from "./serial.mjs";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,6 +11,24 @@ const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-executi
 // These are generated internal receipts, never captured native tool output.
 // Arbitrary input varies the identities; the original collector owns admission.
 export function fuzz(data) {
+  const inventory = Array.from({ length: 1 + (data[1] ?? 4) % 8 }, (_, index) => ({ id: String(index) }));
+  assert.deepEqual(partition(inventory).cases, inventory);
+  for (let count = 1; count <= inventory.length; count++) {
+    const parts = Array.from({ length: count }, (_, index) => partition(inventory, `${index}/${count}`));
+    assert.deepEqual(parts.flatMap(part => part.cases), inventory);
+    assert.ok(parts.every(part => part.cases.length > 0));
+  }
+  for (const value of [`${inventory.length}/${inventory.length}`, "0/0", `0/${inventory.length + 1}`,
+    "-1/2", "0e0/1", "0/1e0", "0.5/2", "0/9007199254740992"])
+    assert.throws(() => partition(inventory, value), { code: "ERR_ASSERTION" });
+  let parsed;
+  try { parsed = partition(inventory, Buffer.from(data).toString("utf8")); }
+  catch (error) { assert.equal(error.code, "ERR_ASSERTION"); }
+  if (parsed) {
+    assert.ok(Number.isSafeInteger(parsed.index) && parsed.index >= 0 && parsed.index < parsed.count);
+    assert.ok(Number.isSafeInteger(parsed.count) && parsed.count > 0 && parsed.count <= inventory.length);
+    assert.ok(parsed.cases.length > 0 && parsed.cases.every(item => inventory.includes(item)));
+  }
   const cases = [{ id: "first" }, { id: "second" }], coverage = { pass: true };
   const hash = value => createHash("sha256").update(data).update(value).digest("hex");
   const binding = { binary: hash("binary"), mock: hash("mock"),

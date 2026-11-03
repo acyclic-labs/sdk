@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition, variants, acceptanceBinding } from "./serial.mjs";
+import { collect, runSuites, variants, acceptanceBinding } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -164,7 +164,7 @@ test("Windows starts the next case only after the previous case has exited", asy
 });
 
 test("serial qualification requires every OS case, volume variant, exit and completed suite", () => {
-  for (const seed of [0, 1, 2]) fuzz(Buffer.from([seed]));
+  for (const seed of [Buffer.from([0]), Buffer.from([1]), Buffer.from([2]), Buffer.from("1/2")]) fuzz(seed);
 });
 
 test("a missing or malformed suite receipt cannot stop later cases or erase the aggregate", async () => {
@@ -190,18 +190,6 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   assert.equal(report.suites[0].execution.stdout, "missing: complete capture");
   assert.equal(report.suites[1].execution.stderr, "malformed: diagnostic");
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(report)));
-});
-
-test("partitions preserve the complete ordered inventory without empty or overlapping work", () => {
-  const cases = Array.from({ length: 5 }, (_, index) => ({ id: String(index) }));
-  assert.deepEqual(partition(cases).cases, cases);
-  for (const count of [1, 2, 3, 5]) {
-    const parts = Array.from({ length: count }, (_, index) => partition(cases, `${index}/${count}`));
-    assert.deepEqual(parts.flatMap(part => part.cases), cases);
-    assert.ok(parts.every(part => part.cases.length > 0));
-  }
-  for (const value of ["1/1", "0/0", "0/6", "-1/2", "0.5/2", "0/9007199254740992"])
-    assert.throws(() => partition(cases, value));
 });
 
 test("matrix command rejects stale receipts against its intended inputs", async () => {
