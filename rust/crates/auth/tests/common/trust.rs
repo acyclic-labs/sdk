@@ -3,6 +3,7 @@ use ed25519_dalek::SigningKey;
 
 pub const NOW: u64 = 100;
 
+#[derive(Clone)]
 pub struct Snapshot {
     pub environments: Vec<BlockId>,
     pub issuers: Vec<BlockId>,

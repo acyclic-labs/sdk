@@ -179,6 +179,7 @@ fn fixture(sealed: bool) -> Result<VerifiedCapability, verify::VerifyError> {
 
 #[test]
 fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> TestResult {
+    let baseline = signed::Snapshot::default();
     for sealed in [false, true] {
         let capability = fixture(sealed)?;
         let wire = capability.encode();
@@ -186,8 +187,7 @@ fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> Test
         let [first, last] = ids.as_slice() else {
             return Err("fixture must authenticate exactly two blocks".into());
         };
-        let evidence =
-            verify::verify(&wire, &signed::Snapshot::default(), signed::NOW)?.trust_evidence()?;
+        let evidence = verify::verify(&wire, &baseline, signed::NOW)?.trust_evidence()?;
         for (ancestor, (key, parent, next_seed)) in
             [("ancestor", [121; 32], 4), ("key", [122; 32], 5)]
                 .into_iter()
@@ -195,7 +195,7 @@ fn compact_trust_matches_full_authentication_for_every_snapshot_change() -> Test
         {
             let next = signed::key(next_seed).verifying_key().to_bytes();
             for mask in 0..1024 {
-                let mut trust = signed::Snapshot::default();
+                let mut trust = baseline.clone();
                 if mask & 1 != 0 {
                     trust.available = false;
                 }
