@@ -1,6 +1,37 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { readBoundedGzip, tarEntries } from "./archive-utils.mjs";
+import { gunzipSync } from "node:zlib";
+import { readBoundedGzip, readDeclaredTarGzip, tarEntries } from "./archive-utils.mjs";
+
+// Keep the declared inventory independent of the returned map: every physical
+// member must be delivered once, with the admitted compressed and member bytes.
+export function fuzzDeclared(data, path, files, digest, maxExpandedBytes) {
+  writeFileSync(path, data);
+  let result;
+  try { result = readDeclaredTarGzip(path, digest, files, maxExpandedBytes); }
+  catch (error) {
+    assert.ok(["Z_DATA_ERROR", "Z_BUF_ERROR", "ERR_BUFFER_TOO_LARGE"].includes(error.code)
+      || /^archive (exceeds|expands|digest|payload|member|has|lacks) /.test(error.message)
+      || error.message === "unsafe, duplicate or unexpected archive member", error);
+    return false;
+  }
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  assert.equal(hash(data), digest, "compressed bytes must match their admitted digest");
+  assert.deepEqual(result.compressed, Buffer.from(data));
+  const expanded = gunzipSync(data, { maxOutputLength: maxExpandedBytes + 1 });
+  assert.ok(expanded.length <= maxExpandedBytes);
+  assert.equal(fuzz(expanded), true);
+  const entries = tarEntries(expanded);
+  assert.equal(entries.length, result.payload.size, "each physical member must be delivered once");
+  assert.deepEqual([...result.payload.keys()].sort(), Object.keys(files).sort());
+  for (const entry of entries) {
+    assert.equal(entry.type, "0", "declared payloads contain only regular files");
+    assert.deepEqual(result.payload.get(entry.path), entry.body);
+    assert.equal(hash(entry.body), files[entry.path], "member bytes must match their admitted digest");
+  }
+  return result;
+}
 
 // The caller owns an isolated file, matching the package readers' actual path
 // boundary. Never hide filesystem failures as invalid compressed inputs.

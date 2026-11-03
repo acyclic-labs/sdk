@@ -3,10 +3,51 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fuzz, fuzzGzip } from "./archive-utils.fuzz.mjs";
+import { createHash } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { fuzz, fuzzGzip, fuzzDeclared } from "./archive-utils.fuzz.mjs";
 import { tarEntries } from "./archive-utils.mjs";
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+
+test("native package inventory survives byte mutations and rejects removed admission checks", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "archive-inventory-"));
+  const path = join(directory, "input.tar.gz");
+  const compressed = readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url));
+  const files = JSON.parse(readFileSync(new URL("./test-support/archive-corpus/native-flat.files.json", import.meta.url), "utf8"));
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  const digest = hash(compressed);
+  const wrong = "0".repeat(64);
+  try {
+    const accepted = fuzzDeclared(compressed, path, files, digest, seed.length);
+    const listed = readFileSync(new URL("./test-support/archive-corpus/native-flat.list", import.meta.url), "utf8");
+    assert.deepEqual([...accepted.payload.keys()], listed.trimEnd().split(/\r?\n/));
+    for (let offset = 0; offset < compressed.length; offset++) {
+      const bytes = Buffer.from(compressed);
+      bytes[offset] ^= 0x80;
+      fuzzDeclared(bytes, path, files, hash(bytes), seed.length);
+    }
+    const mutations = [
+      ['if (sha256(compressed) !== expectedDigest) throw new Error("archive digest differs");', compressed, files, wrong],
+      ['if (sha256(entry.body) !== files[entry.path]) throw new Error("archive payload digest differs");', compressed, { ...files, "body.txt": wrong }, digest],
+      ['if (payload.size !== Object.keys(files).length) throw new Error("archive payload inventory differs");', compressed, { ...files, "absent.txt": wrong }, digest],
+    ];
+    const memberCheck = 'if (entry.type !== "0" || payload.has(entry.path) || !Object.hasOwn(files, entry.path)) {\n      throw new Error("unsafe, duplicate or unexpected archive member");\n    }';
+    const directoryBytes = gzipSync(seed);
+    const directoryFiles = Object.fromEntries(tarEntries(seed).map(entry => [entry.path, hash(entry.body)]));
+    mutations.push([memberCheck, directoryBytes, directoryFiles, hash(directoryBytes)]);
+    const flat = gunzipSync(compressed);
+    // Duplicate the original first member without changing its authenticated
+    // header or body; only the negative input differs from the native capture.
+    const duplicate = gzipSync(Buffer.concat([flat.subarray(0, 1024), flat]));
+    mutations.push([memberCheck, duplicate, files, hash(duplicate)]);
+    for (const [removed, bytes, inventory, expected] of mutations) {
+      assert.equal(fuzzDeclared(bytes, path, inventory, expected, seed.length + 1024), false);
+      const mutant = await planted(removed);
+      assert.throws(() => mutant.fuzzDeclared(bytes, path, inventory, expected, seed.length + 1024), assert.AssertionError);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("native gzip corpus exercises actual file admission and both byte bounds", async () => {
   const directory = mkdtempSync(join(tmpdir(), "archive-admission-"));
