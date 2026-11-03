@@ -19,6 +19,7 @@ acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, features = ["distributed", "local", "test-support", "s3-http"] }
 acyclic-fs-wire = { path = "../crates/filesystem-wire" }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, features = ["test-support", "filesystem"] }
+acyclic-harness-client = { path = "../crates/harness-client", features = ["agents"] }
 acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support", "grpc"] }
 acyclic-native-runtime = { path = "../crates/native-runtime" }
@@ -32,8 +33,10 @@ prost = "0.14.4"
 sha2 = "0.11.0"
 hex = "0.4.3"
 bytes = "1.11.0"
+blake3 = "1.8"
 prost-reflect = { version = "0.16.3", features = ["serde"] }
 serde_json = "1.0"
+serde = "1.0"
 tempfile = { version = "3.27.0", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["rt"], optional = true }
 
@@ -147,6 +150,13 @@ bench = false
 [[bin]]
 name = "inference_http"
 path = "fuzz_targets/inference_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_controls"
+path = "fuzz_targets/agent_controls.rs"
 test = false
 doc = false
 bench = false

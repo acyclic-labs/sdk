@@ -33,6 +33,63 @@ Refresh only the current agent record and checkpoint writers with:
 cargo run --locked --example capture -- --only-agents --extend-goldens
 ```
 
+Capture the public agent command, binding, invocation and reply writers with:
+
+```sh
+cargo run --locked --example capture -- --only-agent-controls --extend-goldens
+cargo +nightly fuzz run --fuzz-dir . agent_controls -- -runs=1000
+```
+
+The target preserves canonical invocation framing, command/reply correlation,
+Unknown request bytes and readable content. Reply corpus entries prefix their
+actual JSON command and a NUL separator. Assembly inputs instead prefix the
+original Staged invocation before the whole command. They check the public
+assembly boundary's agent, command kind and retained invocation; host storage,
+digest verification and multi-frame transport remain separate obligations.
+Outer-response inputs prefix the original invocation before the response from
+`AgentCall::reply`. The public `PreparedAgentInvocation::send` path admits those
+bytes, including refusal and Unknown results, and must reject unknown/duplicate
+protobuf fields and preserve a non-200 Actors status. Its byte source is immediate;
+this exercises response admission without modeling a network or its failures.
+These selectors are not product formats.
+Every input also requires admission of the retained public `command-root` writer
+capture, so refusing all command frames cannot make the conditional oracles pass.
+The kept `negative-controls/agent-command-reject-all.patch` changes only the
+production frame decoder's successful return to refusal. Apply it from the
+repository root, run the same instrumented target and corpus expecting
+`captured writer command refused`, then reverse the patch and require the same
+corpus to pass. This control checks positive admission; it does not replace the
+malformed-input controls.
+The same oracle requires the retained `actor-response-root-0` and
+`assembled-cancel` captures to enter their original invocation, response and
+assembly paths. Their existing arbitrary-input checks report admission to this
+positive witness instead of silently skipping a refused capture. The kept
+`agent-invocation-reject-all.patch` and `agent-assembly-reject-all.patch` change
+the corresponding production success returns. Each must fail the same target
+at `captured writer invocation refused` or `captured writer assembly refused`,
+respectively; reverse each patch before requiring the original corpus to pass.
+These two fixed captures add bounded validation work per fuzz input and no
+shipping work, new parser, transport or fixture producer.
+The retained `unknown` capture must enter the same recovery-request property on
+every input. It requires the owned Unknown variant, exact re-encoding and
+unknown-field refusal. The kept `agent-recovery-reject-all.patch` changes only
+the production Unknown success return to refusal; the same target must fail at
+`captured writer recovery request refused`, then pass after reversal. The
+existing exact-request unit control remains distinct: it compares the decoded
+domain request with the original domain value before encoding.
+The existing `actor-response-refused` capture also enters the same public send
+oracle unconditionally. Its typed host refusal must remain an admitted exchange.
+The kept `agent-refusal-reject-all.patch` removes the production Refused success
+return and must fail at `captured writer response refused`; restoration must pass
+the original corpus. Together with the success and Unknown captures, this covers
+positive admission for all three result envelope variants.
+Malformed base64 is derived from admitted content while retaining its original
+encoded length and range. Writer inputs include content encoding to JSON field
+names, so wire mutation must preserve those fields. Quiet Usage and Events
+snapshots must refuse a live wait without source progress or settlement.
+These are SDK writer captures, not hosted traffic or
+evidence of authentication, dispatch, restart or distributed progress.
+
 Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.

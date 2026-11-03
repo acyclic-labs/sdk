@@ -1,65 +1,8 @@
 //! Settled command outcomes, their process exit codes and their bounded
 //! result encoding.
-use crate::{Error, Result, wire};
+use crate::{Error, Result};
+pub use acyclic_harness_core::HeadlessOutcome;
 use serde_json::{Value, json};
-
-/// Settled task outcome with stable process exit codes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub enum HeadlessOutcome {
-    /// The task completed, or is idle awaiting another prompt.
-    Completed,
-    /// Execution failed.
-    Failed,
-    /// Cancellation settled.
-    Cancelled,
-    /// Execution needs external input or approval.
-    Blocked,
-    /// The service cannot establish whether an operation completed.
-    Indeterminate,
-}
-
-impl HeadlessOutcome {
-    fn from_error(error: &Error) -> Self {
-        if matches!(error, Error::GoalBlocked(_)) {
-            return Self::Blocked;
-        }
-        match error.code() {
-            wire::ErrorCode::Indeterminate => Self::Indeterminate,
-            wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Cancelled,
-            wire::ErrorCode::InteractionDeclined
-            | wire::ErrorCode::InteractionExpired
-            | wire::ErrorCode::InteractionDenied => Self::Blocked,
-            wire::ErrorCode::Unspecified
-            | wire::ErrorCode::NotFound
-            | wire::ErrorCode::Conflict
-            | wire::ErrorCode::Unsupported
-            | wire::ErrorCode::Invalid
-            | wire::ErrorCode::Unauthorized
-            | wire::ErrorCode::Unavailable
-            | wire::ErrorCode::Storage => Self::Failed,
-        }
-    }
-
-    fn of(result: &Result<Value>) -> Self {
-        result
-            .as_ref()
-            .map_or_else(Self::from_error, |_| Self::Completed)
-    }
-
-    /// Stable CLI contract: completed=0, failed=1, cancelled=2, blocked=3, indeterminate=4.
-    #[must_use]
-    pub const fn exit_code(self) -> u8 {
-        match self {
-            Self::Completed => 0,
-            Self::Failed => 1,
-            Self::Cancelled => 2,
-            Self::Blocked => 3,
-            Self::Indeterminate => 4,
-        }
-    }
-}
 
 // Stop the serializer at the encoded bound, including JSON escaping and wrapper
 // fields. Overflow still publishes a terminal outcome; it cannot strand a claim.
@@ -100,7 +43,9 @@ pub fn encode_command_result(
         maximum,
         overflow: false,
     };
-    let completion = HeadlessOutcome::of(result);
+    let completion = result
+        .as_ref()
+        .map_or_else(HeadlessOutcome::from_error, |_| HeadlessOutcome::Completed);
     let encoded = (|| -> serde_json::Result<()> {
         let mut serializer = serde_json::Serializer::new(&mut output);
         let mut map = serializer.serialize_map(Some(3))?;
@@ -131,18 +76,85 @@ pub fn encode_command_result(
 mod tests {
     use super::*;
 
-    // Preparation and history surface a fired cancellation as `Error::Cancelled`;
-    // headless clients must settle it as cancelled, never as a failure.
     #[test]
-    fn cancellation_settles_as_cancelled_and_storage_failure_as_failed() {
-        assert_eq!(
-            HeadlessOutcome::from_error(&Error::Cancelled),
-            HeadlessOutcome::Cancelled
-        );
-        assert_eq!(
-            HeadlessOutcome::from_error(&Error::Storage("provider write failed".into())),
-            HeadlessOutcome::Failed
-        );
+    fn cleanup_preserves_encoded_terminal_outcomes() -> Result<()> {
+        use acyclic_harness_core::{InteractionRejection, OperationId, goal::GoalBlockedReason};
+
+        for cleanup in 0..3 {
+            for (original, outcomes) in [
+                (
+                    Error::GoalBlocked(GoalBlockedReason::Declared),
+                    [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable),
+                    [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::InteractionRejected(InteractionRejection::Denied),
+                    [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::InteractionRejected(InteractionRejection::Declined),
+                    [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::InteractionRejected(InteractionRejection::Expired),
+                    [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::InteractionRejected(InteractionRejection::Cancelled),
+                    // An interaction refusal is settled; uncertain cleanup takes precedence.
+                    [("cancelled", 2), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (Error::Cancelled, [("cancelled", 2); 3]),
+                (
+                    Error::Unsupported("missing capability".into()),
+                    [("failed", 1), ("indeterminate", 4), ("failed", 1)],
+                ),
+                (
+                    Error::Storage("provider write failed".into()),
+                    [("failed", 1); 3],
+                ),
+                (
+                    Error::Indeterminate(OperationId::from_bytes([7; 16])),
+                    [("indeterminate", 4); 3],
+                ),
+            ] {
+                let (terminal, exit) = outcomes[cleanup];
+                let cleanup = match cleanup {
+                    1 => Error::Indeterminate(OperationId::from_bytes([8; 16])),
+                    2 => Error::Storage("retirement write failed".into()),
+                    _ => Error::Conflict("retirement failed".into()),
+                };
+                let mut result = Error::after_cleanup::<Value>(Err(original), Err(cleanup));
+                for depth in 0..3 {
+                    // Exercise both the full and omitted envelopes through the public encoder.
+                    for maximum in [96, 8192] {
+                        let bytes = encode_command_result(3, &result, maximum)?;
+                        let value: Value = serde_json::from_slice(&bytes)
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        assert_eq!(value["sequence"], 3);
+                        assert_eq!(
+                            value["completion"], terminal,
+                            "cleanup must retain the original terminal outcome"
+                        );
+                        assert_eq!(
+                            HeadlessOutcome::from_error(result.as_ref().unwrap_err()).exit_code(),
+                            exit
+                        );
+                        if depth > 0 && maximum == 96 {
+                            assert_eq!(value["output_omitted"], true);
+                        } else if maximum == 8192 {
+                            assert!(value["error"].is_string());
+                        }
+                        assert!(value.get("ok").is_none());
+                    }
+                    result = Error::after_cleanup(result, Err(Error::Conflict("x".repeat(1024))));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

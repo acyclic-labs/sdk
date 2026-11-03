@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-client/src/control.rs b/rust/crates/harness-client/src/control.rs
+index aeade3f1ce..0e0f6e23f7 100644
+--- a/rust/crates/harness-client/src/control.rs
++++ b/rust/crates/harness-client/src/control.rs
+@@ -38,7 +38,7 @@ fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, Command
+     }
+     let request =
+         domain::InvokeActorRequest::try_from(request).map_err(|_| CommandError::Invalid)?;
+-    Ok(wire::InvokeActorRequest::from(request))
++    Err(CommandError::Invalid)
+ }
+ 
+ /// The owning host's pure decoder for the same public invocation sent by the

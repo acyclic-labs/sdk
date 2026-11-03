@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-client/src/reply.rs b/rust/crates/harness-client/src/reply.rs
+index c70e358f1c..6107d1119e 100644
+--- a/rust/crates/harness-client/src/reply.rs
++++ b/rust/crates/harness-client/src/reply.rs
+@@ -342,7 +342,7 @@ pub fn decode_agent_reply(
+             }
+             let request =
+                 wire_codec::commit_from_wire(request).map_err(|_| CommandError::Invalid)?;
+-            Ok(Err(AgentControlFailure::Unknown(Box::new(request))))
++            Err(CommandError::Invalid)
+         }
+         envelope::Value::Refused(code) => {
+             if code.is_empty()

@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-client/src/control.rs b/rust/crates/harness-client/src/control.rs
+index aeade3f1ce..94de323888 100644
+--- a/rust/crates/harness-client/src/control.rs
++++ b/rust/crates/harness-client/src/control.rs
+@@ -88,10 +88,7 @@ impl AgentCall {
+         {
+             return Err(CommandError::Invalid);
+         }
+-        Ok(Self {
+-            invocation: self.invocation.clone(),
+-            command,
+-        })
++        Err(CommandError::Invalid)
+     }
+ 
+     /// Encode a successful exchange, including typed refusals and Unknown, in

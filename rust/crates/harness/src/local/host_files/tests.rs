@@ -2,6 +2,163 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+fn carrier_io() -> Result<(tempfile::TempDir, CarrierIo, std::fs::File)> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let root = acyclic_fs::hold_root(checkout.path()).map_err(native_file_error)?;
+    let directory = root
+        .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let requests = directory
+        .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let status = directory
+        .create_directories(Path::new("status"), acyclic_fs::NativeDurability::Durable)
+        .map_err(native_file_error)?;
+    let lock_file = || {
+        directory
+            .open_file(Path::new("owner.lock"), true)
+            .map_err(native_file_error)
+    };
+    let ownership = acyclic_native_runtime::FileLock::try_acquire(
+        lock_file()?,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )
+    .map_err(storage)?;
+    let probe = lock_file()?;
+    Ok((
+        checkout,
+        CarrierIo {
+            served: Served::default(),
+            requests: requests.path().to_path_buf(),
+            status,
+            _ownership: Arc::new(ownership),
+        },
+        probe,
+    ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let (_checkout, mut files, probe) = carrier_io()?;
+    let operation = OperationId::new();
+    let report = acyclic_native_runtime::obs::WaitReport::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+    let coordinator = std::thread::current().id();
+    files
+        .served
+        .known
+        .insert(operation, Tracked::Running { withdrawn: false });
+    let status = files.status.path().to_path_buf();
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (release, released) = mpsc::sync_channel(1);
+    let mut pending = Box::pin(files.apply(operation, move |files| {
+        assert_ne!(
+            std::thread::current().id(),
+            coordinator,
+            "native carrier ran on its coordinator"
+        );
+        let _ = started.send(std::thread::current().id());
+        released.recv().map_err(storage)?;
+        files.served.answer(
+            &files.status,
+            operation,
+            Ok(serde_json::json!({"reply": 7})),
+        )
+    }));
+    let mut inline_caller = Box::pin(std::future::poll_fn(|context| {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        tracing::dispatcher::with_default(&dispatch, || {
+            std::future::Future::poll(pending.as_mut(), context)
+        })
+    }));
+    let producer = tokio::select! {
+        producer = began => producer.map_err(storage)?,
+        _ = &mut inline_caller => panic!("the original write must wait for its release event"),
+    };
+    drop(inline_caller);
+    assert_ne!(producer, std::thread::current().id());
+    // The coordinator runs while its original native producer is blocked.
+    let sibling = tokio::spawn(async { 7 });
+    assert_eq!(sibling.await.map_err(storage)?, 7);
+    assert!(
+        report.snapshot().iter().any(|wait| {
+            wait.primitive == "native-workspace-files" && wait.key == operation.to_string()
+        }),
+        "the blocked original publication must retain its report identity"
+    );
+    let error = acyclic_native_runtime::FileLock::try_acquire(
+        probe.try_clone().map_err(storage)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .expect_err("an accepted write retains its original owner");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    release.send(()).map_err(storage)?;
+    let files = pending.await?;
+    assert!(
+        report.snapshot().is_empty(),
+        "physical completion retires its wait"
+    );
+    let reply: Value = serde_json::from_slice(&regular_bytes(&reply_path(&status, operation))?)
+        .map_err(storage)?;
+    assert_eq!(reply["ok"], serde_json::json!({"reply": 7}));
+    drop(files);
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_observer_loss_keeps_the_accepted_physical_owner() -> Result<()> {
+    let (_checkout, files, probe) = carrier_io()?;
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (release, released) = mpsc::sync_channel(1);
+    let mut pending = Box::pin(files.apply(OperationId::new(), move |_| {
+        let _ = started.send(());
+        released.recv().map_err(storage)
+    }));
+    tokio::select! {
+        started = began => started.map_err(storage)?,
+        _ = &mut pending => panic!("the original job must wait for its release event"),
+    }
+    drop(pending);
+    let error = acyclic_native_runtime::FileLock::try_acquire(
+        probe.try_clone().map_err(storage)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .expect_err("dropping observation cannot release accepted physical custody");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    release.send(()).map_err(storage)?;
+    // The OS lock waits for this same accepted producer to finish and release
+    // the original guard; no observer, retry or replacement producer is used.
+    acyclic_native_runtime::FileLock::acquire(probe, acyclic_native_runtime::FileLockMode::Shared)
+        .map_err(storage)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> Result<()> {
+    let (_checkout, files, probe) = carrier_io()?;
+    let (producer, receiver) = mpsc::channel::<()>();
+    drop(producer);
+    let result = files
+        .apply(OperationId::new(), move |_| {
+            receiver.recv().map_err(storage)
+        })
+        .await;
+    assert!(matches!(result, Err(Error::Storage(cause)) if cause == mpsc::RecvError.to_string()));
+    acyclic_native_runtime::FileLock::try_acquire(
+        probe,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
 #[test]
 fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     fn ownership(workspace: &Path) -> Result<acyclic_native_runtime::FileLock> {
@@ -448,6 +605,88 @@ fn projection_reads_cannot_wake_either_endpoint() {
     assert!(projection_changed(&Err(notify::Error::generic(
         "watch failed"
     ))));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner")),
+        )
+        .await?,
+    );
+    let mut failures = Vec::new();
+    let operation = OperationId::from_bytes([7; 16]);
+    for shutdown in [
+        Err(Error::Cancelled),
+        Err(Error::Unsupported("original shutdown producer".into())),
+        Err(Error::Indeterminate(operation)),
+        Ok(()),
+    ] {
+        let expected = shutdown.as_ref().err().map(Error::code);
+        // The extra public harness handle makes the original retirement
+        // refuse disconnect after it has joined view cleanup. No replacement
+        // producer or injected filesystem result supplies that refusal.
+        let failure = serve_until(Arc::clone(&local), async move { shutdown })
+            .await
+            .expect_err("the retained harness handle must refuse retirement");
+        failures.push((expected, failure));
+    }
+    Arc::try_unwrap(local)
+        .map_err(|_| Error::Conflict("workspace owner retained after retirement".into()))?
+        .disconnect()
+        .await?;
+    // Release the actual harness before any regression assertion can fail.
+    for (expected, failure) in failures {
+        assert_eq!(
+            failure.code(),
+            expected.unwrap_or(crate::wire::ErrorCode::Conflict),
+            "retirement must retain the original shutdown classification: {failure}"
+        );
+        let retirement = if let Error::Cleanup(ref causes) = failure {
+            assert_eq!(Some(causes.primary().code()), expected);
+            if let Error::Indeterminate(id) = causes.primary() {
+                assert_eq!(*id, operation);
+            }
+            causes.cleanup()
+        } else {
+            assert!(expected.is_none(), "the original failure must survive");
+            &failure
+        };
+        assert!(matches!(retirement, Error::Conflict(cause)
+            if cause == "native owner still has live harness handles"));
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_request_retains_its_admission_and_withdrawal_failures() -> Result<()> {
+    let (_checkout, mut files, _probe) = carrier_io()?;
+    let name = format!("{}.json", OperationId::from_bytes([7; 16]));
+    let path = files.requests.join(&name);
+    // A directory at the request leaf is neither a regular request nor a
+    // removable file. Both refusals come from the original held native root.
+    std::fs::create_dir(&path).map_err(storage)?;
+    let admission = regular_bytes(&path).expect_err("a directory cannot be admitted as a request");
+    let withdrawal =
+        remove_projection(&path).expect_err("file withdrawal cannot remove a directory");
+    let result = files.served.observe(
+        &files.requests,
+        uuid::Uuid::from_bytes([9; 16]),
+        std::ffi::OsStr::new(&name),
+    );
+    let error = result.expect_err("the failed withdrawal must end this owner");
+    assert!(files.served.known.is_empty());
+    assert!(files.served.ready.is_empty());
+    let Error::Cleanup(causes) = error else {
+        panic!("rejected request must retain admission and withdrawal causes");
+    };
+    assert_eq!(causes.primary().to_string(), admission.to_string());
+    assert_eq!(causes.cleanup().to_string(), withdrawal.to_string());
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -174,6 +174,16 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-agent-controls") {
+        let prefix = "agent_controls/";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_agent_controls(&mut manifest)?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -374,6 +384,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         &mut manifest,
     )?;
     capture_agents(&mut manifest)?;
+    capture_agent_controls(&mut manifest)?;
     for (name, bytes) in acyclic_harness_core::filesystem::execution_codec_fuzz::seeds()? {
         save(
             "harness_codecs",
@@ -754,6 +765,20 @@ fn agent_prefix() -> String {
         "harness_codecs/agent-v{}-",
         acyclic_harness_core::agent::RECORD_VERSION
     )
+}
+
+fn capture_agent_controls(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in acyclic_codec_fuzz::agent_controls::seeds()? {
+        let producer = if name.starts_with("assembled-") {
+            "PreparedCommand/AgentBinding public writers; NUL separates the Staged invocation from its whole command; one part with the original BLAKE3 digest"
+        } else if name.starts_with("actor-response-") {
+            "PreparedCommand/AgentBinding/AgentCall::reply public writers; NUL separates the invocation from its original Actors response"
+        } else {
+            "acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply"
+        };
+        save("agent_controls", &name, &bytes, producer, manifest)?;
+    }
+    Ok(())
 }
 
 fn capture_agents(manifest: &mut String) -> Result<(), Box<dyn Error>> {
