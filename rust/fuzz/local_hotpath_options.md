@@ -36,6 +36,7 @@ fail. Restore the parser with `git apply -R rust/fuzz/local_hotpath_options/omit
 before running the positive check.
 
 The retained corpus passes with the original parser. Removing its duplicate guard
-fails the shared oracle on duplicate operations. Instrumented source coverage and
-the instrumented mutant result remain pending. This target covers argument parsing; native shell execution of recovery
-commands and non-UTF-8 OS argument conversion require their own controls.
+fails the shared oracle on duplicate operations through both corpus replay and
+the actual libFuzzer entry point. Source branch coverage remains unqualified.
+This target covers argument parsing; native shell execution of recovery commands
+and non-UTF-8 OS argument conversion require their own controls.
