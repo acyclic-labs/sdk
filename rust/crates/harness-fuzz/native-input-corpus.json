@@ -296,5 +296,12 @@
       "retained_bytes": 10387,
       "scope": "Original production unions and slice input decoder. Real pipe EOF, native binary configuration, dispatch, source branch maps and three-platform validation remain unqualified."
     }
-  ]
+  ],
+  "read_failure_control": {
+    "result": "qualification pending",
+    "oracle": "Once per target process, a real write-only file is read through the shipped plugin input::read_json. Its io::Error kind and raw OS error must match the original native read on the same file.",
+    "negative_control": "Omit propagation of the actual read_to_end failure; the unchanged typed OS-error assertion must fail.",
+    "features": "native-input now enables its existing optional tempfile dependency for the owned native failure fixture; production features and parser are unchanged.",
+    "scope": "Native decoder read-error branch only. Installed stdin dispatch, partial-read failures, downstream effects, union source controls and other platforms retain their separate admission status."
+  }
 }
