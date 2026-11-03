@@ -1,4 +1,4 @@
-#![cfg(feature = "core")]
+#![cfg(feature = "native-answer")]
 
 #[path = "../native_answer_oracle.rs"]
 mod oracle;
