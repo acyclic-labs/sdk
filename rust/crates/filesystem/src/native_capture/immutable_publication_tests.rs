@@ -30,13 +30,11 @@ fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
         );
         assert_eq!(std::fs::read(directory.path().join(leaf))?, bytes);
     }
-    publication_barriers_follow_the_requested_guarantee()?;
-    #[cfg(all(feature = "test-support", feature = "native-mount"))]
-    scoped_publication_keeps_the_original_root_and_restores_after_unwind()?;
     Ok(())
 }
 
 #[cfg(all(feature = "test-support", feature = "native-mount"))]
+#[test]
 fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Result<(), DemandError>
 {
     use crate::native_host::publication_test_support::{
@@ -130,6 +128,7 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
 
 /// Use the original finite work frame to observe barriers on the physical
 /// path. In particular, promoting existing visible bytes must flush the file.
+#[test]
 fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandError> {
     use crate::demand::DemandWork;
     let directory = tempfile::tempdir()?;
