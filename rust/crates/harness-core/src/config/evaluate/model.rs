@@ -89,12 +89,16 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
     };
     let specifier = serde_json::to_string(&String::from_utf8_lossy(bytes))
         .map_err(|error| error.to_string())?;
-    let literal = format!("export default {specifier};");
     let dynamic = format!("export default import({specifier});");
     // Parse arbitrary programs without executing their untrusted control flow.
     // Accepted TypeScript must emit JavaScript admitted by the same production
     // parser, with the same resolved imports after type erasure.
     for path in ["raw.ts", "raw.js"] {
+        let literal = if path.ends_with(".ts") {
+            format!("export default ({specifier} satisfies string);")
+        } else {
+            format!("export default {specifier};")
+        };
         strip(path, literal.as_bytes())
             .map_err(|error| format!("encoded source literal admission: {error}"))?;
         // The same valid literal becomes an import specifier. Both public
