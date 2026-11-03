@@ -44,6 +44,8 @@ def main():
         report["steps"].append({"step": label, "argv": command, "exit": result.returncode, "log_sha256": digest(result.stdout)})
         print(f"{label}: exit={result.returncode}; log={log}", flush=True)
         valid = (result.returncode != 0 and "panicked at" in text and failure in text) if failure else result.returncode == 0
+        if failure and mode == "--host":
+            valid = valid and "test testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver ... FAILED" in text
         if not valid:
             raise RuntimeError(f"{label}: semantic oracle not satisfied; recovery: inspect {shlex.quote(str(log))}, correct source or command, then {shlex.join(command)}")
 
