@@ -1,7 +1,7 @@
 // Run by the native-runtime node_process integration target, which supplies
 // the shipped executable from CARGO_BIN_EXE_acyclic-process-host.
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {fork, spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createConnection, createServer} from 'node:net';
@@ -9,8 +9,13 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {fileURLToPath} from 'node:url';
-import {commandCapture, commandProcess} from '@acyclic-labs/sdk/process';
+import {commandCapture, commandProcess, withProcessSignals} from '@acyclic-labs/sdk/process';
 import {fuzz} from './process-completion.fuzz.mjs';
+
+async function processSource() {
+  return (await readFile(new URL('../native/process.mjs', import.meta.url), 'utf8')).replace(
+    "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
+}
 
 async function terminalControls(run, host) {
   // The same real native close must preserve synchronous status failures and
@@ -55,9 +60,67 @@ async function terminalControls(run, host) {
   }
 }
 
+async function signalControls(mutation) {
+  const child = fork(script, ['signal-owner', mutation], {stdio: ['ignore', 'inherit', 'pipe', 'ipc']});
+  const diagnostics = [];
+  child.stderr.on('data', bytes => diagnostics.push(bytes));
+  const closed = once(child, 'close');
+  try {
+    // Each original IPC event names the handler that is now armed. Physical
+    // child close also ends the wait if that producer disappears.
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+      const armed = await Promise.race([
+        once(child, 'message').then(([message]) => message),
+        closed.then(() => null),
+      ]);
+      assert.equal(armed, signal, `original signal owner must arm before delivery: ${Buffer.concat(diagnostics)}`);
+      assert.ok(child.kill(signal));
+    }
+    assert.deepEqual(await closed, [0, null], Buffer.concat(diagnostics).toString());
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+}
+
+async function processSignalControls() {
+  if (process.platform !== 'win32') {
+    await signalControls('original');
+    await assert.rejects(() => signalControls('omit-release'), {
+      code: 'ERR_ASSERTION', message: /completion must release exactly its original signal handlers/,
+    });
+  }
+}
+
 const script = fileURLToPath(import.meta.url);
 const mode = process.argv[2];
-if (mode === 'echo') {
+if (mode === 'signal-owner') {
+  let run = withProcessSignals;
+  if (process.argv[3] === 'omit-release') {
+    const original = await processSource();
+    const planted = original.replace('process.removeListener(name, handler)', 'void handler');
+    assert.notEqual(planted, original, 'production signal release must exist');
+    ({withProcessSignals: run} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`));
+  }
+  try {
+    const before = ['SIGINT', 'SIGTERM'].map(name => process.listeners(name));
+    for (const name of ['SIGINT', 'SIGTERM']) {
+      await assert.rejects(run(signal => new Promise((resolve, reject) => {
+        const lost = () => reject(new Error('step=signal-producer; recovery=retain the original controlling process until signal delivery'));
+        process.once('disconnect', lost);
+        signal.addEventListener('abort', () => {
+          process.removeListener('disconnect', lost);
+          resolve();
+        }, {once: true});
+        process.send(name, error => { if (error) reject(error); });
+      })), error => error.signal === name);
+      assert.deepEqual(['SIGINT', 'SIGTERM'].map(signal => process.listeners(signal)), before,
+        'completion must release exactly its original signal handlers');
+    }
+  } finally { process.disconnect(); }
+} else if (mode === 'signals') {
+  await processSignalControls();
+} else if (mode === 'echo') {
   process.stderr.write('native stderr π\n');
   process.stdin.pipe(process.stdout);
 } else if (mode === 'descendant') {
@@ -83,6 +146,7 @@ if (mode === 'echo') {
   const host = process.env.ACYCLIC_PROCESS_HOST;
   assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test node_process');
   const options = {host};
+  await processSignalControls();
   const input = Buffer.from('stdin is independent of cancellation\nπ\n');
   const captured = await commandCapture(process.execPath, [script, 'echo'], {...options, input});
   assert.equal(captured.stdout, input.toString());
@@ -97,9 +161,7 @@ if (mode === 'echo') {
   await terminalControls(commandProcess, host);
   // These are omissions in the actual shipped source. The identical public
   // topology/oracle must reject both ways terminal failures can be lost.
-  const moduleUrl = new URL('../native/process.mjs', import.meta.url);
-  const production = (await readFile(moduleUrl, 'utf8')).replace(
-    "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
+  const production = await processSource();
   for (const [guard, replacement] of [
     [".catch(error => retain('terminal', error))", '.catch(() => {})'],
     ["} catch (error) { retain('terminal', error); }", '} catch (error) {}'],
