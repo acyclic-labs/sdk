@@ -19,6 +19,7 @@ export const gateQualifications = [
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
+  { args: ["--provider-refresh"] },
   { args: ["--harness-models", "--all-features"] },
 ];
 // Cargo's workspace wrapper leaves registry dependencies (including Tokio's own
@@ -53,6 +54,13 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
       targetCfg: ["--", "--cfg", "loom"],
       filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"],
     });
+}
+
+export function qualifyProviderRefreshLoom(run = runCommand) {
+  return qualifyLoom("acyclic-harness-providers", "main", [], run, {
+    modelFeatures: [],
+    suites: [["verification_models::refresh::", 7]],
+  });
 }
 
 // Checkout and projection models retain physical cleanup custody.
@@ -193,7 +201,8 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
     ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
-    ...features, "--features", "model-checking", ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
+    ...features, ...(options.modelFeatures ?? ["--features", "model-checking"]),
+    ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
   const tests = options.suites?.map(([filter, passed]) => ({ args: [filter], passed })) ?? (options.filters ?? [options.filter]).map(filter => ({
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
@@ -242,6 +251,7 @@ const fixedModels = {
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
   "--skill-materializer": qualifySkillMaterializerLoom,
+  "--provider-refresh": qualifyProviderRefreshLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {

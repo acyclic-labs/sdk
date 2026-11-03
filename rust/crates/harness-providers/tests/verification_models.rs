@@ -56,7 +56,7 @@ fn calibration_model(broken: bool) {
     });
 }
 
-// The owned permit and its dependency must use the same Loom primitives.
+// Exercise the production owned mutex; only its callers' scheduling is modeled.
 #[cfg(loom)]
 #[path = "models/refresh.rs"]
 mod refresh;
