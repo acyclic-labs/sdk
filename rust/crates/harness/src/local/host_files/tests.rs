@@ -1108,10 +1108,18 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
         if phase == 2 {
             served.answer(&held, operation, Ok(serde_json::json!({"original": true})))?;
         }
+        let answer = (phase == 2)
+            .then(|| regular_bytes(&reply_path(&status, operation)))
+            .transpose()?;
         // A successful observation cannot retire accepted work.
         served.touch(&requests, session, touched())?;
         std::fs::rename(&requests, &retained).map_err(storage)?;
-        std::fs::write(&requests, b"not a directory").map_err(storage)?;
+        // A loop is an observation failure on every supported OS. Windows
+        // reports a regular-file parent as NotFound, which cannot prove this.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&requests, &requests).map_err(storage)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&requests, &requests).map_err(storage)?;
         let cause = std::fs::symlink_metadata(&path).unwrap_err();
         assert_ne!(cause.kind(), std::io::ErrorKind::NotFound);
         let Err(error) = served.touch(&requests, session, touched()) else {
@@ -1134,8 +1142,14 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
             "observation failure retired accepted work"
         );
         assert_eq!(served.rescans, 0);
+        if let Some(answer) = answer {
+            assert_eq!(regular_bytes(&reply_path(&status, operation))?, answer);
+        }
         // Recovery observes the same input; only its actual removal withdraws.
+        #[cfg(unix)]
         std::fs::remove_file(&requests).map_err(storage)?;
+        #[cfg(windows)]
+        std::fs::remove_dir(&requests).map_err(storage)?;
         std::fs::rename(&retained, &requests).map_err(storage)?;
         served.touch(&requests, session, touched())?;
         remove_projection(&path)?;
