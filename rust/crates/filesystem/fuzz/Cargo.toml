@@ -36,6 +36,10 @@ name = "model"
 path = "tests/model.rs"
 required-features = ["model-checking"]
 
+[[test]]
+name = "window_state"
+path = "tests/window_state.rs"
+
 [[bin]]
 name = "access"
 required-features = ["fuzz-targets"]
@@ -72,6 +76,14 @@ bench = false
 name = "paths"
 required-features = ["fuzz-targets"]
 path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "window_state"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/window_state.rs"
 test = false
 doc = false
 bench = false
