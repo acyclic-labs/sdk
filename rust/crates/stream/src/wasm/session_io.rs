@@ -210,7 +210,10 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<transport::Responses<transport::Failure>, transport::Failure>,
+    > {
         Box::pin(async move {
             let mut connection = Connection {
                 controller: web_sys::AbortController::new().map_err(failure)?,
@@ -228,14 +231,17 @@ impl transport::Transport for Endpoint {
                 .map_err(failure)?;
             let writing = Rc::new(RefCell::new(None));
             *self.writing.borrow_mut() = Rc::downgrade(&writing);
-            Ok(Box::pin(Responses {
-                writing,
-                connection,
-                source,
-                read: None,
-                write: None,
-                ended: false,
-            }) as transport::Responses)
+            Ok(Box::pin(
+                Responses {
+                    writing,
+                    connection,
+                    source,
+                    read: None,
+                    write: None,
+                    ended: false,
+                }
+                .map(|frame| frame.map_err(Into::into)),
+            ) as transport::Responses<transport::Failure>)
         })
     }
 }
