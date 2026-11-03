@@ -542,9 +542,12 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const plugin = 'plugin/tests/ready.mjs';
   const beforePlugin = 'export async function ready() {}\n';
   write(plugin, beforePlugin);
+  const deleted = 'plugin/tests/deleted.mjs';
+  write(deleted, 'export const removed = true;\n');
   write('scripts/no-polling-dispositions.json', '[]\n');
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
+  rmSync(join(root, deleted));
   assert.equal(checkCli('HEAD').status, 0);
   write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n'
    + "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function indirect() { await settle(); }\n");

@@ -1,5 +1,5 @@
 import {execFileSync} from 'node:child_process';
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {readFileSync, writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {gitBatchSources} from './source-policy/git.mjs';
 
@@ -18,7 +18,11 @@ export async function checkNoPolling(args, {cwd = process.cwd(), env = process.e
   const git = (args, options) => execFileSync('git', args, {cwd, env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: Infinity, ...options});
   const files = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {encoding: 'utf8'})
    .split('\0').filter(file => file && sourceInScope(file));
-  const afterSources = new Map(files.filter(file => existsSync(resolve(cwd, file))).map(file => [file, readFileSync(resolve(cwd, file), 'utf8')]));
+  const afterSources = new Map();
+  for (const file of files) {
+   try { afterSources.set(file, readFileSync(resolve(cwd, file), 'utf8')); }
+   catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   if (inventory) {
    const revision = git(['rev-parse', '--verify', 'HEAD'], {encoding: 'utf8'}).trim();
    const sites = projectPollingSites(afterSources);
