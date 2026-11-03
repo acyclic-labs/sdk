@@ -279,21 +279,25 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         let action = super::ContextAction::Restore {
             at: 23,
             mode,
-            expected: vec![super::HistoryVolume {
-                binding: super::VolumeBinding {
-                    name: "project".into(),
-                    volume: volume.clone(),
-                },
-                generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-                    kind: acyclic_fs::ObjectKind::GenerationRoot,
-                    digest: acyclic_fs::Digest::from_bytes([23; 32]),
-                    storage: Some(acyclic_fs::ObjectStorage {
-                        locator: acyclic_fs::Digest::from_bytes([29; 32]),
-                        root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
-                        origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
+            expected: if mode.files() {
+                vec![super::HistoryVolume {
+                    binding: super::VolumeBinding {
+                        name: "project".into(),
+                        volume: volume.clone(),
+                    },
+                    generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                        kind: acyclic_fs::ObjectKind::GenerationRoot,
+                        digest: acyclic_fs::Digest::from_bytes([23; 32]),
+                        storage: Some(acyclic_fs::ObjectStorage {
+                            locator: acyclic_fs::Digest::from_bytes([29; 32]),
+                            root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
+                            origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
+                        }),
                     }),
-                }),
-            }],
+                }]
+            } else {
+                Vec::new()
+            },
         };
         seeds.push((
             name,
