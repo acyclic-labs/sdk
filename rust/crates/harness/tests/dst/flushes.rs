@@ -72,7 +72,7 @@ fn turns(
             // The reply is observable before its serving delivery retires.
             // Wait on that same actor's delivery lock and committed checkpoint,
             // while its ordinary continuous runtime remains running.
-            entry(agents.drain(root)).await?;
+            entry(agents.drain(root)).await.map_err(storage)?;
         }
         if extra {
             use acyclic_stream::StreamProviderExt as _;
