@@ -16,6 +16,8 @@ const signalMutations = new Map([
   ['omit-release', ['process.removeListener(name, handler)', 'void handler']],
   ['omit-await', ['await action(stop.signal)', 'action(stop.signal)']],
   ['omit-abort', ['stop.signal.throwIfAborted();', '']],
+  ['omit-reason', ['stop.abort(reason(name))',
+    'stop.abort(Object.assign(new Error(`process signal ${name}`), {signal: name}))']],
 ]);
 
 async function processSource() {
@@ -74,12 +76,13 @@ async function signalControls(mutation) {
   try {
     // Each original IPC event names the handler that is now armed. Physical
     // child close also ends the wait if that producer disappears.
-    for (const signal of ['SIGINT', 'SIGTERM']) {
+    for (const customReason of [false, true]) for (const signal of ['SIGINT', 'SIGTERM']) {
       const armed = await Promise.race([
         once(child, 'message').then(([message]) => message),
         closed.then(() => null),
       ]);
-      assert.equal(armed, signal, `original signal owner must arm before delivery: ${Buffer.concat(diagnostics)}`);
+      assert.deepEqual(armed, {signal, customReason},
+        `original signal owner must arm before delivery: ${Buffer.concat(diagnostics)}`);
       assert.ok(child.kill(signal));
     }
     assert.deepEqual(await closed, [0, null], Buffer.concat(diagnostics).toString());
@@ -142,7 +145,8 @@ if (mode === 'signal-owner') {
   }
   try {
     const before = ['SIGINT', 'SIGTERM'].map(name => process.listeners(name));
-    for (const name of ['SIGINT', 'SIGTERM']) {
+    for (const customReason of [false, true]) for (const name of ['SIGINT', 'SIGTERM']) {
+      const reason = new Error('original interruption diagnostic');
       await assert.rejects(run(signal => new Promise((resolve, reject) => {
         const lost = () => reject(new Error('step=signal-producer; recovery=retain the original controlling process until signal delivery'));
         process.once('disconnect', lost);
@@ -150,8 +154,9 @@ if (mode === 'signal-owner') {
           process.removeListener('disconnect', lost);
           resolve();
         }, {once: true});
-        process.send(name, error => { if (error) reject(error); });
-      })), error => error.signal === name);
+        process.send({signal: name, customReason}, error => { if (error) reject(error); });
+      }), {reason: customReason ? () => reason : undefined}),
+      error => customReason ? error === reason : error.signal === name);
       assert.deepEqual(['SIGINT', 'SIGTERM'].map(signal => process.listeners(signal)), before,
         'completion must release exactly its original signal handlers');
     }
