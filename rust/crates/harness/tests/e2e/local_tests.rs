@@ -143,7 +143,7 @@ async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() ->
 
 #[tokio::test]
 async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
-    reject_changed_command("default-tools/fs/whitespace.json", "add plans/a.md").await
+    reject_changed_command("default-tools/fs/whitespace.json", "commit -m plans").await
 }
 
 #[tokio::test]

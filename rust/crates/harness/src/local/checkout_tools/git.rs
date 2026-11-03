@@ -19,11 +19,8 @@ impl CheckoutTools {
         scope: &RuntimeScope,
     ) -> Result<crate::tools::FsCommand> {
         let parsed = self.commands().fs_arguments(command, scope)?;
-        if !matches!(parsed.arguments.as_slice(), [operation, branch]
-            if matches!(operation.as_str(), "diff" | "merge")
-                && branch.strip_prefix("agents/").is_some_and(|name| !name.is_empty()))
-        {
-            return Err(Error::Invalid("fs supports child diff and merge only; recovery: use fs with diff agents/<name> or merge agents/<name>, or use shell for other git commands".into()));
+        if !child_lifecycle(&parsed.arguments) {
+            return Err(Error::Invalid("fs supports a child fork's lifecycle only: diff, merge or discard agents/<name>, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
         }
         Ok(parsed)
     }
@@ -62,5 +59,24 @@ impl CheckoutTools {
             }),
             workspace::git::Outcome::Rejected(error) => Ok(crate::tools::rejected_input(*error)),
         }
+    }
+}
+
+/// The model-visible fs grammar: one child fork's whole lifecycle. A parent
+/// inspects, merges or discards `agents/<name>`, and a conflicted merge is
+/// completed the way the join's own refusal instructs, by marking resolved
+/// paths and continuing or aborting. Every other git command belongs to shell.
+fn child_lifecycle(arguments: &[String]) -> bool {
+    match arguments {
+        [operation, branch] if matches!(operation.as_str(), "diff" | "merge" | "discard") => branch
+            .strip_prefix("agents/")
+            .is_some_and(|name| !name.is_empty()),
+        [operation, option] if operation == "merge" => {
+            matches!(option.as_str(), "--continue" | "--abort")
+        }
+        [operation, paths @ ..] if operation == "add" => {
+            !paths.is_empty() && paths.iter().all(|path| !path.starts_with('-'))
+        }
+        _ => false,
     }
 }
