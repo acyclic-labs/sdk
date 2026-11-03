@@ -1,11 +1,13 @@
 use super::*;
 use crate::kernel::allocation::effects::{OMIT_REFUND, OMIT_RESERVATION};
 use crate::kernel::codec::{CanonicalDecodeError, Encoder};
-use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use std::{
     cell::{Cell, RefCell},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 loom::thread_local! {
@@ -126,8 +128,8 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
             original.clone()
         };
         let baseline = original.live_allocation_bytes();
-        // Standard Arc only transports owners pinned through join. All mutable
-        // production leaf/resource/cancellation state and the witness use sync.
+        // The witness is observed only after join; its counter adds no product
+        // synchronization. Original ledger/resource/cancellation state uses Loom.
         let actual = Arc::new(AtomicU64::new(0));
         let worker_work = work.clone();
         let worker_cancel = cancellation.clone();
@@ -137,6 +139,29 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
         });
         if cancel {
             cancellation.cancel();
+        } else if pages {
+            // One full writer competes with the same production credit primitive
+            // used by every writer. Exploring two full callback sequences repeats
+            // their local allocation checks without adding a credit transition.
+            let result = allocation::effects::perform(
+                &work,
+                &cancellation,
+                WorkCounters {
+                    page_writes: 1,
+                    ..WorkCounters::UNCHARGED
+                },
+                || {
+                    actual.fetch_add(1, Ordering::Relaxed);
+                },
+            );
+            if let Err(error) = result {
+                assert!(matches!(
+                    error,
+                    crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                        crate::WorkError::BudgetExceeded { .. }
+                    ))
+                ));
+            }
         } else {
             encode::<BROKEN>(&work, &cancellation, actual.clone(), pages);
         }
@@ -175,7 +200,7 @@ fn concurrent_headers_reserve_zero_one_or_both_allowances() {
 }
 
 #[test]
-fn concurrent_blob_pages_reserve_the_page_write_charge() {
+fn blob_page_writer_competes_with_original_effect_credit() {
     for maximum in [0, 1, 2] {
         race::<false, true>(maximum, true, false, false);
     }
