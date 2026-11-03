@@ -75,7 +75,7 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
     let length = value(0).logical_bytes;
     let bytes = 1 + u64::from(bytes) % (length * 4);
     let store = CachedObjectStore::new(
-        crate::MemoryObjectStore::default(),
+        crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
         ObjectCacheOptions {
             maximum_entries: entries,
             maximum_bytes: bytes,

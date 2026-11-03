@@ -7,8 +7,8 @@ allocation retirement. Its completed-work witness is read after both actors
 join and introduces no modeled synchronization.
 
 `mutations/blob_page_reject_all.patch` changes the producer's original page
-admission to refuse every finite allowance. A bound-only oracle could accept
-this defect because no page is written. The unchanged progress assertion must
+admission to charge three page writes, above every tested allowance. A bound-only
+oracle could accept this defect because no page is written. The unchanged progress assertion must
 reject it: with allowance two, the independent credit claimant completes one
 effect while the real writer refuses the other.
 

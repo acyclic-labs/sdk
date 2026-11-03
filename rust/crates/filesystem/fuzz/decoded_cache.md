@@ -5,6 +5,8 @@ and consumes its original `DecodedCacheMiss::admit` token. Values come from
 `encode_file_metadata` and `decode_file_metadata`, with authenticated object IDs.
 An independent bounded LRU over input identities checks values, residency and
 whether each original fill becomes shared or remains uncached.
+The backend uses the same `LogicalObjectStore<MemoryObjects>` composition as
+`Fs::memory`, so the non-test fuzz entry needs no unit-test-only store export.
 
 Input bytes select entry capacity (one through four), byte capacity, then pairs
 of operation and identity. Operations modulo five are lookup-and-fill, lookup,
