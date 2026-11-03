@@ -70,11 +70,17 @@ same oracle. This subsumes the former single dynamic-import error example.
 Raw JSON goes through the production evaluator and is compared with
 `serde_json::Value`, preserving all keys, values and array positions. Numbers
 are compared in ECMAScript's double-precision domain, which rounds large
-integers and normalizes negative zero.
+integers and normalizes negative zero. When syntax is valid but outside serde's
+finite value domain, the reference uses the original engine's `JSON.parse`
+through a fixed JavaScript module containing only the encoded input string.
+This preserves duplicate-key semantics: `{"x":1e400,"x":0}` produces `{"x":0}`,
+while an overflow that survives the parse is refused by the plain-data fold.
+Malformed syntax must still be refused. No second JSON parser is introduced.
 
-Five additional authored internal corpus inputs retain the original JSON
-property-semantics example, numeric and escaped-string cases, TypeScript type
-erasure with a static import, a forbidden dynamic import and malformed JSON.
+Seven additional authored internal corpus inputs retain the original JSON
+property-semantics example, numeric and escaped-string cases, overwritten and
+surviving numeric overflow, TypeScript type erasure with a static import, a
+forbidden dynamic import and malformed JSON.
 The shared property subsumes the former JSON-only example and checks the
 entire result through the original evaluation entry point. The object-literal
 mutation changes production JSON module construction, without modifying the
