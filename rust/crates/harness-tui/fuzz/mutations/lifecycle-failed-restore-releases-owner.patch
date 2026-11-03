@@ -1,0 +1,7 @@
+--- a/rust/crates/harness-tui/src/term/lifecycle.rs
++++ b/rust/crates/harness-tui/src/term/lifecycle.rs
+@@ -52,3 +52,3 @@
+     // an unfinished journal or race a later restoration attempt.
+-    if result.is_ok()
++    if true
+         && owner

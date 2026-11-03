@@ -50,3 +50,35 @@ stay unchanged throughout.
 
 These controls check production renderer transitions under modeled interleavings.
 They do not establish native terminal input provenance or OS cancellation behavior.
+
+## Lifecycle model mutation controls
+
+The lifecycle models call the production `attach`, `detach`, `active`, `restore`
+and `resume` functions with the production state mutex. Their writers represent
+OS state; they do not establish native OS completion or input provenance. Run
+the eight positive controls from the repository root:
+
+```sh
+RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked \
+  -p acyclic-harness-tui --features tui,model-checking --lib \
+  term::lifecycle::terminal_lifecycle_model::
+```
+
+Apply each patch separately, run its exact positive control with `-- --exact`,
+and require the assertion below. A compiler error does not qualify a negative
+control. Restore production source between mutations; neither the model nor its
+assertion changes during a control. Finally run all eight restored models.
+
+| Production defect | Test in `term::lifecycle::terminal_lifecycle_model` | Required assertion |
+|---|---|---|
+| `lifecycle-early-owner-release.patch`: release ownership before restoration | `detach_restores_before_default_signal_and_allows_reopen` | default signal action before restoration |
+| `lifecycle-failed-restore-releases-owner.patch`: release ownership despite a failed restoration | `failed_restoration_keeps_owner_until_successful_retry` | failed restoration released the owner |
+| `lifecycle-split-close-fence.patch`: separate admission from the guarded mode write | `close_fences_every_mode_write` | mode enabled after terminal close |
+| `lifecycle-unfenced-owner-identity.patch`: remove both identity checks from delayed detach | `delayed_split_half_cannot_detach_a_new_terminal` | delayed split-half close detached the new owner |
+| `lifecycle-repeat-os-restoration.patch`: remove the successful-restoration fence | `completed_restore_cannot_mutate_a_reopened_terminal` | old terminal repeated OS restoration after handoff |
+
+The delayed-destructor/reopen and suspend/resume controls remain alongside these
+targets. The former simulated destructor defect is covered by mutating the
+production restoration fence; no test writer invents a destructor or overwrites
+the state after the production transition. All interleavings and positive
+assertions remain in the models.

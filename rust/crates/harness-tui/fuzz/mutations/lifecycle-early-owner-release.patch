@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-tui/src/term/lifecycle.rs
++++ b/rust/crates/harness-tui/src/term/lifecycle.rs
+@@ -49,3 +49,3 @@
+     }
+-    let result = restore(state, true, os_restore);
++    let result: io::Result<()> = Ok(());
+     // Failed restoration retains ownership; a new session must never inherit
+@@ -59,3 +59,4 @@
+     }
+-    result
++    drop(owner);
++    restore(state, true, os_restore)
+ }
