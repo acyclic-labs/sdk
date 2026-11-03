@@ -588,3 +588,12 @@ digest or length separately. `object_put_identity.patch` and
 the unchanged oracle must catch both omissions. This qualifies those admission
 branches, with the original typed producer-loss check retained; it does not
 establish remote durability or physical release.
+
+The GET projection independently checks the original requested offset, complete
+selection length and digest of a complete blob. The same retained writer packet
+supplies altered-offset, altered-content and truncated-selection operands; a
+selected slice is explicitly derived from the original bytes, not recorded as a
+second provider capture. `object_read_start.patch`, `object_read_length.patch`
+and `object_read_content.patch` omit the corresponding production predicates.
+The unchanged property must catch each omission. Manifest logical-content
+authentication, every range-refusal branch and remote topology remain open.
