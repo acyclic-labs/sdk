@@ -1309,10 +1309,11 @@ fn request_observation_failure_preserves_accepted_work_until_real_withdrawal() -
     // at each custody phase. The OS error comes from the real request path.
     for phase in 0..3 {
         let root = tempfile::tempdir().map_err(storage)?;
-        let requests = root.path().join("requests");
-        let retained = root.path().join("retained");
-        let status = root.path().join("status");
-        std::fs::create_dir(&requests).map_err(storage)?;
+        let directory = root.path().join(DIRECTORY);
+        let requests = directory.join("requests");
+        let retained = directory.join("retained");
+        let status = directory.join("status");
+        std::fs::create_dir_all(&requests).map_err(storage)?;
         std::fs::create_dir(&status).map_err(storage)?;
         let held = acyclic_fs::hold_root(&status).map_err(native_file_error)?;
         let session = uuid::Uuid::new_v4();
