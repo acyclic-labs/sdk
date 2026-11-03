@@ -24,9 +24,16 @@ Their first byte selects one of sixteen cases:
 | 15 | Append under a child, leaving the actual implicit parent empty | Typed corruption |
 
 For cases 12..14 the first byte's high nibble modulo three selects the original
-Idle, Active or Reconciling state. An arbitrary accepted state must be
+Idle, Active or Reconciling state. Bit 6 omits `pending_parent`; bit 7 omits
+`subsequent_parent`. Present pinned, pending and subsequent parents have distinct
+identities, so field preservation detects swaps as well as dropped fields.
+The optional-parent corpus programs select Active without a pending parent and
+all three absent-parent combinations of Reconciling. Like the other programs,
+they obtain persisted bytes from the public writer at execution time.
+An arbitrary accepted state must be
 admitted by the original writer on a fresh backend and preserve all fields on another public read. The deterministic
-property replays the stored programs, all sixteen cases, and every low-byte
+property replays the stored programs, all sixteen cases with all four optional
+parent combinations, and every low-byte
 position/truncation selector for all three phases. The fuzzer varies both bytes
 of the selector, the entire payload and edit.
 Inputs and execution are bounded by actual input/output bytes, with no history
@@ -39,8 +46,9 @@ cargo test --locked -p acyclic-fs-fuzz --test window_state persisted_window_reco
 cargo run --locked -p acyclic-fs-fuzz --features fuzz-targets --bin window_state -- rust/crates/filesystem/fuzz/corpus/window_state -runs=0
 ```
 
-The two patches in `mutations/window_state` remove the original owner or ticket
-validation. Apply one at a time, run the SAME oracle, require its typed-corruption
+The patches in `mutations/window_state` remove the original owner or ticket
+validation, or swap the actual reader's pending and subsequent parents. Apply
+one at a time, run the SAME oracle, require its typed-corruption or original-field
 assertion to fail, then reverse the patch. A compiler failure is not detection.
 The source coverage report and mutation receipt must identify their exact
 production source; corpus replay alone is not source branch coverage.

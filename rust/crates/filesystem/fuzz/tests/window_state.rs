@@ -22,6 +22,13 @@ fn persisted_window_records_preserve_fields_or_typed_corruption() {
     ] {
         acyclic_fs::operation_window::check_persisted_window(input);
     }
+    // Exercise each semantic field independently, including absent parents,
+    // through the same production-writer/reopened-reader oracle as the fuzzer.
+    for parents in 0..4 {
+        for case in 0..16 {
+            acyclic_fs::operation_window::check_persisted_window(&[case | (parents << 6)]);
+        }
+    }
     for phase in 0..3 {
         for byte in 0..=u8::MAX {
             acyclic_fs::operation_window::check_persisted_window(&[

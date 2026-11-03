@@ -4,7 +4,8 @@ use acyclic_stream::StreamProviderExt as _;
 
 /// Replays a mutation program against records produced by the public store.
 /// The first byte selects a valid phase, a known invalid state or an arbitrary
-/// payload mutation. Remaining bytes supply the arbitrary payload or byte edit.
+/// payload mutation. Its upper two bits omit optional parent fields. Remaining
+/// bytes supply the arbitrary payload or byte edit.
 pub fn check_persisted_window(input: &[u8]) {
     futures::executor::block_on(check(input));
 }
@@ -13,6 +14,11 @@ async fn check(input: &[u8]) {
     let case = input.first().copied().unwrap_or(0) % 16;
     let workspace = WorkspaceId::from_bytes([161; 16]);
     let parent = GenerationId::new(crate::Digest::from_bytes([152; 32]));
+    let selector = input.first().copied().unwrap_or(0);
+    let pending =
+        (selector & 0x40 == 0).then_some(GenerationId::new(crate::Digest::from_bytes([156; 32])));
+    let subsequent =
+        (selector & 0x80 == 0).then_some(GenerationId::new(crate::Digest::from_bytes([157; 32])));
     let lease_id = OperationLeaseId::from_bytes([153; 16]);
     let active = || OperationWindowPhase::Active {
         pinned_parent: parent,
@@ -24,13 +30,13 @@ async fn check(input: &[u8]) {
                 expires_at_millis: u64::MAX,
             },
         )]),
-        pending_parent: Some(parent),
+        pending_parent: pending,
     };
     let reconcile = || OperationWindowPhase::Reconciling {
         ticket: OperationId::from_bytes([154; 16]),
         pinned_parent: parent,
-        pending_parent: Some(parent),
-        subsequent_parent: Some(parent),
+        pending_parent: pending,
+        subsequent_parent: subsequent,
     };
     let phase_case = if (12..=14).contains(&case) {
         (input[0] >> 4) % 3
@@ -56,7 +62,11 @@ async fn check(input: &[u8]) {
             .await
             .expect("original public writer must admit the valid state")
     );
-    assert_eq!(store.load(workspace).await.unwrap(), Some(original.clone()));
+    assert_eq!(
+        store.load(workspace).await.unwrap(),
+        Some(original.clone()),
+        "persisted window must preserve original fields"
+    );
     let path = stream_window_path(workspace).unwrap();
     let wire = provider
         .head(path.clone())

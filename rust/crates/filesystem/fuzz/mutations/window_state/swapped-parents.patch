@@ -1,0 +1,18 @@
+--- a/rust/crates/filesystem/src/operation_window/streams.rs
++++ b/rust/crates/filesystem/src/operation_window/streams.rs
+@@ -87,6 +87,15 @@
+                 "window revision does not match its stream tail".to_owned(),
+             ));
+         }
++        let mut snapshot = snapshot;
++        if let OperationWindowPhase::Reconciling {
++            pending_parent,
++            subsequent_parent,
++            ..
++        } = &mut snapshot.phase
++        {
++            std::mem::swap(pending_parent, subsequent_parent);
++        }
+         Ok((
+             Some(snapshot),
+             acyclic_stream::CommitCondition::Head {
