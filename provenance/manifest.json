@@ -104,6 +104,12 @@
   "references": [
     {
       "repository": "https://github.com/acyclic-labs/cloud",
+      "commit": "330d2372bdd1164240b1e06425b6fef21d08b269",
+      "paths": ["units/bootstrap/ci/command-input.test.mjs"],
+      "purpose": "Original deployment child/input/terminal ordering and read-only append refusal used by the shared native process control"
+    },
+    {
+      "repository": "https://github.com/acyclic-labs/cloud",
       "commit": "f9a9ea5d08c28a833a8a2d4bf6ed57ea76685d30",
       "paths": ["lib/process/command.mjs", "lib/process/signals.mjs"],
       "purpose": "Process callback, sink completion and cancellation contract comparison; native custody and Node bridge implemented in the SDK"

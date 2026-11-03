@@ -34,6 +34,9 @@ with no shell expansion. Unsupported physical custody is an explicit failure.
 both streams and those writes settle before return. A failed sink requests
 cancellation and retains its original cause. `onTerminal` is called once,
 immediately on a local failure or after the original terminal is available.
+Nonzero exits are reported before joining accepted output, so an output sink
+can release its pending write from that terminal. The terminal callback's own
+accepted work is also joined before return.
 `onClose` sees the selected root's exit code or signal. `commandProcess` returns
 the original bound completion plus the first original failure per phase and
 stream, with bounded failure storage; `commandCapture`
