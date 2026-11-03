@@ -854,9 +854,9 @@ mod tests {
         assert!(failure.progress.root_status.is_none());
         assert!(failure.progress.retired.is_none());
         assert!(failure.receipt_error.is_none());
-        let refused: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(absent.path().join("failed.json")).unwrap())
-                .unwrap();
+        let original = std::fs::read(absent.path().join("failed.json")).unwrap();
+        println!("PROCESS_COMPLETION_CORPUS_refused_BYTES={original:?}");
+        let refused: serde_json::Value = serde_json::from_slice(&original).unwrap();
         assert_eq!(refused["schema"], "acyclic.process-custody-completion.v3");
         assert_eq!(refused["invocation"], PHASE_BINDING);
         assert_eq!(refused["failure"]["phase"], "root-admission");
@@ -939,10 +939,9 @@ mod tests {
                 let retired = observation["retired"].as_f64().unwrap();
                 assert!(admitted <= exited && exited <= retired);
                 if version == "3" {
-                    let receipt: serde_json::Value = serde_json::from_slice(
-                        &std::fs::read(root.path().join("completion.json")).unwrap(),
-                    )
-                    .unwrap();
+                    let original = std::fs::read(root.path().join("completion.json")).unwrap();
+                    println!("PROCESS_COMPLETION_CORPUS_{mode}_BYTES={original:?}");
+                    let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
                     assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v3");
                     assert_eq!(receipt["invocation"], PHASE_BINDING);
                     assert_eq!(receipt["platform"], std::env::consts::OS);

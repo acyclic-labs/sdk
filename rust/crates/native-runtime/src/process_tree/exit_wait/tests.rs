@@ -8,17 +8,20 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     use std::os::fd::AsFd as _;
     // Exercise the exported API on an actual direct child, not a ProcessTree
     // or an alternate pidfd implementation. Its input EOF is also terminal.
-    let mut child = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "process_tree::exit_wait::tests::exit_wait_fixture",
-        ])
-        .env("ACYCLIC_TEST_EXIT_WAIT", "1")
-        .env("ACYCLIC_TEST_EXIT_STATUS", "gated")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+    let spawn = |mode| {
+        std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::exit_wait::tests::exit_wait_fixture",
+            ])
+            .env("ACYCLIC_TEST_EXIT_WAIT", "1")
+            .env("ACYCLIC_TEST_EXIT_STATUS", mode)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    };
+    let mut child = spawn("gated")?;
     let watch = crate::ChildExitWatch::open(&mut child)?.expect("live child");
     let readiness_fd = watch.as_fd().as_raw_fd();
     let early = watch.wait_until(Instant::now());
@@ -37,6 +40,15 @@ fn public_child_exit_watch_preserves_original_owner_and_deadline() -> io::Result
     drop(watch);
     assert!(crate::ChildExitWatch::open(&mut child)?.is_none());
     assert_eq!(crate::wait_child_until(&mut child, Instant::now())?, status);
+
+    let mut child = spawn("eof")?;
+    let waited = crate::wait_child_until(&mut child, Instant::now() + Duration::from_secs(2));
+    // Retire the original child even when testing the former deadlock: closing
+    // retained stdin is the primitive event this child needs to exit.
+    drop(child.stdin.take());
+    let status = child.wait()?;
+    assert_eq!(status.code(), Some(37));
+    assert_eq!(waited?, status);
     Ok(())
 }
 
@@ -127,8 +139,12 @@ fn exit_wait_fixture() {
                 .expect("exit release");
             assert_eq!(release, [1]);
         }
+        if std::env::var("ACYCLIC_TEST_EXIT_STATUS").as_deref() == Ok("eof") {
+            use std::io::Read as _;
+            assert_eq!(std::io::stdin().read(&mut [0]).unwrap(), 0);
+        }
         match std::env::var("ACYCLIC_TEST_EXIT_STATUS").as_deref() {
-            Ok("37" | "gated") => std::process::exit(37),
+            Ok("37" | "gated" | "eof") => std::process::exit(37),
             Ok("signal") => {
                 // SAFETY: the isolated fixture deliberately terminates itself.
                 unsafe { libc::raise(libc::SIGTERM) };
