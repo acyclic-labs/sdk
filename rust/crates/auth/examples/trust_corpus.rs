@@ -2,7 +2,7 @@
 use acyclic_auth::trust::{EnvironmentFrontier, Issuer};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
-use std::{error::Error, fs, path::Path};
+use std::{error::Error, fmt::Write, fs, path::Path};
 
 fn capture() -> Result<(), Box<dyn Error>> {
     let directory = Path::new("fuzz/corpus/trust_record");
@@ -62,10 +62,11 @@ fn capture() -> Result<(), Box<dyn Error>> {
     for (name, bytes, producer) in records {
         let digest = Sha256::digest(&bytes);
         fs::write(directory.join(name), &bytes)?;
-        manifest.push_str(&format!(
-            "{name}\t{}\t{digest:x}\t{producer}\n",
-            bytes.len()
-        ));
+        write!(manifest, "{name}\t{}\t", bytes.len())?;
+        for byte in digest {
+            write!(manifest, "{byte:02x}")?;
+        }
+        writeln!(manifest, "\t{producer}")?;
     }
     fs::write("fuzz/corpus/trust-record-sources.tsv", manifest)?;
     Ok(())
