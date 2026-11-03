@@ -365,7 +365,7 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
 }
 
 /// Once the store is poisoned, waiting for a frame fails even when that
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_poisoned_store_fails_waits_for_frames_already_durable()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -992,7 +992,7 @@ fn a_journal_torn_before_its_header_completed_is_created_again()
 }
 
 /// A mutation made under `deferring_durability` is visible at once and
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
