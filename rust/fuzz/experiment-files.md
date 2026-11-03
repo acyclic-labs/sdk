@@ -147,3 +147,8 @@ No provider payload is fabricated or relabeled.
 
 The target excludes the separate assignment/streaming analysis formats and
 implements no decoder. The library remains the single parser and scorer.
+The original scorer-newline-decision inputs use the same scorer and decision
+properties as standalone files. The former two-assignment report fold is
+subsumed by the generated public trial histories, which cover all four outcomes,
+known and unknown costs, rates and refusal state. No second report fold or
+additional scorer decode is needed for that corpus protocol.

@@ -426,6 +426,18 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
     value
 }
 
+fn decision(bytes: &[u8]) {
+    if Decision::decode(bytes).is_ok() {
+        object(
+            bytes,
+            |b| Decision::decode(b).is_ok(),
+            1,
+            &["version", "value"],
+            &["version", "value"],
+        );
+    }
+}
+
 fn scorer(bytes: &[u8]) {
     let Ok(scorer) = Scorer::decode(bytes) else {
         return;
@@ -510,39 +522,12 @@ fuzz_target!(|bytes: &[u8]| {
         rejects(|b| Observation::decode(b).is_ok(), &invalid);
     }
     scorer(bytes);
-    if Decision::decode(bytes).is_ok() {
-        object(
-            bytes,
-            |b| Decision::decode(b).is_ok(),
-            1,
-            &["version", "value"],
-            &["version", "value"],
-        );
-    }
-    // Retain the existing scorer-newline-decision corpus protocol. A failed
-    // decision is still an assignment, not a silently filtered sample.
+    decision(bytes);
+    // Retain both original files in the scorer-newline-decision corpus protocol.
     if let Some(separator) = bytes.iter().position(|byte| *byte == b'\n') {
         let (source, tail) = bytes.split_at(separator);
         scorer(source);
-        if let Ok(scorer) = Scorer::decode(source) {
-            let decision = Decision::decode(&tail[1..]).ok();
-            let assessment = decision.as_ref().map(|decision| scorer.score(decision));
-            let mut trials = AssignedTrials::default();
-            trials
-                .push(assessment.as_ref(), None)
-                .expect("unknown cost admits");
-            trials.push(None, None).expect("unscored assignment admits");
-            let report = trials.report().expect("two assigned trials report");
-            assert_eq!(
-                (report.assigned, report.valid, report.unscored),
-                (
-                    2,
-                    u64::from(assessment.is_some()),
-                    2 - u64::from(assessment.is_some())
-                )
-            );
-            assert_eq!(report.total_cost_usd, None);
-        }
+        decision(&tail[1..]);
     }
     trials(bytes, &valid_scorer, expected);
     statistics(bytes);
