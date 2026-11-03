@@ -197,6 +197,16 @@ fn interval_projection_refuses_foreign_origins_without_allocating()
         result?;
         assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
     }
+    assert_unix_projection_boundaries(origin, anchor, interval, first)?;
+    Ok(())
+}
+
+fn assert_unix_projection_boundaries(
+    origin: IntervalOrigin,
+    anchor: acyclic_observability::UnixClockAnchor,
+    interval: OperationInterval,
+    first: acyclic_observability::IntervalCoordinates,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Mutated original observations are refusal controls, not clock fixtures.
     let zero = acyclic_observability::IntervalCoordinates {
         started_ns: 0,
