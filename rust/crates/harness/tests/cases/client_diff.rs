@@ -327,7 +327,7 @@ impl Fixture {
 #[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
-    use acyclic_harness::client::{AgentPageRequest, DiffKind};
+    use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
     use acyclic_harness::hosting::diff_page;
     let fixture = Fixture::new().await?;
     for (path, text) in [
@@ -343,7 +343,11 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     fixture.put("restored.txt", "changed\n", "change").await?;
     fixture.put("restored.txt", "original\n", "restore").await?;
     fixture
-        .put("added.txt", "one\ntwo\n🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂\n", "add")
+        .put(
+            "added.txt",
+            &format!("one\ntwo\n{}\n", "🙂".repeat(48)),
+            "add",
+        )
         .await?;
     let large = "x".repeat(65_537);
     fixture.put("large.txt", &large, "large").await?;
@@ -422,9 +426,27 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
             .collect()
     );
 
-    // Tight encoded pages must retain accepted rows even when a later UTF-8
-    // scalar cannot fit. Reassemble patches at each original byte credit.
-    for bytes in [768, 1024, 1280, 1536] {
+    // Fund one worst-case metadata envelope and one scalar. This forces the
+    // long Unicode line to split without guessing the projection digest's size.
+    // The next fragment cannot fit beside an accepted prefix; keep that prefix.
+    {
+        let mut metadata = whole[0].clone();
+        metadata.patch.clear();
+        metadata.publication.fill(u8::MAX);
+        let next = metadata.next.as_mut().expect("more files");
+        next.publication.fill(u8::MAX);
+        next.path.clone_from(&metadata.path);
+        next.offset = Some(usize::MAX);
+        let encoded = serde_json::to_vec(&AgentReply::Diff {
+            items: vec![metadata],
+        })
+        .expect("metadata envelope");
+        let bytes = u32::try_from(
+            acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
+                .expect("wire metadata")
+                + '🙂'.len_utf8() as u64,
+        )
+        .expect("one-fragment credit");
         let mut cursor = None;
         let mut actual = std::collections::BTreeMap::<String, String>::new();
         loop {
