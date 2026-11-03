@@ -108,7 +108,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
     let cancellation = CancellationToken::new();
     let workspace = tools.workspace.view().workspace();
-    let mut checkout = workspace
+    let checkout = workspace
         .checkout(
             GenerationSelector::Head,
             CheckoutMode::tracking_transaction(),
@@ -125,12 +125,24 @@ async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
         config.limits,
     )
     .map_err(storage)?;
-    Ok(checkout
-        .read_file_range(
-            &path,
+    let file = checkout
+        .snapshot_reader()
+        .resolve_files(
+            std::slice::from_ref(&path),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .pop()
+        .flatten()
+        .ok_or_else(|| Error::NotFound("captured marker".into()))?;
+    Ok(file
+        .read_range(
             ByteRange {
                 offset: 0,
-                length: 5,
+                length: file.description().logical_bytes,
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
