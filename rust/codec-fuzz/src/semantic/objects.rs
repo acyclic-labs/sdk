@@ -130,6 +130,31 @@ fn publication(put: &acyclic_objects::Put, expected: (Digest, u64)) {
     }
 }
 
+fn metadata(head: &acyclic_objects::Head, original: &wire::BlobInfo) {
+    use acyclic_objects::Kind;
+    assert!(
+        matches!(
+            (wire::Kind::try_from(original.kind), head.kind),
+            (Ok(wire::Kind::Blob), Kind::Blob) | (Ok(wire::Kind::Manifest), Kind::Manifest)
+        ),
+        "head preserves the original explicit kind"
+    );
+    assert_eq!(
+        head.length, original.length,
+        "head preserves original length"
+    );
+    assert!(
+        head.references
+            .iter()
+            .map(|digest| digest.as_bytes().as_slice())
+            .eq(original
+                .references
+                .iter()
+                .map(|reference| reference.blake3.as_slice())),
+        "head preserves original ordered references"
+    );
+}
+
 fn batch(bytes: &[u8]) {
     let run = |packet: Bytes, lost| {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -250,6 +275,12 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             ] {
                 compare::<wire::GetBlobResponse, _>(bytes, "blobs/get", |client| {
                     ready(client.get(digest(), range, maximum)).map(|object| {
+                        let original = wire::GetBlobResponse::decode(bytes)
+                            .expect("admitted original read wire");
+                        metadata(
+                            object.head(),
+                            original.info.as_ref().expect("admitted original read head"),
+                        );
                         assert_eq!(
                             object.head().digest,
                             digest(),
@@ -292,6 +323,9 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         "acyclic.objects.v1.BlobInfo" => {
             compare::<wire::BlobInfo, _>(bytes, "blobs/head", |client| {
                 ready(client.head(digest())).map(|head| {
+                    let original =
+                        wire::BlobInfo::decode(bytes).expect("admitted original head wire");
+                    metadata(&head, &original);
                     assert_eq!(
                         head.digest,
                         digest(),
@@ -571,6 +605,28 @@ mod tests {
         )
         .expect("retained original service head writer");
         super::check("acyclic.objects.v1.BlobInfo", &captured[8..]);
+        let original =
+            super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
+        let listed = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.ListBlobsResponse-ordered",
+        )
+        .expect("retained original service list writer");
+        let references = super::wire::ListBlobsResponse::decode(&listed[8..])
+            .expect("original service list wire")
+            .digests;
+        // These kind/reference combinations are derived adversarial operands,
+        // not captures of additional provider operations.
+        for kind in [
+            super::wire::Kind::Blob,
+            super::wire::Kind::Manifest,
+            super::wire::Kind::Unspecified,
+        ] {
+            let mut head = original.clone();
+            head.kind = kind as i32;
+            super::check("acyclic.objects.v1.BlobInfo", &head.encode_to_vec());
+            head.references.clone_from(&references);
+            super::check("acyclic.objects.v1.BlobInfo", &head.encode_to_vec());
+        }
         let mut wrong =
             super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
         wrong.digest.as_mut().expect("original head digest").blake3[0] ^= 1;
