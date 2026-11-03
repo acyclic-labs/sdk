@@ -152,6 +152,38 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
     #[cfg(feature = "test-support")]
     {
         let bytes = std::fs::read(&paths[0]).map_err(storage)?;
+        let selected = hex::encode(skills[0].source.generation.as_resource().key());
+        let sibling = hex::encode(skills[1].source.generation.as_resource().key());
+        let mut changed: serde_json::Value = serde_json::from_slice(&bytes).map_err(storage)?;
+        changed["Batch"][&sibling]["Native"]["path"] = "changed/SKILL.md".into();
+        std::fs::write(&paths[0], serde_json::to_vec(&changed).map_err(storage)?)
+            .map_err(storage)?;
+        let cache = retained::RecordCache::default();
+        assert!(
+            matches!(
+                cache
+                    .read(sources.directory.clone(), selected.clone())
+                    .await,
+                Err(Error::Conflict(_))
+            ),
+            "changed sibling must reject the whole physical bundle"
+        );
+        // A rejected read must not publish even the valid selected sibling.
+        std::fs::write(&paths[0], b"{}").map_err(storage)?;
+        assert!(
+            cache
+                .read(sources.directory.clone(), selected.clone())
+                .await
+                .is_err(),
+            "rejected bundle must leave no cached selected record"
+        );
+        std::fs::write(&paths[0], &bytes).map_err(storage)?;
+        assert!(
+            cache
+                .read(sources.directory.clone(), selected)
+                .await?
+                .is_some()
+        );
         codec_fuzz::check(&bytes);
         sources.retain_materialized(&skills[0].source.generation, &skills[0].source.generation)?;
         assert_eq!(

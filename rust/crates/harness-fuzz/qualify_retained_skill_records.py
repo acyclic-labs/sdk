@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parent
@@ -11,6 +12,9 @@ repository = root.parents[2]
 core = root.parent / "harness-core/src"
 corpus = root / "corpus/retained_skill_records"
 recovery = "python3 rust/crates/harness-fuzz/qualify_retained_skill_records.py"
+capture_and_campaign = sys.argv[1:] == ["--capture-and-campaign"]
+if capture_and_campaign:
+    recovery += " --capture-and-campaign"
 test = "context::native_skills::tests::retained_records_share_one_sync_on_the_native_io_service"
 native = ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib",
           "--features", "filesystem-local,native-execution,test-support", test, "--", "--exact"]
@@ -29,6 +33,8 @@ def run(step, command, cwd, env=None):
 
 
 def main():
+    if sys.argv[1:] and not capture_and_campaign:
+        fail("qualification arguments", "expected no arguments or --capture-and-campaign")
     mutations = [
         (core / "context/native_skills/retained.rs",
          b"    for (key, record) in &batch {\n        validate_record(record, key)?;\n    }\n",
@@ -39,7 +45,9 @@ def main():
          b'                }\n',
          "foreign skill receipt kind admitted"),
     ]
-    for source, needle, assertion in mutations:
+    # A retained source-mutation result need not be compiled a second time when
+    # only capture/campaign admission changes.
+    for source, needle, assertion in ([] if capture_and_campaign else mutations):
         original = source.read_bytes()
         if b"\r\n" in original:
             needle = needle.replace(b"\n", b"\r\n")
@@ -67,7 +75,8 @@ def main():
         configuration="native skill roots relative to the contributor working directory",
         captures=captures), indent=2) + "\n")
     with tempfile.TemporaryDirectory(prefix="retained-skill-records-") as artifacts:
-        command = ["cargo", "+nightly", "fuzz", "run", "--dev", "--sanitizer", "none",
+        command = ["cargo", "+nightly", "fuzz", "run", "--fuzz-dir", str(root),
+                   "--dev", "--sanitizer", "none",
                    "--no-default-features", "--features", "native-skill-records",
                    "--target-dir", os.environ.get("CARGO_TARGET_DIR", str(repository / "target")),
                    "retained_skill_records", str(corpus), "--", "-runs=2000", "-seed=1",
@@ -75,7 +84,7 @@ def main():
         result = run("retained skill finite campaign", command, root)
         if result.returncode != 0 or "DONE" not in result.stdout or "cov:" not in result.stdout:
             fail("retained skill finite campaign", f"exit {result.returncode}; instrumented completion required")
-    print("PASS: actual native writer corpus, both production defects rejected, finite campaign completed.")
+    print("PASS: actual native writer corpus and finite campaign completed.")
 
 
 try:
