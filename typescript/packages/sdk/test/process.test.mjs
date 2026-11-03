@@ -12,6 +12,12 @@ import {fileURLToPath} from 'node:url';
 import {commandCapture, commandProcess, withProcessSignals} from '@acyclic-labs/sdk/process';
 import {fuzz} from './process-completion.fuzz.mjs';
 
+const signalMutations = new Map([
+  ['omit-release', ['process.removeListener(name, handler)', 'void handler']],
+  ['omit-await', ['await action(stop.signal)', 'action(stop.signal)']],
+  ['omit-abort', ['stop.signal.throwIfAborted();', '']],
+]);
+
 async function processSource() {
   return (await readFile(new URL('../native/process.mjs', import.meta.url), 'utf8')).replace(
     "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
@@ -86,36 +92,40 @@ async function signalControls(mutation) {
 async function processSignalControls() {
   // A caller-owned signal delegates cancellation without borrowing process
   // handlers, even when already aborted. The action owns its original result.
-  const callerOwned = async run => {
+  const scopeOutcomes = async run => {
     const before = ['SIGINT', 'SIGTERM'].map(name => process.listeners(name));
-    for (const aborted of [false, true]) for (const fails of [false, true]) {
+    for (const ownership of ['caller', 'aborted-caller', 'process']) for (const fails of [false, true]) {
       const stop = new AbortController(), cause = new Error('original caller signal');
-      if (aborted) stop.abort(cause);
+      if (ownership === 'aborted-caller') stop.abort(cause);
       const action = signal => {
-        assert.equal(signal, stop.signal, 'the action must retain its original caller signal');
-        assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name)), before,
-          'caller-owned cancellation must not borrow process handlers');
+        if (ownership !== 'process') {
+          assert.equal(signal, stop.signal, 'the action must retain its original caller signal');
+          assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name)), before,
+            'caller-owned cancellation must not borrow process handlers');
+        }
         if (fails) throw cause;
         return cause;
       };
-      const completed = run(action, {signal: stop.signal});
+      const completed = run(action, {signal: ownership === 'process' ? undefined : stop.signal});
       if (fails) await assert.rejects(completed, error => error === cause);
       else assert.equal(await completed, cause);
+      assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listeners(name)), before,
+        'every original result must release its owned signal handlers');
     }
   };
-  await callerOwned(withProcessSignals);
+  await scopeOutcomes(withProcessSignals);
   const production = await processSource();
   const planted = production.replace('if (signal) return action(signal);', '');
   assert.notEqual(planted, production, 'production caller-signal delegation must exist');
   const {withProcessSignals: mutant} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`);
-  await assert.rejects(() => callerOwned(mutant), {
+  await assert.rejects(() => scopeOutcomes(mutant), {
     code: 'ERR_ASSERTION', message: /the action must retain its original caller signal/,
   });
   if (process.platform !== 'win32') {
     await signalControls('original');
-    await assert.rejects(() => signalControls('omit-release'), {
-      code: 'ERR_ASSERTION', message: /completion must release exactly its original signal handlers/,
-    });
+    for (const mutation of signalMutations.keys()) {
+      await assert.rejects(() => signalControls(mutation), {code: 'ERR_ASSERTION'}, mutation);
+    }
   }
 }
 
@@ -123,10 +133,11 @@ const script = fileURLToPath(import.meta.url);
 const mode = process.argv[2];
 if (mode === 'signal-owner') {
   let run = withProcessSignals;
-  if (process.argv[3] === 'omit-release') {
+  if (signalMutations.has(process.argv[3])) {
     const original = await processSource();
-    const planted = original.replace('process.removeListener(name, handler)', 'void handler');
-    assert.notEqual(planted, original, 'production signal release must exist');
+    const [guard, replacement] = signalMutations.get(process.argv[3]);
+    const planted = original.replace(guard, replacement);
+    assert.notEqual(planted, original, `production signal guard must exist: ${guard}`);
     ({withProcessSignals: run} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`));
   }
   try {
