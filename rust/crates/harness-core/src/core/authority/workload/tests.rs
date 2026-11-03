@@ -343,7 +343,7 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
     widened.parent_proof = Some(*child.proof);
     assert!(
         verified
-            .attenuate(facts(&widened, &name, child.agent)?, &entropy())
+            .attenuate(facts(&widened, &name, child.agent, None)?, &entropy())
             .is_err()
     );
     // A block without scope facts is not a delegation: a later block cannot
@@ -354,7 +354,7 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
     let mut misplaced = child.clone();
     misplaced.parent_proof = Some(*skipped.block_ids().last().unwrap());
     let chain = skipped
-        .attenuate(facts(&misplaced, &name, child.agent)?, &entropy())
+        .attenuate(facts(&misplaced, &name, child.agent, None)?, &entropy())
         .map_err(unauthorized)?;
     retain(&mut misplaced, &chain, &mut None)?;
     assert!(verifier.verify(&misplaced, &mut None).is_err());
@@ -362,7 +362,7 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
     let mut direct = child.clone();
     direct.parent_proof = Some(*child.proof);
     let chain = verified
-        .attenuate(facts(&direct, &name, child.agent)?, &entropy())
+        .attenuate(facts(&direct, &name, child.agent, None)?, &entropy())
         .map_err(unauthorized)?;
     retain(&mut direct, &chain, &mut None)?;
     verifier.verify(&direct, &mut None)?;
