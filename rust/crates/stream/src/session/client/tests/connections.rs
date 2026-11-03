@@ -19,11 +19,12 @@ impl transport::Transport for ReplacedNode {
     fn session(
         &self,
         mut source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::Responses<transport::Failure>, transport::Failure>>
+    {
         Box::pin(async move {
             let hello = source.next().await.ok_or(StreamError::Unavailable)?;
             let Some(Body::Hello(ref value)) = hello.body else {
-                return Err(StreamError::InvalidArgument);
+                return Err(StreamError::InvalidArgument.into());
             };
             self.destinations
                 .lock()
@@ -35,7 +36,7 @@ impl transport::Transport for ReplacedNode {
                 "new"
             };
             if !value.destination_node.is_empty() && value.destination_node != node {
-                return Err(StreamError::InvalidArgument);
+                return Err(StreamError::InvalidArgument.into());
             }
             let output = super::super::super::serve(
                 self.provider.clone(),
@@ -45,10 +46,13 @@ impl transport::Transport for ReplacedNode {
                 Box::pin(stream::once(future::ready(Ok(hello))).chain(source.map(Ok))),
             )?;
             let lifetime = NotifySessionClosed(self.closed.clone());
-            let response: transport::Responses = Box::pin(stream::unfold(
+            let response: transport::Responses<transport::Failure> = Box::pin(stream::unfold(
                 (output, lifetime),
                 |(mut output, lifetime)| async move {
-                    output.next().await.map(|frame| (frame, (output, lifetime)))
+                    output
+                        .next()
+                        .await
+                        .map(|frame| (frame.map_err(Into::into), (output, lifetime)))
                 },
             ));
             Ok(response)
@@ -69,7 +73,7 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
         });
         let client = Client::with_transport(
             endpoint.clone(),
-            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable.into())))),
             Arc::new(crate::runtime::PlatformExecutor),
         );
         client.register_credential(0, crate::session::testing::credential())?;
@@ -328,7 +332,7 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
         fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
-        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable.into())))),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let connections = client.connections();

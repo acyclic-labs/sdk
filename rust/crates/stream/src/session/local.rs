@@ -23,9 +23,10 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::Responses<transport::Failure>, transport::Failure>>
+    {
         Box::pin(async move {
-            super::serve_on_with_products(
+            let response = super::serve_on_with_products(
                 self.provider.clone(),
                 self.authority.clone(),
                 self.products.clone(),
@@ -33,7 +34,9 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
                 Limits::default(),
                 Box::pin(source.map(Ok)),
                 None,
-            )
+            )?;
+            Ok(Box::pin(response.map(|frame| frame.map_err(Into::into)))
+                as transport::Responses<transport::Failure>)
         })
     }
 }
@@ -136,7 +139,7 @@ impl Client {
                 let local = local.clone();
                 Box::pin(async move {
                     if node.node_id != "local" {
-                        return Err(StreamError::Unsupported);
+                        return Err(StreamError::Unsupported.into());
                     }
                     Ok(local)
                 })
