@@ -1,0 +1,13 @@
+--- a/rust/crates/stream/src/journal.rs
++++ b/rust/crates/stream/src/journal.rs
+@@ -103,2 +103,10 @@
+     }?;
++    let family = match &command {
++        WriteRequest::Append(_) => "append",
++        WriteRequest::Fork(_) => "fork",
++        WriteRequest::Commit(_) | WriteRequest::CommitAccepted(_) => "commit",
++    };
++    if std::env::var("ACYCLIC_CODEC_COMMAND_REFUSAL").ok().as_deref() == Some(family) {
++        return Err(StreamError::InvalidArgument);
++    }
+     // Persist only canonical bytes emitted by the current first-party writer.
