@@ -506,50 +506,186 @@ impl UnixMillisClock for TestClock {
 #[tokio::test]
 async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
+    use futures::TryStreamExt as _;
+
+    async fn records(
+        provider: &LocalStream,
+        paths: &[StreamPath],
+    ) -> Result<Vec<Option<Vec<crate::Record>>>, StreamError> {
+        let mut result = Vec::new();
+        for path in paths {
+            result.push(
+                match provider
+                    .read(ReadRequest {
+                        path: path.clone(),
+                        from: 0,
+                        limit: 16,
+                        key: None,
+                        at_least: Default::default(),
+                    })
+                    .await
+                {
+                    Ok(records) => Some(records.try_collect().await?),
+                    Err(StreamError::NotFound) => None,
+                    Err(error) => return Err(error),
+                },
+            );
+        }
+        Ok(result)
+    }
+
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
-    let command = WriteRequest::Append(AppendRequest {
-        path: StreamPath::new("partial")?,
-        records: vec![(Bytes::from_static(b"record")).into()],
-        if_tail: Some(0),
-        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"partial"))?,
-    });
-    let frame = PreparedFrame::encode(&command, 42, None)?;
-    for cut in 0..=frame.encoded.len() {
-        let mut bytes = encode_header(limits, 0)?;
-        bytes.extend_from_slice(
-            frame
-                .encoded
-                .get(..cut)
-                .ok_or(StreamError::InvalidArgument)?,
+    let paths = ["source", "branch", "branch/child", "copy"]
+        .map(StreamPath::new)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let body = |key: &'static [u8], owner: &'static [u8]| {
+        Ok::<_, StreamError>(crate::AppendRecord {
+            value: Bytes::from_static(b"record"),
+            headers: crate::RecordHeaders::new(
+                vec![Bytes::from_static(key)],
+                vec![crate::Attribute {
+                    name: "owner".into(),
+                    value: Bytes::from_static(owner),
+                }],
+            )?,
+        })
+    };
+    let provider = LocalStream::open(directory.path(), limits).await?;
+    provider
+        .append(AppendRequest {
+            path: paths[0].clone(),
+            records: vec![body(b"a", b"alice")?, body(b"z", b"bob")?],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::new("seed")?,
+        })
+        .await?;
+    for pair in paths[..3].windows(2) {
+        provider
+            .fork(ForkRequest {
+                source: pair[0].clone(),
+                destination: pair[1].clone(),
+                at_tail: Some(2),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let requests = [
+        WriteRequest::Append(AppendRequest {
+            path: paths[0].clone(),
+            records: vec![body(b"b", b"alice")?],
+            if_tail: Some(2),
+            idempotency_key: IdempotencyKey::new("partial-append")?,
+        }),
+        WriteRequest::Commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![
+                crate::CommitCondition::Tail {
+                    path: paths[2].clone(),
+                    expected: 2,
+                },
+                crate::CommitCondition::Absent {
+                    path: paths[3].clone(),
+                },
+            ],
+            mutations: vec![
+                crate::CommitMutation::Append {
+                    path: paths[2].clone(),
+                    records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
+                },
+                crate::CommitMutation::Fork {
+                    source: paths[2].clone(),
+                    destination: paths[3].clone(),
+                    at_tail: 2,
+                    exclude: Vec::new(),
+                    records: vec![body(b"c", b"alice")?],
+                },
+            ],
+            idempotency_key: IdempotencyKey::new("partial-commit")?,
+        }),
+    ];
+    // Capture the actual journal emitted by the public provider, including its
+    // canonical commands, sampled times, checksums and inherited identities.
+    let mut captures = Vec::new();
+    for (index, request) in requests.into_iter().enumerate() {
+        let key = match &request {
+            WriteRequest::Append(request) => &request.idempotency_key,
+            WriteRequest::Fork(request) => &request.idempotency_key,
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                &request.idempotency_key
+            }
+        }
+        .clone();
+        let before = records(&provider, &paths).await?;
+        let prefix = std::fs::read(&path)?;
+        assert!(matches!(
+            provider.write(request).await?,
+            crate::WriteOutcome::Append(AppendOutcome::Committed(_))
+                | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+        ));
+        let bytes = std::fs::read(&path)?;
+        assert!(bytes.starts_with(&prefix));
+        let frame = bytes[prefix.len()..].to_vec();
+        let after = records(&provider, &paths).await?;
+        assert_eq!(
+            after
+                .iter()
+                .map(|records| records.as_ref().map(Vec::len))
+                .collect::<Vec<_>>(),
+            if index == 0 {
+                vec![Some(3), Some(2), Some(2), None]
+            } else {
+                vec![Some(3), Some(2), Some(4), Some(3)]
+            }
         );
-        std::fs::write(&path, &bytes)?;
-        let reopened = LocalStream::open(directory.path(), limits).await?;
-        if cut == frame.encoded.len() {
-            assert_eq!(reopened.tail(StreamPath::new("partial")?).await?, 1);
-        } else {
+        if let Some(copy) = &after[3] {
+            assert_eq!(Some(&copy[..2]), before[2].as_deref());
+        }
+        let observed = provider
+            .inspect_idempotency(key.clone())
+            .await?
+            .ok_or("written frame has no retained outcome")?;
+        captures.push((key, prefix, frame, before, after, observed.outcome));
+    }
+    drop(provider);
+
+    for (key, prefix, frame, before, after, outcome) in &captures {
+        for cut in 0..=frame.len() {
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&frame[..cut]);
+            std::fs::write(&path, &bytes)?;
+            let reopened = LocalStream::open(directory.path(), limits).await?;
+            let complete = cut == frame.len();
             assert_eq!(
-                reopened.tail(StreamPath::new("partial")?).await,
-                Err(StreamError::NotFound)
+                &records(&reopened, &paths).await?,
+                if complete { after } else { before },
+                "frame {key:?}, cut {cut} exposed a partial namespace or record"
+            );
+            assert_eq!(
+                reopened
+                    .inspect_idempotency(key.clone())
+                    .await?
+                    .map(|observed| observed.outcome),
+                complete.then(|| outcome.clone()),
+                "frame {key:?}, cut {cut} changed retry acceptance"
+            );
+            drop(reopened);
+            assert_eq!(
+                std::fs::read(&path)?,
+                if complete { &bytes } else { prefix }.as_slice(),
+                "recovery changed the accepted prefix"
             );
         }
-        drop(reopened);
-        assert_eq!(
-            std::fs::metadata(&path)?.len(),
-            u64::try_from(if cut == frame.encoded.len() {
-                bytes.len()
-            } else {
-                HEADER_BYTES
-            })?
-        );
     }
     // A whole checksummed noncanonical command is never a torn append.
-    let mut payload = 42_u64.to_le_bytes().to_vec();
-    payload.extend_from_slice(&command.encode_to_vec());
+    let (_, prefix, frame, ..) = captures.last().ok_or("missing emitted frame")?;
+    let mut payload = frame[4..frame.len() - FRAME_CHECKSUM_BYTES].to_vec();
     payload.extend_from_slice(&[0x78, 0]);
     let length = u32::try_from(payload.len())?.to_le_bytes();
-    let mut bytes = encode_header(limits, 0)?;
+    let mut bytes = prefix.clone();
     bytes.extend_from_slice(&length);
     bytes.extend_from_slice(&payload);
     bytes.extend_from_slice(&frame_checksum(&length, &payload));
