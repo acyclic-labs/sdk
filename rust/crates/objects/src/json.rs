@@ -27,13 +27,8 @@ fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessag
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
-    let descriptor = descriptor(name)?;
-    let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message = DynamicMessage::deserialize(descriptor, &mut json)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    json.end()
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    Ok(message)
+    acyclic_protobuf_json::decode_admitted(descriptor(name)?, bytes)
+        .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {

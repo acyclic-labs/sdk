@@ -147,6 +147,14 @@ Writer-derived truncation, excess width and nonhex spelling must refuse with
 digest with zeroes; the same retained corpus assertion must fail. The existing
 writer corpus supplies generator inputs, rather than handwritten key fixtures.
 
+Objects and the shared Protobuf JSON boundary use one complete-input parser.
+Objects admits byte capacity before descriptor lookup, then calls
+`acyclic_protobuf_json::decode_admitted`; other callers can use the bounded
+`decode` entry point. The existing JSON targets reach this same implementation.
+`protobuf_json_trailing.patch` removes its actual end-of-input check. The kept
+`bytes_use_base64_and_each_refusal_stage_stays_distinct` control in
+`acyclic-protobuf-json` must fail at its original `Trailing` assertion.
+
 With `--features storage-schedules`, the same `object_persistence` target also
 reaches the native LocalMedium payload decoder beneath its shared checksum frame.
 It requires original PUT/REMOVE admission, exact key/value bytes, and refusal of

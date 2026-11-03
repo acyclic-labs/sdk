@@ -58,6 +58,21 @@ pub fn decode(
     if bytes.len() > maximum {
         return Err(Error::Limit);
     }
+    decode_admitted(descriptor, bytes)
+}
+
+/// Decode bytes after the caller has performed its own byte admission.
+///
+/// This lets callers refuse an oversized input before descriptor lookup while
+/// sharing the same complete-input parser without repeating byte admission.
+///
+/// # Errors
+/// Returns `Error::Json` for invalid fields/values and `Error::Trailing` for
+/// unconsumed input. This function does not enforce a byte limit.
+pub fn decode_admitted(
+    descriptor: MessageDescriptor,
+    bytes: &[u8],
+) -> Result<DynamicMessage, Error> {
     let mut json = serde_json::Deserializer::from_slice(bytes);
     let message = DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::Json)?;
     json.end().map_err(|_| Error::Trailing)?;
