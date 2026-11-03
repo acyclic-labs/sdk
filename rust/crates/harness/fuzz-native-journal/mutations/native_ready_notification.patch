@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/host_process/children.rs
++++ b/rust/crates/harness/src/local/host_process/children.rs
+@@ -100,7 +100,7 @@
+             queue.waker.take()
+         };
+         if let Some(waker) = waker {
+-            waker.wake();
++            drop(waker);
+         }
+     }
+ 

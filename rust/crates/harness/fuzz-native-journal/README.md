@@ -56,3 +56,11 @@ patches remove parent refusal, force reject-all admission, and restore the
 original diagnostic that copied the entire rejected input. Each must fail
 the unchanged oracle at its corresponding assertion; none is a compiler
 failure control.
+
+The native ready-queue control
+`local::host_process::children::framing::only_fired_registrations_reach_the_ready_queue`
+also checks real server notifications, waiter replacement and re-registration.
+The retained `mutations/native_ready_notification.patch` drops the production
+notification while preserving queued keys. The unchanged control must fail
+at `fired child registration did not wake the current waiter exactly once`.
+This is a synchronous component check, not an OS event-hub concurrency proof.
