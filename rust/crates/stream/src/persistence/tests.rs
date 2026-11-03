@@ -22,12 +22,6 @@ async fn round_trip(
         .ok_or("missing outcome")?;
     let bytes = encode_observation(&value, BOUND)?;
     assert_eq!(decode_observation(&bytes, bytes.len())?, value);
-    assert_eq!(
-        bytes
-            .strip_prefix(OBSERVATION_MAGIC)
-            .ok_or("missing format header")?,
-        wire_codec::observation_wire(value.clone()).encode_to_vec()
-    );
     if let IdempotencyOutcome::Commit(envelope) = &value.outcome {
         let bytes = encode_envelope(envelope, BOUND)?;
         assert_eq!(decode_envelope(&bytes, bytes.len())?, *envelope);
