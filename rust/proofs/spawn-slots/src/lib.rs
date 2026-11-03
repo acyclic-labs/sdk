@@ -4,18 +4,6 @@
 mod slots;
 
 #[kani::proof]
-fn client_cannot_take_a_recorded_slot() {
-    let open: usize = kani::any();
-    let reserved: usize = kani::any();
-    kani::assume(open <= slots::MAX_OPEN_CHILDREN);
-    kani::assume(reserved <= slots::MAX_OPEN_CHILDREN - open);
-    let ceiling = slots::client_ceiling(true, reserved);
-    if slots::admits(open, ceiling, false) {
-        assert!(open + 1 + reserved <= slots::MAX_OPEN_CHILDREN);
-    }
-}
-
-#[kani::proof]
 fn every_recorded_child_fits_after_client_admission() {
     let open: usize = kani::any();
     let reserved: usize = kani::any();

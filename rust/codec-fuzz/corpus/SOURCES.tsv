@@ -1856,3 +1856,22 @@ actor_codecs/socket-ledger-exhausted-zero-frontier	13	738e8afa7051218cf4b21bfa93
 actor_codecs/socket-ledger-exhausted	24	9499245d7b75a10f680f47b5732ce17ef12cdb8bf6208e3f96f7bf60ce51c696	local::sockets::epoch_record
 actor_codecs/socket-ledger-last-incarnation	24	250dda37b343a1877f7bb0d8ff68265759babd88fc1719f0b0a4b61788d57862	local::sockets::epoch_record
 actor_codecs/socket-ledger-invalid-frontier	15	78f37df85e9855de658d6369266423f408e2f47beccf688c7bbc4925b290662a	local::sockets::epoch_record
+harness_codecs/agent-v12-adopted	190	9d095f2cf574891954627e111efec439578cfa771c3dd0e9a7467d01bfea6aab	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-awaited	33	c83e9996fd33d1a595cf6fb311bb78a79d7564ca6bbe347aeb08ab896a122209	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-status	68	84a6c3c6a71dd392451bad7570aa2bc397ee33c84ff1a63f04283842ea4e8484	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-closed	122	90e9fe7acd674e56a2c0dc11b1cb1b486a3574163e4cbd66a5daa32d7f472fd5	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-effect	119	b1e335cb18d9f960c78b236231609b2c89bd97ab08e5b0e6d04ac5dff281e972	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint	327	86a06a094d2d1f275b23633672dda404dd8254fc2c047ce1a86557809aaf6478	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-envelope	1225	e21b1a0ef91b1ee6a6b459a5a75873e21672ae4b84e8f66c18d24c4bf3133f0a	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-status-approval-bound	289	79d3c53e1e782f17baea7a785d882fe8b43ec8e951af43a4736f7d5848a8a459	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-approval-bound	548	8a6a915c9cb06437509710de73358c866b74ba1f2b01819ec93363580ec11b9a	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-envelope-approval-bound	1942	95e81b2e02f1bc1de1ebad00a7e71b3a3b3031bf084545d6d527292efd6a26f8	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-status-approval-external	124	4aba9ae548753bae906e7db3fc240afc604ace937589ba8127b73ee938b68c3b	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-approval-external	383	d5a9003afed825a7b056923f4cd67a954abd25e94ab97f572c49746ed0bfd54c	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-envelope-approval-external	1429	edacf5adeff4b4dd66ca7e74d4cd578b84a8eb85710d224430f271f537e77486	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-wait	619	421273d1efc596503b32ccc67de438c98396e62342a01ffdc59960399f67af4a	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-envelope-wait	1996	6b60a9130849139f8894dd592d8db98de6c8dad1e7e1f374812c91f84df2cde0	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-state-wait	2135	3d246c8b4d30c4607a828a1b686738029f70b9a93b416802eaaf0fec4768fbf0	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-archive	536	70c71e1501c94235b0d0ebd84998b4415ea5c6490197c324fc40b59fc9bec07c	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-checkpoint-envelope-archive	1714	cdc3154448963e95d9ea45674832f12fbd06e1574a633f6a64f45789b3bd40db	harness-core canonical agent record, effect and checkpoint encoders
+harness_codecs/agent-v12-state-archive	1884	e3d440a00d58201508f9f15752c7968299efeaf266dd5f9736d950630fba4325	harness-core canonical agent record, effect and checkpoint encoders
