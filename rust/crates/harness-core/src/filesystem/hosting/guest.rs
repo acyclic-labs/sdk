@@ -532,8 +532,9 @@ mod tests {
                 );
             }
             assert!(!dispatched.get(), "revoked binding reached projection");
-            // The immutable independent snapshot alone still accepts history.
-            public.verify(&scope, &mut None)?;
+            // Public verification shares the original live trust source. It
+            // cannot authorize the old workload after revocation or source loss.
+            assert!(public.verify(&scope, &mut None).is_err());
             assert!(
                 monitor.as_mut().now_or_never().is_some(),
                 "owner change did not wake the idle monitor"
