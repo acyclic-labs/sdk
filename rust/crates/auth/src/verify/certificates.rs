@@ -70,7 +70,7 @@ impl CertificateVerifier {
         if claims.issued_at_unix_seconds > timestamp {
             return Err(VerifyError::Time);
         }
-        let environments = trust.environment_keys(&claims.environment)?;
+        let environments = trust.environment_keys(&claims.environment, timestamp)?;
         let account = trust.account(&claims.account_id)?;
         let digest = Sha256::digest(certificates.encode_to_vec()).into();
         if let Some(roots) = self.latest.as_ref()
@@ -126,6 +126,7 @@ impl CertificateVerifier {
         &self,
         certificates: &CertificateChainProto,
         trust: &(impl Trust + ?Sized),
+        now: u64,
     ) -> Result<HashSet<BlockId>, VerifyError> {
         let birth = certificates
             .birth
@@ -133,7 +134,7 @@ impl CertificateVerifier {
             .and_then(|birth| birth.birth.as_ref())
             .ok_or(VerifyError::Malformed)?;
         let mut seen = HashSet::new();
-        for key in trust.environment_keys(&birth.environment)?.iter() {
+        for key in trust.environment_keys(&birth.environment, now)?.iter() {
             seen.insert(public_key(key)?.to_bytes());
         }
         seen.insert(public_key(&birth.genesis_public_key)?.to_bytes());

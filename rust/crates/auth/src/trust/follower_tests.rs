@@ -897,7 +897,7 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
             // hang. The real check still uses its original captured signers.
             assert!(verifying.environment.try_write().is_ok());
             assert!(verifying.accounts.try_write().is_ok());
-            assert!(verifying.environment_keys("test").is_ok());
+            assert!(verifying.environment_keys("test", NOW).is_ok());
             assert_eq!(verifying.apply(&winner, NOW + 1), Ok(Applied::Changed));
         }));
     });
@@ -1488,15 +1488,17 @@ fn anchor_rotation_authenticates_new_keys_and_retires_old_after_overlap() {
     // The same follower, never rebuilt, reads the swapped snapshot.
     assert_eq!(trust.apply(&by_new, NOW), Ok(Applied::Changed));
     // A cold follower serves the anchor: the old key only inside its window.
-    cold.protected_now(NOW + 99);
-    let keys = cold.environment_keys("test").unwrap();
+    let keys = cold.environment_keys("test", NOW + 99).unwrap();
     assert!(keys.contains(&new.anchor()[0]) && keys.contains(&old.anchor()[0]));
     assert_eq!(
         Follower::new("test", anchor.clone()).apply(&by_old, NOW + 99),
         Ok(Applied::Changed)
     );
-    cold.protected_now(NOW + 100);
-    assert_eq!(&*cold.environment_keys("test").unwrap(), new.anchor());
+    // Retirement follows the check's own time: no record or floor advance.
+    assert_eq!(
+        &*cold.environment_keys("test", NOW + 100).unwrap(),
+        new.anchor()
+    );
     assert_eq!(
         Follower::new("test", anchor.clone()).apply(&by_old, NOW + 100),
         Err(VerifyError::Signature)
@@ -1534,6 +1536,39 @@ fn a_member_anchored_after_rotation_replays_history_predating_its_anchor() {
     assert_eq!(trust.apply(&next, NOW + 1), Ok(Applied::Changed));
     // Control: history the anchor never authenticates stays refused.
     assert!(EnvironmentFrontier::resume("test", reloaded, &[&first]).is_err());
+}
+
+#[test]
+fn an_unsigned_restatement_of_anchor_keys_cannot_block_later_rotations() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(5));
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(old.anchor()));
+    old.environment_keyring(&mut frontier, &old.anchor(), NOW)
+        .unwrap();
+    let rotation = old
+        .environment_keyring(&mut frontier, &new.anchor(), NOW)
+        .unwrap();
+    let next = new
+        .environment_keyring(&mut frontier, &new.anchor(), NOW + 1)
+        .unwrap();
+    // Anyone can name the public anchor key at the last sequence.
+    let TrustRecordKind::Environment(mut forged) = decode(&rotation).unwrap().record else {
+        panic!("not an environment keyring");
+    };
+    forged.keyring.sequence = u64::MAX;
+    forged.signature = vec![0; 64];
+    let forged = TrustRecordProto::from(TrustRecord {
+        record: TrustRecordKind::Environment(forged),
+    })
+    .encode_to_vec();
+    let trust = Follower::new("test", AnchorKeys::fixed(new.anchor()));
+    assert_eq!(trust.apply(&forged, NOW), Ok(Applied::Changed));
+    assert_eq!(trust.environment_initialized(), Ok(false));
+    // The unproven position blocks nothing: an anchor-signed keyring proves one.
+    assert_eq!(trust.apply(&next, NOW + 1), Ok(Applied::Changed));
+    assert_eq!(trust.environment_initialized(), Ok(true));
+    // Control: against a proven position the forgery is refused outright.
+    assert!(trust.apply(&forged, NOW + 1).is_err());
 }
 
 /// Rotations alternating between {A current, B retiring} and {B current,

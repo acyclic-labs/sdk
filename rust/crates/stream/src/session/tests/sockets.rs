@@ -294,8 +294,9 @@ async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
         fn environment_keys(
             &self,
             environment: &str,
+            now: u64,
         ) -> Result<verify::Keys<'_>, verify::VerifyError> {
-            verify::Trust::environment_keys(&self.0, environment)
+            verify::Trust::environment_keys(&self.0, environment, now)
         }
         fn account(&self, account: &str) -> Result<verify::AccountState<'_>, verify::VerifyError> {
             if !matches!(account, "account" | "other") {

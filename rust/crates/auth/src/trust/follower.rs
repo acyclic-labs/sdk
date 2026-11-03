@@ -104,6 +104,9 @@ struct EnvironmentRevision {
     sequence: u64,
     digest: BlockId,
     issued_at: u64,
+    /// A trusted key signed this position. Until one does, the anchor is the
+    /// key set and the recorded position is replaceable.
+    proven: bool,
 }
 
 impl EnvironmentFrontier {
@@ -142,7 +145,7 @@ impl EnvironmentFrontier {
                 }
             }
         }
-        if !records.is_empty() && frontier.revision.cold() {
+        if !records.is_empty() && frontier.revision.sequence == 0 {
             return Err(VerifyError::Trust);
         }
         Ok(frontier)
@@ -191,9 +194,9 @@ impl EnvironmentFrontier {
 }
 
 impl EnvironmentRevision {
-    /// No keyring applied: the anchor is the environment's key set.
+    /// No trusted key signed this position: the anchor is the key set.
     const fn cold(&self) -> bool {
-        self.sequence == 0
+        !self.proven
     }
 
     /// The environment keys at `now` under the anchor snapshot `anchor`.
@@ -213,14 +216,16 @@ impl EnvironmentRevision {
         now: u64,
     ) -> Result<(Applied, u64), VerifyError> {
         let next = &signed.keyring;
-        if next.sequence <= self.sequence {
+        if self.proven && next.sequence <= self.sequence {
             return Ok((Applied::Duplicate, self.issued_at));
         }
         let linked = self.sequence.checked_add(1) == Some(next.sequence)
             && next.previous_digest == self.digest
             && next.issued_at_unix_seconds >= self.issued_at;
-        // Only a keyring with no applied predecessor may start past keyring 1.
-        if !(linked || (self.cold() && next.sequence > 1)) || next.keys.is_empty() {
+        // A proven position admits only its successor. Without one, any
+        // keyring the anchor authenticates may establish a position: an
+        // unproven sequence never makes a later keyring a duplicate.
+        if !(linked || self.cold()) || next.sequence == 0 || next.keys.is_empty() {
             return Err(VerifyError::Trust);
         }
         if next.issued_at_unix_seconds > now {
@@ -243,22 +248,33 @@ impl EnvironmentRevision {
             .collect::<Result<Vec<BlockId>, _>>()?;
         #[cfg(test)]
         tests::environment_verifying();
-        // The previous keyring signs its successor. With none applied, the
-        // anchor snapshot authenticates a keyring it signed, or one naming
-        // only its keys; it never overrides an applied chain.
-        if self.cold() {
+        // The previous keyring signs its successor. Without a proven
+        // position the anchor snapshot proves a keyring it signed. A keyring
+        // naming only anchor keys but signed by an older key is recorded as
+        // an unproven position: it changes no trusted key, and its sequence,
+        // digest and signature stay unauthenticated until an anchor key
+        // signs a successor.
+        let digest = block_id(&message, &signed.signature);
+        let proven = if self.cold() {
             let anchor = anchor.at(now);
-            if !keys.iter().all(|key| anchor.contains(key)) {
-                signed_by(&anchor, &message, &signed.signature)?;
+            match signed_by(&anchor, &message, &signed.signature) {
+                Ok(()) => true,
+                Err(_) if keys.iter().all(|key| anchor.contains(key)) => false,
+                Err(error) => return Err(error),
             }
         } else {
             signed_by(&self.keys, &message, &signed.signature)?;
+            true
+        };
+        if !proven && next.sequence == self.sequence && digest == self.digest {
+            return Ok((Applied::Duplicate, self.issued_at));
         }
         *self = Self {
             keys: keys.into(),
             sequence: next.sequence,
-            digest: block_id(&message, &signed.signature),
+            digest,
             issued_at: next.issued_at_unix_seconds,
+            proven,
         };
         Ok((Applied::Changed, next.issued_at_unix_seconds))
     }
@@ -647,7 +663,7 @@ impl Follower {
             .read()
             .map_err(|_| VerifyError::Unavailable)?
             .clone();
-        let sequence = prepared.sequence;
+        let frontier = (prepared.sequence, prepared.digest);
         let keys = prepared.keys.clone();
         // Exactly one published anchor snapshot authenticates this record.
         let anchor = self.anchor.borrow().clone();
@@ -660,7 +676,7 @@ impl Follower {
                 .environment
                 .write()
                 .map_err(|_| VerifyError::Unavailable)?;
-            if environment.sequence != sequence || !Arc::ptr_eq(&environment.keys, &keys) {
+            if (environment.sequence, environment.digest) != frontier || !Arc::ptr_eq(&environment.keys, &keys) {
                 return Err(VerifyError::Unavailable);
             }
             std::mem::replace(&mut *environment, prepared)
@@ -688,7 +704,10 @@ impl Follower {
                         .read()
                         .map_err(|_| VerifyError::Unavailable)?;
                     let anchor = self.anchor.borrow().clone();
-                    (environment.keys(&anchor, now), environment.sequence)
+                    (
+                        environment.keys(&anchor, now),
+                        (environment.sequence, environment.digest),
+                    )
                 };
                 prepare_keyring(&account, signed, &keys, now).and_then(|prepared| {
                     self.publish_keyring(&mut account, revision, &keys, prepared)
@@ -708,7 +727,7 @@ impl Follower {
     fn publish_keyring(
         &self,
         account: &mut Account,
-        revision: u64,
+        revision: (u64, BlockId),
         keys: &Arc<[BlockId]>,
         prepared: PreparedKeyring,
     ) -> Result<(Applied, u64), VerifyError> {
@@ -716,7 +735,7 @@ impl Follower {
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        if environment.sequence != revision || !Arc::ptr_eq(&environment.keys, keys) {
+        if (environment.sequence, environment.digest) != revision || !Arc::ptr_eq(&environment.keys, keys) {
             return Err(VerifyError::Unavailable);
         }
         let retired = prepared.next.and_then(|next| account.keyring.replace(next));
@@ -867,14 +886,15 @@ impl Follower {
         });
     }
 
-    /// Current environment keys at the protected time floor.
-    fn environment_keys_now(&self) -> Result<Arc<[BlockId]>, VerifyError> {
+    /// Environment keys at `now`, never earlier than the protected time floor:
+    /// a retired anchor key stops at its deadline without another record.
+    fn environment_keys_at(&self, now: u64) -> Result<Arc<[BlockId]>, VerifyError> {
         let environment = self
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
         let anchor = self.anchor.borrow().clone();
-        Ok(environment.keys(&anchor, self.floor.load(Ordering::SeqCst)))
+        Ok(environment.keys(&anchor, now.max(self.floor.load(Ordering::SeqCst))))
     }
 
     fn check(&self) -> Result<(), VerifyError> {
@@ -901,7 +921,7 @@ impl Follower {
     /// The same refusals as serving the account's trust.
     pub fn snapshot(&self, account: &str) -> Result<super::Snapshot, VerifyError> {
         let environment = self.name.clone();
-        let environment_keys = self.environment_keys_now()?.to_vec();
+        let environment_keys = self.environment_keys_at(0)?.to_vec();
         self.with_account(account, |keyring, revocations| {
             let (keys, blocks, floor) = revocations.revoked();
             super::Snapshot {
@@ -1118,10 +1138,10 @@ fn revocation(
 }
 
 impl Trust for Follower {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError> {
         self.check()?;
         if self.name == environment {
-            Ok(Keys::Shared(self.environment_keys_now()?))
+            Ok(Keys::Shared(self.environment_keys_at(now)?))
         } else {
             Err(VerifyError::Trust)
         }

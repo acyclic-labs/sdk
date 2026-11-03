@@ -284,8 +284,8 @@ pub struct RevocationTrust<'a, T> {
 }
 
 impl<T: Trust> Trust for RevocationTrust<'_, T> {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
-        self.owner.environment_keys(environment)
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError> {
+        self.owner.environment_keys(environment, now)
     }
 
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {

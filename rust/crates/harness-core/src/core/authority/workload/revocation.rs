@@ -11,8 +11,12 @@ struct RevocationTarget<'a> {
 }
 
 impl Trust for RevocationTarget<'_> {
-    fn environment_keys(&self, environment: &str) -> std::result::Result<Keys<'_>, VerifyError> {
-        self.owner.environment_keys(environment)
+    fn environment_keys(
+        &self,
+        environment: &str,
+        now: u64,
+    ) -> std::result::Result<Keys<'_>, VerifyError> {
+        self.owner.environment_keys(environment, now)
     }
 
     fn account(&self, account: &str) -> std::result::Result<AccountState<'_>, VerifyError> {

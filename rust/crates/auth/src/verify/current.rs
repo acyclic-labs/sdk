@@ -141,7 +141,7 @@ where
         if now < self.not_before || now >= self.expires_at {
             return Err(VerifyError::Time);
         }
-        let environments = trust.environment_keys(self.environment)?;
+        let environments = trust.environment_keys(self.environment, now)?;
         if !self
             .environment_issuers
             .iter()

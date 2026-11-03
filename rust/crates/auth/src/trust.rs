@@ -40,7 +40,7 @@ pub fn block_ids(bytes: &[u8]) -> Result<Vec<BlockId>, VerifyError> {
 }
 
 impl Trust for Snapshot {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+    fn environment_keys(&self, environment: &str, _now: u64) -> Result<Keys<'_>, VerifyError> {
         if environment == self.environment && !self.environment_keys.is_empty() {
             Ok((&self.environment_keys).into())
         } else {

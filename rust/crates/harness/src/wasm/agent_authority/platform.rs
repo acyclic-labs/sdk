@@ -129,9 +129,10 @@ impl acyclic_auth::verify::Trust for PlatformTrust {
     fn environment_keys(
         &self,
         environment: &str,
+        now: u64,
     ) -> std::result::Result<acyclic_auth::verify::Keys<'_>, acyclic_auth::verify::VerifyError>
     {
-        acyclic_auth::verify::Trust::environment_keys(&self.snapshot, environment)
+        acyclic_auth::verify::Trust::environment_keys(&self.snapshot, environment, now)
     }
     fn account(
         &self,
