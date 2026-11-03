@@ -70,7 +70,7 @@ impl Session {
     }
 
     pub async fn select(
-        &self,
+        &mut self,
         conversation: &Conversation,
         query: Option<&CommandQuery>,
     ) -> Result<(), Failure> {
@@ -107,6 +107,10 @@ impl Session {
         conversation
             .publish_client_files(conversation.client_session(), operation, changes)
             .await?;
+        // The next conditional edit needs the committed descriptor, including
+        // another command in this input batch. Reopen one consistent query cut
+        // rather than manufacturing a FileRef or retaining optimistic state.
+        *self = Self::open(conversation).await?;
         Ok(())
     }
 }
@@ -152,7 +156,7 @@ mod tests {
         );
         let connection = harness.connect().await?;
         let conversation = Conversation::open(connection.clone())?;
-        let ui = Session::open(&conversation).await?;
+        let mut ui = Session::open(&conversation).await?;
         assert!(ui.open_view().is_none());
         // Poll the original live query before publishing through a second call
         // on the same authenticated session. No timing or readiness probe.
@@ -188,6 +192,41 @@ mod tests {
             capture("CLIENT_FILES_CORPUS", &command, reply)?;
             println!("SESSION_LAYOUT_CORPUS {}", original.text);
         }
+        // These use the same production command path without yielding to the
+        // terminal's background query between selections.
+        ui.select(&conversation, Some(&CommandQuery::History))
+            .await
+            .map_err(|error| {
+                format!("sequential view selection lost its committed source: {error}")
+            })?;
+        ui.select(&conversation, Some(&CommandQuery::Diff)).await?;
+        assert_eq!(ui.open_view(), Some("diff"));
+        let original = ui
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .ok_or("selected layout is absent")?;
+        let mut large: Value = serde_json::from_str(&original.text)?;
+        large["description"] = Value::String("x".repeat(32 * 1024 + 1));
+        ui_create(
+            &conversation,
+            Some(original.file.clone()),
+            large.to_string(),
+        )
+        .await?;
+        let ui = Session::open(&conversation)
+            .await
+            .map_err(|error| format!("published client file cannot be reopened: {error}"))?;
+        let original = ui
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .ok_or("large layout is absent")?
+            .clone();
+        assert!(original.text.len() > 32 * 1024);
+        assert_eq!(ui.open_view(), Some("diff"));
         drop(ui);
         drop(conversation);
         let resumed = Conversation::open(harness.connect().await?)?;

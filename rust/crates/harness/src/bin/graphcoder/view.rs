@@ -700,6 +700,7 @@ pub async fn run(
                 output_rows.reverse();
             }
             batch = keys.next() => {
+                let mut selection_changed = false;
                 for event in batch.ok_or("terminal input ended")?? {
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
@@ -747,8 +748,9 @@ pub async fn run(
                                         return Ok(view.outcome.code());
                                     }
                                     Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
-                                        if let Err(error) = ui.select(&conversation, Some(&selected)).await {
-                                            view.notice = Some(error.to_string());
+                                        match ui.select(&conversation, Some(&selected)).await {
+                                            Ok(()) => selection_changed = true,
+                                            Err(error) => view.notice = Some(error.to_string()),
                                         }
                                         continue;
                                     }
@@ -802,14 +804,10 @@ pub async fn run(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
-                            InputEffect::Host(Action::Escape) if overlay.is_some() => {
-                                if let Err(error) = ui.select(&conversation, None).await {
-                                    view.notice = Some(error.to_string());
-                                }
-                            }
-                            InputEffect::Host(Action::Escape) if queries.source().is_some() => {
-                                if let Err(error) = ui.select(&conversation, None).await {
-                                    view.notice = Some(error.to_string());
+                            InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
+                                match ui.select(&conversation, None).await {
+                                    Ok(()) => selection_changed = true,
+                                    Err(error) => view.notice = Some(error.to_string()),
                                 }
                             }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
@@ -866,6 +864,16 @@ pub async fn run(
                             _ => {}
                         }
                     }
+                }
+                if selection_changed {
+                    ui.config.apply(&mut input, &profile)
+                        .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+                    apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                        query_future.as_mut(), &catalog, &input)?;
+                    overlay_top = 0;
+                    // Retire the older in-flight projection before following
+                    // the cut that supplied this batch's conditional sources.
+                    files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
                 }
                 input.refresh_completions();
             }

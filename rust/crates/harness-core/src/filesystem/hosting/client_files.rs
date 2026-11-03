@@ -65,7 +65,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         session: OperationId,
         paths: &[String],
         after: Option<&GenerationRef>,
-        maximum_bytes: u64,
     ) -> Result<ClientFiles, Error> {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
@@ -151,7 +150,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                     &grant,
                     path,
                     Some(&selected.generation),
-                    maximum_bytes,
+                    self.maximum_bytes,
                     access,
                 )
                 .await
