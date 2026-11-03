@@ -713,6 +713,7 @@ dependencies = [
  "acyclic-test-support",
  "blake3",
  "bytes",
+ "clap",
  "diffy",
  "futures",
  "harness-mock-model",
