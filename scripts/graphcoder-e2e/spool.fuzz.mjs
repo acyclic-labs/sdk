@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -137,6 +137,44 @@ async function failure(bytes, mode, sourceError) {
   assert.equal(await observed(spool.keyed(Symbol("later missing"))), cause);
 }
 
+// Mutate the original completed file, then compare its two indexed ranges and
+// completed history with independent whole-buffer decoding. These are format
+// checks, not integrity certification for externally modified transcripts.
+async function persisted(bytes, path) {
+  const baseline = Buffer.concat([original, distinct]);
+  const transcript = createWriteStream(path), written = finished(transcript);
+  const spool = new Spool(Readable.from([baseline]), Promise.resolve(captured), { key, transcript });
+  const terminal = await spool.next(() => false).catch(error => error);
+  assert.equal(terminal.kind, "eof");
+  await written;
+  const ranges = [[event.id, 0, original.length], [event.id + "\0", original.length, distinct.length]];
+  for (const mutation of [bytes, Buffer.concat([bytes, baseline])]) {
+    writeFileSync(path, mutation);
+    for (const [id, at, length] of ranges) {
+      if (mutation.length < at + length) {
+        await assert.rejects(spool.keyed(id), error => error.kind === "spool"
+          && error.detail.at === at && error.detail.length === length);
+      } else {
+        let value, invalid;
+        try { value = JSON.parse(mutation.subarray(at, at + length).toString("utf8")); }
+        catch (error) { invalid = error; }
+        if (invalid) await assert.rejects(spool.keyed(id), error => error.kind === "spool" && error.cause instanceof SyntaxError);
+        else assert.deepEqual(await spool.keyed(id), value);
+      }
+    }
+    if (mutation.length < baseline.length) {
+      await assert.rejects(spool.history(), error => error.kind === "spool" && error.detail.completed === baseline.length);
+    } else {
+      let values, invalid;
+      try { values = mutation.subarray(0, baseline.length).toString("utf8").split("\n").filter(Boolean).map(JSON.parse); }
+      catch (error) { invalid = error; }
+      if (invalid) await assert.rejects(spool.history(), SyntaxError);
+      else assert.deepEqual(await spool.history(), values);
+    }
+    assert.equal(spool.ended, terminal, "a historical read cannot replace the original process terminal");
+  }
+}
+
 export async function fuzz(data) {
   const bytes = Buffer.from(data);
   const directory = mkdtempSync(join(tmpdir(), "spool-corpus-"));
@@ -147,6 +185,7 @@ export async function fuzz(data) {
     assert.equal(sourceError?.code, "ENOENT");
     for (const mode of ["key", "listener", "predicate", "stream", "closed"])
       await failure(bytes, mode, sourceError);
+    await persisted(bytes, join(directory, "mutated.jsonl"));
     for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
       Buffer.concat([original, original, bytes]), Buffer.concat([original, distinct, bytes])])
       for (const unique of [false, true])
