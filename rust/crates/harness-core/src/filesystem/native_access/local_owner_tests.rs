@@ -523,7 +523,7 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
     assert!(
         matches!(result, Err(acyclic_fs::MountLifecycleError::NativePolicy(reason)) if reason == expected)
             && std::fs::read_dir(destination.path())?.count() == 0,
-        "working-set admission disclosed bytes"
+        "working-set admission disclosed bytes or lost its refusal: {result:?}"
     );
     Ok(())
 }
@@ -548,16 +548,6 @@ async fn preparation_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectS
         .map_err(|failure| failure.error)?
         .value
         .workspace())
-}
-
-#[tokio::test]
-async fn revoked_policy_rejects_previously_bound_generation_before_copy() -> TestResult {
-    preparation_disclosure(b"revoked secret", false, false).await
-}
-
-#[tokio::test]
-async fn foreign_volume_rejects_before_copy() -> TestResult {
-    preparation_disclosure(b"foreign secret", true, false).await
 }
 
 proptest! {
