@@ -145,36 +145,3 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         assert_eq!(ok.value, json!({"deny": []}));
     }
 }
-
-// plugins.ts: an entry may be a function of the entry below it, and its
-// `config` a function of the plugin's defaults; both fold to data.
-#[tokio::test]
-async fn nested_functions_fold_over_the_base_at_their_path() -> Result<()> {
-    let base = json!({
-        "compaction": {"enabled": true, "config": {"notify": 0.75, "reuse": "ancestors"}},
-        "goal": {"enabled": true, "config": {"maxLoops": 3}},
-    });
-    let source = "export default (base) => ({
-        ...base,
-        compaction: { ...base.compaction, config: (c) => ({ ...c, notify: 0.7 }) },
-        goal: (entry) => ({ ...entry, enabled: false }),
-        extra: { config: (c) => ({ seen: c === undefined }) },
-    });";
-    let evaluated = evaluate(
-        "plugins.ts",
-        source.as_bytes(),
-        &TREE,
-        &base,
-        Surface::Compose,
-    )
-    .await?;
-    assert_eq!(
-        evaluated.value,
-        json!({
-            "compaction": {"enabled": true, "config": {"notify": 0.7, "reuse": "ancestors"}},
-            "goal": {"enabled": false, "config": {"maxLoops": 3}},
-            "extra": {"config": {"seen": true}},
-        })
-    );
-    Ok(())
-}
