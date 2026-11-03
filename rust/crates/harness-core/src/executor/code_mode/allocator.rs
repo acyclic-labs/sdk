@@ -58,7 +58,7 @@ impl EngineAllocator {
             #[cfg(feature = "filesystem")]
             failure: Default::default(),
             #[cfg(feature = "filesystem")]
-            work: work.cloned(),
+            work: None,
         }
     }
 
