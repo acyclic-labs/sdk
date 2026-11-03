@@ -631,3 +631,11 @@ outcomes; these are adversarial inputs, not captured indeterminate operations.
 `object_put_unknown.patch` admits the actual production false discriminator;
 the unchanged writer property must detect that admission. Indeterminate
 execution, remote durability and complete outcome-branch coverage remain open.
+
+The existing `object_persistence` oracle also checks the public `ByteRange`
+resolver against sorted input-derived bounds and empty, reversed and oversized
+selections. This subsumes the mixed manifest round-trip example without adding
+another target or corpus. `negative-controls/object_range_empty.patch` removes
+its production empty-selection refusal; the unchanged writer-corpus property
+must reject that defect. These are component checks, with no range-transport,
+complete branch-coverage or physical-storage qualification implied.
