@@ -8,7 +8,11 @@ use acyclic_harness::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-fn admission<T: Serialize + DeserializeOwned>(original: &T, label: &str, optional: &[&str]) {
+pub(super) fn admission<T: Serialize + DeserializeOwned>(
+    original: &T,
+    label: &str,
+    optional: &[&str],
+) {
     let encoded = serde_json::to_value(original).unwrap();
     let decoded: T = serde_json::from_value(encoded.clone()).unwrap();
     assert_eq!(
@@ -84,13 +88,13 @@ pub(super) fn check(bytes: &[u8]) {
             SessionAction::Send {
                 prompt: "caller input".into(),
             },
-            SessionAction::Next,
-            SessionAction::Observe,
+            SessionAction::Next {},
+            SessionAction::Observe {},
             SessionAction::Reply {
                 id: IntentId::try_from("native:caller").unwrap(),
                 inbox: u64::MAX,
             },
-            SessionAction::Recover,
+            SessionAction::Recover {},
         ];
         for control in [
             Control::Resume,

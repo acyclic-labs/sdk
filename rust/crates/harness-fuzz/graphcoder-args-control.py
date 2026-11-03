@@ -87,10 +87,24 @@ additional_controls = {
         ),
         (
             "rust/crates/harness/src/local/host_owner/sessions.rs",
-            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
-            b'#[serde(tag = "kind", rename_all = "snake_case")]',
+            b"    Next {},",
+            b"    Next,",
             "null",
             b"native session action unknown fields must be refused",
+        ),
+        (
+            "rust/crates/harness/src/client/commands.rs",
+            b"    Theme {},",
+            b"    Theme,",
+            "null",
+            b"command action unknown fields must be refused",
+        ),
+        (
+            "rust/crates/harness-core/src/command_request.rs",
+            b"    Quit {},",
+            b"    Quit,",
+            "null",
+            b"command request unknown fields must be refused",
         ),
     ],
     "command_result": [
