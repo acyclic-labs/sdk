@@ -454,7 +454,7 @@ where
                 Ok(AgentReply::ClientFiles {
                     snapshot: self
                         .bound
-                        .client_files(agent, *session, paths, after.as_ref(), MAX_READ_BYTES)
+                        .client_files(agent, *session, paths, after.as_ref())
                         .await?,
                 })
             }
