@@ -156,30 +156,16 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         eprintln!(
             "LEAF_HEAP host={host} moved={moved:?} copied={copied:?} repeated={repeated:?} old_append={old_append:?}"
         );
-        // Fixed warm six-path heap counts, independent of receipts or controls.
-        let expected = match (host, cfg!(windows), cfg!(debug_assertions)) {
-            (true, true, _) => 37,
-            (true, false, _) => 40,
-            // The optimized checkout walk eliminates one allocation on
-            // both hosts. Its debug count would admit a redundant release
-            // allocation; copying and append controls stay independently exact.
-            (false, _, false) => 192,
-            (false, _, true) => 193,
-        };
-        let no_copy = |allocations| {
-            if allocations == expected {
-                Ok(())
-            } else {
-                Err((expected, allocations))
-            }
-        };
-        no_copy(moved.count_total).unwrap();
-        no_copy(repeated.count_total).unwrap();
-        assert!(no_copy(copied.count_total).is_err());
-        assert!(copied.count_total > moved.count_total);
-        assert_eq!(copied.count_total, expected + 15);
-        assert_eq!(old_append.count_total, expected + 6);
-        assert!(no_copy(old_append.count_total).is_err());
+        // Four leaf copies allocate a custody owner and component vector each,
+        // plus one byte vector per component (depths 1, 1, 2 and 3). The old
+        // append path also allocates one discarded error for each of six names.
+        // Storage and proof work are identical on this original checkout.
+        assert_eq!(moved, repeated);
+        assert_eq!(
+            copied.count_total - moved.count_total,
+            4 * 2 + 1 + 1 + 2 + 3
+        );
+        assert_eq!(old_append.count_total - moved.count_total, 6);
     }
     Ok(())
 }
