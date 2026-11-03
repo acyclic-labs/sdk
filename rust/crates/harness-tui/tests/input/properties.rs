@@ -100,6 +100,7 @@ proptest! {
             input.key(KeyEvent::new(code, mods), at, 80);
         }
         input.committed_text(if matches { "older" } else { "missing" }, 4);
+        if matches { prop_assert_eq!(input.editor.text(), "older"); }
         input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
         prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("newer", 5));
         input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
@@ -112,24 +113,45 @@ proptest! {
         reloads in 1usize..8
     ) {
         use acyclic_harness_tui::Editor;
-        let mut input = PromptInput::new(Editor::new("draft"));
-        input.replace_history(parse_history(r#"["first","second","third"]"#)?);
-        for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL),
-            (1, KeyCode::Up, KeyModifiers::NONE), (2, KeyCode::Up, KeyModifiers::NONE),
-            (3, KeyCode::End, KeyModifiers::CONTROL)] {
-            input.key(KeyEvent::new(code, mods), at, 80);
+        for replacements in [
+            vec![], vec!["replacement".to_owned()],
+            vec!["first".to_owned(), "second".to_owned(), "third".to_owned()], replacements
+        ] {
+            let mut input = PromptInput::new(Editor::new("draft"));
+            input.replace_history(parse_history(r#"["first","second","third"]"#)?);
+            for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL),
+                (1, KeyCode::Up, KeyModifiers::NONE), (2, KeyCode::Up, KeyModifiers::NONE),
+                (3, KeyCode::End, KeyModifiers::CONTROL)] {
+                input.key(KeyEvent::new(code, mods), at, 80);
+            }
+            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
+            if search {
+                input.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), 4, 80);
+                input.committed_text("first", 4);
+                prop_assert_eq!(input.editor.text(), "first");
+            } else { input.edit_message("message".into(), "editing"); }
+            let json = serde_json::to_string(&replacements)?;
+            let before = input.history().generation();
+            for _ in 0..reloads {
+                let snapshot = parse_history(&json)?;
+                prop_assert!(snapshot.generation() > 0);
+                input.replace_history(snapshot);
+            }
+            prop_assert_eq!(input.history().generation(), before + reloads as u64);
+            let entries = input.history().entries().to_vec();
+            input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
+            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
+            let mut recall = input.clone();
+            recall.key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), 6, 80);
+            recall.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 7, 80);
+            prop_assert_eq!(recall.editor.text(), entries.last().map_or("second", String::as_str));
+            input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
+            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
+            prop_assert_eq!(input.history().entries(), entries);
+            input.key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), 7, 80);
+            input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 8, 80);
+            prop_assert_eq!(input.editor.text(), entries.last().map_or("second", String::as_str));
         }
-        if search { input.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), 4, 80); }
-        else { input.edit_message("message".into(), "editing"); }
-        let json = serde_json::to_string(&replacements)?;
-        let before = input.history().generation();
-        for _ in 0..reloads { input.replace_history(parse_history(&json)?); }
-        prop_assert_eq!(input.history().generation(), before + reloads as u64);
-        let entries = input.history().entries().to_vec();
-        input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
-        input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
-        prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
-        prop_assert_eq!(input.history().entries(), entries);
     }
 
 }

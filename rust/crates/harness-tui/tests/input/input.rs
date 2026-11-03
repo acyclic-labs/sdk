@@ -318,26 +318,6 @@ fn shift_click_extends_selection_and_release_survives_a_zero_size_area() {
 }
 
 #[test]
-fn cancelling_reverse_search_preserves_down_to_the_original_draft() {
-    let mut input = PromptInput::new(Editor::new("working draft"));
-    let mut history = acyclic_harness_tui::PromptHistory::default();
-    history.push("older".into());
-    history.push("newer".into());
-    input.replace_history(history);
-    press(&mut input, KeyCode::Home, M::NONE, 0);
-    press(&mut input, KeyCode::Up, M::NONE, 1);
-    assert_eq!(input.editor.text(), "newer");
-    press(&mut input, KeyCode::End, M::NONE, 2);
-    press(&mut input, KeyCode::Char('r'), M::CONTROL, 3);
-    input.committed_text("older", 4);
-    assert_eq!(input.editor.text(), "older");
-    press(&mut input, KeyCode::Esc, M::NONE, 5);
-    assert_eq!((input.editor.text(), input.editor.cursor()), ("newer", 5));
-    press(&mut input, KeyCode::Down, M::NONE, 6);
-    assert_eq!(input.editor.text(), "working draft");
-}
-
-#[test]
 fn edited_submissions_append_to_the_shared_history_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness_tui::{format_history, parse_history};
@@ -371,68 +351,6 @@ fn edited_submissions_append_to_the_shared_history_snapshot()
     press(&mut input, KeyCode::Down, M::NONE, 6);
     assert_eq!(input.editor.text(), "working draft");
     assert_eq!(parse_history(&saved)?.entries(), input.history().entries());
-    Ok(())
-}
-
-#[test]
-fn history_reload_invalidates_navigation_saved_by_edit_or_search()
--> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::parse_history;
-    for search in [false, true] {
-        for replacement in [
-            r#"["replacement"]"#,
-            "[]",
-            r#"["first","second","third","fourth","fifth"]"#,
-        ] {
-            let mut input = PromptInput::new(Editor::new("working draft"));
-            input.replace_history(parse_history(
-                r#"["first","second","third","fourth","fifth"]"#,
-            )?);
-            press(&mut input, KeyCode::Home, M::CONTROL, 0);
-            press(&mut input, KeyCode::Up, M::NONE, 1);
-            press(&mut input, KeyCode::Up, M::NONE, 2);
-            press(&mut input, KeyCode::End, M::CONTROL, 3);
-            assert_eq!(input.editor.text(), "fourth");
-            if search {
-                press(&mut input, KeyCode::Char('r'), M::CONTROL, 4);
-                input.committed_text("first", 5);
-            } else {
-                input.edit_message("message".into(), "edited message");
-            }
-            let generation = input.history().generation();
-            let snapshot = parse_history(replacement)?;
-            assert!(
-                snapshot.generation() > 0,
-                "every loaded snapshot has a generation"
-            );
-            let entries = snapshot.entries().to_vec();
-            input.replace_history(snapshot);
-            assert!(input.history().generation() > generation);
-            press(&mut input, KeyCode::Esc, M::NONE, 6);
-            assert_eq!((input.editor.text(), input.editor.cursor()), ("fourth", 6));
-            let mut recall = input.clone();
-            press(&mut recall, KeyCode::Home, M::CONTROL, 7);
-            press(&mut recall, KeyCode::Up, M::NONE, 8);
-            assert_eq!(
-                recall.editor.text(),
-                entries.last().map_or("fourth", String::as_str),
-                "Up must immediately reach the reloaded history"
-            );
-            press(&mut input, KeyCode::Down, M::NONE, 7);
-            assert_eq!(
-                input.editor.text(),
-                "fourth",
-                "stale navigation must be reset"
-            );
-            assert_eq!(input.history().entries(), entries);
-            press(&mut input, KeyCode::Home, M::CONTROL, 8);
-            press(&mut input, KeyCode::Up, M::NONE, 9);
-            assert_eq!(
-                input.editor.text(),
-                entries.last().map_or("fourth", String::as_str)
-            );
-        }
-    }
     Ok(())
 }
 

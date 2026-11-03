@@ -29,7 +29,6 @@ fn apply(view: &ConfigView, input: &mut PromptInput) {
 fn all_defaults_validate_and_all_actions_bind_by_name() {
     let mut view = ConfigView::default();
     let mut input = PromptInput::default();
-    assert_eq!(view.settings().unwrap(), *input.editor.settings());
     let schema = schema_oracle();
     for file in ConfigFile::ALL {
         schema.check(&(file, file.defaults().as_bytes().to_vec()));

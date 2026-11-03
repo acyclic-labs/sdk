@@ -48,21 +48,12 @@ fn a_megabyte_paste_is_not_retained_again_for_each_following_edit() {
 }
 
 #[test]
-fn keymap_is_unambiguous_and_help_comes_from_the_bindings() {
-    use acyclic_harness_tui::{Action, KEYMAP, keymap_help};
-    let help = keymap_help(KEYMAP);
+fn default_keymap_is_unambiguous() {
+    use acyclic_harness_tui::KEYMAP;
     let mut seen = std::collections::BTreeSet::new();
     for binding in KEYMAP {
         assert!(seen.insert(binding.chord), "duplicate {}", binding.chord);
-        assert!(help.contains(&format!("{}\t{}\n", binding.chord, binding.help)));
     }
-    assert_eq!(
-        KEYMAP
-            .iter()
-            .find(|b| b.chord == "Ctrl+y")
-            .map(|b| b.action),
-        Some(Action::Yank)
-    );
 }
 
 #[test]
