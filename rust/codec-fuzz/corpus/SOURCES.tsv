@@ -1723,3 +1723,7 @@ harness_codecs/agent-v9-checkpoint-envelope-approval-bound	1867	093d19d39d613934
 harness_codecs/agent-v9-status-approval-external	123	1db7d854f65e1d7c630cd99061156439142d986ef24553a80881ce7ad78fe2b2	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v9-checkpoint-approval-external	363	0f23d0dda50ee56c2395e7df88da073c8e2dc5b86d31da532019572c06643dbb	harness-core canonical agent record, effect and checkpoint encoders
 harness_codecs/agent-v9-checkpoint-envelope-approval-external	1354	a5d1b357c24550cf37edeb02dc80955e4f6d24f21dbb80ea3c590cb7477576dc	harness-core canonical agent record, effect and checkpoint encoders
+object_revisions/put-revision	62	a7da6e958f37beaf14d54013d359f4335dd8a8a91d053bc413fa7073b1263db6	BlobsServer::put_blob over MemoryObjects; original binary REVISION metadata, no redaction; source c1c8baf7f7f4749948730fee4a84f6d1942251b2; cargo test --locked -p acyclic-objects --lib grpc::tests::revision_transport::admission_preserves_authority_and_original_failure -- --exact --nocapture
+object_persistence/local-put-empty	45	16f9ca60ca7e5680bdb3edfed7a3621fcd606f5e1c3655892d90b7545969fa5c	acyclic_objects::codec_fuzz::seeds
+object_persistence/local-put-utf8	66	cf0d88eb2b70d59bce935c610b70dccc9c1f5104bf9c2e7092583ea1e96b14ca	acyclic_objects::codec_fuzz::seeds
+object_persistence/local-remove	55	78453976378043a8ef2e2ba83666ada8a6b0b46241b55e4bd01c4d2b96ff5e01	acyclic_objects::codec_fuzz::seeds

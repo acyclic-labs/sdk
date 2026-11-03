@@ -29,6 +29,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+#[cfg(feature = "test-support")]
+pub(crate) mod codec_fuzz;
+
 /// How file contents are made durable before they become observable.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LocalDurability {
@@ -464,14 +467,13 @@ fn read_exact_at(file: &std::fs::File, offset: u64, out: &mut [u8]) -> std::io::
     Ok(())
 }
 
-/// Replays `file`, `length` bytes long, into its index: the end of its last
+/// Replays `reader`, `length` bytes long, into its index: the end of its last
 /// whole frame, the index and its live bytes. The first invalid frame ends
 /// the replay; `None` if it is not at the end.
 fn replay(
-    file: &std::fs::File,
+    mut reader: impl std::io::Read,
     length: u64,
 ) -> std::io::Result<(u64, BTreeMap<String, Slot>, u64, bool)> {
-    let mut reader = std::io::BufReader::new(file);
     let (mut end, mut index, mut live) = (0, BTreeMap::new(), 0);
     while end < length {
         let Some(body) = LOG_FRAME.read(&mut reader, length - end)? else {
@@ -651,13 +653,14 @@ fn open_root(
         .truncate(false)
         .open(root.join(LOG))?;
     let length = log.metadata()?.len();
-    let (end, index, live, whole) = replay(&log, length).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::InvalidData {
-            LocalOpenError::Corrupt
-        } else {
-            LocalOpenError::Io(error)
-        }
-    })?;
+    let (end, index, live, whole) =
+        replay(std::io::BufReader::new(&log), length).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                LocalOpenError::Corrupt
+            } else {
+                LocalOpenError::Io(error)
+            }
+        })?;
     if !whole {
         // Only an owner that never closed can have torn the log.
         if !recovered {

@@ -1,0 +1,14 @@
+diff --git a/rust/crates/objects/src/grpc/revision.rs b/rust/crates/objects/src/grpc/revision.rs
+--- a/rust/crates/objects/src/grpc/revision.rs
++++ b/rust/crates/objects/src/grpc/revision.rs
+@@ -264,6 +264,10 @@
+         let metadata = MetadataMap::from_headers(std::mem::take(response.headers_mut()));
+         admission.header = issued(&metadata);
+         let terminal = tonic::Status::from_header_map(metadata.as_ref());
++        if terminal.is_none() {
++            admit(&admission.revisions, &admission.floor, admission.header.clone(), true)
++                .map_err(super::status)?;
++        }
+         *response.headers_mut() = metadata.into_headers();
+         let admission = if let Some(status) = terminal {
+             admission.finish(status, &MetadataMap::new())?;

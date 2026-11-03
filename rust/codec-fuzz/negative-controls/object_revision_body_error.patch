@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/grpc/revision.rs
++++ b/rust/crates/objects/src/grpc/revision.rs
+@@ -259,7 +259,7 @@
+             }
+             Some(Err(error)) => {
+                 this.admission.take();
+-                Poll::Ready(Some(Err(tonic::Status::from_error(error.into()))))
++                Poll::Ready(Some(Err(tonic::Status::unknown(tonic::Status::from_error(error.into()).message()))))
+             }
+             None => {
+                 // Missing grpc-status supplies no successful revision evidence.

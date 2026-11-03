@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/blob.rs b/rust/crates/objects/src/blob.rs
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -317,7 +317,3 @@
+ pub(crate) fn decode_epoch(bytes: &[u8]) -> Result<u64, Error> {
+-    let mut reader = Reader(bytes);
+-    reader.header(EPOCH_MAGIC)?;
+-    let epoch = u64::from_be_bytes(reader.take(8)?.try_into().map_err(|_| corrupt())?);
+-    reader.finish()?;
+-    Ok(epoch)
++    Err(corrupt())
+ }

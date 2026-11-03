@@ -10,6 +10,8 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[path = "grpc_context_tests.rs"]
 mod context;
+#[path = "grpc_revision_tests.rs"]
+mod revision_transport;
 
 /// Writes commit on the primary; reads are served from a view that holds only
 /// what `catch_up` applied, at the replica's own applied revision.
@@ -132,8 +134,12 @@ fn client(replica: &Arc<Replica>) -> GrpcObjects {
 }
 
 fn client_over(resolve: AccountResolver, credential: CredentialProvider) -> GrpcObjects {
-    let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
+    GrpcObjects::over(channel_over(resolve), credential)
+}
+
+fn channel_over(resolve: AccountResolver) -> Channel {
+    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
+        move |_| {
             let resolve = Arc::clone(&resolve);
             async move {
                 let (client, server) = tokio::io::duplex(64 * 1024);
@@ -146,9 +152,8 @@ fn client_over(resolve: AccountResolver, credential: CredentialProvider) -> Grpc
                 });
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
             }
-        }),
-    );
-    GrpcObjects::over(channel, credential)
+        },
+    ))
 }
 
 #[tokio::test]
@@ -544,29 +549,6 @@ async fn a_refused_wait_keeps_its_own_failure() -> TestResult {
     let own = client(&replica);
     own.revisions().observe(&committed);
     assert_eq!(own.head(digest).await?.digest, digest);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_read_without_its_revision_is_refused_under_a_minimum() -> TestResult {
-    let replica = Replica::new().await?;
-    let objects = client(&replica);
-    let floor = RevisionCut::of(AppliedRevisions::in_process().at(1));
-    assert_eq!(
-        objects
-            .observed(Ok(tonic::Response::new(())), Some(&floor))
-            .map(|_| ())
-            .map_err(|error| error.code),
-        Err(wire::ErrorCode::Unavailable)
-    );
-    // Negative controls: without a minimum the same reply is accepted.
-    assert!(objects.observed(Ok(tonic::Response::new(())), None).is_ok());
-    let empty = RevisionCut::default();
-    assert!(
-        objects
-            .observed(Ok(tonic::Response::new(())), Some(&empty))
-            .is_ok()
-    );
     Ok(())
 }
 

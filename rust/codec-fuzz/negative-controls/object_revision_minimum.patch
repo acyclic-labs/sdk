@@ -1,0 +1,21 @@
+--- a/rust/crates/objects/src/grpc/revision.rs
++++ b/rust/crates/objects/src/grpc/revision.rs
+@@ -74,16 +74,13 @@
+         metadata
+             .get_all_bin(MINIMUM_REVISION)
+             .iter()
+-            .map(|value| {
++            .filter_map(|value| {
+                 value
+                     .to_bytes()
+                     .ok()
+                     .and_then(|bytes| acyclic_stream::wire::Revision::decode(bytes).ok())
+-                    .ok_or_else(|| {
+-                        tonic::Status::invalid_argument("invalid Objects minimum revision")
+-                    })
+             })
+-            .collect::<Result<Vec<_>, _>>()?,
++            .collect(),
+     )
+     .map_err(|_| tonic::Status::invalid_argument("invalid Objects minimum revision"))
+ }

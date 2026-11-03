@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -288,7 +288,7 @@
+     if bytes.len() % 32 != 0 {
+         return Err(corrupt());
+     }
+-    bytes.chunks_exact(32).map(Digest::from_slice).collect()
++    Err(corrupt())
+ }
+ 
+ pub(crate) fn encode_incarnation(incarnation: u128, run: u64) -> Vec<u8> {

@@ -10,6 +10,7 @@ publish = false
 cargo-fuzz = true
 
 [features]
+object-revisions = ["acyclic-objects/grpc"]
 storage-schedules = ["acyclic-objects/local", "acyclic-native-runtime/test-support", "dep:tempfile", "dep:tokio"]
 
 [dependencies]
@@ -161,3 +162,11 @@ bench = false
 [[example]]
 name = "object_schedules"
 required-features = ["storage-schedules"]
+
+[[bin]]
+name = "object_revisions"
+path = "fuzz_targets/object_revisions.rs"
+test = false
+doc = false
+bench = false
+required-features = ["object-revisions"]

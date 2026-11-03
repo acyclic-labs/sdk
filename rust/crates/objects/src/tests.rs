@@ -3455,16 +3455,19 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
     let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
     put?;
     once(bytes, 0);
-    // A received body is hashed once, where it crosses the trust boundary.
-    let served = body(8);
-    let request = crate::wire::PutBlobRequest {
-        digest: Some(Digest::of(&served).into()),
-        body: bytes::Bytes::from_owner(served),
-        references: Vec::new(),
-    };
-    let (put, bytes) = hashed(crate::route::put_blob(&blobs, request)).await;
-    put?;
-    once(bytes, 1);
+    #[cfg(objects_server)]
+    {
+        // A received body is hashed once, where it crosses the trust boundary.
+        let served = body(8);
+        let request = crate::wire::PutBlobRequest {
+            digest: Some(Digest::of(&served).into()),
+            body: bytes::Bytes::from_owner(served),
+            references: Vec::new(),
+        };
+        let (put, bytes) = hashed(crate::route::put_blob(&blobs, request)).await;
+        put?;
+        once(bytes, 1);
+    }
     // Negative control: a provider that only implements `put` lowers a
     // sealed batch to it, and the body is hashed twice.
     let unsealed = Overlap {

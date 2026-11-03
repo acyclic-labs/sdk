@@ -92,6 +92,10 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "session_protocol" => assert!(acyclic_stream::codec_fuzz::session(bytes)),
         "stream_persistence" => stream_persistence(bytes),
         "object_persistence" => assert!(acyclic_objects::codec_fuzz::check(bytes)),
+        #[cfg(feature = "object-revisions")]
+        "object_revisions" => assert!(acyclic_objects::grpc::check_revision_metadata(bytes)),
+        #[cfg(not(feature = "object-revisions"))]
+        "object_revisions" => return Err("revision transport replay requires object-revisions; recovery: cargo run --features object-revisions --example replay".into()),
         #[cfg(feature = "storage-schedules")]
         "object_schedule" => {
             object_schedule::check(bytes).map_err(|error| error.to_string())?;

@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -40,7 +40,7 @@
+     pub fn from_hex(text: &str) -> Result<Self, Error> {
+         let mut bytes = [0; 32];
+         hex::decode_to_slice(text, &mut bytes).map_err(|_| invalid())?;
+-        Ok(Self(bytes))
++        Ok(Self([0; 32]))
+     }
+ 
+     pub(crate) fn from_slice(bytes: &[u8]) -> Result<Self, Error> {

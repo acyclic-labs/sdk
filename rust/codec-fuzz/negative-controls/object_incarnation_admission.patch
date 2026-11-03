@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -305,7 +305,7 @@
+     let incarnation = u128::from_be_bytes(reader.take(16)?.try_into().map_err(|_| corrupt())?);
+     let run = u64::from_be_bytes(reader.take(8)?.try_into().map_err(|_| corrupt())?);
+     reader.finish()?;
+-    Ok((incarnation, run))
++    Err(corrupt())
+ }
+ 
+ pub(crate) fn encode_epoch(epoch: u64) -> Vec<u8> {
