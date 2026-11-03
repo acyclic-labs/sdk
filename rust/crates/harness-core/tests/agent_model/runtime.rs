@@ -320,6 +320,7 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
     use acyclic_stream::LocalStream;
@@ -541,6 +542,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_them() -> Result {
     use acyclic_actors::local::ControlledClock;
@@ -679,6 +681,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -> Result {
     use acyclic_stream::LocalStream;
