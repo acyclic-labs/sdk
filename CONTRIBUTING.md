@@ -58,12 +58,10 @@ no Bun installation is needed for this prerequisite:
 ```sh
 cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts
 cargo test --locked -p acyclic-actors --test main guest_contract::generated_authoring_contract_has_no_drift -- --exact
-cargo test --locked -p acyclic-actors --test main timer_contract::generated_timer_authoring_has_no_drift -- --exact
 ```
 
 The producer uses the output path's parent for `guest.ts` and service metadata.
-The timer drift check retains its original test-only authoring fixture. Full
-TypeScript generation subsequently projects the metadata into `actors-service.ts`. Rust qualification generates these files before its
+Full TypeScript generation subsequently projects the metadata into `actors-service.ts`. Rust qualification generates these files before its
 workspace tests; drift checks only compare and never rewrite their inputs.
 
 The `dev` and `test` profiles use LLVM, panic unwinding and line tables for

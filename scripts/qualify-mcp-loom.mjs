@@ -14,7 +14,7 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
-  { args: ["--timer"] }, { args: ["--guest"] },
+  { args: ["--stream-retry"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
@@ -84,11 +84,11 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
   });
 }
 
-export function qualifyTimerLoom(run = runCommand) {
-  return qualifyLoom("acyclic-actors", "main", [
-    "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
+export function qualifyStreamRetryLoom(run = runCommand) {
+  return qualifyLoom("acyclic-stream", "main", [
+    "--no-default-features", "--features", "local",
   ], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["timer_loom::", 2]],
+    env: loomEnvironment(), targetCfg: [], suites: [["retry_recovery_loom::", 2]],
   });
 }
 
@@ -245,7 +245,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
-  "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
+  "--native-progress": qualifyNativeProgressLoom, "--stream-retry": qualifyStreamRetryLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
