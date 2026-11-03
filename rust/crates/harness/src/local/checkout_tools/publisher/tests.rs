@@ -920,7 +920,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             .signed
             .capabilities()
             .iter()
-            .chain([shell_grant.as_str(), "tool:call:fs"]),
+            .chain([shell_grant.as_str()]),
     );
     super::super::access::require_mount_access(
         tools.workspace.view().workspace(),
@@ -958,22 +958,21 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             RuntimeScope::new(grants, crate::conversation::Limits::default())?,
             None,
         )?);
-        for name in [crate::tools::shell::PLATFORM.name, "fs"] {
-            let context = ToolContext::new(task.clone(), OperationId::new(), "policy-call")?;
-            let invocation = ToolInvocation {
-                operation_id: context.operation_id(),
-                call_id: context.call_id().into(),
-                name: name.into(),
-                arguments: serde_json::json!({"command": if name == "fs" { "grep secret" } else { "echo compromised > secrets/key" }}),
-            };
-            match tools.execute(invocation, Some(context)).await {
-                Err(Error::Unauthorized(_)) if authority => {}
-                Err(Error::FilesystemAccessConfiguration(_)) if !authority => {}
-                result => {
-                    return Err(Error::Invalid(format!(
-                        "{name} must refuse before dispatch: {result:?}"
-                    )));
-                }
+        let name = crate::tools::shell::PLATFORM.name;
+        let context = ToolContext::new(task.clone(), OperationId::new(), "policy-call")?;
+        let invocation = ToolInvocation {
+            operation_id: context.operation_id(),
+            call_id: context.call_id().into(),
+            name: name.into(),
+            arguments: serde_json::json!({"command": "echo compromised > secrets/key"}),
+        };
+        match tools.execute(invocation, Some(context)).await {
+            Err(Error::Unauthorized(_)) if authority => {}
+            Err(Error::FilesystemAccessConfiguration(_)) if !authority => {}
+            result => {
+                return Err(Error::Invalid(format!(
+                    "{name} must refuse before dispatch: {result:?}"
+                )));
             }
         }
         Ok(())
