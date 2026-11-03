@@ -2,7 +2,35 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { readBoundedGzip, readDeclaredTarGzip, tarEntries } from "./archive-utils.mjs";
+import { isWasmArtifactPath, readBoundedGzip, readDeclaredTarGzip, tarEntries, tarPayload } from "./archive-utils.mjs";
+
+export function fuzzPayload(data, caseInsensitive) {
+  const bytes = Buffer.from(data);
+  let payload;
+  try { payload = tarPayload(bytes, isWasmArtifactPath, caseInsensitive); }
+  catch (error) {
+    if (["unsafe or duplicate archive member", "empty archive payload"].includes(error.message)) return false;
+    return refused(error);
+  }
+  assert.equal(fuzz(bytes), true);
+  const entries = tarEntries(bytes);
+  assert.ok(payload.size > 0, "an admitted payload must contain a file");
+  assert.deepEqual([...payload.keys()], entries.filter(entry => entry.type === "0").map(entry => entry.path));
+  const names = entries.map(entry => entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path);
+  assert.ok(names.every(isWasmArtifactPath), "each admitted name must satisfy the caller's policy");
+  assert.equal(new Set(caseInsensitive ? names.map(name => name.toLowerCase()) : names).size,
+    entries.length, "admitted names must be unique under the caller's case policy");
+  for (const entry of entries) {
+    assert.ok(["0", "5"].includes(entry.type), "only regular files and directories are admitted");
+    if (entry.type === "0") {
+      assert.deepEqual(payload.get(entry.path), entry.body);
+      assert.equal(payload.get(entry.path).buffer, bytes.buffer, "member delivery must not copy its body");
+      assert.equal(payload.get(entry.path).byteOffset, entry.body.byteOffset,
+        "even pooled bodies must retain their original byte range");
+    }
+  }
+  return payload;
+}
 
 // Keep the declared inventory independent of the returned map: every physical
 // member must be delivered once, with the admitted compressed and member bytes.

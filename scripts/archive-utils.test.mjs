@@ -5,10 +5,47 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { fuzz, fuzzGzip, fuzzDeclared } from "./archive-utils.fuzz.mjs";
+import { fuzz, fuzzGzip, fuzzDeclared, fuzzPayload } from "./archive-utils.fuzz.mjs";
 import { tarEntries } from "./archive-utils.mjs";
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
+
+test("native payload framing preserves caller path and case policies without copying members", async () => {
+  const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
+  // The third member in the retained native capture is a directory header.
+  const withDirectory = Buffer.concat([flat.subarray(0, flat.length - 1024), seed.subarray(1536, 2048), flat.subarray(flat.length - 1024)]);
+  for (const insensitive of [false, true]) {
+    assert.equal(fuzzPayload(flat, insensitive).size, 2);
+    assert.deepEqual([...fuzzPayload(withDirectory, insensitive)], [...fuzzPayload(flat, insensitive)]);
+    for (let offset = 0; offset < flat.length; offset += 512) fuzzPayload(flat.subarray(0, offset), insensitive);
+  }
+  const unsafe = Buffer.from(flat);
+  unsafe.fill(0, 0, 100);
+  unsafe.write("../body.txt");
+  seal(unsafe);
+  const link = Buffer.from(flat);
+  link[156] = "2".charCodeAt(0);
+  seal(link);
+  const first = Buffer.from(flat.subarray(0, 1024));
+  first.write("BODY.txt");
+  seal(first);
+  const folded = Buffer.concat([first, flat]);
+  assert.equal(fuzzPayload(folded, false).size, 3);
+  const memberCheck = 'if (!isCanonical(name) || seen.has(key) || !["0", "5"].includes(entry.type)) throw new Error("unsafe or duplicate archive member");';
+  for (const [removed, replacement, bytes, insensitive] of [
+    [memberCheck, "", unsafe, false],
+    [memberCheck, "", link, false],
+    [memberCheck, "", Buffer.concat([flat.subarray(0, 1024), flat]), false],
+    ["name.toLowerCase()", "name", folded, true],
+    ['if (!payload.size) throw new Error("empty archive payload");', "", flat.subarray(flat.length - 1024), false],
+  ]) {
+    assert.equal(fuzzPayload(bytes, insensitive), false);
+    const mutant = await planted(removed, replacement);
+    assert.throws(() => mutant.fuzzPayload(bytes, insensitive), assert.AssertionError);
+  }
+  const copying = await planted("payload.set(name, entry.body)", "payload.set(name, Buffer.from(entry.body))");
+  assert.throws(() => copying.fuzzPayload(flat, false), assert.AssertionError);
+});
 
 test("native package inventory survives byte mutations and rejects removed admission checks", async () => {
   const directory = mkdtempSync(join(tmpdir(), "archive-inventory-"));
@@ -120,10 +157,10 @@ test("the unchanged fuzz oracle rejects removed checksum and end-marker checks",
   }
 });
 
-async function planted(removed) {
+async function planted(removed, replacement = "") {
   const source = readFileSync(new URL("./archive-utils.mjs", import.meta.url), "utf8").replaceAll("\r\n", "\n");
   const target = readFileSync(new URL("./archive-utils.fuzz.mjs", import.meta.url), "utf8");
   assert.ok(source.includes(removed), "planted defect no longer matches production");
-  const production = `data:text/javascript;base64,${Buffer.from(source.replace(removed, "")).toString("base64")}`;
+  const production = `data:text/javascript;base64,${Buffer.from(source.replace(removed, replacement)).toString("base64")}`;
   return import(`data:text/javascript;base64,${Buffer.from(target.replace('"./archive-utils.mjs"', JSON.stringify(production))).toString("base64")}`);
 }
