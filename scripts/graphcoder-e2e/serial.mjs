@@ -156,7 +156,7 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
   source['file-digest.mjs'] = await sha256File(new URL('../file-digest.mjs', import.meta.url));
   const executables={ NODE: await executable(process.execPath) };
-  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
+  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST','E2E_GIT_BINARY',
     'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
     if(env[name])executables[name]=await executable(env[name]);
   const hosts={},closures=new Map();

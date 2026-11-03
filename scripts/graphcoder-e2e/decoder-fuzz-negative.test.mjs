@@ -7,6 +7,7 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
     ["serial.mjs", 'assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");',
       'void binding;', "serial"],
     ["serial.mjs", 'binding: first.binding', 'binding: undefined', "serial"],
+    ["serial.mjs", ",'E2E_GIT_BINARY'", "", "serial-admission"],
     ...["expired", "cancelled", "signal"].map(field =>
       ["serial.mjs", `!execution?.${field}`, "true", "serial"]),
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
@@ -96,7 +97,10 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
         return { ...loaded, source: source.replace(${JSON.stringify(before)}, ${JSON.stringify(after)}) };
       } });
       try {
-        ${oracle === "serial" ? `
+        ${oracle === "serial-admission" ? `
+          const { fuzzAdmission } = await import(${JSON.stringify(new URL("./serial.fuzz.mjs", import.meta.url).href)});
+          await fuzzAdmission(Buffer.alloc(0));
+        ` : oracle === "serial" ? `
           const { fuzz } = await import(${JSON.stringify(new URL("./serial.fuzz.mjs", import.meta.url).href)});
           fuzz(Buffer.alloc(0));
         ` : oracle === "watch" ? `
@@ -147,7 +151,7 @@ for (const group of ["serial", "decoder"]) test(`${group} fuzz oracles reject pl
     assert.equal(result.error?.code, 1, `${recovery}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PLANTED_DEFECT_REJECTED/, `${recovery}\n${result.stdout}\n${result.stderr}`);
   };
-  const remaining = mutations.filter(([, , , oracle]) => (oracle === "serial") === (group === "serial")).values();
+  const remaining = mutations.filter(([, , , oracle]) => oracle.startsWith("serial") === (group === "serial")).values();
   // Each worker has fresh module state and one production mutation. Two share
   // admission credit; the original worker exit releases its slot.
   await Promise.all([0, 1].map(async () => {
