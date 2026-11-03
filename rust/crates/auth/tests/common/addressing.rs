@@ -151,6 +151,26 @@ fn route(pattern: &str, url: &str) {
 
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
+    if !bytes.is_empty() {
+        let value = ResourceIdentity::new(bytes, bytes).unwrap();
+        assert_eq!(
+            ResourceIdentity::decode(&value.encode()),
+            Ok(value),
+            "resource writer output must admit"
+        );
+        // Generate a legal actor name; the account still retains arbitrary bytes.
+        let name: Vec<_> = bytes
+            .iter()
+            .take(128)
+            .map(|byte| b'a' + byte % 26)
+            .collect();
+        let value = ActorReference::new(bytes, b"fuzz", &name).unwrap();
+        assert_eq!(
+            ActorReference::decode(&value.encode()),
+            Ok(value),
+            "actor writer output must admit"
+        );
+    }
     if let Ok(value) = ResourceIdentity::decode(bytes) {
         version(
             bytes,
