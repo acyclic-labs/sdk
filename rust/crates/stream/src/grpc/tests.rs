@@ -429,28 +429,51 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
     for error in StreamError::ALL {
         let attempts = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&attempts);
+        let provider = MemoryStream::default();
         // The shipping encoder's status crosses real HTTP/2 trailers before
         // the public client decodes it.
         let original = wire_codec::error_status(&error);
-        let client =
-            client_with_interceptor(MemoryStream::default(), move |request: Request<()>| {
-                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    Err(original.clone())
-                } else {
-                    Ok(request)
-                }
-            })?;
-        let key = IdempotencyKey::unique();
+        let client = client_with_interceptor(provider.clone(), move |request: Request<()>| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(original.clone())
+            } else {
+                Ok(request)
+            }
+        })?;
+        let request = AppendRequest {
+            path: StreamPath::new("application-error/original")?,
+            records: vec![OwnedBytes::from_static(b"original caller body").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
         assert_eq!(
-            client.inspect_idempotency(key.clone()).await,
+            client.append(request.clone()).await,
             Err(error.clone()),
             "public transport changed application error {error:?}"
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?,
+            None
+        );
         // The same live server accepts the caller's next request. An automatic
         // readiness retry would consume this response before returning the error.
-        assert_eq!(client.inspect_idempotency(key).await, Ok(None));
+        let outcome = client.append(request.clone()).await?;
+        assert!(matches!(outcome, AppendOutcome::Committed(_)));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let observation = provider
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .ok_or("public append lost original idempotency key")?;
+        assert_eq!(observation.idempotency_key, request.idempotency_key);
+        // The original provider's keyed replay checks the entire caller command,
+        // including its path, condition and body, against what crossed the wire.
+        assert_eq!(provider.append(request.clone()).await?, outcome);
+        assert_eq!(client.append(request.clone()).await?, outcome);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.tail(request.path).await?, 1);
     }
     Ok(())
 }
