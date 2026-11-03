@@ -196,6 +196,20 @@ additional_controls = {
             "model-file",
             b"model file admission must refine the original parser",
         ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"std::fs::File::open(&path)\n                .map_err(Error::process_io)?\n                .take(config.maximum_file_bytes + 1)\n                .read_to_end(&mut bytes)\n                .map_err(Error::process_io)?;",
+            b"let _ = std::fs::File::open(&path).ok().and_then(|file| file.take(config.maximum_file_bytes + 1).read_to_end(&mut bytes).ok());",
+            "project-server",
+            b"selected file I/O must not be admitted or reclassified",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings/model.rs",
+            b'let file = match std::fs::File::open(&path) {\n            Ok(file) => file,\n            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),\n            Err(error) => return Err(Error::process_io(error)),\n        };\n        if self.maximum_file_bytes == 0 || self.maximum_file_bytes == u64::MAX {\n            return Err(Error::Invalid(\n                "settings require a finite positive byte bound".into(),\n            ));\n        }\n        let mut bytes = Vec::new();\n        file.take(self.maximum_file_bytes + 1)\n            .read_to_end(&mut bytes)\n            .map_err(Error::process_io)?;',
+            b'let file = std::fs::File::open(&path).ok();\n        if self.maximum_file_bytes == 0 || self.maximum_file_bytes == u64::MAX {\n            return Err(Error::Invalid(\n                "settings require a finite positive byte bound".into(),\n            ));\n        }\n        let mut bytes = Vec::new();\n        let _ = file.and_then(|file| file.take(self.maximum_file_bytes + 1).read_to_end(&mut bytes).ok());',
+            "model-file",
+            b"selected file I/O must not be admitted or reclassified",
+        ),
     ],
 }
 
