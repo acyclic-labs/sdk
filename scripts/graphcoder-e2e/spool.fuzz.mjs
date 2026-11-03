@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { Spool } from "./process.mjs";
 
@@ -98,10 +98,55 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   if (cause.kind === "eof") assert.equal(cause.detail, captured, "EOF must retain the original native result");
 }
 
+// Exercise the original source and callback failure entrances. The stream is
+// an in-memory adapter; the source cause is an actual filesystem refusal, not
+// a claim about native pipe retirement or transcript write failure.
+async function failure(bytes, mode, sourceError) {
+  const source = new PassThrough();
+  let close, refuse;
+  const closed = new Promise((resolve, reject) => { close = resolve; refuse = reject; });
+  const consumer = ["key", "listener", "predicate"].includes(mode);
+  const error = consumer ? new Error("generated callback refusal") : sourceError;
+  const dispatch = () => { throw error; };
+  const spool = new Spool(source, closed, { key: mode === "key" ? dispatch : key });
+  const events = [];
+  spool.subscribe(event => events.push(event));
+  if (mode === "listener") spool.subscribe(dispatch);
+  const observed = promise => promise.then(() => assert.fail("failed dispatch cannot resolve"), error => error);
+  const predicate = mode === "predicate" ? observed(spool.next(dispatch)) : undefined;
+  const terminal = observed(spool.next(() => false));
+  const missing = observed(spool.keyed(Symbol("missing after failure")));
+  const drained = finished(source).then(() => undefined, error => error);
+  if (consumer) source.write(original);
+  else if (mode === "stream") source.destroy(error);
+  else refuse(error);
+  const cause = await terminal;
+  assert.equal(cause.kind, consumer ? "consumer" : "source");
+  assert.equal(cause.detail, error, "failure retains the original object");
+  assert.equal(cause.cause, error, "native error cause remains inspectable");
+  assert.equal(await missing, cause);
+  if (predicate) assert.equal(await predicate, cause);
+  // Later output and physical completion cannot replace the first terminal.
+  if (mode !== "stream") source.end(Buffer.concat([bytes, original]));
+  close(captured);
+  assert.equal(await drained, mode === "stream" ? error : undefined);
+  assert.equal(spool.ended, cause);
+  assert.equal(spool.sequence, consumer ? 1 : 0);
+  assert.deepEqual(events, consumer && mode !== "key" ? [event] : []);
+  assert.equal(await observed(spool.next(() => true)), cause);
+  assert.equal(await observed(spool.keyed(Symbol("later missing"))), cause);
+}
+
 export async function fuzz(data) {
   const bytes = Buffer.from(data);
   const directory = mkdtempSync(join(tmpdir(), "spool-corpus-"));
   try {
+    let sourceError;
+    try { readFileSync(join(directory, "absent")); }
+    catch (error) { sourceError = error; }
+    assert.equal(sourceError?.code, "ENOENT");
+    for (const mode of ["key", "listener", "predicate", "stream", "closed"])
+      await failure(bytes, mode, sourceError);
     for (const input of [bytes, Buffer.concat([bytes, original]), Buffer.concat([original, bytes]),
       Buffer.concat([original, original, bytes]), Buffer.concat([original, distinct, bytes])])
       for (const unique of [false, true])
