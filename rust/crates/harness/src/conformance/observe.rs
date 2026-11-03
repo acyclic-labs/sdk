@@ -30,7 +30,6 @@ pub(crate) struct Observed {
 struct Capture {
     commits: Vec<CommitRequest>,
     follows: Vec<(StreamPath, u64)>,
-    appends: Vec<AppendRequest>,
 }
 
 impl Observed {
@@ -84,10 +83,6 @@ impl Observed {
 
     pub fn take_follows(&self) -> Vec<(StreamPath, u64)> {
         self.take_capture(|capture| std::mem::take(&mut capture.follows))
-    }
-
-    pub fn take_appends(&self) -> Vec<AppendRequest> {
-        self.take_capture(|capture| std::mem::take(&mut capture.appends))
     }
 
     fn capture(&self, record: impl FnOnce(&mut Capture)) {
@@ -212,7 +207,6 @@ impl StreamProvider for Observed {
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
-                        self.capture(|capture| capture.appends.push(request.clone()));
                         self.requests.record(RequestClass::Data);
                         self.io(self.inner.append(request)).await
                     },

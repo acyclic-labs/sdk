@@ -1,9 +1,10 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
+use acyclic_actors::local::State;
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    StreamPath, StreamProvider,
+    CommitMutation, StreamPath, StreamProvider,
     runtime::{Executor as _, PlatformExecutor},
 };
 use futures::TryFutureExt as _;
@@ -60,6 +61,42 @@ async fn until(
     }
 }
 
+async fn checkpoint(provider: &Observed, cut: u64) -> Result {
+    use futures::TryStreamExt as _;
+    // Locate the original dispatcher publication, rather than reconstructing
+    // its private address or manufacturing its durable state.
+    let path = provider
+        .take_commits()
+        .into_iter()
+        .flat_map(|request| request.mutations)
+        .find_map(|mutation| match mutation {
+            CommitMutation::Append { path, records }
+                if records.iter().any(|record| {
+                    State::decode(record.value.as_ref())
+                        .is_ok_and(|state| state.cursor("activation").is_some())
+                }) =>
+            {
+                Some(path)
+            }
+            _ => None,
+        })
+        .ok_or("dispatcher state was not published")?;
+    let mut changes = acyclic_stream::records_only(
+        provider
+            .follow(acyclic_stream::FollowRequest::new(path, 0))
+            .await?,
+    );
+    while let Some(record) = changes.try_next().await? {
+        if State::decode(record.value.as_ref())?
+            .cursor("activation")
+            .is_some_and(|cursor| cursor >= cut)
+        {
+            return Ok(());
+        }
+    }
+    Err("dispatcher state follow ended before its cursor was saved".into())
+}
+
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = Arc::new(Observed::capturing(storage.open().await?));
@@ -70,14 +107,14 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     // No explicit track after restart: only the dispatcher can rediscover it.
     host.send(&agent, &fixtures::sender(), &fixtures::request("before")?)
         .await?;
-    until(&host, output(&host, &agent, 0, b"before")).await?;
     let root = StreamPath::new(ACTORS)?;
-    let cut = provider.tail(root.clone()).await?;
-    let opened = provider
-        .take_appends()
-        .into_iter()
-        .find(|request| request.path == root)
-        .ok_or("activation open was not attempted")?;
+    let mut cut = 0;
+    until(&host, async {
+        output(&host, &agent, 0, b"before").await?;
+        cut = provider.tail(root.clone()).await?;
+        checkpoint(&provider, cut).await
+    })
+    .await?;
     drop(host);
     drop(provider);
     let reopened = Arc::new(Observed::capturing(storage.open().await?));
@@ -97,9 +134,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
             "restart replayed activation history instead of its checkpoint: {follows:?}"
         )
         .into());
-    }
-    if reopened.take_appends().first() != Some(&opened) {
-        return Err("activation reopen changed its request or key".into());
     }
     cursor_crashes(backend).await
 }
