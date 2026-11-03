@@ -800,36 +800,68 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         put(store, &ExtentPage::Internal(children), width).await
     }
 
-    let narrow_store = MemoryObjectStore::default();
-    let narrow = root_with_width(&narrow_store, 2).await?;
+    let store = MemoryObjectStore::default();
+    let narrow = root_with_width(&store, 2).await?;
+    let wide = root_with_width(&store, 1_024).await?;
+    // Both mutations publish the same empty page into the same object index.
+    // Install it first so index insertion and lookup are not compared as if
+    // they were work caused by the width of the discarded extent root.
+    let empty = put(&store, &ExtentPage::Leaf(Vec::new()), 1).await?;
+    let budget = WorkBudget {
+        page_reads: 0,
+        backend_read_operations: 0,
+        object_bytes_read: 0,
+        ..WorkBudget::UNBOUNDED
+    };
     let narrow_receipt = apply_extent_mutations(
-        &narrow_store,
+        &store,
         (narrow, 2),
         &[ExtentMutation::Resize { logical_bytes: 0 }],
         1,
         DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
+        budget,
         &CancellationToken::new(),
     )
     .await?;
 
-    let wide_store = MemoryObjectStore::default();
-    let wide = root_with_width(&wide_store, 1_024).await?;
     let wide_receipt = apply_extent_mutations(
-        &wide_store,
+        &store,
         (wide, 1_024),
         &[ExtentMutation::Resize { logical_bytes: 0 }],
         1,
         DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
+        budget,
         &CancellationToken::new(),
     )
     .await?;
-    assert_eq!(wide_receipt.work.page_reads, 0);
-    assert_eq!(
-        wide_receipt.work.items_examined,
-        narrow_receipt.work.items_examined
-    );
+    assert_eq!(wide_receipt.root, empty);
+    assert_eq!(wide_receipt.logical_bytes, 0);
+    assert_eq!(wide_receipt, narrow_receipt);
+
+    // Retaining a byte needs the original root. The same budget must refuse
+    // that real traversal before touching the object store.
+    let failure = apply_extent_mutations(
+        &store,
+        (wide, 1_024),
+        &[ExtentMutation::Resize { logical_bytes: 1 }],
+        1,
+        DecodeLimits::default(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("nonempty truncation unexpectedly avoided its root read")?;
+    assert!(matches!(
+        failure.error,
+        ExtentMutationError::Work(WorkError::BudgetExceeded {
+            counter: "page_reads",
+            observed: 1,
+            maximum: 0,
+        })
+    ));
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.backend_write_operations, 0);
     Ok(())
 }
 
