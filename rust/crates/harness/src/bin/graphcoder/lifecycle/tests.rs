@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_native_runtime::obs::{ReportAck, ReportOutcome, ReportRequest};
+use acyclic_native_runtime::obs::{ReportAck, ReportOutcome, ReportPort, ReportRequest};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 const GENERATION: &str = "0123456789abcdef0123456789abcdef";
@@ -71,7 +71,7 @@ fn original_setup_refusal_survives_announcement_and_sink_loss() {
                 .boxed()
                 .shared();
                 let rejection =
-                    reject_startup(port, shutdown, CliPhase::Diagnostics, cause.as_ref());
+                    report_failure(port, shutdown, CliPhase::Diagnostics, cause.as_ref());
                 let receive = async {
                     let Some(owner) = owner else { return None };
                     let mut reader = BufReader::new(owner);
