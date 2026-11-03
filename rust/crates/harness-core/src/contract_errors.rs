@@ -1,5 +1,5 @@
 use super::OperationId;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 use crate::wire::ErrorCode;
 
 /// Reasons an interaction settled without approving its action. Tool callers
