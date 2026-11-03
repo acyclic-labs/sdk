@@ -215,8 +215,10 @@ The native floor report uses the shared local provider defaults: memory capacity
 is unbounded, journal compaction retains its normal targets, and durability uses
 the full-flush policy.
 
-The native floor report also retains a timer-only observation control. Ratios
-include sampler cost; rows flag modeled floors below the measured timestamp resolution.
+The native report retains a timer-only observation control in calibration output.
+Operation `floor_ns`, `p50_ratio` and `p99_ratio` are null: standalone calibration
+and semantic coefficients do not supply a matched public-path physical floor.
+Operation rows retain `ratio_qualified: false` and explain the missing evidence.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
 Call and copy calibration use4096-operation batches; hashing uses64-operation
@@ -224,8 +226,8 @@ batches. Their observations and quantiles are normalized batch averages, so
 their calibration p99 does not describe an individual call's tail. Operation
 rows retain individually timed samples without batch averaging.
 Zero-duration samples are retained when both timestamps occupy the same clock
-tick. The floor-resolution flag also uses the smallest positive timer-only observation;
-an entirely unresolved timer or a zero-median semantic floor refuses calibration.
+tick. Calibration retains the smallest positive timer-only observation;
+an entirely unresolved timer or a zero-median primitive measurement refuses calibration.
 Requested HEAD and LIST results are data. The shared observer excludes exactly
 the original query dispatch from control overhead, retains every provider class,
 and checks that an additional real HEAD remains one control request.
@@ -234,9 +236,9 @@ Each raw sample has an `original_work_receipts` entry with its original API
 key, resource or cursor, and the same interval's work dimensions. These diagnostic
 identities do not supply an authenticated admission token or physical group
 coverage. Missing dimensions remain null. Each operation reports its public
-guarantee and the modeled work units used to compose its floor; these coefficients
-are separate from observed counts. Raw ratios remain unqualified while physical
-coverage or the matching durability guarantee is missing. File creation plus
+guarantee and modeled work units; these coefficients are separate from observed
+counts and are not combined into a numerical floor. Physical coverage and matching
+durability guarantees remain unknown. File creation plus
 directory durability is calibrated separately from an in-place flush.
 
 The [tooling qualification plan](../../../docs/tooling-qualification.md) separates logical counters, physical requests, hosted execution and on-demand measurements. Side proof/model/fuzz packages remain explicitly selected; they are not added to ordinary default workspace commands.

@@ -1,4 +1,4 @@
-//! Serial measurements of native providers against same-device primitive floors.
+//! Serial native-provider observations and standalone primitive calibration.
 #[path = "local_hotpath/actor_delivery.rs"]
 mod actor_delivery;
 #[path = "local_hotpath/calibrate.rs"]
