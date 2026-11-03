@@ -1089,16 +1089,14 @@ impl Schedule {
 
 /// One simulated follow over a lossy transport. `eager` is the negative
 /// control: it resumes on reconnect before catching up to the observed tail.
-fn simulate(seed: u64, eager: bool) -> Result<(), String> {
-    let mut world = world();
+fn simulate(
+    world: &World,
+    credentials: &[(Vec<u8>, BlockId)],
+    seed: u64,
+    eager: bool,
+) -> Result<(), String> {
     let trust = Follower::new("test", world.issuer.anchor());
-    let mut stream = world.genesis.clone();
-    let credentials = {
-        let probe = follower(&world);
-        (0..4)
-            .map(|index| credential(&world, &probe, index))
-            .collect::<Vec<_>>()
-    };
+    let (mut root, mut stream) = world.issuer.genesis("account", key(2), NOW).unwrap();
     // Stream index of each credential's revocation, and of the epoch floor
     // that refuses every credential, once appended.
     let mut revoked_at = [None::<usize>; 4];
@@ -1109,24 +1107,17 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
         match schedule.next(6) {
             0 => match schedule.next(8) {
                 // An unrelated key revocation changes trust but no verdict.
-                0 => stream.push(
-                    world
-                        .root
-                        .revoke_keys(&[("retired", NOW + 50)], NOW)
-                        .unwrap(),
-                ),
+                0 => stream.push(root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap()),
                 1 if floor_at.is_none() => {
                     floor_at = Some(stream.len());
-                    stream.push(world.root.raise_minimum_epoch(2, NOW).unwrap());
+                    stream.push(root.raise_minimum_epoch(2, NOW).unwrap());
                 }
                 _ => {
                     let index = schedule.next(4) as usize;
                     if revoked_at[index].is_none() {
                         revoked_at[index] = Some(stream.len());
                         stream.push(
-                            world
-                                .root
-                                .revoke(&[(credentials[index].1, NOW + 10_000)], NOW)
+                            root.revoke(&[(credentials[index].1, NOW + 10_000)], NOW)
                                 .unwrap(),
                         );
                     }
@@ -1222,12 +1213,18 @@ fn simulate(seed: u64, eager: bool) -> Result<(), String> {
 
 #[test]
 fn simulated_lossy_follow_never_admits_stale_trust_and_loses_nothing() {
+    let world = world();
+    let probe = follower(&world);
+    let credentials = (0..4)
+        .map(|index| credential(&world, &probe, index))
+        .collect::<Vec<_>>();
     for seed in 0..512 {
-        simulate(seed, false).unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+        simulate(&world, &credentials, seed, false)
+            .unwrap_or_else(|error| panic!("seed {seed}: {error}"));
     }
     // Negative control: resuming before catch-up admits stale trust.
     assert!(
-        (0..512).any(|seed| simulate(seed, true).is_err()),
+        (0..512).any(|seed| simulate(&world, &credentials, seed, true).is_err()),
         "the checker must catch a follower that serves before catching up"
     );
 }
