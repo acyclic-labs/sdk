@@ -161,6 +161,23 @@ pub fn check(bytes: &[u8]) {
         }
     }
     record::<InboxRecord>(bytes);
+    // Read the selection independently of SpawnRequest's field deserializer:
+    // dropping it there otherwise leaves a stable decode/encode fixed point.
+    if let Ok(InboxRecord::Spawn(spawn)) = InboxRecord::decode(bytes) {
+        let input =
+            records::decode_record::<serde_json::Value>(bytes).expect("admitted spawn payload");
+        let selected: Option<super::HistorySelection> = serde_json::from_value(
+            input
+                .pointer("/spawn/history")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .expect("admitted spawn history selection");
+        assert_eq!(
+            spawn.history, selected,
+            "spawn record lost the input's history selection"
+        );
+    }
     record::<StatusRecord>(bytes);
     record::<Closed>(bytes);
     record::<ConversationEntry>(bytes);

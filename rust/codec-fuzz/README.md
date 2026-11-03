@@ -164,7 +164,11 @@ Struct record payloads additionally refuse an unknown field, including the
 payload within an externally tagged variant. This checks admission before a
 reader can silently discard data; it does not cover every nested object.
 Nested spawn history, restore generations and conversation records compare
-the admitted value with the original writer input. Its ordinary writer replay runs
+the admitted value with the original writer input. The arbitrary-input oracle
+also reads a spawn's original history selection through `HistorySelection`,
+independently of `SpawnRequest`'s field deserializer. This comparison preserves
+the optional selection and both conversation/checkpoint cuts; it does not
+establish independent preservation of every record field. Ordinary writer replay runs
 without a fuzzing toolchain:
 
 ```sh
@@ -184,6 +188,12 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | `agent-record-trailing.patch` | `agent record header refusal changed` |
 | `agent-record-unknown-field.patch` | `agent record discarded an unknown payload field` |
 | `agent-spawn-history.patch` | `agent record lost the writer's input` |
+
+Replaying the retained `harness_codecs/agent-v13-spawn-history` input through
+`harness_codecs` with `agent-spawn-history.patch` must instead fail at
+`spawn record lost the input's history selection`. This exercises the same
+arbitrary-input oracle without invoking the separate writer assertion or
+regenerating captures.
 
 The state mutation changes the production checkpoint decoder. Replaying the
 retained `harness_codecs/agent-v13-state-wait` input through `harness_codecs`
