@@ -200,3 +200,18 @@ idle with the exact expected answer and no running child. Fork/merge also
 requires the real merge and the resulting parent file bytes. The text oracle follows `-p`;
 JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeated
 tool calls. This tier complements the installed-host matrix.
+
+The kept byte-fuzz entries are `lines.fuzz.mjs`, `process-report.fuzz.mjs` and
+`assertions.fuzz.mjs`. They call the shared production decoders and acceptance
+boundaries, retaining captured wire seeds and provenance in `fixtures/`.
+Run their corpus replay and planted production-defect controls with:
+
+```sh
+node --test scripts/graphcoder-e2e/decoder-fuzz.test.mjs scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs
+```
+
+The mutation control checks that each source edit applies exactly once and that
+the unchanged oracle rejects the intended defect; an import failure or crash
+does not qualify. For unmutated source coverage, run only `decoder-fuzz.test.mjs`
+with Node's `--experimental-test-coverage` option. These parser controls do not
+replace the real process, transport-retirement or installed-host suites.
