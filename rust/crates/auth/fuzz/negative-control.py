@@ -12,6 +12,10 @@ if choice.startswith("filesystem-"):
     target = "filesystem_access"
     source = root.parent / "harness-core/src/core/authority/workload/admission.rs"
     oracle = source.with_name("verification.rs")
+elif choice == "addressing-fragment":
+    target = "addressing"
+    source = root.parent / "src/addressing/routes.rs"
+    oracle = root.parent / "tests/common/addressing.rs"
 elif choice.startswith("secret-"):
     target = "secret_ref"
     source = root.parent / "src/secrets.rs"
@@ -37,6 +41,10 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-fragment": (
+            b"            || url.fragment().is_some()", b"",
+            "routing must refuse credentials, fragments and unsupported schemes", "route-0",
+        ),
         "filesystem-ancestor": (
             b".is_some_and(|parent| !capabilities.is_subset_of(&parent.capabilities))",
             b".is_some_and(|parent| false && !capabilities.is_subset_of(&parent.capabilities))",
