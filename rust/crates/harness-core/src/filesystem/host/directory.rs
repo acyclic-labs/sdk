@@ -317,11 +317,17 @@ pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {
     /// Whether both policy owners let this selection's caller list `path`.
     pub(super) fn lists(&self, path: &str, now: u64) -> bool {
-        self.view.0.decide(Action::List, path, now).allowed
+        self.allows(Action::List, path, now)
+    }
+
+    /// Whether both policy owners let this selection's caller take `action`
+    /// on `path`.
+    pub(super) fn allows(&self, action: Action, path: &str, now: u64) -> bool {
+        self.view.0.decide(action, path, now).allowed
             && self
                 .data_access
                 .as_ref()
-                .is_none_or(|(_, view)| view.0.decide(Action::List, path, now).allowed)
+                .is_none_or(|(_, view)| view.0.decide(action, path, now).allowed)
     }
 
     /// Linearizes a disclosure from this selection against the current policy.

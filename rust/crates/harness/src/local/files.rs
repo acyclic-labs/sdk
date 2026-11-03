@@ -26,10 +26,12 @@ impl LocalHarness {
     /// One page of the selected checkout's changes since its first complete
     /// import, the fork base every agent edit is measured from. Before that
     /// baseline is recorded nothing has changed. Projection, disclosure
-    /// authority and paging are the shared [`crate::hosting::diff_page`].
+    /// authority and paging are the shared [`crate::hosting::DiffPages`],
+    /// which retains this checkout's projection in `diffs`.
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn project_diff(
         &self,
+        diffs: &crate::hosting::DiffPages,
         page: &acyclic_harness_client::AgentPageRequest,
     ) -> Result<Vec<crate::context::DiffFilePage>> {
         let workspace = self
@@ -65,16 +67,17 @@ impl LocalHarness {
             .map_err(storage)?
             .value
             .map_or(current, |baseline| baseline.id());
-        crate::hosting::diff_page(
-            &*self.signed_reader()?,
-            &self.project,
-            (
-                &self.files.generation_ref_id(base, None)?,
-                &self.files.generation_ref_id(current, None)?,
-            ),
-            page,
-        )
-        .await
+        diffs
+            .page(
+                &*self.signed_reader()?,
+                &self.project,
+                (
+                    &self.files.generation_ref_id(base, None)?,
+                    &self.files.generation_ref_id(current, None)?,
+                ),
+                page,
+            )
+            .await
     }
 
     /// Publisher of this harness's prompt inputs on its private journal volume.

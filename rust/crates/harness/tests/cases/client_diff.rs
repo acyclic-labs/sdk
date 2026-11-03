@@ -323,13 +323,15 @@ impl Fixture {
 }
 
 /// The shared platform producer: one exact projection of the volume's changes
-/// since its fork base, paged without loss and disclosed only under list authority.
+/// since its fork base, paged without loss from its retained projection and
+/// disclosed only under the requesting reader's list authority.
 #[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
     use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
-    use acyclic_harness::hosting::diff_page;
+    use acyclic_harness::hosting::DiffPages;
     let fixture = Fixture::new().await?;
+    let pages = DiffPages::default();
     for (path, text) in [
         ("kept.txt", "same\n"),
         ("edited.txt", "before\n"),
@@ -370,7 +372,9 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     let volume = &fixture.root.volume;
     let page = |items, cursor| AgentPageRequest::new(items, 64 * 1024, cursor).expect("page");
 
-    let whole = diff_page(&fixture.files, volume, (&base, &current), &page(128, None)).await?;
+    let whole = pages
+        .page(&fixture.files, volume, (&base, &current), &page(128, None))
+        .await?;
     let rows = whole
         .iter()
         .map(|file| {
@@ -398,8 +402,9 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     // One row per page reassembles exactly the same projection.
     let (mut cursor, mut pages, mut patches) = (None, 0, std::collections::BTreeMap::new());
     loop {
-        let fragments =
-            diff_page(&fixture.files, volume, (&base, &current), &page(1, cursor)).await?;
+        let fragments = pages
+            .page(&fixture.files, volume, (&base, &current), &page(1, cursor))
+            .await?;
         assert_eq!(fragments.len(), 1);
         pages += 1;
         let fragment = &fragments[0];
@@ -451,7 +456,9 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         let mut actual = std::collections::BTreeMap::<String, String>::new();
         loop {
             let request = AgentPageRequest::new(128, bytes, cursor).expect("page");
-            let fragments = diff_page(&fixture.files, volume, (&base, &current), &request).await?;
+            let fragments = pages
+                .page(&fixture.files, volume, (&base, &current), &request)
+                .await?;
             assert!(!fragments.is_empty());
             for fragment in &fragments {
                 if fragment.omitted_bytes.is_none() {
@@ -492,18 +499,20 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     fixture.put("added.txt", "four\n", "later").await?;
     let later = fixture.source("kept.txt").await?.generation;
     assert!(matches!(
-        diff_page(
-            &fixture.files,
-            volume,
-            (&base, &later),
-            &page(128, Some(stale))
-        )
-        .await,
+        pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &later),
+                &page(128, Some(stale))
+            )
+            .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
     // No change since the base is an empty projection.
     assert!(
-        diff_page(&fixture.files, volume, (&later, &later), &page(128, None))
+        pages
+            .page(&fixture.files, volume, (&later, &later), &page(128, None))
             .await?
             .is_empty()
     );
@@ -532,13 +541,14 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         )
         .await?;
     let expensive_current = fixture.source("expensive.txt").await?.generation;
-    let bounded = diff_page(
-        &fixture.files,
-        volume,
-        (&expensive_base, &expensive_current),
-        &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
-    )
-    .await?;
+    let bounded = pages
+        .page(
+            &fixture.files,
+            volume,
+            (&expensive_base, &expensive_current),
+            &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
+        )
+        .await?;
     assert_eq!(bounded.len(), 3);
     assert_eq!(bounded[0].omitted_bytes, Some(128));
     assert!(bounded[0].patch.is_empty());
@@ -577,7 +587,26 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         None,
     )?;
     assert!(matches!(
-        diff_page(&unlisted, volume, (&base, &current), &page(128, None)).await,
+        pages
+            .page(&unlisted, volume, (&base, &current), &page(128, None))
+            .await,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
+    // Nor does a continuation of a projection retained for an authorized
+    // reader: every page rechecks the requesting reader's authority.
+    let first = pages
+        .page(&fixture.files, volume, (&base, &current), &page(1, None))
+        .await?;
+    let next = first[0]
+        .next
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .expect("cursor");
+    assert!(matches!(
+        pages
+            .page(&unlisted, volume, (&base, &current), &page(1, next))
+            .await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));
     Ok(())

@@ -61,7 +61,21 @@ impl Hosted {
 /// The local user owns the whole tree: its policy admits every command its
 /// own session credential carries, and its prompts attach the checkout files
 /// they mention.
-struct LocalUser(Weak<LocalHarness>);
+struct LocalUser {
+    harness: Weak<LocalHarness>,
+    /// The root's retained diff projection, which its continuation pages
+    /// read without projecting again.
+    #[cfg(any(test, feature = "native-execution"))]
+    diffs: crate::hosting::DiffPages,
+}
+
+impl LocalUser {
+    fn harness(&self) -> Result<Arc<LocalHarness>> {
+        self.harness
+            .upgrade()
+            .ok_or_else(|| Error::Unsupported("local harness is closed".into()))
+    }
+}
 
 impl crate::hosting::Platform for LocalUser {
     fn policy<'a>(
@@ -76,13 +90,7 @@ impl crate::hosting::Platform for LocalUser {
         &'a self,
         text: &'a str,
     ) -> BoxProviderFuture<'a, Result<Option<String>>> {
-        Box::pin(async move {
-            self.0
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?
-                .resolve_prompt_command(text)
-                .await
-        })
+        Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
     }
 
     fn attachments<'a>(
@@ -90,18 +98,14 @@ impl crate::hosting::Platform for LocalUser {
         key: &'a [u8],
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
-        Box::pin(async move {
-            self.0
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?
-                .prompt_attachments(key, text)
-                .await
-        })
+        Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
     }
 
     /// The root's checkout diff, read under the tree owner's own signed
-    /// authority: the server admitted this session's credential, and the
-    /// shared producer checks that authority before disclosing any path.
+    /// authority, the one every client of this tree is minted under: the
+    /// server rechecked this session's credential and policy for this page,
+    /// and the shared producer checks the owner's file authority before
+    /// disclosing any path or content, retained continuation pages included.
     #[cfg(any(test, feature = "native-execution"))]
     fn diff<'a>(
         &'a self,
@@ -110,16 +114,13 @@ impl crate::hosting::Platform for LocalUser {
         page: &'a acyclic_harness_client::AgentPageRequest,
     ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
         Box::pin(async move {
-            let local = self
-                .0
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+            let local = self.harness()?;
             if local.agents.get().map(Hosted::root) != Some(agent) {
                 return Err(Error::Unsupported(
                     "a child agent's fork diff is unavailable".into(),
                 ));
             }
-            local.project_diff(page).await
+            local.project_diff(&self.diffs, page).await
         })
     }
 
@@ -503,7 +504,11 @@ impl LocalHarness {
             )
         }
         .map_err(storage)?;
-        let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser(Arc::downgrade(self)));
+        let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
+            harness: Arc::downgrade(self),
+            #[cfg(any(test, feature = "native-execution"))]
+            diffs: crate::hosting::DiffPages::default(),
+        });
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with
         // another policy would refuse the reopen.

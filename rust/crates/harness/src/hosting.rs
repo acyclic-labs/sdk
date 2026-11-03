@@ -30,7 +30,7 @@ mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
 mod diff;
-pub use diff::{DIFF_FILE_BYTES, diff_page};
+pub use diff::{DIFF_FILE_BYTES, DiffPages};
 
 use crate::{
     agent::{
