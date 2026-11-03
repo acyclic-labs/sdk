@@ -3,6 +3,8 @@ use sdk_docs::path_identity as paths;
 use sdk_generation::historical;
 #[path = "../git_layout.rs"]
 mod git_layout;
+#[path = "../source_identities.rs"]
+mod source_identities;
 #[path = "../../src/source_selection.rs"]
 mod source_selection;
 
@@ -11,7 +13,6 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(text) = std::str::from_utf8(bytes) {
         let fields = text
             .lines()
-            .take(8)
             .map(str::to_owned)
             .collect::<std::collections::BTreeSet<_>>();
         let sources = fields
@@ -30,12 +31,23 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 sources
             );
         }
-        let mut duplicate = sources.clone();
-        duplicate.extend(sources.clone());
-        source_selection::deduplicate(&mut duplicate);
-        let once = duplicate.clone();
-        source_selection::deduplicate(&mut duplicate);
-        assert_eq!(duplicate, once);
+        let mut identities = sources.clone();
+        if let Some(first) = sources.first() {
+            // Keep physical identity fixed while varying each other field.
+            identities.extend(sources.iter().skip(1).flat_map(|source| {
+                [
+                    sdk_docs::GeneratedSource {
+                        logical_path: source.logical_path.clone(),
+                        ..first.clone()
+                    },
+                    sdk_docs::GeneratedSource {
+                        sha256: source.sha256.clone(),
+                        ..first.clone()
+                    },
+                ]
+            }));
+        }
+        source_identities::check(&identities);
         let mut fields = text.splitn(3, '\n');
         if let (Some(old), Some(new), Some(path)) = (fields.next(), fields.next(), fields.next()) {
             for windows in [false, true] {

@@ -19,8 +19,13 @@ identity oracle, and arbitrary bytes exercise the parser directly.
 Other seeds are pre-existing path/source-selection mutations without recorded
 external capture provenance. They are not evidence of a process run. Removed
 fixed-head, valid-head and manifest seeds covered only test-scaffold parsers.
-Path identity now calls the shared library directly. Source selection continues
-to include its production source; its separate caller/coverage audit is open.
+Path identity now calls the shared library directly. Source selection reuses its production source directly. Its shared identity
+oracle checks the complete physical path, logical path and digest set, including
+repeated entries and independently varied logical paths/digests at one physical
+path. These are typed domain mutations of the path seeds, not captured external
+wire records. The retained loss/logical/digest patches mutate the real production
+deduplicator. The property and fuzzer share this oracle; source-selection branch
+coverage remains open.
 This corpus and planted-defect property do not establish an instrumented fuzz
 campaign, full branch coverage, Git process loss, shallow-repository topology,
 or complete source-frontier admission.

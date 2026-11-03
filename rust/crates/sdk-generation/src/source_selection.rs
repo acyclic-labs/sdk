@@ -160,17 +160,8 @@ mod tests {
         fn bundling_deduplicates_only_complete_physical_logical_and_digest_identity(
             keys in prop::collection::vec((0u8..4, 0u8..4, 0u8..4), 0..32),
         ) {
-            let expected = keys.iter().copied().collect::<BTreeSet<_>>();
-            let mut sources = keys.iter().map(|(p,l,d)| source(format!("physical/{p}"), *l, *d)).collect::<Vec<_>>();
-            deduplicate(&mut sources);
-            let identities = sources.iter().map(|source| (source.physical_path.clone(), source.logical_path.clone(), source.sha256.clone())).collect::<BTreeSet<_>>();
-            prop_assert_eq!(sources.len(), expected.len());
-            for (p,l,d) in expected {
-                let item = source(format!("physical/{p}"), l, d);
-                prop_assert!(identities.contains(&(item.physical_path, item.logical_path, item.sha256)));
-            }
-            let once = sources.clone(); deduplicate(&mut sources);
-            prop_assert_eq!(sources, once);
+            let sources = keys.iter().map(|(p,l,d)| source(format!("physical/{p}"), *l, *d)).collect::<Vec<_>>();
+            crate::source_identities_oracle::check(&sources);
         }
     }
 }

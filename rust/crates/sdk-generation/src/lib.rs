@@ -22,6 +22,9 @@ mod archive_members_oracle;
 #[cfg(test)]
 #[path = "../fuzz/git_layout.rs"]
 mod git_layout_oracle;
+#[cfg(test)]
+#[path = "../fuzz/source_identities.rs"]
+mod source_identities_oracle;
 mod generation;
 pub mod historical;
 mod release_manifest;
