@@ -1,6 +1,7 @@
 //! Exercise the public binary client and its actual request-bound admission.
 use acyclic_objects::{
-    Availability, Blobs, ByteRange, Digest, Error, Manifest, MemoryMedium, Part, RootId, Store,
+    Availability, AvailabilityCursor, Blobs, ByteRange, Digest, Error, Manifest, MemoryMedium,
+    Part, RootId, Store,
     binary::{BinaryObjects, Reply, Transport},
     wire,
 };
@@ -220,6 +221,44 @@ fn batch(bytes: &[u8]) {
     run(Bytes::new(), true);
 }
 
+// Check the shipped feed adapter against independently held producer cursors.
+// Candidate frames are derived operands, not captures of another producer.
+fn availability(initial: AvailabilityCursor, candidate: AvailabilityCursor) {
+    let forward = AvailabilityCursor::new(*initial.incarnation(), 2).unwrap();
+    let later = AvailabilityCursor::new(*initial.incarnation(), 3).unwrap();
+    let expected = if candidate.incarnation() == initial.incarnation() && candidate.sequence() > 2 {
+        Ok(candidate)
+    } else {
+        Err(wire::ErrorCode::Unavailable.into())
+    };
+    let mut feed = Availability::new(
+        initial,
+        futures::stream::iter([Ok(forward), Ok(candidate), Ok(later)]),
+    );
+    assert_eq!(
+        ready(feed.changed()),
+        Ok(forward),
+        "feed admits producer progress"
+    );
+    assert_eq!(
+        ready(feed.changed()),
+        expected,
+        "feed binds incarnation and strictly increasing position"
+    );
+    assert_eq!(
+        feed.cursor(),
+        expected.clone().unwrap_or(forward),
+        "refusal retains the last admitted cut"
+    );
+    if expected.is_err() {
+        assert_eq!(
+            ready(feed.changed()),
+            expected,
+            "refused feed cannot resume on a later healthy frame"
+        );
+    }
+}
+
 pub(super) fn check(name: &str, bytes: &[u8]) {
     if !name.starts_with("acyclic.objects.v1.") {
         return;
@@ -227,9 +266,36 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     // Syntax equivalence and a scripted response cannot detect a server that
     // refuses every request. Admit the original service writers once per
     // process before comparing arbitrary packets through the same client.
-    static WRITERS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    WRITERS.get_or_init(|| {
-        seeds().expect("original Objects service writers must be admitted");
+    static WRITERS: std::sync::OnceLock<AvailabilityCursor> = std::sync::OnceLock::new();
+    let initial = *WRITERS.get_or_init(|| {
+        let (_, initial) =
+            writer_seeds().expect("original Objects service writers must be admitted");
+        let mut foreign = *initial.incarnation();
+        foreign[0] ^= 1;
+        foreign[1] |= 1;
+        // Include forward, duplicate, regressing and foreign frames even when
+        // arbitrary wire input never supplies a valid cursor.
+        for candidate in [
+            initial,
+            AvailabilityCursor::new(*initial.incarnation(), 1).unwrap(),
+            AvailabilityCursor::new(*initial.incarnation(), 3).unwrap(),
+            AvailabilityCursor::new(foreign, 3).unwrap(),
+        ] {
+            availability(initial, candidate);
+        }
+        let unavailable = Err(wire::ErrorCode::Unavailable.into());
+        let mut ended = Availability::new(initial, futures::stream::empty());
+        assert_eq!(ready(ended.changed()), unavailable);
+        let cause = Error::from(wire::ErrorCode::OutcomeUnknown);
+        let mut failed =
+            Availability::new(initial, futures::stream::iter([Err(cause.clone()), Ok(initial)]));
+        assert_eq!(
+            ready(failed.changed()),
+            Err(cause),
+            "feed preserves its original terminal cause"
+        );
+        assert_eq!(ready(failed.changed()), unavailable);
+        initial
     });
     request(name, bytes);
     if name == "acyclic.objects.v1.AvailabilityCursor"
@@ -237,11 +303,15 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     {
         let valid =
             cursor.incarnation.len() == 16 && cursor.incarnation.iter().any(|byte| *byte != 0);
+        let decoded = AvailabilityCursor::try_from(cursor);
         assert_eq!(
-            acyclic_objects::AvailabilityCursor::try_from(cursor).is_ok(),
+            decoded.is_ok(),
             valid,
             "cursor admission must match its wire identity"
         );
+        if let Ok(candidate) = decoded {
+            availability(initial, candidate);
+        }
     }
     macro_rules! response {
         ($wire:ident, $route:literal, |$client:ident| $call:expr) => {
@@ -515,13 +585,17 @@ impl Transport for Capture {
 }
 
 pub(super) fn seeds() -> Result<Vec<Seed>, Box<dyn std::error::Error>> {
+    writer_seeds().map(|(seeds, _)| seeds)
+}
+
+fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error::Error>> {
     let store = Store::new(MemoryMedium::default());
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let client = BinaryObjects::new(Capture {
         account: store.account(b"codec-capture")?,
         outputs: outputs.clone(),
     });
-    ready(async {
+    let initial = ready(async {
         client.put(body(), Vec::new()).await?;
         client.put(body(), Vec::new()).await?;
         client.put_manifest(manifest()).await?;
@@ -540,7 +614,7 @@ pub(super) fn seeds() -> Result<Vec<Seed>, Box<dyn std::error::Error>> {
             .next()
             .await
             .expect("original availability writer emits its opening cursor")?;
-        acyclic_objects::AvailabilityCursor::try_from(opening.clone())?;
+        let initial = AvailabilityCursor::try_from(opening.clone())?;
         // This is a mutation of the original source's packet, never a second
         // producer or evidence of a different account's physical availability.
         let mut zero = opening;
@@ -566,10 +640,10 @@ pub(super) fn seeds() -> Result<Vec<Seed>, Box<dyn std::error::Error>> {
             let verified = put.verified().expect("original batch writer");
             assert_eq!((verified.digest, verified.length), expected);
         }
-        Ok::<_, Error>(())
+        Ok::<_, Error>(initial)
     })?;
     let seeds = std::mem::take(&mut *outputs.lock().expect("capture output custody"));
-    Ok(seeds)
+    Ok((seeds, initial))
 }
 
 #[cfg(test)]

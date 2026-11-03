@@ -1,0 +1,10 @@
+--- a/rust/crates/objects/src/availability.rs
++++ b/rust/crates/objects/src/availability.rs
+@@ -105,7 +105,6 @@
+             Some(Err(error)) => error,
+             _ => unavailable(),
+         };
+-        self.changes = Box::pin(stream::empty());
+         Err(result)
+     }
+ }
