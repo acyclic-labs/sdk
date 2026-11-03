@@ -75,3 +75,16 @@ source-loss topology. `python3 negative-control.py trust-target` removes the
 production follower scope guard and requires the unchanged target's disjointness
 assertion to fail. It restores the source and never counts a build error as
 mutation detection.
+The capability target also reaches the original issuance request and reply
+admission wrappers. `examples/issuance_corpus.rs` captures the actual request
+writer and all reply decisions, including a certificate from the original
+account signer. Regenerate from `rust/crates/auth` using
+`cargo run --locked --features test-support --example issuance_corpus`.
+`corpus/issuance-sources.tsv` records their lengths, SHA-256 and original
+producers. These are public deterministic test identities and certificates.
+The target requires exact canonical bytes and refuses a duplicate version
+produced by the same protobuf writers. `negative-control.py issuance-request`
+and `negative-control.py issuance-reply` independently remove the original
+canonicality guards and must trigger their distinct unchanged assertions.
+These controls exercise wire admission, not the serving store's atomic commit,
+current-authority checks, transport or cancellation topology.
