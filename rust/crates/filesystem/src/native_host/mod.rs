@@ -66,6 +66,9 @@ mod unix_path;
 #[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub use open::check_prepared_ascii_leaf;
 pub use open::file_transfer;
 pub(crate) use open::*;
 mod mutation;

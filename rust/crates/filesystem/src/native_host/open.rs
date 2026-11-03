@@ -328,7 +328,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     if prefix.is_empty() || matches!(prefix, b"." | b"..") {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let examined = WorkCounters {
+    let credit = work.reserve_work(WorkCounters {
         items_examined: prefix.len() as u64,
         #[cfg(windows)]
         bytes_encoded: prefix
@@ -336,17 +336,30 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
-    };
-    // The whole leaf is one admission and one ledger record, not a lock per byte.
-    let credit = work.reserve_work(examined)?;
-    crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
-    credit.record_completed(examined)?;
+    })?;
+    // The complete fixed-size input is already admitted. Validate and encode
+    // it locally, then record the exact examined prefix once, including the
+    // rejected byte. No shared ledger lock is needed for each ASCII unit.
     let mut name = [0; N];
+    let mut examined = 0;
+    let mut valid = true;
     for (&byte, unit) in prefix.iter().zip(&mut name) {
+        examined += 1;
         if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
+            valid = false;
+            break;
         }
         *unit = NativeUnit::from(byte);
+    }
+    credit.record_completed(WorkCounters {
+        items_examined: examined,
+        #[cfg(windows)]
+        bytes_encoded: examined * 2,
+        ..WorkCounters::UNCHARGED
+    })?;
+    work.check()?;
+    if !valid {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
     }
     Ok(PreparedAsciiLeaf { units: name })
 }
@@ -417,7 +430,44 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     operation(parent, leaf, work)
 }
 
-#[cfg(test)]
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .unwrap_or_else(|(error, _)| panic!("native leaf work: {error}"));
+    let before = work.receipt();
+    let result = prepare_ascii_leaf(bytes, &work);
+    let prefix = bytes.split_last().and_then(|(&last, prefix)| {
+        (last == 0 && !prefix.is_empty() && !matches!(prefix, b"." | b"..")).then_some(prefix)
+    });
+    let invalid = prefix.and_then(|prefix| {
+        prefix
+            .iter()
+            .position(|byte| !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':'))
+    });
+    assert_eq!(result.is_ok(), prefix.is_some() && invalid.is_none());
+    if let Ok(name) = result {
+        assert!(
+            name.units
+                .iter()
+                .zip(bytes)
+                .all(|(&unit, byte)| unit == NativeUnit::from(byte))
+        );
+    }
+    let examined =
+        prefix.map_or(0, |prefix| invalid.map_or(prefix.len(), |index| index + 1)) as u64;
+    let after = work.receipt();
+    assert_eq!(after.items_examined - before.items_examined, examined);
+    #[cfg(windows)]
+    assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
+    assert_eq!(after.allocation_operations, before.allocation_operations);
+    assert_eq!(work.live_allocation_bytes(), 0);
+}
+
+#[cfg(all(test, not(loom)))]
 mod prepared_leaf_tests {
     use super::*;
 
@@ -482,17 +532,7 @@ mod prepared_leaf_tests {
             NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .map_err(|(error, _)| error)?;
         for byte in u8::MIN..=u8::MAX {
-            let result = prepare_ascii_leaf([b'a', byte, 0], &work);
-            assert_eq!(
-                result.is_ok(),
-                byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':')
-            );
-            if let Ok(name) = result {
-                assert_eq!(
-                    name.units,
-                    [NativeUnit::from(b'a'), NativeUnit::from(byte), 0]
-                );
-            }
+            check_prepared_ascii_leaf([b'a', byte, 0]);
         }
         assert!(prepare_ascii_leaf([], &work).is_err());
         assert!(prepare_ascii_leaf([0], &work).is_err());

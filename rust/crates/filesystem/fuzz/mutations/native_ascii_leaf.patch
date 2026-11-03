@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/native_host/open.rs b/rust/crates/filesystem/src/native_host/open.rs
+--- a/rust/crates/filesystem/src/native_host/open.rs
++++ b/rust/crates/filesystem/src/native_host/open.rs
+@@ -352,7 +352,7 @@
+         *unit = NativeUnit::from(byte);
+     }
+     credit.record_completed(WorkCounters {
+-        items_examined: examined,
++        items_examined: 0,
+         #[cfg(windows)]
+         bytes_encoded: examined * 2,
+         ..WorkCounters::UNCHARGED
