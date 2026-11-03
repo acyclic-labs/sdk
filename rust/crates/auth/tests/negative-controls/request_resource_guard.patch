@@ -1,0 +1,12 @@
+--- a/rust/crates/auth/src/authority.rs
++++ b/rust/crates/auth/src/authority.rs
+@@ -506,9 +506,6 @@
+     if !admitted {
+         return Err(Deny::Capability);
+     }
+-    if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
+-        return Err(Deny::NonCanonicalResource);
+-    }
+     if !crate::valid_resource(r.audience) {
+         return Err(Deny::NonCanonicalAudience);
+     }

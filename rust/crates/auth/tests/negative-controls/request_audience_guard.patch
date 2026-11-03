@@ -1,0 +1,12 @@
+--- a/rust/crates/auth/src/authority.rs
++++ b/rust/crates/auth/src/authority.rs
+@@ -509,9 +509,6 @@
+     if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
+         return Err(Deny::NonCanonicalResource);
+     }
+-    if !crate::valid_resource(r.audience) {
+-        return Err(Deny::NonCanonicalAudience);
+-    }
+     if policy == PolicyDecision::Deny {
+         return Err(Deny::OwnerPolicy);
+     }
