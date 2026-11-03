@@ -4,6 +4,37 @@
 mod callback_path;
 
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {
+    // Construct an admitted component independently of either codec. The
+    // leading underscore excludes dot/parent components; forbidden filename
+    // units are replaced, while every other UTF-16 unit stays unchanged.
+    let admitted: Vec<_> = std::iter::once(95)
+        .chain(
+            input
+                .chunks_exact(2)
+                .map(|pair| match u16::from_le_bytes([pair[0], pair[1]]) {
+                    0 | 47 | 58 | 92 => 95,
+                    unit => unit,
+                }),
+        )
+        .collect();
+    let expected = vec![
+        admitted
+            .iter()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect(),
+    ];
+    assert_eq!(
+        callback_path::components(&admitted),
+        Some(expected.clone()),
+        "valid callback component must be admitted unchanged"
+    );
+    assert_eq!(
+        callback_path::wide_components(&expected)
+            .expect("valid callback component must be encodable")
+            .collect::<Vec<_>>(),
+        admitted
+    );
+
     let raw_parts: Vec<_> = input
         .split(|byte| *byte == 0xff)
         .map(<[u8]>::to_vec)

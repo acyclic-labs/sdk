@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs b/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
+--- a/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
++++ b/rust/crates/filesystem/src/native_mount/projfs/callback_path.rs
+@@ -1,4 +1,7 @@
+ pub(super) fn components(wide: &[u16]) -> Option<Vec<Vec<u8>>> {
++    if !wide.is_empty() {
++        return None;
++    }
+     fn separator(unit: &u16) -> bool {
+         matches!(*unit, 47 | 92)
+     }
