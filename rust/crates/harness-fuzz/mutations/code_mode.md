@@ -92,3 +92,15 @@ original producerless refusal branch. The unchanged oracle must fail at
 `a producerless promise must retain its refusal`. This wrong-success mutation
 preserves the idle event and introduces no stranded future. Restore it before
 collecting original coverage.
+
+The same progress relation now checks finite CPU work against the original
+protective interrupt counter, retaining the native ledger and one-poll blocking
+boundary. The finite loop completes even if interruption is broken, so neither
+the positive nor negative needs a timeout. This subsumes the former unfunded
+infinite-loop example. The target's private checks separate program/output,
+progress, reply and settlement obligations without another model or executor.
+
+Apply `mutations/code_mode_ignore_interrupt_budget.patch` to prevent the original
+remaining-budget condition from firing. The unchanged oracle must fail at
+`finite CPU work must reach its protective interrupt` when the loop finishes
+without interruption. Restore the mutation before collecting original coverage.

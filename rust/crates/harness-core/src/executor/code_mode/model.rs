@@ -1,5 +1,6 @@
 //! The production interpreter with real declarations, allocation and drop paths.
 use super::{allocator::EngineAllocator, interpreter};
+use acyclic_stream::OwnedBytes;
 use futures::FutureExt;
 
 fn native_work(deny_allocation: bool) -> acyclic_fs::NativeMaterializationWork {
@@ -22,18 +23,25 @@ pub async fn check(input: &[u8]) {
         .map(|tool| tool.bind().expect("catalog declaration").definition)
         .collect();
     let tool_name = serde_json::to_string(&definitions[0].name).unwrap();
-    let definitions: acyclic_stream::OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
+    let definitions: OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
     let text = String::from_utf8_lossy(input);
     let literal = serde_json::to_string(text.as_ref()).unwrap();
+    check_programs(input, &definitions, &literal, &text).await;
+    check_progress(&definitions).await;
+    check_replies(input, &definitions, &tool_name, &literal, &text).await;
+    check_settlement(&definitions, &tool_name, &literal).await;
+}
+
+async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, text: &str) {
     for (source, maximum, deny_allocation) in [
         (
             std::str::from_utf8(input).ok(),
             literal.len().max(4096),
             false,
         ),
-        (Some(literal.as_str()), literal.len(), false),
-        (Some(literal.as_str()), literal.len() - 1, false),
-        (Some(literal.as_str()), literal.len(), true),
+        (Some(literal), literal.len(), false),
+        (Some(literal), literal.len() - 1, false),
+        (Some(literal), literal.len(), true),
     ] {
         if let Some(source) = source {
             let work = native_work(deny_allocation);
@@ -58,7 +66,7 @@ pub async fn check(input: &[u8]) {
             if deny_allocation {
                 assert!(result.is_err());
                 assert!(failure.lock().unwrap().is_some());
-            } else if source == literal.as_str() && failure.lock().unwrap().is_none() {
+            } else if source == literal && failure.lock().unwrap().is_none() {
                 if maximum < literal.len() {
                     assert_eq!(
                         result,
@@ -71,36 +79,65 @@ pub async fn check(input: &[u8]) {
             }
         }
     }
+}
+
+async fn check_progress(definitions: &OwnedBytes) {
     // The original runtime idle event owns all possible promise producers. A
     // promise with none must refuse through the same native-funded execution
     // boundary, without a dispatcher reply or cancellation supplying a wake.
-    let work = native_work(false);
-    let baseline = work.live_allocation_bytes();
-    let allocator = EngineAllocator::new(Some(&work));
-    let (send, receive) = tokio::sync::mpsc::channel(1);
-    let execution = interpreter::run(
-        "await new Promise(() => {})".into(),
-        definitions.clone(),
-        send,
-        tokio_util::sync::CancellationToken::new(),
-        4096,
-        allocator,
-        16,
-    );
-    let result = acyclic_native_runtime::blocking_future(async move {
-        execution
-            .now_or_never()
-            .expect("no producer remains to wake this program")
-    })
-    .await
-    .expect("the original blocking pool must execute");
-    drop(receive);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(
-        result,
-        Err("JavaScript promise cannot settle: no pending jobs or tool calls".into()),
-        "a producerless promise must retain its refusal"
-    );
+    for (source, producerless) in [
+        ("await new Promise(() => {})", true),
+        // Finite work still completes if the interrupt condition is broken,
+        // so the negative control cannot strand its original blocking poll.
+        (
+            "for (let remaining = 1000000; remaining; remaining--) {}",
+            false,
+        ),
+    ] {
+        let work = native_work(false);
+        let baseline = work.live_allocation_bytes();
+        let allocator = EngineAllocator::new(Some(&work));
+        let (send, receive) = tokio::sync::mpsc::channel(1);
+        let execution = interpreter::run(
+            source.into(),
+            definitions.clone(),
+            send,
+            tokio_util::sync::CancellationToken::new(),
+            4096,
+            allocator,
+            16,
+        );
+        let result = acyclic_native_runtime::blocking_future(async move {
+            execution
+                .now_or_never()
+                .expect("no producer remains to wake this program")
+        })
+        .await
+        .expect("the original blocking pool must execute");
+        drop(receive);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        if producerless {
+            assert_eq!(
+                result,
+                Err("JavaScript promise cannot settle: no pending jobs or tool calls".into()),
+                "a producerless promise must retain its refusal"
+            );
+        } else {
+            assert!(
+                result.is_err_and(|error| error.contains("interrupt")),
+                "finite CPU work must reach its protective interrupt"
+            );
+        }
+    }
+}
+
+async fn check_replies(
+    input: &[u8],
+    definitions: &OwnedBytes,
+    tool_name: &str,
+    literal: &str,
+    text: &str,
+) {
     // Exercise the original reply producer and decoder together. The dispatcher
     // transports one frame; it does not stand in for tool admission or execution.
     let source = format!(
@@ -167,6 +204,9 @@ pub async fn check(input: &[u8]) {
             assert_eq!(result.unwrap()["ok"], false, "invalid UTF-8 must refuse");
         }
     }
+}
+
+async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &str) {
     #[derive(Clone, Copy)]
     enum Settlement {
         Retire,

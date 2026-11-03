@@ -188,23 +188,3 @@ pub(super) async fn run(
         futures::future::Either::Right((result, _)) => result,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[tokio::test]
-    async fn protective_interrupt_stops_cpu_bytecode_without_a_host_event() {
-        let (send, _receive) = tokio::sync::mpsc::channel(1);
-        let result = acyclic_native_runtime::blocking_future(super::run(
-            "while (true) {}".into(),
-            acyclic_stream::OwnedBytes::from_static(b"[]"),
-            send,
-            tokio_util::sync::CancellationToken::new(),
-            4096,
-            super::super::allocator::EngineAllocator::new(None),
-            16,
-        ))
-        .await
-        .unwrap();
-        assert!(result.unwrap_err().contains("interrupt"));
-    }
-}
