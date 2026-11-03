@@ -52,11 +52,17 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
         _ => None,
     };
-    if let Some((actual, prefix)) = diagnostic
-        && let Ok(text) = std::str::from_utf8(&bytes[..bytes.len().min(crate::EXCERPT_BYTES)])
-    {
-        // An independent raw-input expectation catches loss shared by every
-        // chunk width. Invalid UTF-8 still has the bounds/chunking checks above.
+    if let Some((actual, prefix)) = diagnostic {
+        // Normalize the raw prefix first, then remove only the replacement for
+        // an incomplete final scalar when there was no earlier invalid input.
+        // Production instead borrows the original valid byte prefix in that case.
+        let bounded = &bytes[..bytes.len().min(crate::EXCERPT_BYTES)];
+        let normalized = String::from_utf8_lossy(bounded);
+        let text = if std::str::from_utf8(bounded).is_err_and(|error| error.error_len().is_none()) {
+            normalized.strip_suffix('\u{fffd}').unwrap()
+        } else {
+            &normalized
+        };
         let expected: String = prefix
             .chars()
             .chain(text.chars())
@@ -165,6 +171,25 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     }
     let signature = include_bytes!("../../fuzz/corpus/http_failure/gemini-signature");
     assert_eq!(decode(400, &signature[2..], 1, false).0, ErrorCode::Invalid);
+    // These are explicit byte/status mutations of the original captured body,
+    // not additional provider responses. Exercise valid scalars cut at each
+    // boundary, malformed scalars, and a real replacement before a cut scalar.
+    for marker in [
+        b"\xc2\xa2".as_slice(),
+        b"\xe2\x82\xac".as_slice(),
+        b"\xf0\x9f\x92\xa9".as_slice(),
+        b"\xff".as_slice(),
+        b"\xc0\x80".as_slice(),
+        b"\xed\xa0\x80".as_slice(),
+        b"\xef\xbf\xbd\xe2\x82".as_slice(),
+    ] {
+        for offset in [1, 17, 251, 252, 253, 254, 255] {
+            let mut input = signature.to_vec();
+            input[..2].copy_from_slice(&429u16.to_le_bytes());
+            input[2 + offset..2 + offset + marker.len()].copy_from_slice(marker);
+            assert_http_failure_invariants(&input);
+        }
+    }
 
     // This is the same captured context refusal, with only its JSON spelling
     // changed. Native parsing must fund scratch, retire it, and retain refusal
