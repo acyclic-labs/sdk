@@ -659,7 +659,7 @@ fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     })?;
 
     for (key, prefix, frame, before, after, outcome) in &captures {
-        journal_cuts(0..frame.len() + 1, async |cut, directory| {
+        let verify = async |cut, directory: &std::path::Path| {
             let path = directory.join(JOURNAL_FILE);
             let mut bytes = prefix.clone();
             bytes.extend_from_slice(&frame[..cut]);
@@ -686,7 +686,12 @@ fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                 "recovery changed the accepted prefix"
             );
             Ok(())
-        })?;
+        };
+        journal_cuts(0..frame.len(), &verify)?;
+        // A complete receipt names the original store's canonical directory
+        // and durable incarnation. Check that cut at its actual source rather
+        // than moving the accepted revision to another storage authority.
+        runtime.block_on(verify(frame.len(), directory.path()))?;
     }
     // A whole checksummed noncanonical command is never a torn append.
     let (_, prefix, frame, ..) = captures.last().ok_or("missing emitted frame")?;
