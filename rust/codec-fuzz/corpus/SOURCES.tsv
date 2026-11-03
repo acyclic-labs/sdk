@@ -1827,3 +1827,17 @@ actor_codecs/transition-clear	625	9110fbbd345411a3aebcd3dc729a41acc121299af89639
 actor_codecs/state-alarm-set-v2	129	68f2437c0b0d7c7b0e6c9e4905116f0cd6b5601bd6ec0396b5bf12eaf30e5418	local::Store::publish and local::State::encode
 actor_codecs/state-alarm-delivered-v2	131	6c6c37526ca3f8ec00c247ced679366543ecec4fe4ed818d5bf4373341d173c2	local::Store::publish and local::State::encode
 actor_codecs/state-alarm-clear-v2	127	87330ec1b4c83f70ee54145d5c6e5c24a81805c9eba0183bc970cc43ae97f80f	local::Store::publish and local::State::encode
+actor_codecs/socket-open-v1	131	61f1fcba5aac888664c37e0ffcf53b9bc744a698fb3b6913def82a3578977f3a	sockets::SocketOpen::encode
+actor_codecs/socket-text-v1	6	c016cb6198e66e208aafebe8e188025f1cf78e91f85804dc4787f41f95fdc164	sockets::SocketFrame::encode
+actor_codecs/socket-binary-v1	4	23bb4dd5e62a35b75f9f57833b4874e8702d5d0b06932e41c8f6a7dc5abfa488	sockets::SocketFrame::encode
+actor_codecs/socket-close-peer-v1	12	df9865cac42ee97ab9ad6f0849778060f1be47c06c6a42dc040ce0797c361d2e	sockets::SocketFrame::encode
+actor_codecs/socket-close-actor-v1	14	0ebcdb2b6fe4d528ce8fe83d2a478e34ea04c44594e42b40e4947efbbeeab3a2	sockets::SocketFrame::encode
+actor_codecs/socket-close-runtime-v1	17	7647c372ac0207d62d391b458f487e3d8927c681e29d7de523809ae95cf24181	sockets::SocketFrame::encode
+actor_codecs/socket-accepted-v1	8	4504dab6f9042ce3d2c5b2601db5a7b2b61b75bf61bdbcc3c4c300ff84dbc5bb	sockets::SocketFrame::encode
+actor_codecs/socket-accepted-none-v1	2	37aa3970b6801c9d286464f7d86e50bf41c88e54c7b4d08f3ff61935b3f59c3c	sockets::SocketFrame::encode
+actor_codecs/socket-rejected-v1	13	09ffc7e5fa9d3d11144f6e9138c9986b568a19e28d72e252eb68651719baf668	sockets::SocketFrame::encode
+actor_codecs/socket-verdict-accept-v1	112	c50f1dbabb5c7dd97f2f0200b08d5373234ad2e135b6f892fc69ea93368dd266	sockets::socket_reply
+actor_codecs/socket-verdict-none-v1	68	e7ad83a89499711e1e8e9defccb780c4207cbd8c25eadf08e4e665f30e5b50a9	sockets::socket_reply
+actor_codecs/socket-verdict-unoffered-v1	75	662154c825e8df3d19c6c3614a19c0fdc97f77758da03b6e62494611f4787d6a	sockets::socket_reply
+actor_codecs/socket-verdict-reject-v1	54	9191059245768710a08dc039e78ce7a8e58ef31d102d39e91d197959101986a4	sockets::socket_reply
+actor_codecs/socket-verdict-reply-v1	48	6326a9ccd4537c603573637796760b734aa29ff103a7f5021406fd1296b3b55a	sockets::socket_reply
