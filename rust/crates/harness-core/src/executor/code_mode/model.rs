@@ -78,8 +78,10 @@ async fn check_bridge(text: &str) {
                     .unwrap();
                 let result = allocator.copy_text(&source);
                 assert!(result.is_err(), "unfunded bridge bytes must refuse");
+                // Consume the original cause as the execution boundary does;
+                // the next refusal must produce its own cause on that carrier.
                 assert!(matches!(
-                    allocator.failure().lock().unwrap().as_ref(),
+                    allocator.failure().lock().unwrap().take(),
                     Some(acyclic_fs::NativeTreeMaterializationError::Work(
                         acyclic_fs::WorkError::BudgetExceeded {
                             counter: "peak_allocation_bytes",
