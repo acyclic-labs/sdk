@@ -2,6 +2,8 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+mod custody;
+
 #[test]
 fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     fn ownership(workspace: &Path) -> Result<acyclic_native_runtime::FileLock> {
@@ -651,6 +653,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     };
     assert_eq!(recovered, committed);
     drop(late);
+    custody::observation_errors_preserve_requests(&committed["ok"])?;
     let requests_registry = Arc::clone(&registry);
     let result = tokio::task::spawn_blocking(move || {
         // A caller can occupy its exact writable reply name before watching.

@@ -82,6 +82,16 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
         ),
         |(body, attribute, owner_delta, initial_link)| {
             runtime.block_on(async {
+                let cancellation = CancellationToken::new();
+                let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+                let fs = crate::Fs::memory();
+                let workspace = fs.create_workspace("reuse-property", setup.budget(), &cancellation).await.unwrap().value;
+                let empty = workspace.checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::tracking_transaction(),
+                    &setup,
+                    &cancellation,
+                ).await.unwrap();
                 for edit in 0..7 {
                     let source = tempfile::tempdir().unwrap();
                     let file = source.path().join("file");
@@ -96,21 +106,7 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                     let cancellation = CancellationToken::new();
                     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                         .unwrap();
-                    let fs = crate::Fs::memory();
-                    let workspace = fs
-                        .create_workspace("reuse-property", work.budget(), &cancellation)
-                        .await
-                        .unwrap()
-                        .value;
-                    let mut initial = workspace
-                        .checkout(
-                            crate::model::GenerationSelector::Head,
-                            crate::model::CheckoutMode::tracking_transaction(),
-                            &work,
-                            &cancellation,
-                        )
-                        .await
-                        .unwrap();
+                    let mut initial = candidate(&empty, &work);
                     let path = NamespacePath::from_portable(
                         &crate::path::PortablePath::parse("/file", initial.volume_config().limits)
                             .unwrap(),

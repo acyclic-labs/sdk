@@ -11,14 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const OUTSTANDING: &str = "process_tree::scale_tests::outstanding_waits_hold_no_thread_per_child";
 const CONTROL: &str = "process_tree::scale_tests::a_thread_per_wait_starves_the_bounded_pool";
 
-/// The scale target, when the platform's default limits allow it.
-#[cfg(unix)]
-const TARGET: usize = 10_000;
-
-/// Descriptors kept free for the runtime, the test harness and spawning.
-#[cfg(unix)]
-const DESCRIPTOR_MARGIN: u64 = 64;
-
 /// One blocked child and the writer whose close releases it.
 struct Blocked {
     tree: ProcessTree,
@@ -43,41 +35,6 @@ fn blocked() -> io::Result<Blocked> {
         tree: ProcessTree::spawn(&mut command)?,
         release,
     })
-}
-
-/// How many children this platform's default limits allow at once: each
-/// costs one release writer here, and a pidfd on Linux, without raising
-/// any limit.
-#[cfg(unix)]
-fn children() -> io::Result<usize> {
-    let limit = |resource| {
-        // SAFETY: plain output fields; all-zero is a valid initial value.
-        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
-        // SAFETY: a writable rlimit owned by this frame.
-        if unsafe { libc::getrlimit(resource, &raw mut limit) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(limit.rlim_cur)
-    };
-    let per_child = if cfg!(target_os = "linux") { 2 } else { 1 };
-    let open = crate::testing::process_resources()?.descriptors;
-    let descriptors =
-        limit(libc::RLIMIT_NOFILE)?.saturating_sub(open + DESCRIPTOR_MARGIN) / per_child;
-    // The user's process limit counts every process the user runs.
-    let processes = limit(libc::RLIMIT_NPROC)? / 2;
-    let allowed = descriptors.min(processes);
-    Ok(usize::try_from(allowed).map_or(TARGET, |allowed| allowed.min(TARGET)))
-}
-
-/// Windows children are full processes on a developer workstation; a few
-/// hundred already exceed the blocking pool many times over.
-#[cfg(windows)]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "every platform reports its limit the same way"
-)]
-fn children() -> io::Result<usize> {
-    Ok(256)
 }
 
 fn threads() -> io::Result<u64> {
@@ -119,7 +76,10 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         )?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
     let baseline = threads()?;
-    let count = children()?;
+    // Both populations exceed the worker pool. Doubling the armed population
+    // must add registrations, not worker threads.
+    let first_population = 2 * pool + 1;
+    let count = 2 * first_population;
     assert!(
         count > 4 * pool,
         "{count} children cannot exceed the {pool}-thread pool"
@@ -127,13 +87,12 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     let done = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::with_capacity(count);
     let mut releases = Vec::with_capacity(count);
-    let mut armed = Vec::with_capacity(count);
-    for _ in 0..count {
+    let mut first_threads = None;
+    for index in 0..count {
         let Blocked { mut tree, release } = blocked()?;
         releases.push(release);
         let (sender, receiver) = tokio::sync::oneshot::channel();
         tree.capture_armed = Some(sender);
-        armed.push(receiver);
         let done = Arc::clone(&done);
         tasks.push(runtime.spawn(async move {
             let outcome = tree
@@ -142,13 +101,17 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
             done.fetch_add(1, Ordering::AcqRel);
             outcome
         }));
-    }
-    // Each receipt belongs to its original capture's first complete native
-    // registration. Failure or loss of that producer closes its own receipt.
-    for receiver in armed {
+        // The receipt belongs to this original capture's first complete native
+        // registration. Losing that producer closes the receipt with an error.
         runtime
             .block_on(receiver)
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "capture lost before arming"))?;
+        if index + 1 == first_population {
+            assert_eq!(events::armed_waits(), first_population);
+            let observed = threads()?;
+            assert!(observed <= baseline + 1);
+            first_threads = Some(observed);
+        }
     }
     assert_eq!(
         events::armed_waits(),
@@ -156,6 +119,10 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         "every child has one wait armed"
     );
     let outstanding = threads()?;
+    assert!(
+        first_threads.is_some_and(|first| outstanding <= first),
+        "doubling outstanding waits must not add a worker thread"
+    );
     println!("{count} outstanding waits: {baseline} threads before, {outstanding} with all armed");
     assert!(
         outstanding <= baseline + 1,

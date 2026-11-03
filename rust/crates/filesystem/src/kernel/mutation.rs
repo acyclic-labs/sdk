@@ -143,7 +143,8 @@ pub enum Mutation {
 /// One ordered mutation of an existing path-independent file record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileMutation {
-    /// Replaces one authenticated file record without changing its live bindings. The current identity and link count remain authoritative.
+    /// Replaces one authenticated file record's content and metadata. The
+    /// current identity, reverse bindings and link count remain authoritative.
     ReplaceRecord {
         /// Complete replacement record for the same file identity and kind.
         record: FileRecord,

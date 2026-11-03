@@ -1,0 +1,9 @@
+--- a/rust/crates/harness/src/local/host_files.rs
++++ b/rust/crates/harness/src/local/host_files.rs
+@@ -922,5 +922,3 @@
+             // A known request changes only by its withdrawal.
+-            if !projection_present(&path).map_err(|error| {
+-                Error::Storage(owner_failure("observe native request projection", &error))
+-            })? {
++            if std::fs::symlink_metadata(&path).is_err() {
+                 self.withdraw(requests, operation)?;

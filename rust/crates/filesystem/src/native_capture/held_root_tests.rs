@@ -67,11 +67,10 @@ enum Expected {
 }
 
 fn expected(query: &str, errno: i32) -> Expected {
-    // An interrupted query is retried, and an `EPERM` open is retried without
-    // `O_NOATIME`; both name the same incarnation. A kernel without file
-    // handles is a filesystem without stable ids. Every other failure keeps
-    // its cause.
-    if errno == libc::EINTR || (query == "openat" && errno == libc::EPERM) {
+    // An `EPERM` open is retried without `O_NOATIME`, naming the same
+    // incarnation. A kernel without file handles has no stable ids. Other
+    // failures, including interruption, retain their original cause.
+    if query == "openat" && errno == libc::EPERM {
         Expected::Same
     } else if query == "handle" && errno == libc::ENOSYS {
         Expected::Unstable
@@ -84,18 +83,21 @@ fn expected(query: &str, errno: i32) -> Expected {
 /// transient or capability errno, names the unchanged incarnation, classifies
 /// a kernel without file handles, or fails with the injected cause: never a
 /// different incarnation.
-fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
+#[test]
+fn every_identity_query_fault_keeps_one_incarnation_or_its_cause() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let baseline = capture(directory.path()).map_err(|error| error.to_string())?;
     for query in ["openat", "fstat", "handle", "fsid"] {
         for errno in [libc::EINTR, libc::ENOSYS, libc::EPERM] {
+            let _probe = Probe::rescan(false);
             let fault = Fault::inject(query, errno);
-            if fold {
-                fault.fold_errors();
-            }
             let held = capture(directory.path());
             if !fault.fired() {
                 return Err(format!("{query} was never queried"));
+            }
+            if errno == libc::EINTR && events().iter().filter(|event| **event == query).count() != 1
+            {
+                return Err(format!("{query} retried its interrupted native call"));
             }
             match (expected(query, errno), held) {
                 (Expected::Same, Ok(held)) if held == baseline => {}
@@ -109,16 +111,6 @@ fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[test]
-fn every_identity_query_fault_keeps_one_incarnation_or_its_cause() {
-    every_fault_keeps_one_incarnation(false).unwrap();
-}
-
-#[test]
-fn negative_control_a_folded_handle_error_changes_the_incarnation() {
-    assert!(every_fault_keeps_one_incarnation(true).is_err());
 }
 
 /// The physical native queries of one held-root capture.
@@ -248,8 +240,8 @@ fn concurrent_publishers_return_one_record() {
 
 /// Publishing requires one candidate; reading any existing publication must
 /// require none, even when the candidate source is unavailable.
-fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
-    use crate::native_host::publish_probe;
+#[test]
+fn reading_an_existing_record_never_generates_another_candidate() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let root = hold_root(directory.path()).map_err(|error| error.to_string())?;
     let leaf = std::path::Path::new("token");
@@ -269,34 +261,29 @@ fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     assert_eq!(calls.get(), 1);
     assert_eq!(published, [7; 16]);
-    publish_probe::generate_candidates_eagerly(eager);
-    let result = (|| {
-        for _ in 0..readers {
-            let record = root.read_or_publish::<16>(leaf, || {
-                calls.set(calls.get() + 1);
-                unavailable()
-            });
-            if !matches!(record, Ok(record) if record == published) || calls.get() != 1 {
-                return Err("an existing record requested another candidate".into());
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::reading_an_existing_record_never_generates_another_candidate"
+        )),
+        ..proptest::test_runner::Config::with_cases(16)
+    });
+    runner
+        .run(&(1usize..9), |readers| {
+            for _ in 0..readers {
+                let record = root.read_or_publish::<16>(leaf, || {
+                    calls.set(calls.get() + 1);
+                    unavailable()
+                });
+                proptest::prop_assert!(
+                    matches!(record, Ok(record) if record == published) && calls.get() == 1,
+                    "an existing record requested another candidate"
+                );
             }
-        }
-        Ok(())
-    })();
-    publish_probe::generate_candidates_eagerly(false);
-    result
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
-    #[test]
-    fn reading_an_existing_record_never_generates_another_candidate(readers in 1usize..9) {
-        proptest::prop_assert_eq!(candidate_work(false, readers), Ok(()));
-    }
-}
-
-#[test]
-fn negative_control_eager_candidates_add_work_and_can_prevent_reopen() {
-    assert!(candidate_work(true, 1).is_err());
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Enumerate all crash cuts of the token's reachability chain. The kernel

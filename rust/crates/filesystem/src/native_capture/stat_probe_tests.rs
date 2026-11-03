@@ -3,6 +3,37 @@ use crate::native_host::stat_probe::Probe;
 use proptest::prelude::*;
 use std::os::unix::fs::PermissionsExt as _;
 
+// Keep directories across generated cases; recreate their physical children so
+// each comparison still owns fresh files, descriptors, roots and work ledgers.
+struct PhysicalFixture {
+    source: tempfile::TempDir,
+    links: tempfile::TempDir,
+}
+
+impl PhysicalFixture {
+    fn new() -> Self {
+        Self {
+            source: tempfile::tempdir().unwrap(),
+            links: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn reset(&self) -> &Path {
+        for path in [
+            self.source.path().join("file"),
+            self.source.path().join("replacement"),
+            self.links.path().join("link"),
+        ] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("reset physical capture fixture: {error}"),
+            }
+        }
+        self.source.path()
+    }
+}
+
 fn metadata_bytes(stat: &HostStat) -> Vec<u8> {
     crate::kernel::encode_file_metadata(
         capture_metadata(stat),
@@ -14,6 +45,7 @@ fn metadata_bytes(stat: &HostStat) -> Vec<u8> {
 
 #[test]
 fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
+    let fixtures = [PhysicalFixture::new(), PhysicalFixture::new()];
     let _subscriber =
         tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
@@ -28,22 +60,19 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
             let mut outcomes = Vec::new();
             for old in [false, true] {
                 // Separate files, descriptors, roots, cancellation and original ledgers.
-                let source = tempfile::tempdir().unwrap();
-                let path = source.path().join("file");
+                let fixture = &fixtures[usize::from(old)];
+                let source = fixture.reset();
+                let path = source.join("file");
                 std::fs::write(&path, &bytes).unwrap();
                 let file = std::fs::File::open(&path).unwrap();
                 let fallback = crate::native_host::stat_probe::uses_fallback(&file);
-                let _link_root = if mode & 1 != 0 {
-                    let links = tempfile::tempdir().unwrap();
-                    std::fs::hard_link(&path, links.path().join("link")).unwrap();
-                    Some(links)
-                } else {
-                    None
-                };
+                if mode & 1 != 0 {
+                    std::fs::hard_link(&path, fixture.links.path().join("link")).unwrap();
+                }
                 file.set_permissions(std::fs::Permissions::from_mode(mode))
                     .unwrap();
-                let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
-                    .unwrap();
+                let root =
+                    HostRoot::open(source, &mut crate::native_host::ordinary_work()).unwrap();
                 let expected = if kind == 3 {
                     crate::native_host::stat_probe::baseline_at(
                         root.directory_fd(),
@@ -222,6 +251,7 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
 #[test]
 fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
 -> Result<(), Box<dyn std::error::Error>> {
+    let fixtures = [PhysicalFixture::new(), PhysicalFixture::new()];
     let _subscriber =
         tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -239,16 +269,17 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 crate::native_host::stat_probe::StatxOptions::enter(forced, without_birth_time);
             let mut outcomes = Vec::new();
             for old in [false, true] {
-                let source = tempfile::tempdir().unwrap();
-                let path = source.path().join("file");
+                let fixture = &fixtures[usize::from(old)];
+                let source = fixture.reset();
+                let path = source.join("file");
                 let file = std::fs::File::create(&path).unwrap();
                 let fallback = crate::native_host::stat_probe::uses_fallback(&file);
                 let fallback_reads = u64::from(fallback);
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))
                     .unwrap();
                 file.set_len(if sparse { 65537 } else { 0 }).unwrap();
-                let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
-                    .unwrap();
+                let root =
+                    HostRoot::open(source, &mut crate::native_host::ordinary_work()).unwrap();
                 let snapshot = test_host_stat(&root, Path::new("file")).unwrap();
                 if forced || without_birth_time {
                     prop_assert!(snapshot.birth_time().is_none());
@@ -277,7 +308,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                     )),
                     3 => Some((0, Box::new(move || cancel.cancel()))),
                     4 => {
-                        let replacement = source.path().join("replacement");
+                        let replacement = source.join("replacement");
                         std::fs::write(&replacement, []).unwrap();
                         // Replace after the held-descriptor check, before the final path query.
                         Some((

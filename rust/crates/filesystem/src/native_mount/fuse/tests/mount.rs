@@ -531,13 +531,13 @@ fn linux_session_cycles() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Sessions return their read buffers when they end, so a process that
-/// mounts views one after another keeps none resident. The negative control
-/// leaves glibc's threshold adaptive: once the first session's buffers are
-/// freed, later sessions' buffers come from the heap, zeroed and kept.
+/// mounts views one after another keeps none resident. The retained source
+/// mutation leaks the actual packet buffers; allocator tuning alone is not a
+/// defect in session ownership.
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
 fn linux_sessions_keep_no_read_buffers_resident() -> Result<(), Box<dyn std::error::Error>> {
-    let retained = |dynamic: bool| -> Result<u64, Box<dyn std::error::Error>> {
+    let retained = || -> Result<u64, Box<dyn std::error::Error>> {
         let mut command = std::process::Command::new(std::env::current_exe()?);
         command.args([
             "--ignored",
@@ -546,11 +546,6 @@ fn linux_sessions_keep_no_read_buffers_resident() -> Result<(), Box<dyn std::err
             "--nocapture",
             "--test-threads=1",
         ]);
-        if dynamic {
-            command.env(super::super::session::DYNAMIC_THRESHOLD, "1");
-        } else {
-            command.env_remove(super::super::session::DYNAMIC_THRESHOLD);
-        }
         let output = command.output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "{stdout}");
@@ -560,10 +555,8 @@ fn linux_sessions_keep_no_read_buffers_resident() -> Result<(), Box<dyn std::err
     };
     // One callback thread's buffer: the bound sits below a single one.
     let buffer = 16 << 20;
-    let fixed = retained(false)?;
+    let fixed = retained()?;
     assert!(fixed < buffer, "sessions kept {fixed} bytes resident");
-    let adaptive = retained(true)?;
-    assert!(adaptive >= buffer, "the control kept only {adaptive} bytes");
     Ok(())
 }
 

@@ -33,3 +33,50 @@ failure, compiler error, or unrelated panic does not qualify the control.
 Restore the source and require the same model to pass. The model uses actual
 recovery and fence ownership with modeled kernel calls; it does not establish
 native process or mount conformance.
+
+## Native session and identity controls
+
+These mutations change the production statement while retaining the original
+native conformance test. Apply one patch from the repository root, run its exact
+selector, then reverse the patch and require the same selector to pass:
+
+```sh
+cargo test --locked -p acyclic-fs --all-features --lib SELECTOR -- --exact --include-ignored --nocapture
+```
+
+| Mutation | Selector | Required failure |
+| --- | --- | --- |
+| `packet-closed-session-continues.patch` | `native_mount::fuse::tests::packets::failed_child_view_keeps_parent_packets_live_until_transport_failure` | The original final request must observe `ENODEV`; continuing a physically closed session violates that assertion. |
+| `record-replacement-stale-bindings.patch` | `native_mount::lazy::tests::publication::source_hard_link_open_unlink_write_preserves_surviving_alias` | The real open/unlink/write/sync path must reject the stale reverse binding or fail its surviving-alias assertions. The closure validator remains unchanged. |
+| `root-handle-error-as-identity.patch` | `native_capture::held_root_tests::every_identity_query_fault_keeps_one_incarnation_or_its_cause` | A failed handle query returned as an identity must fail the original exact-cause/incarnation assertion. Interruption must make exactly one native attempt. |
+| `packet-workers-early-startup.patch` | `native_mount::fuse::tests::packet_workers::callback_failure_and_panic_join_the_other_physical_worker` | The completion must carry the number of physical threads actually created. An early receipt fails `startup preceded physical worker creation` before any worker starts; both original failure/panic join assertions remain. |
+| `packet-buffer-retirement-leak.patch` | `native_mount::fuse::tests::mount::linux_sessions_keep_no_read_buffers_resident` | Leaking the original packet buffers after their physical worker exits must fail the unchanged `sessions kept` RSS bound. No allocator setting or alternate test constructor selects the leak. |
+
+Also run the unchanged
+`native_mount::fuse::tests::shared::linux_shared_views_cost_no_thread_descriptor_or_mount`
+against a live Linux FUSE mount. Its resource census and original unshared
+negative control remain intact. The worker completion count comes from the
+same recursion that owns and joins each real thread handle; it is not a parallel
+state model. A compiler failure, timeout, unrelated panic or missing mount
+capability does not qualify any mutation. Native conformance does not establish
+crash or upgrade coverage.
+
+## Existing-record candidate control
+
+`record-candidate-before-read.patch` moves the actual candidate acquisition ahead
+of the existing-record read in `HostRoot::read_or_publish`. The ordinary source
+has one lazy path, without a probe-selected eager implementation. Apply the
+mutation from the repository root and run:
+
+```sh
+cargo test --locked -p acyclic-fs --all-features --lib native_capture::held_root_tests::reading_an_existing_record_never_generates_another_candidate -- --exact
+```
+
+The unchanged property must fail `an existing record requested another candidate`:
+its real record already exists and its candidate provider retains the original
+PermissionDenied refusal. Restore the source and require the same property to
+pass. All 16 generated reader-count cases share one immutable native publication;
+every real read still checks exact bytes and the unchanged candidate count.
+The initial unavailable provider must retain its cause and leave no record, and
+the first successful publication must call its provider exactly once. Compiler
+errors, timeouts and unrelated panics do not qualify this control.

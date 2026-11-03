@@ -148,8 +148,9 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Retains filesystem command results while their original records under
+    /// `directory/requests` remain present or cannot be observed. The bridge
+    /// owns reply and withdrawal durability; this stores no generic host reply.
     #[must_use]
     pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
         self.requests = Some(directory);
@@ -378,13 +379,7 @@ impl HostWorkspaceOwner {
         let request = self
             .requests
             .clone()
-            .map(|directory| acyclic_fs::GitRequest {
-                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-                unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
-                    let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
-                    directory.join("requests").join(&file).exists()
-                }),
-            });
+            .map(|directory| super::host_files::git_request(directory, operation));
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)
             .map_err(storage)
     }

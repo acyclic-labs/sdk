@@ -248,7 +248,7 @@ impl FuseSession {
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
-            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
+            started.worker = Some(session.start(std::thread::Builder::new())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
             started.identity = Some(identity);
@@ -436,11 +436,6 @@ impl FuseSession {
     }
 }
 
-/// Set in the negative control of the read buffers' test: glibc keeps its
-/// adaptive threshold.
-#[cfg(test)]
-pub(super) const DYNAMIC_THRESHOLD: &str = "ACYCLIC_FS_TEST_DYNAMIC_MMAP_THRESHOLD";
-
 /// Keeps every session's read buffers in their own mappings. glibc raises its
 /// mapping threshold past each mapped block it frees, so once one session
 /// unmounts, later sessions' buffers would come from the heap: zeroed there,
@@ -448,10 +443,6 @@ pub(super) const DYNAMIC_THRESHOLD: &str = "ACYCLIC_FS_TEST_DYNAMIC_MMAP_THRESHO
 /// threshold keeps each buffer a mapping that only the requests the kernel
 /// writes into make resident, returned whole when its session ends.
 pub(super) fn map_read_buffers() {
-    #[cfg(test)]
-    if std::env::var_os(DYNAMIC_THRESHOLD).is_some() {
-        return;
-    }
     #[cfg(target_env = "gnu")]
     {
         // fuser reads each request into a buffer of its largest write plus

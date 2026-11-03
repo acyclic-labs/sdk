@@ -227,9 +227,9 @@ fn file_handle_at(fd: i32, name: &std::ffi::CStr, flags: rustix::fs::AtFlags) ->
 }
 
 /// The held root's kernel file handle digest, which carries the inode
-/// generation. The query is independent of `statx`. An interrupted query is
-/// retried; every other failure keeps its cause, and a filesystem that issues
-/// no handles is `Unsupported`: never a missing value hashed as identity.
+/// generation. The query is independent of `statx`. Every failed native call
+/// keeps its cause, including interruption. A filesystem that issues no
+/// handles is `Unsupported`: never a missing value hashed as identity.
 #[cfg(target_os = "linux")]
 pub(super) fn root_file_handle<W: NativeHostWork>(
     fd: std::os::fd::RawFd,
@@ -282,11 +282,6 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
             Ok(()) => return Ok(handle),
             Err(error) => error,
         };
-        #[cfg(test)]
-        if stat_probe::fold_errors() {
-            handle.handle_bytes = 0;
-            return Ok(handle);
-        }
         Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
             io::Error::new(
                 io::ErrorKind::Unsupported,
