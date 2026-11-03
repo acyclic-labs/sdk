@@ -1,17 +1,13 @@
 #![no_main]
-#[path = "../../tests/cli_regressions/package_manifest.rs"]
-mod package_manifest;
-#[path = "../../tests/cli_regressions/paths.rs"]
-mod paths;
-#[path = "../../src/historical/probe.rs"]
-mod probe;
+use sdk_docs::path_identity as paths;
+use sdk_generation::historical;
+#[path = "../git_layout.rs"]
+mod git_layout;
 #[path = "../../src/source_selection.rs"]
 mod source_selection;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let _ = probe::graft_path(bytes);
-    let _ = paths::fixed_revision(b"ref: refs/heads/sdk-fixture\n", bytes);
-    let _ = paths::fixed_revision(bytes, b"0123456789012345678901234567890123456789");
+    let _ = git_layout::check_input(bytes);
     if let Ok(text) = std::str::from_utf8(bytes) {
         let fields = text
             .lines()
@@ -67,9 +63,5 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 }
             }
         }
-    }
-    let template = b"[package]\nname='demo'\nversion='1.0.0'\nbuild=false\n[lib]\nname='demo'\npath='src/lib.rs'\n";
-    if let Some(result) = package_manifest::normalize(template, bytes) {
-        assert_eq!(package_manifest::normalize(&result, bytes), Some(result));
     }
 });

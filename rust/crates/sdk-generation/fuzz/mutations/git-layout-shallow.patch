@@ -1,0 +1,7 @@
+--- a/rust/crates/sdk-generation/src/historical/probe.rs
++++ b/rust/crates/sdk-generation/src/historical/probe.rs
+@@ -3,3 +3,3 @@
+     let mut lines = text.lines();
+-    if lines.next() != Some("false") {
++    if lines.next().is_none() {
+         return Err("source frontier requires complete original Git ancestry".into());

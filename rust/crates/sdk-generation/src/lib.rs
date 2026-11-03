@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 #[path = "../fuzz/archive_members.rs"]
 mod archive_members_oracle;
+#[cfg(test)]
+#[path = "../fuzz/git_layout.rs"]
+mod git_layout_oracle;
 mod generation;
 pub mod historical;
 mod release_manifest;

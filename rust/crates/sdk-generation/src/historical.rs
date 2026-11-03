@@ -123,6 +123,8 @@ mod corpus;
 mod discovery;
 mod examples;
 mod probe;
+#[doc(hidden)]
+pub use probe::graft_path;
 mod producer;
 mod registry;
 
