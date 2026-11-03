@@ -219,8 +219,10 @@ async fn check_replies(
         ])
     });
     let encoded = serde_json::to_string(&success).unwrap();
-    let expected = canonical_reply_value(definitions, &encoded).await;
+    let maximum = encoded.len().max(literal.len()).saturating_add(4096);
+    let expected = canonical_reply(definitions, &encoded, maximum).await;
     let refusal = serde_json::Value::String(text.to_string());
+    let expected_refusal = Ok(serde_json::json!({"ok": false, "value": &refusal}));
     for kind in 0..3 {
         let work = native_work(false);
         let baseline = work.live_allocation_bytes();
@@ -256,7 +258,7 @@ async fn check_replies(
             definitions.clone(),
             send,
             tokio_util::sync::CancellationToken::new(),
-            encoded.len().max(literal.len()).saturating_add(4096),
+            maximum,
             allocator,
             16,
         );
@@ -273,8 +275,12 @@ async fn check_replies(
         let failed = failure.lock().unwrap().is_some();
         if !failed && kind < 2 {
             assert_eq!(
-                result.unwrap(),
-                serde_json::json!({"ok": kind == 0, "value": if kind == 0 { &expected } else { &refusal }}),
+                &result,
+                if kind == 0 {
+                    &expected
+                } else {
+                    &expected_refusal
+                },
                 "the original host reply must preserve its value and refusal"
             );
         } else if !failed && std::str::from_utf8(input).is_err() {
@@ -283,10 +289,19 @@ async fn check_replies(
     }
 }
 
-async fn canonical_reply_value(definitions: &OwnedBytes, encoded: &str) -> serde_json::Value {
+async fn canonical_reply(
+    definitions: &OwnedBytes,
+    encoded: &str,
+    maximum: usize,
+) -> Result<serde_json::Value, String> {
     // Use the original engine's JSON semantics for numbers and Unicode. Rust
     // neither predicts JS number rounding nor implements another reply decoder.
-    let source = format!("JSON.parse({})", serde_json::to_string(encoded).unwrap());
+    // Compare the same envelope and allowance: JS number formatting can expand
+    // valid JSON beyond the admitted output, which must retain its exact refusal.
+    let source = format!(
+        "({{ok:true,value:JSON.parse({})}})",
+        serde_json::to_string(encoded).unwrap()
+    );
     let work = native_work(false);
     let baseline = work.live_allocation_bytes();
     let allocator = EngineAllocator::new(Some(&work));
@@ -297,13 +312,18 @@ async fn canonical_reply_value(definitions: &OwnedBytes, encoded: &str) -> serde
         definitions.clone(),
         send,
         tokio_util::sync::CancellationToken::new(),
-        encoded.len().saturating_add(4096),
+        maximum,
         allocator,
         16,
     )
     .await;
     assert_eq!(work.live_allocation_bytes(), baseline);
-    result.expect("serializer-produced JSON must complete through the original engine")
+    assert!(
+        result.is_ok()
+            || matches!(&result, Err(error) if error == "JavaScript result exceeds admitted output"),
+        "serializer-produced JSON must complete or retain its output refusal: {result:?}"
+    );
+    result
 }
 
 async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &str) {

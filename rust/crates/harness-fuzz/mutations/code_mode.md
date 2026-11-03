@@ -114,6 +114,13 @@ the serializer's JSON through the same production engine without a tool reply,
 then compares its completion to the value delivered through the original reply
 channel. This retains JavaScript number and Unicode semantics without another
 decoder or a Rust model of coercion. Both executions retire their native credit.
+The reference evaluates the same success envelope under the same output allowance
+as the RPC completion. Both must return the same value or the exact output-limit
+refusal; other reference errors fail the property. This covers number formatting
+that expands valid JSON beyond its admission without raising the allowance.
+The generated `corpus/code_mode/number-expansion.json` seed retains 400 copies of
+`1e20`, whose JavaScript array encoding is 8801 bytes before the reply envelope.
+Its provenance is recorded separately from captured inputs in `SOURCES.tsv`.
 
 Apply `mutations/code_mode_nonstring_reply_null.patch` to preserve strings but
 replace other successful reply values with null. The earlier string-only oracle
