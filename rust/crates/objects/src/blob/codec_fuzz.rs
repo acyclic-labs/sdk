@@ -194,6 +194,24 @@ pub fn check(bytes: &[u8]) -> bool {
             if error.code == ErrorCode::QuotaExceeded && error.stopped.is_none() => {}
         _ => return false,
     }
+    // Part and edge custody is independent of their repeated wire positions.
+    let mut edge = *digest.as_bytes();
+    edge[0] ^= 1;
+    let edge = Digest::from_bytes(edge);
+    let part = Part {
+        digest,
+        length: bytes.len() as u64,
+    };
+    if (Manifest {
+        parts: vec![part, part],
+        edges: vec![edge, digest, edge],
+    })
+    .references()
+    .as_slice()
+        != [digest, edge].as_slice()
+    {
+        return false;
+    }
     let mut envelope = Envelope {
         kind: if fields[56] & 1 == 0 {
             Kind::Blob
