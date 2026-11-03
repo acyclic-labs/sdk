@@ -297,28 +297,24 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
     }
 
     fn quiesce(&self, wait_for_ack: bool) -> io::Result<()> {
-        self.quiesce_generation::<true>(wait_for_ack, None)
+        self.quiesce_generation(wait_for_ack, None)
     }
 
     fn cancel_background(this: &Arc<Self>, generation: u64) {
         let owner = Arc::clone(this);
         #[cfg(loom)]
         let _worker = thread::spawn(move || {
-            let _ = owner.quiesce_generation::<true>(true, Some(generation));
+            let _ = owner.quiesce_generation(true, Some(generation));
         });
         #[cfg(not(loom))]
         let _worker = thread::Builder::new()
             .name("terminal-cancel".into())
             .spawn(move || {
-                let _ = owner.quiesce_generation::<true>(true, Some(generation));
+                let _ = owner.quiesce_generation(true, Some(generation));
             });
     }
 
-    fn quiesce_generation<const FENCE_WAKE: bool>(
-        &self,
-        wait_for_ack: bool,
-        generation: Option<u64>,
-    ) -> io::Result<()> {
+    fn quiesce_generation(&self, wait_for_ack: bool, generation: Option<u64>) -> io::Result<()> {
         let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
         if generation.is_some_and(|value| value != state.generation) {
             return Ok(());
@@ -327,7 +323,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         while wait_for_ack && !state.acknowledged {
             // A notified waiter may reacquire after replacement. Cancellation
             // still belongs to its original operation, never the new worker.
-            if FENCE_WAKE && generation.is_some_and(|value| value != state.generation) {
+            if generation.is_some_and(|value| value != state.generation) {
                 return Ok(());
             }
             // Repeat cancellation across the pre-submission race. An idle
@@ -523,12 +519,6 @@ mod tests {
         assert!(std::panic::catch_unwind(|| model(true)).is_err());
     }
 
-    struct CancellationWitness {
-        original: thread::ThreadId,
-        original_only: bool,
-        started: Option<loom::sync::mpsc::Sender<()>>,
-    }
-
     loom::lazy_static! {
         static ref CANCELLATIONS: Mutex<(Vec<thread::ThreadId>, Option<loom::sync::mpsc::Sender<()>>)> =
             Mutex::new((Vec::new(), None));
@@ -542,7 +532,7 @@ mod tests {
         }
     }
 
-    fn handoff_model<const FENCE_WAKE: bool>() {
+    fn handoff_model() {
         loom::model(|| {
             let (started, cancelling) = loom::sync::mpsc::channel();
             CANCELLATIONS.lock().unwrap_or_else(|e| panic!("{e}")).1 = Some(started);
@@ -550,33 +540,29 @@ mod tests {
                 RestoreGuard::new(Vec::new(), &Capabilities::default()),
                 record_cancel,
             );
-            // Cut at an in-flight native write: its guard is outside owner
-            // state. The full worker/ack model above covers reaching this cut.
-            let original = Arc::new(thread::spawn(|| {}));
-            let original_id = original.thread().id();
-            let guard = {
+            let (entered, submitted) = loom::sync::mpsc::channel();
+            let (release, waiting) = loom::sync::mpsc::channel();
+            let generation = {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                state.generation = 1;
-                state.phase = Phase::Submitted;
-                state.acknowledged = false;
-                state.worker = Some(original);
-                state.guard.take()
+                Owner::submit(&owner, &mut state, false, move |_| {
+                    entered.send(thread::current().id()).unwrap();
+                    waiting.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+                state.generation
             };
+            let original_id = submitted.recv().unwrap();
             let cancelling_owner = Arc::clone(&owner);
             let canceller = thread::spawn(move || {
                 cancelling_owner
-                    .quiesce_generation::<FENCE_WAKE>(true, Some(1))
+                    .quiesce_generation(true, Some(generation))
                     .unwrap_or_else(|e| panic!("{e}"));
             });
             cancelling.recv().unwrap_or_else(|e| panic!("{e}"));
-            // The old native write acknowledges. Publish a new operation before
-            // the cancelled generation's waiter necessarily reacquires state.
-            {
-                let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
-                state.guard = guard;
-                state.acknowledged = true;
-                owner.wake.notify_all();
-            }
+            // Complete the original production worker. Its acknowledgement can
+            // race replacement with the cancellation waiter's lock reacquisition.
+            release.send(()).unwrap();
             {
                 let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
                 while !state.acknowledged {
@@ -607,12 +593,7 @@ mod tests {
 
     #[test]
     fn cancellation_wakeup_cannot_target_replacement_generation() {
-        handoff_model::<true>();
-    }
-
-    #[test]
-    fn negative_control_detects_cancellation_after_generation_handoff() {
-        assert!(std::panic::catch_unwind(handoff_model::<false>).is_err());
+        handoff_model();
     }
 
     fn retry_owner() -> Arc<Owner<Vec<u8>>> {

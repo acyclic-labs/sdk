@@ -78,7 +78,17 @@ assertion changes during a control. Finally run all eight restored models.
 | `lifecycle-repeat-os-restoration.patch`: remove the successful-restoration fence | `completed_restore_cannot_mutate_a_reopened_terminal` | old terminal repeated OS restoration after handoff |
 
 The delayed-destructor/reopen and suspend/resume controls remain alongside these
-targets. The former simulated destructor defect is covered by mutating the
-production restoration fence; no test writer invents a destructor or overwrites
-the state after the production transition. All interleavings and positive
-assertions remain in the models.
+targets. No test writer invents a destructor or overwrites state after the
+production transition. Native destructor behavior needs its native control;
+the modeled restoration fence alone does not qualify it.
+
+## Console cancellation handoff
+
+`console-cancel-replacement-generation.patch` removes the production generation
+check after a cancellation wake. With the wrapper above, run the exact test
+`term::console_owner::tests::cancellation_wakeup_cannot_target_replacement_generation`.
+It must fail with `cancel reached replacement worker`; restore the patch and run
+the same test again. Both generations are submitted by production `Owner::submit`,
+and the original worker publishes its own acknowledgment. Channels constrain only
+the observed action/cancellation boundary; the model does not seed worker state
+or qualify native `CancelSynchronousIo` completion.

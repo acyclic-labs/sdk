@@ -1,0 +1,8 @@
+--- a/rust/crates/harness-tui/src/term/console_owner.rs
++++ b/rust/crates/harness-tui/src/term/console_owner.rs
+@@ -325,5 +325,2 @@
+             // still belongs to its original operation, never the new worker.
+-            if generation.is_some_and(|value| value != state.generation) {
+-                return Ok(());
+-            }
+             // Repeat cancellation across the pre-submission race. An idle
