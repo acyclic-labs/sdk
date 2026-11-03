@@ -29,3 +29,11 @@ coverage remains open.
 This corpus and planted-defect property do not establish an instrumented fuzz
 campaign, full branch coverage, Git process loss, shallow-repository topology,
 or complete source-frontier admission.
+
+The shared path identity oracle is also used by the production POSIX and Windows
+receipt properties. Constructed owned paths must relocate successfully, preserve
+the exact suffix and keep the same root-relative identity, for POSIX, drive and
+UNC roots. Arbitrary path admission checks remain separate. The retained
+`path-rebase-refusal.patch` and `path-posix-separators.patch` mutate the shared
+production implementation, rather than an oracle-only simulation. These paths
+are typed domain mutations, not external process captures.

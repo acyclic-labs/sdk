@@ -1,8 +1,10 @@
 #![no_main]
-use sdk_docs::path_identity as paths;
+use sdk_docs::path_identity;
 use sdk_generation::historical;
 #[path = "../git_layout.rs"]
 mod git_layout;
+#[path = "../../../sdk-docs/fuzz/path_identity.rs"]
+mod path_identity_oracle;
 #[path = "../source_identities.rs"]
 mod source_identities;
 #[path = "../../src/source_selection.rs"]
@@ -48,12 +50,38 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             }));
         }
         source_identities::check(&identities);
+        // Construct owned paths as well as checking arbitrary admission below:
+        // a decoder that refuses every relocation must fail this same oracle.
+        let suffix = text
+            .split('/')
+            .filter(|part| !matches!(*part, "" | "." | ".."))
+            .collect::<Vec<_>>()
+            .join("/");
+        if !suffix.is_empty() {
+            path_identity_oracle::check(
+                &format!("/checkout/{suffix}"),
+                "/checkout",
+                "/relocated",
+                &suffix,
+                false,
+            );
+        }
+        let suffix = format!("source-{}", text.replace([':', '\\', '/'], "_"));
+        for (old, new) in [
+            ("C:/checkout", "D:/relocated"),
+            ("//server/share/checkout", "//server/share/relocated"),
+        ] {
+            path_identity_oracle::check(&format!("{old}/{suffix}"), old, new, &suffix, true);
+        }
         let mut fields = text.splitn(3, '\n');
         if let (Some(old), Some(new), Some(path)) = (fields.next(), fields.next(), fields.next()) {
             for windows in [false, true] {
-                if let Some(rebased) = paths::rebase(path, old, new, windows) {
-                    assert_eq!(paths::rebase(&rebased, new, new, windows), Some(rebased));
-                    let before = paths::stable_filename(path, old);
+                if let Some(rebased) = path_identity::rebase(path, old, new, windows) {
+                    assert_eq!(
+                        path_identity::rebase(&rebased, new, new, windows),
+                        Some(rebased)
+                    );
+                    let before = path_identity::stable_filename(path, old);
                     let root_is_windows = old.as_bytes().get(1) == Some(&b':')
                         || old.starts_with("\\\\")
                         || old.starts_with("//");
@@ -65,8 +93,8 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                         && windows == new_is_windows
                     {
                         assert_eq!(
-                            paths::stable_filename(
-                                &paths::rebase(path, old, new, windows).unwrap(),
+                            path_identity::stable_filename(
+                                &path_identity::rebase(path, old, new, windows).unwrap(),
                                 new
                             ),
                             before
