@@ -44,6 +44,28 @@ fn summary(value: &e::SummaryRef) {
 }
 
 fn residency(previous: ModelCacheResidency) {
+    for version in [0, 1, u32::MAX] {
+        let unsupported = ModelCacheResidency {
+            version,
+            ..previous
+        };
+        assert_eq!(
+            unsupported.estimated_resident_at(previous.clock_domain, previous.observed_at_ns),
+            None,
+            "unsupported cache residency query admitted",
+        );
+        assert_eq!(
+            ModelCacheResidency::observe(
+                previous.key,
+                Some(unsupported),
+                previous.clock_domain,
+                previous.observed_at_ns,
+                ModelCacheAccess::Miss
+            ),
+            Err(ModelCacheError::Version),
+            "unsupported cache residency update admitted",
+        );
+    }
     let mut foreign_clock = previous.clock_domain;
     foreign_clock[0] ^= 1;
     let mut foreign_scope = previous.key;
@@ -76,6 +98,7 @@ fn residency(previous: ModelCacheResidency) {
         assert_eq!(
             previous.estimated_resident_at(previous.clock_domain, at),
             expected,
+            "cache query original time contract changed",
         );
         assert_eq!(
             previous.estimated_resident_at(foreign_clock, at),
@@ -121,7 +144,11 @@ fn residency(previous: ModelCacheResidency) {
                     continue;
                 }
                 if prior.is_some_and(|value| at < value.observed_at_ns) {
-                    assert_eq!(result, Err(ModelCacheError::TimeReversed));
+                    assert_eq!(
+                        result,
+                        Err(ModelCacheError::TimeReversed),
+                        "reversed cache update admitted"
+                    );
                     continue;
                 }
                 // Wider arithmetic checks both multiplication and addition
@@ -491,18 +518,26 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn Error>> {
                 ..cache
             })?,
         ),
+        ("epoch-genesis", envelope().value.to_vec()),
+    ];
+    for (name, access) in [
+        ("cache-residency", ModelCacheAccess::Write(cache.ttl)),
         (
-            "cache-residency",
+            "cache-residency-unknown",
+            ModelCacheAccess::Hit { refresh: None },
+        ),
+    ] {
+        seeds.push((
+            name,
             serde_json::to_vec(&ModelCacheResidency::observe(
                 cache.key().unwrap(),
                 None,
                 [7; 16],
                 10,
-                acyclic_harness_core::executor::ModelCacheAccess::Write(cache.ttl),
+                access,
             )?)?,
-        ),
-        ("epoch-genesis", envelope().value.to_vec()),
-    ];
+        ));
+    }
     let mut prepared = genesis();
     let id = prepared.prepare(10, 12)?;
     seeds.push(("epoch-prepared", encoded(&prepared)?));
