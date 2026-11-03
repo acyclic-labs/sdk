@@ -574,9 +574,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_http_failure_does_not_record_on_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{
-            AppendRequest, IdempotencyKey, StreamError, StreamPath, StreamProviderExt as _,
-        };
+        use crate::{StreamError, StreamPath, StreamProviderExt as _};
         use tracing::{Instrument, instrument::WithSubscriber};
         use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
@@ -610,6 +608,14 @@ mod tests {
                 "fixture-token",
                 1024,
             )?;
+            let server = tokio::spawn(async move {
+                let connection = listener.accept().await;
+                assert!(
+                    connection.is_ok(),
+                    "loopback fixture could not accept the request"
+                );
+                // Closing before a response forces the request completion error path.
+            });
             let parent = tracing::info_span!(
                 "test.parent",
                 outcome = "sentinel",
@@ -617,25 +623,11 @@ mod tests {
                 bytes = 777_u64,
                 http.status = 777_u64
             );
-            // Reads use the reconnecting Session. A public append exercises the
-            // HTTP observation whose filtered completion this test protects.
-            let request = provider.append(AppendRequest {
-                path: StreamPath::new("filtered/test")?,
-                records: vec![bytes::Bytes::from_static(b"record").into()],
-                if_tail: Some(0),
-                idempotency_key: IdempotencyKey::unique(),
-            });
-            let request = request.instrument(parent);
-            tokio::pin!(request);
-            let (connection, _) = tokio::select! {
-                accepted = listener.accept() => accepted?,
-                result = &mut request => {
-                    return Err(format!("HTTP request ended before loopback acceptance: {result:?}").into());
-                }
-            };
-            // Closing this request's original socket produces its completion.
-            drop(connection);
-            let result = request.await;
+            let result = provider
+                .tail(StreamPath::new("filtered/test")?)
+                .instrument(parent)
+                .await;
+            server.await?;
             assert_eq!(result, Err(StreamError::Unavailable));
             Ok(())
         }
