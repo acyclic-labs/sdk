@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/checkpoint.rs b/rust/crates/harness-core/src/agent/checkpoint.rs
+--- a/rust/crates/harness-core/src/agent/checkpoint.rs
++++ b/rust/crates/harness-core/src/agent/checkpoint.rs
+@@ -143,8 +143,7 @@
+     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
+     let mut state: AgentState =
+         super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
+-    if !state.open_children.is_empty()
+-        || !state.archive_pending.is_empty()
++    if !state.archive_pending.is_empty()
+         || !state.awaiting.is_empty()
+         || state.turn.is_some()
+         || state.parent.is_some()

@@ -205,6 +205,38 @@ pub(super) fn check_wire(bytes: &[u8]) {
             "{reason}"
         );
     };
+    let rest: AgentState =
+        super::records::decode_payload(&encoded.state).expect("checkpoint state writer");
+    for field in 0..5 {
+        let mut changed = rest.clone();
+        let reason = match field {
+            0 => {
+                changed.parent = state.parent.clone();
+                "checkpoint admitted an embedded parent"
+            }
+            1 => {
+                changed.open_children = state.open_children.clone();
+                "checkpoint admitted embedded open children"
+            }
+            2 => {
+                changed.archive_pending = state.archive_pending.clone();
+                "checkpoint admitted embedded archive children"
+            }
+            3 => {
+                changed.awaiting = state.awaiting.clone();
+                "checkpoint admitted embedded awaited children"
+            }
+            _ => {
+                changed.turn = state.turn.clone();
+                "checkpoint admitted an embedded turn"
+            }
+        };
+        if changed != rest {
+            let mut wire = encoded.clone();
+            wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
+            refuses(wire, reason);
+        }
+    }
     for archive in [false, true] {
         let mut changed = encoded.clone();
         let bitmap = if archive {

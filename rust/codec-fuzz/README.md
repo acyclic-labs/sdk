@@ -218,6 +218,18 @@ guard mutations must fail when replaying the retained
 | `agent-checkpoint-short-archive.patch` | index-out-of-bounds panic while decoding the short archive bitmap |
 | `agent-checkpoint-short-awaited.patch` | `checkpoint admitted a short awaited bitmap` |
 | `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
+| `agent-checkpoint-embedded-parent.patch` | `checkpoint admitted an embedded parent` |
+| `agent-checkpoint-embedded-open-children.patch` | `checkpoint admitted embedded open children` |
+| `agent-checkpoint-embedded-archive-children.patch` | `checkpoint admitted embedded archive children` |
+| `agent-checkpoint-embedded-awaited-children.patch` | `checkpoint admitted embedded awaited children` |
+| `agent-checkpoint-embedded-turn.patch` | `checkpoint admitted an embedded turn` |
+
+The embedded-field controls put one nonempty ownership field at a time back
+into the shared payload through the production writer. Each removes only
+that field's production guard. Use `agent-v13-checkpoint-archive` for the
+archive field, and `agent-v13-checkpoint-wait` for the other four fields.
+The original prost fields remain intact, so a second invalid field cannot
+mask an omitted guard.
 
 The existing round-trip check lives beside that same private wire type.
 Short bitmap derivatives retain the writer's child count and the awaited
