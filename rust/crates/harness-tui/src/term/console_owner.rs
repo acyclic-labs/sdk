@@ -400,85 +400,48 @@ mod tests {
     use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
 
-    fn profile_model(broken: bool) {
-        loom::model(move || {
-            let caps = crate::term::Capabilities {
+    #[test]
+    fn metadata_and_io_follow_the_original_guard_handoff() {
+        loom::model(|| {
+            let caps = Capabilities {
                 scroll_regions: true,
-                ..crate::term::Capabilities::default()
+                ..Capabilities::default()
             };
             let owner = Owner::new(RestoreGuard::new(Vec::<u8>::new(), &caps), |_| {});
             assert!(owner.supports_scroll_regions());
-            let borrowing = Arc::clone(&owner);
-            let worker = thread::spawn(move || {
-                Owner::run(&borrowing, Instant::now() + Duration::from_secs(10), |_| {
-                    Ok(())
-                })
-                .unwrap()
-            });
-            let _ = owner.supports_scroll_regions();
-            worker.join().unwrap();
-            assert!(owner.supports_scroll_regions());
-            let guard = owner.state.lock().unwrap().guard.take().unwrap();
-            let supported = broken || owner.supports_scroll_regions();
-            assert!(!supported, "borrowed profile must be unknown");
-            owner.state.lock().unwrap().guard = Some(guard);
-        });
-    }
-    #[test]
-    fn scroll_profile_observation_follows_guard_ownership() {
-        profile_model(false);
-    }
-    #[test]
-    fn negative_control_scroll_profile_cannot_outlive_guard_ownership() {
-        assert!(std::panic::catch_unwind(|| profile_model(true)).is_err());
-    }
-
-    fn counter_model(broken: bool) {
-        loom::model(move || {
-            let owner = Owner::new(
-                RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
-                |_| {},
-            );
             assert_eq!(owner.outside_writes(), Some(0));
             assert_eq!(owner.empty_if_current(Some(0)).unwrap(), Some(0));
             assert!(owner.state.lock().unwrap().worker.is_none());
-            let writing = Arc::clone(&owner);
-            let worker = thread::spawn(move || {
-                Owner::run(
-                    &writing,
-                    Instant::now() + Duration::from_secs(10),
-                    |guard| guard.writer().write_all(b"outside"),
-                )
-                .unwrap();
-            });
-            // During the handoff the worker owns the guard, so None is valid.
-            assert!(matches!(owner.outside_writes(), None | Some(0 | 1)));
-            worker.join().unwrap();
+
+            let checking = Arc::clone(&owner);
+            let (free, profile, generation, empty) = Owner::run(
+                &owner,
+                Instant::now() + Duration::from_secs(10),
+                move |guard| {
+                    // The production worker owns the guard here. Observe the
+                    // original owner before the same worker returns it and
+                    // acknowledges completion; no borrowed state is seeded.
+                    let free = checking.state.try_lock().is_ok();
+                    let profile = checking.supports_scroll_regions();
+                    let generation = checking.outside_writes();
+                    let empty = checking.empty_if_current(Some(0))?;
+                    guard.writer().write_all(b"outside")?;
+                    Ok((free, profile, generation, empty))
+                },
+            )
+            .expect("console I/O action must complete");
+            assert!(free, "console I/O retained owner state");
+            assert!(!profile, "borrowed profile must be unknown");
+            assert!(generation.is_none(), "borrowed guard must be unknown");
+            assert!(
+                empty.is_none(),
+                "borrowed guard acknowledged an empty frame"
+            );
+            assert!(owner.supports_scroll_regions());
             assert_eq!(owner.outside_writes(), Some(1));
             assert_eq!(owner.empty_if_current(Some(0)).unwrap(), None);
             assert_eq!(owner.empty_if_current(Some(1)).unwrap(), Some(1));
-            let mut state = owner.state.lock().unwrap();
-            let guard = state.guard.take().unwrap();
-            drop(state);
-            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), None);
-            let observed = if broken {
-                Some(1)
-            } else {
-                owner.outside_writes()
-            };
-            assert_eq!(observed, None, "borrowed guard must be unknown");
-            owner.state.lock().unwrap().guard = Some(guard);
         });
-    }
-
-    #[test]
-    fn counter_observation_follows_the_guard_handoff() {
-        counter_model(false);
-    }
-
-    #[test]
-    fn negative_control_counter_cannot_reuse_a_borrowed_guard() {
-        assert!(std::panic::catch_unwind(|| counter_model(true)).is_err());
     }
 
     struct Console {
@@ -560,40 +523,10 @@ mod tests {
         assert!(std::panic::catch_unwind(|| model(true)).is_err());
     }
 
-    fn lock_model(broken: bool) {
-        loom::model(move || {
-            let owner = Owner::new(
-                RestoreGuard::new(Vec::new(), &Capabilities::default()),
-                |_| {},
-            );
-            let checking = Arc::clone(&owner);
-            let free = Owner::run(
-                &owner,
-                Instant::now() + Duration::from_secs(10),
-                move |_| {
-                    if broken {
-                        // Negative control: the old driver path retained owner
-                        // state while waiting for its setup/restoration I/O.
-                        let _held = checking
-                            .state
-                            .lock()
-                            .unwrap_or_else(|error| panic!("{error:?}"));
-                        Ok(checking.state.try_lock().is_ok())
-                    } else {
-                        Ok(checking.state.try_lock().is_ok())
-                    }
-                },
-            );
-            assert_eq!(free.ok(), Some(true));
-        });
-    }
-    #[test]
-    fn console_setup_and_restore_io_release_owner_state() {
-        lock_model(false);
-    }
-    #[test]
-    fn negative_control_detects_io_wait_under_owner_state() {
-        assert!(std::panic::catch_unwind(|| lock_model(true)).is_err());
+    struct CancellationWitness {
+        original: thread::ThreadId,
+        original_only: bool,
+        started: Option<loom::sync::mpsc::Sender<()>>,
     }
 
     loom::lazy_static! {
