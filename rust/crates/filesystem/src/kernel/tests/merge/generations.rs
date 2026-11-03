@@ -543,75 +543,87 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let metadata = put_metadata(&store, FileMetadata::default()).await?;
     let a = FileId::from_bytes([2; 16]);
     let b = FileId::from_bytes([3; 16]);
-    let entry = |name: &str, file_id| -> Result<TreeEntry, Box<dyn std::error::Error>> {
-        Ok(TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
-            file_id,
-            kind: FileKind::Fifo,
-        })
+    let config = crate::VolumeConfig {
+        profile: crate::FilesystemProfile::Posix,
+        ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
     };
-    let base_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?]).await?;
-    let ours_entries = put_tree(
-        &store,
-        vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?],
-    )
-    .await?;
-    let theirs_entries = put_tree(
-        &store,
-        vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?],
-    )
-    .await?;
-    let directory = |entries| FileRecord {
+    let path = |name: &str| -> Result<crate::kernel::NamespacePath, Box<dyn std::error::Error>> {
+        Ok(crate::kernel::NamespacePath::new(
+            vec![LogicalName::new(
+                NameEncoding::Utf8,
+                name.as_bytes().to_vec(),
+                config.limits.maximum_component_bytes,
+            )?],
+            config.limits,
+        )?)
+    };
+    let cancellation = CancellationToken::new();
+    let empty = FileRecord {
         metadata,
-        payload: FilePayload::Directory { entries },
+        payload: FilePayload::Directory {
+            entries: put_tree(&store, Vec::new()).await?,
+        },
         ..directory(1, 0, 1, 0)
     };
-    let first = FileRecord {
-        metadata,
-        ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo)
-    };
-    let second = FileRecord {
-        metadata,
-        ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo)
-    };
-    let base = GenerationRoot {
-        file_table: put_table(&store, vec![directory(base_entries), first, second]).await?,
+    let empty = GenerationRoot {
+        file_table: put_table(&store, vec![empty]).await?,
         ..root(1, 1, 0)
     };
-    let ours = GenerationRoot {
-        file_table: put_table(
-            &store,
-            vec![
-                directory(ours_entries),
-                FileRecord {
-                    link_count: 2,
-                    ..first
+    let base = crate::kernel::apply_generation_mutations(
+        &store,
+        &empty,
+        vec![
+            crate::kernel::Mutation::Create {
+                path: path("alpha")?,
+                record: FileRecord {
+                    metadata,
+                    ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo)
                 },
-                second,
-            ],
-        )
-        .await?,
-        ..root(1, 1, 0)
-    };
+            },
+            crate::kernel::Mutation::Create {
+                path: path("beta")?,
+                record: FileRecord {
+                    metadata,
+                    ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo)
+                },
+            },
+        ],
+        config,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?
+    .root;
+    // The original mutation producer co-commits forward and reverse bindings.
+    let ours = crate::kernel::apply_generation_mutations(
+        &store,
+        &base,
+        vec![crate::kernel::Mutation::Link {
+            source: path("alpha")?,
+            destination: path("left")?,
+        }],
+        config,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?
+    .root;
     let ours_table = ours.file_table;
-    let theirs = GenerationRoot {
-        file_table: put_table(
-            &store,
-            vec![
-                directory(theirs_entries),
-                first,
-                FileRecord {
-                    link_count: 2,
-                    ..second
-                },
-            ],
-        )
-        .await?,
-        ..root(1, 1, 0)
-    };
+    let theirs = crate::kernel::apply_generation_mutations(
+        &store,
+        &base,
+        vec![crate::kernel::Mutation::Link {
+            source: path("beta")?,
+            destination: path("right")?,
+        }],
+        config,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?
+    .root;
     let request = stored_request(&store, base, ours, theirs).await?;
     let second_parent = GenerationId::from_root(request.theirs_generation);
-    let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);

@@ -199,22 +199,39 @@ pub(super) fn original_borrowed_path_changes(
 }
 
 pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResult {
-    let root = ObjectId {
-        storage: None,
-        kind: ObjectKind::GenerationRoot,
-        digest: Digest::from_bytes([221; 32]),
-    };
-    let expected = VolumeId::from_bytes([222; 16]);
-    let wrong = VolumeId::from_bytes([223; 16]);
-    let authority = Arc::new(crate::MemoryAuthorityStore::default());
-    let fs = Fs::new(
-        authority.clone(),
-        crate::MemoryObjectStore::default(),
-        EmbeddedCapabilities::MEMORY,
-    );
     let cancel = CancellationToken::new();
-    let authority_id = volume_authority_id(expected);
+    let (volume, mut checkout) = fixture(config(), &cancel).await?;
+    create(&mut checkout, "identity", OwnedBytes::new(), &cancel).await?;
+    commit(&mut checkout, &cancel).await?;
+    let authority = &volume.fs.inner.authority;
     let mut work = crate::AuthorityWork::new(B, &cancel);
+    let (records, _) = authority
+        .replay(
+            volume_authority_id(volume.id),
+            Sequence::GENESIS,
+            crate::ReplayLimit {
+                records: 2,
+                payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES * 2,
+            },
+            &mut work,
+        )
+        .await?;
+    assert_eq!(records.len(), 2);
+    let foreign = VolumeId::new();
+    for record in &records {
+        assert!(matches!(
+            generation_from_record(
+                record,
+                foreign,
+                &mut KernelAccounting::standalone(B, &cancel)
+            ),
+            Err(FsError::VolumeMismatch)
+        ));
+    }
+
+    // Replay actual creation bytes to the wrong authority. The publication
+    // boundary rejects them before any durable foreign generation can exist.
+    let authority_id = volume_authority_id(foreign);
     let created = authority
         .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await
@@ -222,77 +239,38 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     let head = match created {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let mut accounting = KernelAccounting::standalone(B, &cancel);
-    let encoded =
-        crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| {
-            crate::kernel::encode_volume_created(
-                VolumeCreated {
-                    volume_id: wrong,
-                    config: config(),
-                    initial_generation_root: root,
-                },
-                observe,
-                allocation_error,
-            )
-        })?;
-    let proposal = creation_commit(OperationId::from_bytes([227; 16]), encoded, &mut accounting)?;
+    let creation = &records[0];
     let appended = authority
         .compare_and_append(
             crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
-                expected: Head::genesis(head.epoch),
-                commit: proposal,
+                expected: head,
+                commit: ProposedCommit {
+                    publication: None,
+                    operation_id: creation.operation_id,
+                    fingerprint: creation.fingerprint,
+                    payload: creation.payload.clone(),
+                },
                 permit: PublicationPermit::Unrestricted,
             },
             &mut work,
             None::<&mut ()>,
         )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let AppendOutcome::Committed(creation) = appended else {
-        return Err("fixture creation did not commit".into());
-    };
-    assert!(matches!(
-        fs.read_creation_record(expected, B, &cancel).await,
-        Err(OperationFailure {
-            error: FsError::VolumeMismatch,
-            ..
-        })
-    ));
-    let mut payload = Vec::from(b"acyclic-fs-publish-generation-v1\0".as_slice());
-    payload.extend_from_slice(&1_u16.to_le_bytes());
-    payload.extend_from_slice(&wrong.into_bytes());
-    payload.push(root.kind.canonical_tag());
-    payload.extend_from_slice(root.digest.as_bytes());
-    let publication = DurableCommit {
-        sequence: Sequence::new(2),
-        payload: payload.into(),
-        ..creation.clone()
-    };
-    for record in [&creation, &publication] {
-        assert!(matches!(
-            generation_from_record(
-                record,
-                expected,
-                &mut KernelAccounting::standalone(B, &cancel)
-            ),
-            Err(FsError::VolumeMismatch)
-        ));
-    }
-    let empty = VolumeId::from_bytes([228; 16]);
-    authority
-        .create_authority(
-            volume_authority_id(empty),
-            Epoch::GENESIS,
-            &mut work,
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await;
+    assert!(
+        matches!(
+            appended,
+            Err(crate::AuthorityError::Authority(
+                AuthorityStoreError::CorruptStatic(_)
+            ))
+        ),
+        "foreign creation was not rejected: {appended:?}"
+    );
+    assert_eq!(authority.head(authority_id, &mut work).await?, head);
     let empty = Volume {
-        fs,
-        id: empty,
+        fs: volume.fs.clone(),
+        id: foreign,
         config: config(),
     };
     assert!(matches!(

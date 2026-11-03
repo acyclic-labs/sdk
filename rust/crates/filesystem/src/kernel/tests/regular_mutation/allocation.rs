@@ -224,6 +224,11 @@ async fn preallocation_budget_rejections_report_only_completed_work()
     .await?;
     let mut scan_budget = WorkBudget::UNBOUNDED;
     scan_budget.items_examined = 5;
+    // The range planner consumes one visit before forwarding the remaining
+    // credit. The memory index then admits the complete fixed-width identity
+    // comparison atomically; a refused comparison is not completed work.
+    let backend_limit = scan_budget.items_examined - 1;
+    let comparison_attempt = backend_limit + ObjectId::ENCODED_LEN as u64;
     let failure = (apply_regular_mutation_async(
         &store,
         sparse.payload,
@@ -239,14 +244,19 @@ async fn preallocation_budget_rejections_report_only_completed_work()
     .await
     .err()
     .ok_or("scan-limited preallocation unexpectedly succeeded")?;
-    assert!(matches!(
+    assert!(
+        matches!(
+            failure.error,
+            RegularMutationError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                observed,
+                maximum,
+            }) if observed == comparison_attempt && maximum == backend_limit
+        ),
+        "original failure: {:?}; completed work: {:?}",
         failure.error,
-        RegularMutationError::Work(WorkError::BudgetExceeded {
-            counter: "items_examined",
-            observed: 6,
-            maximum: 5,
-        })
-    ));
+        failure.work
+    );
     assert_eq!(failure.work.items_examined, 5);
     assert_eq!(failure.work.backend_write_operations, 0);
     Ok(())
