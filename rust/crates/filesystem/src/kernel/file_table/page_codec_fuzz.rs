@@ -101,4 +101,58 @@ pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefi
     compare_observed::<ORDER>(bytes, limits, usize::MAX, &complete, &tape).unwrap();
     let denied = prefix % (tape.len() + 1);
     compare_observed::<ORDER>(bytes, limits, denied, &complete, &tape).unwrap();
+
+    // Shape decoding checks framing, not record semantics or ordering. Exercise
+    // arbitrary bytes, but require agreement only for fully validated pages.
+    let shape = file_table_page_decode_shape(bytes, limits);
+    let Ok(page) = complete else {
+        return;
+    };
+    let (kind, items) = match &page {
+        FileTablePage::Leaf(records) => {
+            for record in records {
+                let mut encoded = encode_file_record(
+                    *record,
+                    |_| Ok::<_, crate::FsError>(()),
+                    |_| CanonicalDecodeError::AllocationFailed.into(),
+                )
+                .unwrap();
+                assert_eq!(
+                    decode_file_record(&encoded),
+                    Ok(*record),
+                    "standalone record differs from the fully validated page"
+                );
+                assert!(
+                    decode_file_record(&encoded[..prefix % encoded.len()]).is_err(),
+                    "standalone record admitted a truncated frame"
+                );
+                encoded.push(0);
+                assert!(
+                    decode_file_record(&encoded).is_err(),
+                    "standalone record admitted trailing bytes"
+                );
+            }
+            (DecodedPageKind::Leaf, records.len())
+        }
+        FileTablePage::Internal(children) => (DecodedPageKind::Internal, children.len()),
+    };
+    assert_eq!(
+        shape.unwrap(),
+        DecodedPageShape {
+            kind,
+            items,
+            nested_bytes: 0,
+        },
+        "shape differs from the fully validated page"
+    );
+    assert!(
+        file_table_page_decode_shape(&bytes[..prefix % bytes.len()], limits).is_err(),
+        "shape admitted a truncated frame"
+    );
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(
+        file_table_page_decode_shape(&trailing, limits).is_err(),
+        "shape admitted trailing bytes"
+    );
 }

@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
++++ b/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
+@@ -290,7 +290,6 @@
+             });
+         }
+     };
+-    decoder.finish()?;
+     Ok(DecodedPageShape {
+         kind,
+         items: usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?,
