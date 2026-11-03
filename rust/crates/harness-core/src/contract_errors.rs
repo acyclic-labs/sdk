@@ -56,6 +56,65 @@ impl std::fmt::Display for ModelTransportFailure {
     }
 }
 
+/// Settled task outcome with stable process exit codes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum HeadlessOutcome {
+    /// The task completed, or is idle awaiting another prompt.
+    Completed,
+    /// Execution failed.
+    Failed,
+    /// Cancellation settled.
+    Cancelled,
+    /// Execution needs external input or approval.
+    Blocked,
+    /// The service cannot establish whether an operation completed.
+    Indeterminate,
+}
+
+impl HeadlessOutcome {
+    /// Classify a settled error, preserving the original outcome through cleanup.
+    #[must_use]
+    pub fn from_error(error: &Error) -> Self {
+        if let Error::Cleanup(failure) = error {
+            return failure.outcome;
+        }
+        if matches!(error, Error::GoalBlocked(_)) {
+            return Self::Blocked;
+        }
+        match error.code() {
+            crate::wire::ErrorCode::Indeterminate => Self::Indeterminate,
+            crate::wire::ErrorCode::InteractionCancelled | crate::wire::ErrorCode::Cancelled => {
+                Self::Cancelled
+            }
+            crate::wire::ErrorCode::InteractionDeclined
+            | crate::wire::ErrorCode::InteractionExpired
+            | crate::wire::ErrorCode::InteractionDenied => Self::Blocked,
+            crate::wire::ErrorCode::Unspecified
+            | crate::wire::ErrorCode::NotFound
+            | crate::wire::ErrorCode::Conflict
+            | crate::wire::ErrorCode::Unsupported
+            | crate::wire::ErrorCode::Invalid
+            | crate::wire::ErrorCode::Unauthorized
+            | crate::wire::ErrorCode::Unavailable
+            | crate::wire::ErrorCode::Storage => Self::Failed,
+        }
+    }
+
+    /// Stable CLI contract: completed=0, failed=1, cancelled=2, blocked=3, indeterminate=4.
+    #[must_use]
+    pub const fn exit_code(self) -> u8 {
+        match self {
+            Self::Completed => 0,
+            Self::Failed => 1,
+            Self::Cancelled => 2,
+            Self::Blocked => 3,
+            Self::Indeterminate => 4,
+        }
+    }
+}
+
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -451,16 +510,17 @@ impl Error {
             (Ok(value), Ok(())) => Ok(value),
             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
             (Err(primary), Err(cleanup)) => {
-                let code = if (!primary.leaves_outcome_uncertain()
+                let classification = if (!primary.leaves_outcome_uncertain()
                     && cleanup.leaves_outcome_uncertain())
                     || (!primary.uncertain() && cleanup.uncertain())
                 {
-                    cleanup.code()
+                    &cleanup
                 } else {
-                    primary.code()
+                    &primary
                 };
                 Err(Self::Cleanup(CleanupFailure {
-                    code,
+                    code: classification.code(),
+                    outcome: HeadlessOutcome::from_error(classification),
                     uncertain: primary.uncertain() || cleanup.uncertain(),
                     effect_uncertain: primary.leaves_effect_uncertain()
                         || cleanup.leaves_effect_uncertain(),
@@ -808,6 +868,7 @@ impl Error {
 pub struct CleanupFailure {
     causes: Box<[Error; 2]>,
     code: crate::wire::ErrorCode,
+    outcome: HeadlessOutcome,
     uncertain: bool,
     effect_uncertain: bool,
     outcome_uncertain: bool,

@@ -171,9 +171,10 @@ pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
     COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities,
     CommandIndeterminacy, CommandIndeterminacyReason, ConversationId, EffectAttemptId, EffectId,
-    Error, GroupId, IdempotencyKey, IndeterminateCause, InteractionId, InteractionRejection,
-    ModelTransportFailure, OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId,
-    TaskId, TurnId, is_valid_component_label, resolve_policies, resolve_policy_layers,
+    Error, GroupId, HeadlessOutcome, IdempotencyKey, IndeterminateCause, InteractionId,
+    InteractionRejection, ModelTransportFailure, OperationId, Outcome, PolicyLayer,
+    ProtocolIdentity, Result, SessionId, TaskId, TurnId, is_valid_component_label,
+    resolve_policies, resolve_policy_layers,
 };
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
