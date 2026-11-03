@@ -219,13 +219,13 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
     fn set_operations_preserve_filesystem_ceilings(
-        legacy_kind in 0usize..4,
+        legacy_kind in 0usize..5,
         parent_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
         child_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
     ) {
         use acyclic_fs::access::{DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation, is_filesystem_capability};
         let prefixes = [FILE_READ_PREFIX, DIRECTORY_READ_PREFIX,
-            VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix()];
+            VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix(), VolumeOperation::Delete.capability_prefix()];
         let prefix = prefixes.get(legacy_kind).ok_or(proptest::test_runner::TestCaseError::fail("missing fixture capability prefix"))?;
         let legacy = format!("{prefix}volume");
         let parent = Capability { layers: vec![vec![grant("src/**")]], expires_at: parent_expiry };
