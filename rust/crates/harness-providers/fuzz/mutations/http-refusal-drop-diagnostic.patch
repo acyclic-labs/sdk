@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-providers/src/lib.rs b/rust/crates/harness-providers/src/lib.rs
+--- a/rust/crates/harness-providers/src/lib.rs
++++ b/rust/crates/harness-providers/src/lib.rs
+@@ -187,10 +187,7 @@ async fn read_http_failure(
+         return match http::bounded::read(body, maximum, work).await {
+             Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
+                 Ok(true) => Error::ModelContextOverflow,
+-                Ok(false) => Error::Invalid(diagnostic::excerpt(format_args!(
+-                    "model HTTP status {status}: {}",
+-                    excerpt_text(&body.bytes)
+-                ))),
++                Ok(false) => http_error(status),
+                 Err(error) => error,
+             },
+             Err(error) => error,

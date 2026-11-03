@@ -41,9 +41,42 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
     } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
-    if let Error::ModelUnavailable { excerpt, .. } = &error {
+    if let Error::ModelUnavailable { excerpt, .. } | Error::Invalid(excerpt) = &error {
         assert!(excerpt.len() <= crate::EXCERPT_BYTES);
         assert!(excerpt.chars().all(|character| !character.is_control()));
+    }
+    let diagnostic = match &error {
+        Error::Invalid(message) if matches!(status, 400 | 413) && !failure => {
+            Some((message, format!("model HTTP status {status}: ")))
+        }
+        Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
+        _ => None,
+    };
+    if let Some((actual, prefix)) = diagnostic
+        && let Ok(text) = std::str::from_utf8(&bytes[..bytes.len().min(crate::EXCERPT_BYTES)])
+    {
+        // An independent raw-input expectation catches loss shared by every
+        // chunk width. Invalid UTF-8 still has the bounds/chunking checks above.
+        let expected: String = prefix
+            .chars()
+            .chain(text.chars())
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .scan(0usize, |length, character| {
+                *length += character.len_utf8();
+                (*length <= crate::EXCERPT_BYTES).then_some(character)
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            expected.trim(),
+            "HTTP refusal lost original diagnostic"
+        );
     }
     (error.code(), error.to_string())
 }
@@ -73,8 +106,9 @@ pub fn assert_http_failure_invariants(input: &[u8]) {
             "escape mutation changed JSON meaning"
         );
         assert_eq!(
-            decode(status, &canonical, canonical.len().max(1), false),
-            decode(status, &escaped, escaped.len().max(1), false)
+            decode(status, &canonical, canonical.len().max(1), false).0,
+            decode(status, &escaped, escaped.len().max(1), false).0,
+            "JSON spelling may change the original excerpt, never its class"
         );
     }
 }
@@ -125,9 +159,12 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/proxy-rate").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/gemini-signature").as_slice(),
     ] {
         assert_http_failure_invariants(input);
     }
+    let signature = include_bytes!("../../fuzz/corpus/http_failure/gemini-signature");
+    assert_eq!(decode(400, &signature[2..], 1, false).0, ErrorCode::Invalid);
 
     // This is the same captured context refusal, with only its JSON spelling
     // changed. Native parsing must fund scratch, retire it, and retain refusal
