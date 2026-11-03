@@ -77,6 +77,22 @@ controls = {
     ),
 }
 additional_controls = {
+    "event_projection": [
+        (
+            "rust/crates/harness-client/src/event_projection.rs",
+            b"if *previous == cursor {",
+            b"if true {",
+            "resource-state",
+            b"a changed source cursor must be retained",
+        ),
+        (
+            "rust/crates/harness-client/src/event_projection.rs",
+            b"if position.input < previous.input",
+            b"if false && position.input < previous.input",
+            "execution-state",
+            b"execution cursor moved backwards",
+        ),
+    ],
     "native_input": [
         (
             "rust/crates/harness/src/local/host_owner.rs",
