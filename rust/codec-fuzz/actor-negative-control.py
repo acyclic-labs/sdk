@@ -62,5 +62,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"STEP Actors negative control failed: {error}", file=sys.stderr)
+        print(f"STEP Actors negative control failed: {error}; recovery after correcting "
+              "the reported failure: python3 actor-negative-control.py", file=sys.stderr)
         sys.exit(1)
