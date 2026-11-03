@@ -1,0 +1,17 @@
+diff --git a/rust/crates/harness-core/src/contract_errors.rs b/rust/crates/harness-core/src/contract_errors.rs
+index 7c4916c315..3ed12992e4 100644
+--- a/rust/crates/harness-core/src/contract_errors.rs
++++ b/rust/crates/harness-core/src/contract_errors.rs
+@@ -519,7 +519,11 @@ impl Error {
+                     &primary
+                 };
+                 Err(Self::Cleanup(CleanupFailure {
+-                    code: classification.code(),
++                    code: if matches!(&primary, Self::Cleanup(_)) {
++                        cleanup.code()
++                    } else {
++                        classification.code()
++                    },
+                     outcome: HeadlessOutcome::from_error(classification),
+                     uncertain: primary.uncertain() || cleanup.uncertain(),
+                     effect_uncertain: primary.leaves_effect_uncertain()

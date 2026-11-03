@@ -1124,19 +1124,42 @@ mod cleanup_tests {
                 assert!(!joined.is_model_failure());
                 assert!(!joined.is_tool_failure());
                 assert!(joined.is_native_failure());
-                if (!failure.primary().leaves_outcome_uncertain()
-                    && failure.cleanup().leaves_outcome_uncertain())
-                    || (!failure.primary().uncertain() && failure.cleanup().uncertain())
-                {
-                    assert_eq!(joined.code(), cleanup_code);
-                } else {
-                    assert_eq!(joined.code(), primary_code);
+                for last in 0..7 {
+                    // The first cause at the highest uncertainty tier owns the
+                    // public classification, regardless of cleanup grouping.
+                    // Derive leaf facts from real errors, then compare both
+                    // groupings through the production operation.
+                    let owner = [last, retirement, original]
+                        .into_iter()
+                        .map(cause)
+                        .max_by_key(|error| (error.leaves_outcome_uncertain(), error.uncertain()))
+                        .unwrap();
+                    let join = |primary, cleanup| {
+                        Error::after_cleanup::<()>(Err(primary), Err(cleanup)).unwrap_err()
+                    };
+                    let left = join(join(cause(original), cause(retirement)), cause(last));
+                    let right = join(cause(original), join(cause(retirement), cause(last)));
+                    for nested in [left, right] {
+                        assert_eq!(
+                            nested.code(),
+                            owner.code(),
+                            "cleanup grouping changed its public class"
+                        );
+                        assert_eq!(
+                            HeadlessOutcome::from_error(&nested),
+                            HeadlessOutcome::from_error(&owner)
+                        );
+                        assert_eq!(nested.uncertain(), uncertain || cause(last).uncertain());
+                        assert_eq!(
+                            nested.leaves_effect_uncertain(),
+                            effect_uncertain || cause(last).leaves_effect_uncertain()
+                        );
+                        assert_eq!(
+                            nested.leaves_outcome_uncertain(),
+                            outcome_uncertain || cause(last).leaves_outcome_uncertain()
+                        );
+                    }
                 }
-                // A further settled cleanup cannot erase the original facts.
-                let nested = Error::after_cleanup::<()>(Err(joined), Err(cause(1))).unwrap_err();
-                assert_eq!(nested.uncertain(), uncertain);
-                assert_eq!(nested.leaves_effect_uncertain(), effect_uncertain);
-                assert_eq!(nested.leaves_outcome_uncertain(), outcome_uncertain);
             }
             let error = Error::after_cleanup::<()>(Err(cause(original)), Ok(())).unwrap_err();
             assert_eq!(error.code(), cause(original).code());
