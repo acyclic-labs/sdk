@@ -556,65 +556,46 @@ test('the entry point compares real Git objects and rejects modified and untrack
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
   assert.equal(checkCli('HEAD').status, 0);
-  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n');
-  const pluginTimer = await check('HEAD');
-  assert.notEqual(pluginTimer.status, 0);
-  assert.match(pluginTimer.output, /file=plugin\/tests\/ready.mjs:1/);
-  write(plugin, "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function ready() { await settle(); }\n");
-  const pluginHelper = await check('HEAD');
-  assert.notEqual(pluginHelper.status, 0);
-  assert.match(pluginHelper.output, /file=plugin\/tests\/ready.mjs:1 kind=polling-helper-reference/);
-  write(plugin, beforePlugin);
+  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n'
+   + "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function indirect() { await settle(); }\n");
   const pluginChild = 'plugin/tests/hosts/child.py';
   write(pluginChild, 'import time\nwhile not ready():\n time.sleep(.01)\n');
-  const pluginUntracked = await check('HEAD');
-  assert.notEqual(pluginUntracked.status, 0);
-  assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
+  const native = 'scripts/control.hpp';
+  write(native, 'inline void wait() { std::this_thread::sleep_for(std::chrono::seconds(1)); }\n');
+  write(rust, 'fn current() { std::thread::sleep(duration); }\n');
+  write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
+  write(script, 'setTimeout(probe, 1);\n');
+  const modified = checkCli('HEAD');
+  assert.notEqual(modified.status, 0);
+  for (const diagnostic of [
+   /file=plugin\/tests\/ready.mjs:1 kind=timer-or-readiness/,
+   /file=plugin\/tests\/ready.mjs:2 kind=polling-helper-reference/,
+   /file=plugin\/tests\/hosts\/child.py:2 kind=loop/,
+   /file=scripts\/control.hpp:1 kind=timer-or-readiness/,
+   /file=rust\/crates\/example\/src\/lib.rs:1 kind=timer-or-readiness/,
+   /file=typescript\/packages\/example\/test\/caller.ts:1 kind=polling-helper-reference/,
+   /file=typescript\/packages\/example\/test\/control.ts:1 kind=timer-or-readiness/,
+  ]) assert.match(modified.output, diagnostic);
+  assert.match(modified.output, /recovery command: node scripts\/check-no-polling.mjs "HEAD"/);
   const censusPath = join(root, 'census.json');
   const inventoried = await check('--inventory', 'census.json');
   assert.equal(inventoried.status, 0, inventoried.output);
   const census = JSON.parse(readFileSync(censusPath, 'utf8'));
   assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
-  assert.equal(census.files, 5);
+  assert.equal(census.files, 7);
   const siteOrder = (a, b) => a.file.localeCompare(b.file) || a.fingerprint.localeCompare(b.fingerprint);
-  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map([
-   [rust, readFileSync(join(root, rust), 'utf8')],
-   [helper, readFileSync(join(root, helper), 'utf8')],
-   [caller, readFileSync(join(root, caller), 'utf8')],
-   [plugin, beforePlugin],
-   [pluginChild, readFileSync(join(root, pluginChild), 'utf8')],
-  ])).sort(siteOrder));
+  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map(
+   [rust, helper, caller, plugin, pluginChild, native, script]
+    .map(file => [file, readFileSync(join(root, file), 'utf8')]),
+  )).sort(siteOrder));
   assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
   const preserved = readFileSync(censusPath, 'utf8');
   assert.notEqual((await check('--inventory', 'census.json')).status, 0);
   assert.equal(readFileSync(censusPath, 'utf8'), preserved);
-  rmSync(join(root, pluginChild));
-  const native = 'scripts/control.hpp';
-  write(native, 'inline void wait() { std::this_thread::sleep_for(std::chrono::seconds(1)); }\n');
-  const nativeUntracked = await check('HEAD');
-  assert.notEqual(nativeUntracked.status, 0);
-  assert.match(nativeUntracked.output, /file=scripts\/control.hpp:1 kind=timer-or-readiness/);
-  rmSync(join(root, native));
-  write(rust, 'fn current() { std::thread::sleep(duration); }\n');
-  const modified = checkCli('HEAD');
-  assert.notEqual(modified.status, 0);
-  assert.match(modified.output, /step=no-polling file=rust\/crates\/example\/src\/lib.rs:1/);
-  assert.match(modified.output, /recovery command: node scripts\/check-no-polling.mjs "HEAD"/);
-  write(rust, 'fn current() {}\n');
-  write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
-  const indirect = await check('HEAD');
-  assert.notEqual(indirect.status, 0);
-  assert.match(indirect.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=polling-helper-reference/);
-  write(caller, beforeCaller);
   git(['rm', '-q', '--', helper]);
   const missingProducer = await check('HEAD');
   assert.notEqual(missingProducer.status, 0);
   assert.match(missingProducer.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=unresolved-local-helper/);
-  git(['restore', '--staged', '--worktree', '--', helper]);
-  write(script, 'setTimeout(probe, 1);\n');
-  const untracked = await check('HEAD');
-  assert.notEqual(untracked.status, 0);
-  assert.match(untracked.output, /step=no-polling file=typescript\/packages\/example\/test\/control.ts:1/);
   const missingBase = await check('missing-source-baseline');
   assert.notEqual(missingBase.status, 0);
   assert.match(missingBase.output, /step=no-polling.*recovery command:/s);
