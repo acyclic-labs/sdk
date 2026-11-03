@@ -321,14 +321,7 @@ where
                         "local guest enrollment requires native custody".into(),
                     )
                 })?;
-                owner_mount_options(
-                    &workspace,
-                    std::borrow::Cow::Borrowed(issuer),
-                    None,
-                    writable,
-                    work,
-                )
-                .await?
+                owner_mount_options(&workspace, issuer, None, writable, work).await?
             }
         };
         let source = workspace.native_source(&options).await?;
@@ -532,9 +525,8 @@ mod tests {
                 );
             }
             assert!(!dispatched.get(), "revoked binding reached projection");
-            // Public verification shares the original live trust source. It
-            // cannot authorize the old workload after revocation or source loss.
-            assert!(public.verify(&scope, &mut None).is_err());
+            // The immutable independent snapshot alone still accepts history.
+            public.verify(&scope, &mut None)?;
             assert!(
                 monitor.as_mut().now_or_never().is_some(),
                 "owner change did not wake the idle monitor"

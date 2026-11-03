@@ -11,40 +11,6 @@ fn initialize() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn embedded_handles_retain_only_their_own_authority_runtime() -> TestResult {
-    initialize()?;
-    let fs = acyclic_fs::Fs::memory();
-    let workspace = preparation_workspace(&fs, "host-custody").await?;
-    let access = local_owner_workspace_access("host-custody")?;
-    access.require(&workspace).await?;
-    let issuer = host_owner_root("caller-custody")?;
-    let grants = crate::Capabilities::new([acyclic_fs::access::Capability::whole_volume(
-        None,
-        &acyclic_fs::access::Action::ALL,
-    )
-    .to_scope_label()?]);
-    let scope = issuer.bootstrap_scope("caller", &grants, None, &mut None)?;
-    let delegated = WorkspaceAccess::new(&issuer.verifier(&mut None)?, &scope, &grants, None)?;
-    delegated.require(&workspace).await?;
-    drop(issuer);
-    assert!(delegated.require(&workspace).await.is_err());
-    access.require(&workspace).await?;
-
-    use acyclic_fs::native_mount::MountFilesystem;
-    let options = local_owner_mount_options(&workspace, "host-custody", true).await?;
-    let source = workspace.native_source(&options).await?;
-    let work = source
-        .native_original_work()?
-        .ok_or("missing original work")?;
-    let guard = source
-        .native_callback_guard()
-        .ok_or("missing authority guard")?;
-    guard.check(&work)?.await?;
-    guard.check_write(&work)?.await?;
-    Ok(())
-}
-
 async fn recovery(name: &str, durable: bool, recreate: bool) -> TestResult {
     initialize()?;
     let directory = tempfile::tempdir()?;

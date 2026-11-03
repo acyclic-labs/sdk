@@ -64,14 +64,7 @@ where
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
     let issuer = host_owner_root(owner)?;
-    owner_mount_options(
-        workspace,
-        std::borrow::Cow::Owned(issuer),
-        None,
-        writable,
-        &work,
-    )
-    .await
+    owner_mount_options(workspace, &issuer, None, writable, &work).await
 }
 
 /// Authenticate the embedded host identity for the shared raw-workspace facade.
@@ -84,10 +77,7 @@ pub fn local_owner_workspace_access(owner: &str) -> Result<WorkspaceAccess> {
         .to_scope_label()
         .map_err(|_| Error::FilesystemAccessConfiguration("host workspace"))?]);
     let scope = issuer.bootstrap_scope("host-workspace", &grants, None, &mut None)?;
-    Ok(
-        WorkspaceAccess::new(&issuer.verifier(&mut None)?, &scope, &grants, None)?
-            .with_owner(issuer),
-    )
+    WorkspaceAccess::new(&issuer.verifier(&mut None)?, &scope, &grants, None)
 }
 
 fn host_owner_root(owner: &str) -> Result<crate::core::AuthorityRoot> {
