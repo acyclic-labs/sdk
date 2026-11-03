@@ -80,45 +80,7 @@ fn producer_fields_replace_stale_values_before_original_terminal()
             for restore in [false, true] {
                 for abandon in [false, true] {
                     tracing::dispatcher::with_default(&dispatch, || {
-                        // Creation and deferred records use the same projection.
-                        let span = tracing::info_span!(
-                            "acyclic.harness.executor.publication",
-                            outcome = tracing::field::Empty,
-                            work.items = invalid,
-                            work.bytes = invalid,
-                            work.durability = invalid,
-                            rpc = invalid,
-                            data = invalid,
-                            control = invalid,
-                        );
-                        let known = || {
-                            span.record("work.items", 0_u64)
-                                .record("work.bytes", u64::MAX)
-                                .record("work.durability", 2_u64)
-                                .record("rpc", "tool-settlement")
-                                .record("data", "result-and-projection")
-                                .record("control", "conditional-journal-append");
-                        };
-                        known();
-                        let cost = acyclic_test_support::measure(|| {
-                            span.record("work.items", invalid)
-                                .record("work.bytes", invalid)
-                                .record("work.durability", invalid)
-                                .record("rpc", invalid)
-                                .record("data", invalid)
-                                .record("control", invalid);
-                        });
-                        assert_eq!(cost.count_total, 0, "invalidation allocated scratch");
-                        if restore {
-                            known();
-                        }
-                        if !abandon {
-                            span.record("outcome", "ok");
-                            // The original terminal freezes both known and
-                            // unknown evidence, despite retained span handles.
-                            known();
-                            span.record("work.bytes", invalid).record("data", invalid);
-                        }
+                        replace_producer_fields(invalid, restore, abandon);
                     });
                     let record = ready(records.recv())?.ok_or("original work terminal absent")?;
                     assert_eq!(
@@ -199,7 +161,7 @@ fn named_operation_keeps_fields_and_context_through_completion_and_drop()
                     result.as_ref().err().map(|_| "closed")
                 },
                 acyclic_native_runtime::obs::OperationSpan::new,
-                async { event.await },
+                event,
                 rpc.code = tracing::field::Empty,
             )
         });
@@ -251,15 +213,6 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
-    // IDs come from this test's original admission, never from native descriptors
-    // or a parent lookup. Different admissions may legitimately reuse these IDs.
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct Key {
-        authority: u64,
-        operation: u64,
-        generation: u64,
-        physical_owner: u64,
-    }
     let key = Key {
         authority: 1,
         operation: 2,
@@ -292,7 +245,7 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         });
         // An explicit root cannot steal the ambient operation's provenance.
         bridge.in_scope(|| {
-            drop(tracing::info_span!(parent: None, "acyclic.test.unbound", outcome = "ok"))
+            drop(tracing::info_span!(parent: None, "acyclic.test.unbound", outcome = "ok"));
         });
         Ok::<_, Box<dyn std::error::Error>>((binding, work, bridge.id()))
     })?;
@@ -335,22 +288,7 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
         Some(&key)
     );
 
-    // Equal user IDs in another registry are not the original admission.
-    let unrelated = tracing::dispatcher::with_default(
-        &tracing::Dispatch::new(
-            tracing_subscriber::registry().with(Operations(Metrics::default())),
-        ),
-        || {
-            let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
-            Ok::<_, Box<dyn std::error::Error>>(Binding::attach(
-                &root,
-                key,
-                admission.clone().try_acquire_owned()?,
-            )?)
-        },
-    )?;
-    assert!(!unrelated.matches(&terminal.sample()));
-    drop(unrelated);
+    assert_foreign_binding(key, &admission, &terminal)?;
     drop(binding);
     assert_eq!(
         admission.available_permits(),
@@ -363,27 +301,7 @@ fn admitted_identity_survives_original_worker_and_credited_terminal_retirement()
     assert_eq!(admission.available_permits(), 2);
     assert_eq!(records.available_permits(), 8);
 
-    // Lost producers retain both incomplete disposition and original binding.
-    tracing::dispatcher::with_default(&dispatch, || {
-        let span = tracing::info_span!("acyclic.test.lost", outcome = tracing::field::Empty);
-        Binding::attach(&span, key, admission.clone().try_acquire_owned()?)?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    let lost = ready(output.recv())?.ok_or("lost producer terminal absent")?;
-    assert_eq!(lost.sample().outcome, Outcome::Incomplete);
-    assert!(lost.sample().binding.is_some());
-    drop(lost);
-    tracing::dispatcher::with_default(&dispatch, || {
-        let span = tracing::info_span!("acyclic.test.completed", outcome = "ok");
-        assert_eq!(
-            Binding::attach(&span, key, admission.clone().try_acquire_owned()?).unwrap_err(),
-            BindingError::Completed
-        );
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    drop(ready(output.recv())?.ok_or("completed terminal absent")?);
-    assert_eq!(admission.available_permits(), 2);
-    assert_eq!(export.stats().retained, 0);
+    assert_binding_terminals(&dispatch, key, &admission, &export, &mut output)?;
     assert_bounded_detail_cost()?;
     Ok(())
 }
@@ -409,7 +327,7 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
             let permit = credit.clone().try_acquire_owned()?;
             let mut binding = None;
             let admission = acyclic_test_support::measure(|| {
-                binding = Some(Binding::attach(&root, 17_u64, permit))
+                binding = Some(Binding::attach(&root, 17_u64, permit));
             });
             assert_eq!(
                 admission.count_total, 1,
@@ -457,48 +375,14 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
     let permit = credit.clone().try_acquire_owned()?;
     let disabled = acyclic_test_support::measure(|| {
         assert_eq!(
-            Binding::attach(&tracing::Span::none(), 17_u64, permit).unwrap_err(),
-            BindingError::SpanUnavailable
+            Binding::attach(&tracing::Span::none(), 17_u64, permit).err(),
+            Some(BindingError::SpanUnavailable)
         );
     });
     assert_eq!(disabled.count_total, 0);
     assert_eq!(credit.available_permits(), 1);
 
-    // A per-layer filtered immediate parent is unknown; searching through it
-    // would both change the original edge and add depth-dependent work.
-    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
-    struct Keep;
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Keep {}
-    let dispatch = tracing::Dispatch::new(
-        tracing_subscriber::registry()
-            .with(
-                Operations(export).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-                    metadata.name() != "hidden.parent"
-                })),
-            )
-            .with(Keep),
-    );
-    tracing::dispatcher::with_default(&dispatch, || {
-        let root = tracing::info_span!(parent: None, "acyclic.test.filtered_owner", outcome = tracing::field::Empty);
-        let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
-        let hidden = tracing::info_span!(parent: &root, "hidden.parent");
-        drop(tracing::info_span!(parent: &hidden, "acyclic.test.filtered_bound", outcome = "ok"));
-        let record = ready(output.recv())?.ok_or("filtered child terminal absent")?;
-        assert!(record.sample().binding.is_none());
-        assert!(!binding.matches(&record.sample()));
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    drop(ready(output.recv())?.ok_or("filtered owner's terminal absent")?);
-    let unobserved = tracing::Dispatch::new(tracing_subscriber::registry());
-    tracing::dispatcher::with_default(&unobserved, || {
-        let span = tracing::info_span!("acyclic.test.unobserved", outcome = tracing::field::Empty);
-        assert_eq!(
-            Binding::attach(&span, 17_u64, credit.clone().try_acquire_owned()?).unwrap_err(),
-            BindingError::UnobservedSpan
-        );
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    assert_eq!(credit.available_permits(), 1);
+    assert_filtered_admission(&credit)?;
     Ok(())
 }
 
@@ -587,112 +471,7 @@ fn exported_evidence_retains_original_parent_and_native_field_contract()
     assert!(closed.contains(&unrelated), "worker retained its caller");
     assert!(closed.contains(failed.sample().span_id));
 
-    // Exercise the producer's field contract through the real registry and
-    // credited sink. This checks projection, not an additional native hook.
-    use acyclic_observability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};
-    let native = std::fs::File::open("").expect_err("an empty path cannot open a file");
-    let code = native.raw_os_error().ok_or("native error code absent")?;
-    let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
-    let field_dispatch =
-        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields.clone())));
-    for (requested, syscall, expected) in [
-        ("full", "fsync", Some(DurabilitySyscall::Fsync)),
-        ("full", "fdatasync", Some(DurabilitySyscall::Fdatasync)),
-        ("full", "F_FULLFSYNC", Some(DurabilitySyscall::FullFsync)),
-        (
-            "barrier",
-            "F_BARRIERFSYNC",
-            Some(DurabilitySyscall::BarrierFsync),
-        ),
-        (
-            "full",
-            "FlushFileBuffers",
-            Some(DurabilitySyscall::FlushFileBuffers),
-        ),
-        ("full", "syncfs", Some(DurabilitySyscall::Syncfs)),
-        ("unrecognized", "unrecognized", None),
-    ] {
-        tracing::dispatcher::with_default(&field_dispatch, || {
-            let span = tracing::info_span!(
-                "acyclic.runtime.durability",
-                requested,
-                syscall,
-                descriptor = 0_u64,
-                error.os = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-            );
-            span.record("error.os", code);
-            // A later generic/overwritten error must not replace original evidence.
-            span.record("error.os", i64::from(code) + 1);
-            span.record("outcome", "err");
-        });
-        let record = ready(field_output.recv())?.ok_or("typed attempt sample absent")?;
-        let attempt = record.sample().durability.ok_or("attempt fields absent")?;
-        assert_eq!(attempt.syscall, expected);
-        assert_eq!(attempt.descriptor, Some(0), "zero is a present opaque ID");
-        assert_eq!(attempt.os_error, Some(code), "first native code was lost");
-        assert_eq!(
-            attempt.requested,
-            match requested {
-                "full" => Some(DurabilityRequest::Full),
-                "barrier" => Some(DurabilityRequest::Barrier),
-                _ => None,
-            }
-        );
-    }
-    tracing::dispatcher::with_default(&field_dispatch, || {
-        drop(tracing::info_span!(
-            "acyclic.runtime.durability",
-            error.os = i64::MAX,
-            outcome = "err",
-        ));
-    });
-    let absent = ready(field_output.recv())?.ok_or("unknown attempt sample absent")?;
-    assert_eq!(
-        absent.sample().durability,
-        Some(DurabilityAttempt::default())
-    );
-    drop(absent);
-    tracing::dispatcher::with_default(&field_dispatch, || {
-        let span = tracing::info_span!(
-            "acyclic.runtime.durability",
-            requested = tracing::field::Empty,
-            syscall = tracing::field::Empty,
-            descriptor = tracing::field::Empty,
-            error.os = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-        );
-        span.record("requested", "barrier");
-        span.record("syscall", "F_BARRIERFSYNC");
-        span.record("descriptor", 0_u64);
-        span.record("error.os", code);
-        // Separately recorded fields keep their first original value.
-        span.record("requested", "full");
-        span.record("syscall", "fsync");
-        span.record("descriptor", 1_u64);
-        span.record("outcome", "err");
-        // Completion freezes the same record, even while its span is retained.
-        span.record("requested", "full");
-        span.record("syscall", "syncfs");
-        span.record("descriptor", 2_u64);
-        span.record("outcome", "ok");
-    });
-    let deferred = ready(field_output.recv())?.ok_or("deferred attempt sample absent")?;
-    assert_eq!(deferred.sample().outcome, Outcome::Err);
-    assert_eq!(
-        deferred.sample().durability,
-        Some(DurabilityAttempt {
-            requested: Some(DurabilityRequest::Barrier),
-            syscall: Some(DurabilitySyscall::BarrierFsync),
-            descriptor: Some(0),
-            os_error: Some(code),
-        })
-    );
-    assert_eq!(
-        fields.stats().full,
-        Some(0),
-        "completion emitted duplicate output"
-    );
+    assert_native_field_contract()?;
     Ok(())
 }
 
@@ -700,27 +479,9 @@ fn exported_evidence_retains_original_parent_and_native_field_contract()
 fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Export, Outcome, Sink};
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::sync::{Arc, mpsc};
-    use tokio::sync::{Semaphore, oneshot};
-    #[derive(Clone, Default)]
-    struct OriginalCause {
-        pointer: Arc<AtomicUsize>,
-        closed: Arc<AtomicU64>,
-    }
-    impl Sink for OriginalCause {
-        fn record(&self, sample: &acyclic_observability::Sample<'_>) {
-            if let Some(kind) = sample.error_kind {
-                self.pointer
-                    .store(kind.as_ptr() as usize, Ordering::Relaxed);
-            }
-        }
-    }
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OriginalCause {
-        fn on_close(&self, id: tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-            self.closed.store(id.into_u64(), Ordering::Relaxed);
-        }
-    }
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::Semaphore;
     let original_cause = OriginalCause::default();
     let credit = Arc::new(Semaphore::new(1));
     let (export, mut output) = Export::channel(credit.clone(), true);
@@ -735,16 +496,7 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
             ))),
     );
     let baseline = export.stats();
-    let (send, receive) = mpsc::channel::<()>();
-    drop(send);
-    let nested = std::io::Error::new(
-        std::io::ErrorKind::BrokenPipe,
-        receive.recv().err().ok_or("producer unexpectedly alive")?,
-    );
-    let nested_kind = acyclic_native_runtime::obs::kind(&nested);
-    let original = std::io::Error::other(nested);
-    // The flattening negative control loses the actual channel producer cause.
-    assert_ne!(acyclic_native_runtime::obs::kind(&original), nested_kind);
+    let (original, nested_kind) = original_channel_cause()?;
     let original = tracing::dispatcher::with_default(&dispatch, || {
         let span = tracing::info_span!(
             "acyclic.test.export",
@@ -767,26 +519,7 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
     let held = ready(output.recv())?.ok_or("terminal output absent")?;
     assert_eq!(held.sample().outcome, Outcome::Err);
     assert_eq!(held.sample().error_kind, Some(nested_kind));
-    let kind = held
-        .sample()
-        .error_kind
-        .ok_or("original failure category absent")?;
-    assert_eq!(
-        kind.as_ptr() as usize,
-        original_cause.pointer.load(Ordering::Relaxed),
-        "export copied the collector's original category"
-    );
-    assert_eq!(
-        held.sample().span_id.into_u64(),
-        original_cause.closed.load(Ordering::Relaxed),
-        "retained output held the original span open or lost its registry identity"
-    );
-    let copied = kind.to_owned();
-    assert_ne!(
-        kind.as_ptr(),
-        copied.as_ptr(),
-        "negative control failed to detect a copied field"
-    );
+    assert_borrowed_cause(&held, &original_cause)?;
     let refused = acyclic_test_support::measure(|| export.record(&held.sample()));
     assert_eq!(
         refused.count_total, 0,
@@ -798,29 +531,7 @@ fn credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink()
         "dequeue released consumer-owned credit"
     );
 
-    // The output consumer holds its only credit. Cancelling original work must
-    // still retire its receiver and update the independent selected query.
-    let (send, receive) = oneshot::channel::<()>();
-    tracing::dispatcher::with_default(&dispatch, || {
-        let span = tracing::info_span!(
-            "acyclic.test.export",
-            outcome = tracing::field::Empty,
-            error.kind = tracing::field::Empty
-        );
-        let future = acyclic_observability::observe(&span, receive, |_| "producer_closed");
-        let mut future = Box::pin(future);
-        assert!(
-            future
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        );
-        drop(future);
-    });
-    assert!(
-        send.send(()).is_err(),
-        "blocked output retained cancelled work"
-    );
+    cancel_original_export(&dispatch);
     assert_eq!((query.snapshot().err, query.snapshot().incomplete), (1, 1));
     drop(held);
     let after = export.stats();
@@ -860,15 +571,6 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    struct WakeCount(AtomicUsize);
-    impl std::task::Wake for WakeCount {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
     let metrics = Metrics::default();
     let mut query = metrics.query("acyclic.test.operation");
     let mut unrelated = metrics.query("acyclic.test.unrelated");
@@ -883,7 +585,7 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
         let span = tracing::info_span!("acyclic.test.operation", outcome = tracing::field::Empty);
         span.record("outcome", "ok");
         span.record("outcome", "err"); // Duplicate completion must not change the first terminal result.
-        span.clone()
+        span
     });
     assert!(
         wakes.0.load(Ordering::Relaxed) > 0,
@@ -910,19 +612,7 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
     let last = ready(query.changed())??;
     assert_eq!((last.ok, last.err, last.incomplete), (1, 1, 1));
     assert_eq!(last.latency_ns.iter().sum::<u64>(), 3);
-    let mut counts = None;
-    let copied = acyclic_test_support::measure(|| {
-        counts = query.outcome_counts();
-    });
-    assert_eq!(counts, Some([1, 1, 1]));
-    assert_eq!(copied.count_total, 0);
-    assert_eq!(copied.bytes_total, 0);
-    // The original owned projection is the concrete extra-copy negative.
-    let owned = acyclic_test_support::measure(|| {
-        std::hint::black_box(query.snapshot());
-    });
-    assert!(owned.count_total > copied.count_total);
-    assert!(owned.bytes_total >= u64::try_from(last.latency_ns.len() * size_of::<u64>())?);
+    assert_query_projection(&query, &last)?;
     // Negative schedule: a child retains the span after its producer future is
     // abandoned. The owner, rather than the last tracing handle, must notify.
     let (retained, abandoned) = tracing::dispatcher::with_default(&dispatch, || {
@@ -1269,5 +959,402 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
             "unexpected syscall count {calls}: {trace}"
         );
     }
+    Ok(())
+}
+
+fn replace_producer_fields(invalid: &dyn tracing::field::Value, restore: bool, abandon: bool) {
+    // Creation and deferred records use the same projection.
+    let span = tracing::info_span!(
+        "acyclic.harness.executor.publication",
+        outcome = tracing::field::Empty,
+        work.items = invalid,
+        work.bytes = invalid,
+        work.durability = invalid,
+        rpc = invalid,
+        data = invalid,
+        control = invalid,
+    );
+    let known = || {
+        span.record("work.items", 0_u64)
+            .record("work.bytes", u64::MAX)
+            .record("work.durability", 2_u64)
+            .record("rpc", "tool-settlement")
+            .record("data", "result-and-projection")
+            .record("control", "conditional-journal-append");
+    };
+    known();
+    let cost = acyclic_test_support::measure(|| {
+        span.record("work.items", invalid)
+            .record("work.bytes", invalid)
+            .record("work.durability", invalid)
+            .record("rpc", invalid)
+            .record("data", invalid)
+            .record("control", invalid);
+    });
+    assert_eq!(cost.count_total, 0, "invalidation allocated scratch");
+    if restore {
+        known();
+    }
+    if !abandon {
+        span.record("outcome", "ok");
+        // The original terminal freezes both known and
+        // unknown evidence, despite retained span handles.
+        known();
+        span.record("work.bytes", invalid).record("data", invalid);
+    }
+}
+
+// IDs come from this test's original admission, never from native descriptors
+// or a parent lookup. Different admissions may legitimately reuse these IDs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Key {
+    authority: u64,
+    operation: u64,
+    generation: u64,
+    physical_owner: u64,
+}
+
+struct WakeCount(std::sync::atomic::AtomicUsize);
+impl std::task::Wake for WakeCount {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn assert_binding_terminals(
+    dispatch: &tracing::Dispatch,
+    key: Key,
+    admission: &std::sync::Arc<tokio::sync::Semaphore>,
+    export: &acyclic_observability::Export,
+    output: &mut acyclic_observability::ExportReceiver,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Binding, BindingError, Outcome};
+    // Lost producers retain both incomplete disposition and original binding.
+    tracing::dispatcher::with_default(dispatch, || {
+        let span = tracing::info_span!("acyclic.test.lost", outcome = tracing::field::Empty);
+        Binding::attach(&span, key, admission.clone().try_acquire_owned()?)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    let lost = ready(output.recv())?.ok_or("lost producer terminal absent")?;
+    assert_eq!(lost.sample().outcome, Outcome::Incomplete);
+    assert!(lost.sample().binding.is_some());
+    drop(lost);
+    tracing::dispatcher::with_default(dispatch, || {
+        let span = tracing::info_span!("acyclic.test.completed", outcome = "ok");
+        assert_eq!(
+            Binding::attach(&span, key, admission.clone().try_acquire_owned()?).unwrap_err(),
+            BindingError::Completed
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    drop(ready(output.recv())?.ok_or("completed terminal absent")?);
+    assert_eq!(admission.available_permits(), 2);
+    assert_eq!(export.stats().retained, 0);
+    Ok(())
+}
+
+fn assert_filtered_admission(
+    credit: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{Binding, BindingError, Export};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+    // A per-layer filtered immediate parent is unknown; searching through it
+    // would both change the original edge and add depth-dependent work.
+    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
+    struct Keep;
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Keep {}
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(
+                Operations(export).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.name() != "hidden.parent"
+                })),
+            )
+            .with(Keep),
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        let root = tracing::info_span!(parent: None, "acyclic.test.filtered_owner", outcome = tracing::field::Empty);
+        let binding = Binding::attach(&root, 17_u64, credit.clone().try_acquire_owned()?)?;
+        let hidden = tracing::info_span!(parent: &root, "hidden.parent");
+        drop(tracing::info_span!(parent: &hidden, "acyclic.test.filtered_bound", outcome = "ok"));
+        let record = ready(output.recv())?.ok_or("filtered child terminal absent")?;
+        assert!(record.sample().binding.is_none());
+        assert!(!binding.matches(&record.sample()));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    drop(ready(output.recv())?.ok_or("filtered owner's terminal absent")?);
+    let unobserved = tracing::Dispatch::new(tracing_subscriber::registry());
+    tracing::dispatcher::with_default(&unobserved, || {
+        let span = tracing::info_span!("acyclic.test.unobserved", outcome = tracing::field::Empty);
+        assert_eq!(
+            Binding::attach(&span, 17_u64, credit.clone().try_acquire_owned()?).err(),
+            Some(BindingError::UnobservedSpan)
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    assert_eq!(credit.available_permits(), 1);
+    Ok(())
+}
+
+fn assert_native_field_contract() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::Export;
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+    // Exercise the producer's field contract through the real registry and
+    // credited sink. This checks projection, not an additional native hook.
+    use acyclic_observability::{DurabilityRequest, DurabilitySyscall};
+    let native = std::fs::File::open("").expect_err("an empty path cannot open a file");
+    let code = native.raw_os_error().ok_or("native error code absent")?;
+    let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
+    let field_dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields.clone())));
+    for (requested, syscall, expected) in [
+        ("full", "fsync", Some(DurabilitySyscall::Fsync)),
+        ("full", "fdatasync", Some(DurabilitySyscall::Fdatasync)),
+        ("full", "F_FULLFSYNC", Some(DurabilitySyscall::FullFsync)),
+        (
+            "barrier",
+            "F_BARRIERFSYNC",
+            Some(DurabilitySyscall::BarrierFsync),
+        ),
+        (
+            "full",
+            "FlushFileBuffers",
+            Some(DurabilitySyscall::FlushFileBuffers),
+        ),
+        ("full", "syncfs", Some(DurabilitySyscall::Syncfs)),
+        ("unrecognized", "unrecognized", None),
+    ] {
+        tracing::dispatcher::with_default(&field_dispatch, || {
+            let span = tracing::info_span!(
+                "acyclic.runtime.durability",
+                requested,
+                syscall,
+                descriptor = 0_u64,
+                error.os = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+            );
+            span.record("error.os", code);
+            // A later generic/overwritten error must not replace original evidence.
+            span.record("error.os", i64::from(code) + 1);
+            span.record("outcome", "err");
+        });
+        let record = ready(field_output.recv())?.ok_or("typed attempt sample absent")?;
+        let attempt = record.sample().durability.ok_or("attempt fields absent")?;
+        assert_eq!(attempt.syscall, expected);
+        assert_eq!(attempt.descriptor, Some(0), "zero is a present opaque ID");
+        assert_eq!(attempt.os_error, Some(code), "first native code was lost");
+        assert_eq!(
+            attempt.requested,
+            match requested {
+                "full" => Some(DurabilityRequest::Full),
+                "barrier" => Some(DurabilityRequest::Barrier),
+                _ => None,
+            }
+        );
+    }
+    assert_deferred_durability(&field_dispatch, &fields, &mut field_output, code)?;
+    Ok(())
+}
+
+#[derive(Clone, Default)]
+struct OriginalCause {
+    pointer: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+impl acyclic_observability::Sink for OriginalCause {
+    fn record(&self, sample: &acyclic_observability::Sample<'_>) {
+        if let Some(kind) = sample.error_kind {
+            self.pointer
+                .store(kind.as_ptr() as usize, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OriginalCause {
+    fn on_close(&self, id: tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+        self.closed
+            .store(id.into_u64(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn cancel_original_export(dispatch: &tracing::Dispatch) {
+    use tokio::sync::oneshot;
+    // The output consumer holds its only credit. Cancelling original work must
+    // still retire its receiver and update the independent selected query.
+    let (send, receive) = oneshot::channel::<()>();
+    tracing::dispatcher::with_default(dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.test.export",
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        );
+        let future = acyclic_observability::observe(&span, receive, |_| "producer_closed");
+        let mut future = Box::pin(future);
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        drop(future);
+    });
+    assert!(
+        send.send(()).is_err(),
+        "blocked output retained cancelled work"
+    );
+}
+
+fn assert_foreign_binding(
+    key: Key,
+    admission: &std::sync::Arc<tokio::sync::Semaphore>,
+    terminal: &acyclic_observability::ExportRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::Binding;
+    // Equal user IDs in another registry are not the original admission.
+    let unrelated = tracing::dispatcher::with_default(
+        &tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Operations(Metrics::default())),
+        ),
+        || {
+            let root = tracing::info_span!(parent: None, "acyclic.test.admitted_owner", outcome = tracing::field::Empty);
+            Ok::<_, Box<dyn std::error::Error>>(Binding::attach(
+                &root,
+                key,
+                admission.clone().try_acquire_owned()?,
+            )?)
+        },
+    )?;
+    assert!(!unrelated.matches(&terminal.sample()));
+    drop(unrelated);
+    Ok(())
+}
+
+fn original_channel_cause() -> Result<(std::io::Error, &'static str), Box<dyn std::error::Error>> {
+    use std::sync::mpsc;
+    let (send, receive) = mpsc::channel::<()>();
+    drop(send);
+    let nested = std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        receive.recv().err().ok_or("producer unexpectedly alive")?,
+    );
+    let nested_kind = acyclic_native_runtime::obs::kind(&nested);
+    let original = std::io::Error::other(nested);
+    // The flattening negative control loses the actual channel producer cause.
+    assert_ne!(acyclic_native_runtime::obs::kind(&original), nested_kind);
+    Ok((original, nested_kind))
+}
+
+fn assert_query_projection(
+    query: &acyclic_observability::Query,
+    last: &acyclic_observability::Snapshot,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut counts = None;
+    let copied = acyclic_test_support::measure(|| {
+        counts = query.outcome_counts();
+    });
+    assert_eq!(counts, Some([1, 1, 1]));
+    assert_eq!(copied.count_total, 0);
+    assert_eq!(copied.bytes_total, 0);
+    // The original owned projection is the concrete extra-copy negative.
+    let owned = acyclic_test_support::measure(|| {
+        std::hint::black_box(query.snapshot());
+    });
+    assert!(owned.count_total > copied.count_total);
+    assert!(owned.bytes_total >= u64::try_from(last.latency_ns.len() * size_of::<u64>())?);
+    Ok(())
+}
+
+fn assert_deferred_durability(
+    field_dispatch: &tracing::Dispatch,
+    fields: &acyclic_observability::Export,
+    field_output: &mut acyclic_observability::ExportReceiver,
+    code: i32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_observability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall, Outcome};
+    tracing::dispatcher::with_default(field_dispatch, || {
+        drop(tracing::info_span!(
+            "acyclic.runtime.durability",
+            error.os = i64::MAX,
+            outcome = "err",
+        ));
+    });
+    let absent = ready(field_output.recv())?.ok_or("unknown attempt sample absent")?;
+    assert_eq!(
+        absent.sample().durability,
+        Some(DurabilityAttempt::default())
+    );
+    drop(absent);
+    tracing::dispatcher::with_default(field_dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.runtime.durability",
+            requested = tracing::field::Empty,
+            syscall = tracing::field::Empty,
+            descriptor = tracing::field::Empty,
+            error.os = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        span.record("requested", "barrier");
+        span.record("syscall", "F_BARRIERFSYNC");
+        span.record("descriptor", 0_u64);
+        span.record("error.os", code);
+        // Separately recorded fields keep their first original value.
+        span.record("requested", "full");
+        span.record("syscall", "fsync");
+        span.record("descriptor", 1_u64);
+        span.record("outcome", "err");
+        // Completion freezes the same record, even while its span is retained.
+        span.record("requested", "full");
+        span.record("syscall", "syncfs");
+        span.record("descriptor", 2_u64);
+        span.record("outcome", "ok");
+    });
+    let deferred = ready(field_output.recv())?.ok_or("deferred attempt sample absent")?;
+    assert_eq!(deferred.sample().outcome, Outcome::Err);
+    assert_eq!(
+        deferred.sample().durability,
+        Some(DurabilityAttempt {
+            requested: Some(DurabilityRequest::Barrier),
+            syscall: Some(DurabilitySyscall::BarrierFsync),
+            descriptor: Some(0),
+            os_error: Some(code),
+        })
+    );
+    assert_eq!(
+        fields.stats().full,
+        Some(0),
+        "completion emitted duplicate output"
+    );
+    Ok(())
+}
+
+fn assert_borrowed_cause(
+    held: &acyclic_observability::ExportRecord,
+    original_cause: &OriginalCause,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering;
+    let kind = held
+        .sample()
+        .error_kind
+        .ok_or("original failure category absent")?;
+    assert_eq!(
+        kind.as_ptr() as usize,
+        original_cause.pointer.load(Ordering::Relaxed),
+        "export copied the collector's original category"
+    );
+    assert_eq!(
+        held.sample().span_id.into_u64(),
+        original_cause.closed.load(Ordering::Relaxed),
+        "retained output held the original span open or lost its registry identity"
+    );
+    let copied = kind.to_owned();
+    assert_ne!(
+        kind.as_ptr(),
+        copied.as_ptr(),
+        "negative control failed to detect a copied field"
+    );
     Ok(())
 }

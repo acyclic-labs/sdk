@@ -250,12 +250,14 @@ async fn formatting_cost() -> io::Result<()> {
         result = output.record(|buffer| write!(buffer, "original {}", 19));
     });
     result.map_err(io::Error::other)?;
+    assert_eq!((direct.count_total, direct.bytes_total), (0, 0));
     drop(
         receiver
             .recv()
             .await
             .ok_or_else(|| io::Error::other("terminal producer closed"))?,
     );
+    let mut result = Ok(());
     let copied = acyclic_test_support::measure(|| {
         result = output.record(|buffer| {
             let extra = std::hint::black_box(format!("original {}", 19));
