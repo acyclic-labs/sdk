@@ -346,8 +346,19 @@ async fn check_replies(
         let allocator = EngineAllocator::new(Some(&work));
         let failure = allocator.failure();
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
+        let source = if kind == 2 {
+            // Ask the original engine about syntax in the same execution. A
+            // valid JSON scalar need not be a reply envelope; this relation
+            // only requires malformed frames to preserve their refusal.
+            format!(
+                "let parseable = true; try {{ JSON.parse({literal}); }} \
+                 catch {{ parseable = false; }} {source}; ({{parseable,outcome:result}})"
+            )
+        } else {
+            source.clone()
+        };
         let run = interpreter::run(
-            source.clone(),
+            source,
             definitions.clone(),
             send,
             tokio_util::sync::CancellationToken::new(),
@@ -376,8 +387,23 @@ async fn check_replies(
                 },
                 "the original host reply must preserve its value and refusal"
             );
-        } else if !failed && std::str::from_utf8(input).is_err() {
-            assert_eq!(result.unwrap()["ok"], false, "invalid UTF-8 must refuse");
+        } else if !failed {
+            let report = match result {
+                Ok(report) => report,
+                Err(error) => {
+                    assert_eq!(error, "JavaScript result exceeds admitted output");
+                    continue;
+                }
+            };
+            let parseable = report["parseable"]
+                .as_bool()
+                .expect("the original engine must report raw reply syntax");
+            if std::str::from_utf8(input).is_err() || !parseable {
+                assert_eq!(
+                    report["outcome"]["ok"], false,
+                    "malformed host JSON must retain its parse refusal"
+                );
+            }
         }
     }
 }
