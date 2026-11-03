@@ -523,12 +523,15 @@ mod tests {
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime().unwrap();
         let error = runtime
-            .block_on(super::spawn_persistence(
-                "local",
-                "panic",
-                super::PersistenceKey::new(19, 0),
-                || panic!("original persistence failure"),
-            ))
+            .block_on(async {
+                super::spawn_persistence(
+                    "local",
+                    "panic",
+                    super::PersistenceKey::new(19, 0),
+                    || panic!("original persistence failure"),
+                )
+                .await
+            })
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         let mut bytes = Vec::new();

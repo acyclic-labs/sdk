@@ -629,10 +629,13 @@ impl<'a> Pump<'a> {
         self.restore(tree);
         // Cleanup errors take precedence: a capture timeout alone does not
         // describe an unresolved termination. Keep Child ownership on error.
-        let status = self.status;
-        let result = tree.capture_terminate(meter).and(result).and_then(|()| {
-            status.ok_or_else(|| io::Error::other("capture completed without an exit status"))
-        });
+        let result = tree
+            .capture_terminate(meter, &mut self.status)
+            .and(result)
+            .and_then(|()| {
+                self.status
+                    .ok_or_else(|| io::Error::other("capture completed without an exit status"))
+            });
         let [stdout, stderr] = self.output;
         match result {
             Ok(status) => Ok(Output {

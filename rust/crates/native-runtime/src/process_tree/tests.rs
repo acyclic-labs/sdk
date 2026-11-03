@@ -107,7 +107,12 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
         )
         .expect_err("undelivered exchange input must fail");
     assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
-    assert!(failure.status.is_some());
+    assert_eq!(
+        failure
+            .status
+            .and_then(|status| { std::os::unix::process::ExitStatusExt::signal(&status) }),
+        Some(libc::SIGKILL)
+    );
     assert!(failure.cleanup_completed);
     Ok(())
 }

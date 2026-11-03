@@ -1157,7 +1157,7 @@ impl ProcessTree {
                 // Cleanup of an unstarted capture may block; it runs on the
                 // pool like every other turn. Observe the original physical
                 // result before dropping its owner, as a running pump does.
-                if let Err(error) = self.capture_terminate(None) {
+                if let Err(error) = self.capture_terminate(None, &mut failure.status) {
                     failure.error = error;
                 }
                 failure.cleanup_completed = self.is_reaped();
@@ -1213,7 +1213,7 @@ impl ProcessTree {
     /// Terminates containment and reaps the direct child.
     pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         if meter.is_some() {
-            return self.capture_terminate(meter);
+            return self.capture_terminate(meter, &mut None);
         }
         let operation = obs::span!(
             INFO,
@@ -1221,19 +1221,23 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.in_scope(|| operation.finish(self.capture_terminate(meter)))
+        operation.in_scope(|| operation.finish(self.capture_terminate(meter, &mut None)))
     }
 
-    fn capture_terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
+    fn capture_terminate(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        status: &mut Option<ExitStatus>,
+    ) -> io::Result<()> {
         self.select_control_meter(meter);
         #[cfg(unix)]
-        return self.terminate_with_meter(meter);
+        return self.terminate_with_meter(meter, status);
         #[cfg(windows)]
         {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                self.wait_exit(meter)?;
+                *status = Some(self.wait_exit(meter)?);
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
                         process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -1265,12 +1269,13 @@ impl ProcessTree {
     fn terminate_with_meter(
         &mut self,
         meter: Option<&dyn crate::NativeReadMeter>,
+        status: &mut Option<ExitStatus>,
     ) -> io::Result<()> {
         self.spawn_resources.cleanup(meter)?;
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            platform::await_exiting_id(self.owned_child_id()?, meter)?;
+            *status = Some(platform::await_exiting_id(self.owned_child_id()?, meter)?);
             // Only actually retained standard pipes require a release call.
             // Denial keeps the observed leader unreaped and its remaining
             // streams owned by this same tree, rather than hiding their drops
