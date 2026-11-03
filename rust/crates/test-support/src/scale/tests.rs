@@ -37,7 +37,8 @@ fn flat() -> Report {
     let mut report = observed(&[vec![1; 4], vec![1; 4], vec![1; 4]], 0, OPERATIONS[0]);
     for point in &mut report.points {
         let sample = &mut point.samples[0];
-        sample.work.fill(sample.work[0]);
+        let counter = sample.work[0];
+        sample.work.fill(counter);
     }
     report
 }
