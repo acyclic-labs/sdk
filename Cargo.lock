@@ -1236,6 +1236,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-test-support",
  "arrayvec",

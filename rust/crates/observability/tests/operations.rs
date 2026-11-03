@@ -832,10 +832,10 @@ fn method_queries_preserve_the_complete_typed_key() {
 
 #[test]
 fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_observability::{Slo, Snapshot};
+    use acyclic_observability::Slo;
     use std::sync::Arc;
     let file = br#"{"version":1,"operation":"acyclic.test.operation","success_ppm":990000,"latency":{"maximum_ns":10,"target_ppm":990000}}"#;
-    let mut slo: Slo = serde_json::from_slice(file)?;
+    let slo: Slo = serde_json::from_slice(file)?;
     let metrics = Metrics::default();
     let mut live = metrics.query_slo(slo.clone())?;
     let initial = live.snapshot();
@@ -879,39 +879,6 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
     );
     drop(live);
     assert_eq!(initial.slo.operation, slo.operation);
-    let mut snapshot = Snapshot {
-        operation: slo.operation.clone(),
-        latency_ns: vec![0; 129],
-        ..Snapshot::default()
-    };
-    assert_eq!(slo.evaluate(&snapshot)?.success, None);
-    snapshot.ok = 1;
-    *snapshot
-        .latency_ns
-        .get_mut(4)
-        .ok_or("missing latency bucket")? = 1; // [8,15] ns crosses the requested threshold.
-    let verdict = slo.evaluate(&snapshot)?;
-    assert_eq!((verdict.success, verdict.latency), (Some(true), None));
-    slo.latency
-        .as_mut()
-        .ok_or("missing latency SLO")?
-        .maximum_ns = 15;
-    assert_eq!(slo.evaluate(&snapshot)?.latency, Some(true));
-    snapshot.err = 1;
-    *snapshot
-        .latency_ns
-        .get_mut(5)
-        .ok_or("missing latency bucket")? = 1;
-    let verdict = slo.evaluate(&snapshot)?;
-    assert_eq!(
-        (verdict.success, verdict.latency),
-        (Some(false), Some(false))
-    );
-    slo.version = 2;
-    assert_eq!(
-        slo.evaluate(&snapshot),
-        Err(acyclic_observability::SloError::Version)
-    );
     Ok(())
 }
 

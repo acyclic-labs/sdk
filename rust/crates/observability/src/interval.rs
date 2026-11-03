@@ -193,7 +193,7 @@ mod proofs {
     use super::*;
 
     #[kani::proof]
-    fn unix_projection_preserves_duration_or_refuses() {
+    fn unix_projection_admits_exactly_representable_intervals() {
         let anchor = UnixClockAnchor {
             domain: kani::any(),
             observed_unix_ns: kani::any(),
@@ -210,6 +210,18 @@ mod proofs {
         } else if coordinates.finished_ns < coordinates.started_ns {
             assert_eq!(result, Err(IntervalError::Reversed));
         } else {
+            // Independent 129-bit affine range check: subtracting the midpoint
+            // leaves a u128 exactly when addition's carry cancels subtraction's
+            // borrow. This covers admission away from the midpoint as well.
+            let representable = |offset| {
+                let (sum, carry) = anchor.observed_unix_ns.overflowing_add(offset);
+                let (_, borrow) = sum.overflowing_sub(anchor.read_window_ns / 2);
+                carry == borrow
+            };
+            assert_eq!(
+                result.is_ok(),
+                representable(coordinates.started_ns) && representable(coordinates.finished_ns)
+            );
             match result {
                 Ok(estimate) => {
                     assert_eq!(estimate.domain, coordinates.domain);
@@ -233,31 +245,5 @@ mod proofs {
                 Err(error) => assert_eq!(error, IntervalError::UnixRange),
             }
         }
-    }
-
-    #[kani::proof]
-    fn unix_projection_admits_representable_midpoint_intervals() {
-        let anchor = UnixClockAnchor {
-            domain: kani::any(),
-            observed_unix_ns: kani::any(),
-            read_window_ns: kani::any(),
-        };
-        let elapsed: u128 = kani::any();
-        let started_ns = anchor.read_window_ns / 2;
-        let Some(finished_ns) = started_ns.checked_add(elapsed) else {
-            return;
-        };
-        let Some(finished_unix_ns) = anchor.observed_unix_ns.checked_add(elapsed) else {
-            return;
-        };
-        let estimate = anchor
-            .project(IntervalCoordinates {
-                domain: anchor.domain,
-                started_ns,
-                finished_ns,
-            })
-            .expect("representable original midpoint interval");
-        assert_eq!(estimate.started_unix_ns, anchor.observed_unix_ns);
-        assert_eq!(estimate.finished_unix_ns, finished_unix_ns);
     }
 }
