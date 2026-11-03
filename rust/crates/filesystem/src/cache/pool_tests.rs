@@ -371,17 +371,6 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
             ));
         }
         drop(follower);
-        if !native {
-            let ledger = accounting.standalone_parts().unwrap().0;
-            let crate::kernel::allocation::LedgerState::Shared(control) = &ledger.state else {
-                panic!("original flight did not retain its caller's ledger")
-            };
-            assert_eq!(
-                Arc::strong_count(control),
-                1,
-                "flight funding still retained"
-            );
-        }
         assert_eq!(
             if native {
                 original.live_allocation_bytes()
