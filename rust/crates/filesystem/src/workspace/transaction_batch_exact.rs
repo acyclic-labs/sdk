@@ -7,8 +7,9 @@ fn check(invalid: bool, fault: Fault) -> TestCaseResult {
     let expected = &expected[format!("staging.{invalid}")];
     let actual =
         serde_json::json!({ "work": new.2, "allocations": differential::allocation_counts(new.3) });
+    equivalent(&old, &old_trace, &new, &new_trace, invalid)?;
     prop_assert!(
-        old.0 == new.0 && old.1 == new.1 && old_trace == new_trace && actual == *expected,
+        actual == *expected,
         "exact staging work/allocation differs: actual={actual}, expected={expected}"
     );
     Ok(())

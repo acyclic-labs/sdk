@@ -1,0 +1,13 @@
+--- a/rust/crates/protobuf-json/src/lib.rs
++++ b/rust/crates/protobuf-json/src/lib.rs
+@@ -79,6 +79,9 @@
+     let mut json = serde_json::Deserializer::from_slice(bytes);
+     let message = DynamicMessage::deserialize(descriptor, &mut json)
+         .map_err(|cause| error(Error::Json, cause))?;
+-    json.end().map_err(|cause| error(Error::Trailing, cause))?;
++    json.end().map_err(|_cause| error(
++        Error::Trailing,
++        serde_json::Error::io(std::io::Error::other("lost original parser cause")),
++    ))?;
+     Ok(message)
+ }

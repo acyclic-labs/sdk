@@ -1,0 +1,19 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -259,15 +259,7 @@
+         };
+         let condemned = reader.u64()?;
+         reader.finish()?;
+-        Ok(Self {
+-            kind,
+-            length,
+-            stored,
+-            references,
+-            version,
+-            dying,
+-            condemned,
+-        })
++        Err(corrupt())
+     }
+ }
+ 

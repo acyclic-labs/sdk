@@ -1,0 +1,9 @@
+--- a/rust/crates/protobuf-json/src/lib.rs
++++ b/rust/crates/protobuf-json/src/lib.rs
+@@ -79,6 +79,5 @@
+     let mut json = serde_json::Deserializer::from_slice(bytes);
+     let message = DynamicMessage::deserialize(descriptor, &mut json)
+         .map_err(|cause| error(Error::Json, cause))?;
+-    json.end().map_err(|cause| error(Error::Trailing, cause))?;
+     Ok(message)
+ }

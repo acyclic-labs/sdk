@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/grpc.rs b/rust/crates/objects/src/grpc.rs
+--- a/rust/crates/objects/src/grpc.rs
++++ b/rust/crates/objects/src/grpc.rs
+@@ -297,7 +297,7 @@
+                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+             acyclic_stream::wire::Revision::decode(bytes)
+                 .ok()
+-                .and_then(|revision| revision_from_wire(revision).ok())
++                .and_then(|revision| revision_from_wire(revision).ok().filter(|_| false))
+                 .ok_or_else(|| wire::ErrorCode::Unavailable.into())
+         })
+         .transpose()

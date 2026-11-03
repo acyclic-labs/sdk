@@ -1,5 +1,5 @@
 //! Independent JSON scalar expectations over the actual protobuf descriptor.
-use acyclic_protobuf_json::{Error, decode, encode, encode_to_writer};
+use acyclic_protobuf_json::{Error, decode, decode_admitted, encode, encode_to_writer};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use prost::Message;
@@ -43,17 +43,28 @@ fn bytes_use_base64_and_each_refusal_stage_stays_distinct() -> Result<(), TestCa
         decode(descriptor.clone(), b"{}", 1).err(),
         Some(Error::Limit)
     );
-    assert_eq!(
-        decode(descriptor.clone(), br#"{"unknown":true}"#, 64).err(),
-        Some(Error::Json)
+    let (stage, cause) = decode_admitted(
+        descriptor.clone(),
+        br#"{"unknown":true}"#,
+        |stage, cause| (stage, cause),
+    )
+    .expect_err("unknown field refuses");
+    assert_eq!(stage, Error::Json);
+    assert!(
+        cause.is_data(),
+        "original field refusal retains its data cause"
     );
     assert_eq!(
         decode(descriptor.clone(), br#"{"positiveIntValue":"-1"}"#, 64).err(),
         Some(Error::Json)
     );
-    assert_eq!(
-        decode(descriptor.clone(), b"{} {}", 64).err(),
-        Some(Error::Trailing)
+    let (stage, cause) =
+        decode_admitted(descriptor.clone(), b"{} {}", |stage, cause| (stage, cause))
+            .expect_err("trailing input refuses");
+    assert_eq!(Some(stage), Some(Error::Trailing));
+    assert!(
+        cause.is_syntax(),
+        "original trailing refusal retains its syntax cause"
     );
     assert_eq!(encode(descriptor, &[128]).err(), Some(Error::Wire));
     Ok(())

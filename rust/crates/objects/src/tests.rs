@@ -2004,6 +2004,8 @@ struct Disk {
     settled: bool,
     budget: Option<usize>,
     operations: usize,
+    /// Metadata whose crash-damaged header no longer matches its real writer.
+    refused: std::collections::BTreeMap<String, OwnedBytes>,
 }
 
 /// Which unflushed writes a crash keeps: whole, or torn to half their bytes.
@@ -2157,6 +2159,20 @@ impl Crashing {
             };
         }
         Disk {
+            refused: found
+                .iter()
+                .filter(|(key, bytes)| {
+                    (key.contains("/e/")
+                        || key.contains("/r/")
+                        || key.ends_with("/incarnation")
+                        || key.ends_with("/epoch"))
+                        && disk.visible.get(*key).is_some_and(|original| {
+                            let header = original.iter().position(|byte| *byte == 0).unwrap() + 1;
+                            !bytes.starts_with(&original[..header])
+                        })
+                })
+                .map(|(key, bytes)| (key.clone(), bytes.clone()))
+                .collect(),
             visible: found.clone(),
             durable: found,
             commits: disk.commits.clone(),
@@ -2165,6 +2181,45 @@ impl Crashing {
             budget: None,
             operations: 0,
         }
+    }
+
+    /// Unknown formats are refused, never repaired by deleting their records.
+    /// Derive the expected refusal from the original writer's header, independently
+    /// of the decoder under test. Recognised records still take every crash path.
+    async fn refuses_unrecognized_metadata(
+        &self,
+        retained: &[Digest],
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        if self.disk.lock().unwrap().refused.is_empty() {
+            return Ok(false);
+        }
+        let blobs = Store::new(self.clone()).account(b"account")?;
+        // Collection enters repair, writer authority and epoch admission. A
+        // read-only revision observation does not open the latter two owners.
+        let refusal = blobs.collect().await.err().map(|error| error.code);
+        if refusal != Some(ErrorCode::Unsupported) {
+            return Err(format!("unrecognized metadata returned {refusal:?}").into());
+        }
+        let disk = self.disk.lock().unwrap();
+        for (key, bytes) in &disk.refused {
+            if disk.visible.get(key) != Some(bytes) || disk.durable.get(key) != Some(bytes) {
+                return Err(format!("refusal changed {key}").into());
+            }
+        }
+        if disk.settled
+            && disk
+                .refused
+                .keys()
+                .any(|key| key.contains("/e/") || key.contains("/r/"))
+        {
+            return Err("refused recovery settled".into());
+        }
+        // An unacknowledged batch is not served until recovery succeeds.
+        // Refusal must still preserve every previously acknowledged commit.
+        let mut committed = disk.commits.clone();
+        committed.extend_from_slice(retained);
+        blobs_are_whole(&disk, committed)?;
+        Ok(true)
     }
 }
 
@@ -2348,6 +2403,11 @@ fn committed_blobs_are_whole(disk: &Disk) -> Result<(), String> {
             pending.extend(batch);
         }
     }
+    blobs_are_whole(disk, pending)
+}
+
+fn blobs_are_whole(disk: &Disk, mut pending: Vec<Digest>) -> Result<(), String> {
+    let prefix = format!("{}/", Digest::of(b"account").to_hex());
     let mut seen = std::collections::HashSet::new();
     while let Some(digest) = pending.pop() {
         if !seen.insert(digest) {
@@ -2418,6 +2478,19 @@ async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
                 let mut acknowledged = None;
                 let _ = commit_scenario(&crashed, append_first, &mut acknowledged).await;
                 let restarted = Crashing::restart(crashed.recover(survivors));
+                match restarted
+                    .refuses_unrecognized_metadata(
+                        acknowledged.as_ref().map_or(&[], |members| members),
+                    )
+                    .await
+                {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        violations.push(format!("crash at {budget}, {survivors:?}: {error}"));
+                        continue;
+                    }
+                }
                 let repaired = Store::new(restarted.clone())
                     .account(b"account")?
                     .revisions()
@@ -2473,6 +2546,9 @@ async fn after_a_crashed_put(
     medium: &Crashing,
     body: &OwnedBytes,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if medium.refuses_unrecognized_metadata(&[]).await? {
+        return Ok(());
+    }
     let digest = Digest::of(body);
     let blobs = Store::new(medium.clone()).account(b"account")?;
     let whole = |object: Result<crate::Object, crate::Error>| {
@@ -2586,6 +2662,14 @@ async fn a_recovered_parent_commits_only_with_its_closure_whole_and_indexed()
                     recovered,
                     ..Crashing::restart(crashed.recover(survivors))
                 };
+                match restarted.refuses_unrecognized_metadata(&[]).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        violations.push(format!("crash at {budget}, {survivors:?}: {error}"));
+                        continue;
+                    }
+                }
                 let blobs = Store::new(restarted.clone()).account(b"account")?;
                 if retain {
                     match blobs.retain(&RootId::new(*b"root")?, vec![parent]).await {
@@ -3371,16 +3455,19 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
     let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
     put?;
     once(bytes, 0);
-    // A received body is hashed once, where it crosses the trust boundary.
-    let served = body(8);
-    let request = crate::wire::PutBlobRequest {
-        digest: Some(Digest::of(&served).into()),
-        body: bytes::Bytes::from_owner(served),
-        references: Vec::new(),
-    };
-    let (put, bytes) = hashed(crate::route::put_blob(&blobs, request)).await;
-    put?;
-    once(bytes, 1);
+    #[cfg(objects_server)]
+    {
+        // A received body is hashed once, where it crosses the trust boundary.
+        let served = body(8);
+        let request = crate::wire::PutBlobRequest {
+            digest: Some(Digest::of(&served).into()),
+            body: bytes::Bytes::from_owner(served),
+            references: Vec::new(),
+        };
+        let (put, bytes) = hashed(crate::route::put_blob(&blobs, request)).await;
+        put?;
+        once(bytes, 1);
+    }
     // Negative control: a provider that only implements `put` lowers a
     // sealed batch to it, and the body is hashed twice.
     let unsealed = Overlap {

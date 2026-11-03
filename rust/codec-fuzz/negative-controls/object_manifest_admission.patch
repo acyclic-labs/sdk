@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -175,7 +175,7 @@
+             .map(|_| reader.digest())
+             .collect::<Result<Vec<_>, Error>>()?;
+         reader.finish()?;
+-        Ok(Self { parts, edges })
++        Err(corrupt())
+     }
+ 
+     /// Every outgoing reference, parts first, each digest once.

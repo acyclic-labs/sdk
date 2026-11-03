@@ -1,0 +1,8 @@
+diff --git a/rust/crates/objects/src/local.rs b/rust/crates/objects/src/local.rs
+--- a/rust/crates/objects/src/local.rs
++++ b/rust/crates/objects/src/local.rs
+@@ -452,3 +452,3 @@
+         PUT => Some((operation, key, value)),
+-        REMOVE if value.is_empty() => Some((operation, key, value)),
++        REMOVE => Some((operation, key, value)),
+         _ => None,

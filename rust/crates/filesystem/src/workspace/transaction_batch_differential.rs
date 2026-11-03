@@ -151,6 +151,12 @@ fn pair(
                 Ok(()) => runtime.block_on(commit(&mut transaction)),
                 Err(error) => Err(format!("{error:?}")),
             };
+            if let Ok(id) = &result {
+                let head = runtime
+                    .block_on(workspace.head(WorkBudget::UNBOUNDED, &cancellation))
+                    .unwrap();
+                assert_eq!(head.value.id(), *id);
+            }
             let mut bytes = BTreeMap::new();
             for path in observed {
                 let read = runtime
@@ -166,10 +172,25 @@ fn pair(
 
 fn check(history: &[(u8, Vec<u8>)], invalid: bool) -> TestCaseResult {
     let [(old, old_trace), (new, new_trace)] = pair(history, invalid, Fault::None);
-    prop_assert!(
-        old.0 == new.0 && old.1 == new.1 && old_trace == new_trace,
-        "independent staging differs: old={old:?}, new={new:?}, old_trace={old_trace:?}, new_trace={new_trace:?}"
-    );
+    equivalent(&old, &old_trace, &new, &new_trace, invalid)
+}
+
+fn equivalent(
+    old: &Output,
+    old_trace: &[(&'static str, u64)],
+    new: &Output,
+    new_trace: &[(&'static str, u64)],
+    invalid: bool,
+) -> TestCaseResult {
+    // authored_file_id includes the working table and compiled-batch ordinal:
+    // serial and batch creations need not have the same opaque identities.
+    // Each successful result is checked against its own published head above.
+    // Require the intended outcome, rather than accepting two equal failures.
+    let expected_error = invalid.then(|| format!("{:?}", WorkspaceError::NotRegularFile));
+    prop_assert_eq!(old.0.as_ref().err(), expected_error.as_ref());
+    prop_assert_eq!(new.0.as_ref().err(), expected_error.as_ref());
+    prop_assert_eq!(&old.1, &new.1);
+    prop_assert_eq!(old_trace, new_trace);
     Ok(())
 }
 
@@ -185,18 +206,3 @@ proptest! {
 
 #[path = "transaction_batch_exact.rs"]
 mod exact;
-
-#[test]
-fn staging_accounting_measurements() {
-    for invalid in [false, true] {
-        let [(old, old_trace), (new, new_trace)] = pair(&[], invalid, Fault::None);
-        assert!(old.0 == new.0 && old.1 == new.1 && old_trace == new_trace);
-        eprintln!(
-            "PERF_ACCOUNTING {}",
-            serde_json::json!({
-                "case": format!("staging.{invalid}"), "work": new.2,
-                "allocations": differential::allocation_counts(new.3),
-            })
-        );
-    }
-}

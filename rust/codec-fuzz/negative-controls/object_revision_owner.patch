@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/grpc/revision.rs
++++ b/rust/crates/objects/src/grpc/revision.rs
+@@ -34,7 +34,7 @@
+     /// Retains the same revision frontier across replacement transports.
+     #[must_use]
+     pub fn with_revisions(inner: S, revisions: RevisionArc<RevisionTracker>) -> Self {
+-        Self { inner, revisions }
++        Self { inner, revisions: RevisionArc::default() }
+     }
+ 
+     /// Selects the implicit account floor; every clone keeps shared observations.

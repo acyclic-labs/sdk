@@ -23,6 +23,16 @@ S3-compatible (`s3`) media; `grpc` and `http` provide remote clients and the
 gRPC server. Every provider passes `conformance::verify`, including the
 cross-account probes. Persisted formats are v1.
 
+`grpc::RevisionChannel<S>` wraps a caller-admitted Tower service for the generated
+Objects client. Clones share revision observations; select an authenticated
+account with `with_revision_scope` for constant work independent of unrelated
+accounts. Request minima are merged with that floor for GET, PUT and DELETE.
+These minima require an applied revision, rather than a comparison of blob
+contents. Successful unary replies must prove the requested scope, incarnation
+and index. Admission uses the final gRPC status, preserving original refusal
+details and trailers. The wrapper copies no body bytes, opens no connection and
+adds no round trip, retry, timeout or independently scheduled work.
+
 The `binary` feature exposes `binary::BinaryObjects` over an existing admitted
 account transport. It uses the canonical Protobuf routes and the native clients'
 result validators, retains each reply's original revision, and decodes body

@@ -346,12 +346,13 @@ fn capture() -> Result<(), Box<dyn Error>> {
         }
     }
     capture_semantic(&mut manifest)?;
-    // Preserve historical bytes without reintroducing obsolete writers.
+    // Preserve retained captures without inventing replacement writers.
     let current_agents = agent_prefix();
     for line in std::fs::read_to_string("corpus/SOURCES.tsv")?
         .lines()
         .filter(|line| {
             (line.starts_with("harness_codecs/agent-") && !line.starts_with(&current_agents))
+                || line.starts_with("object_revisions/")
                 || matches!(
                     line.split('\t').next(),
                     Some(

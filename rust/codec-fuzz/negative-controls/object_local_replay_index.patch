@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/local.rs
++++ b/rust/crates/objects/src/local.rs
+@@ -497,7 +497,7 @@
+             live += bytes;
+             index.insert(key.to_owned(), slot)
+         } else {
+-            index.remove(key)
++            index.get(key).copied()
+         };
+         if let Some(previous) = previous {
+             live -= previous.bytes;

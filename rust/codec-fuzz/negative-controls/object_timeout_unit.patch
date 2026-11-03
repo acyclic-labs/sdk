@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/grpc.rs b/rust/crates/objects/src/grpc.rs
+--- a/rust/crates/objects/src/grpc.rs
++++ b/rust/crates/objects/src/grpc.rs
+@@ -640,7 +640,7 @@ fn grpc_timeout(value: &str) -> Option<std::time::Duration> {
+     }
+     let amount: u64 = amount.parse().ok()?;
+     Some(match unit {
+-        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
++        "H" => std::time::Duration::from_secs(amount.checked_mul(60)?),
+         "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
+         "S" => std::time::Duration::from_secs(amount),
+         "m" => std::time::Duration::from_millis(amount),

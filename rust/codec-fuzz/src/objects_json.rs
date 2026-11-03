@@ -1,4 +1,5 @@
-//! Differential coverage of the public Objects JSON boundary and shared codec.
+//! Public Objects quota and error mapping over the one shared JSON codec.
+//! Parser semantics are qualified at the shared owner, not by this correspondence.
 use acyclic_objects::{Error, json, wire::ErrorCode};
 use prost::Message;
 use prost_reflect::MessageDescriptor;

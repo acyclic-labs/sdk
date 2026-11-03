@@ -1,7 +1,10 @@
 //! Original local operations and their original physical fault controller.
 use acyclic_fs::GenerationId;
 use acyclic_native_runtime::testing::{DurableFault, DurableWrite, InjectedStorageFault, Schedule};
-use acyclic_objects::{LocalMedium, Medium, MediumError, local::LocalObjectsLimits};
+use acyclic_objects::{
+    LocalClose, LocalMedium, Medium, MediumError,
+    local::{LocalObjectsLimits, LocalOpenError},
+};
 use acyclic_stream::OwnedBytes;
 use std::{error::Error, path::Path};
 
@@ -163,6 +166,59 @@ impl<'a> Case<'a> {
     }
 }
 
+// Use the actual root writer, native open and owned close, outside the measured
+// mutation. These checks do not substitute a parallel FORMAT parser or model.
+async fn check_root_format(
+    root: &Path,
+    key: &str,
+    expected: Option<OwnedBytes>,
+    arbitrary: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let path = root.join("FORMAT");
+    let original = std::fs::read(&path)?;
+    let log = std::fs::read(root.join("log"))?;
+    assert!(
+        !original.is_empty(),
+        "original root writer emits its version"
+    );
+    let mut extended = original.clone();
+    extended.push(0);
+    for bytes in [
+        &[][..],
+        &original[..original.len() - 1],
+        &extended,
+        arbitrary,
+    ] {
+        if bytes == original {
+            continue;
+        }
+        std::fs::write(&path, bytes)?;
+        let refused = LocalMedium::open(root, LocalObjectsLimits::default(), None).await;
+        assert!(
+            matches!(
+                refused,
+                Err(LocalOpenError::Corrupt | LocalOpenError::UnsupportedLayout)
+            ),
+            "foreign root format must refuse before log admission"
+        );
+        assert_eq!(
+            std::fs::read(&path)?,
+            bytes,
+            "refusal retains original header"
+        );
+        assert_eq!(
+            std::fs::read(root.join("log"))?,
+            log,
+            "refusal retains original log"
+        );
+    }
+    std::fs::write(&path, original)?;
+    let reopened = LocalMedium::open(root, LocalObjectsLimits::default(), None).await?;
+    assert_eq!(reopened.read(key, None).await?, expected);
+    assert!(matches!(reopened.close().await?, LocalClose::Released));
+    Ok(())
+}
+
 struct Execution {
     terminal: Terminal,
     writes: Vec<DurableWrite>,
@@ -264,9 +320,13 @@ fn check_sites(
         );
         assert_eq!(baseline_medium.read(&key, None).await?, case.after());
         assert!(baseline.fault.is_none());
+        assert!(matches!(
+            baseline_medium.close().await?,
+            LocalClose::Released
+        ));
+        check_root_format(baseline_root.path(), &key, case.after(), case.payload).await?;
         if baseline.writes.is_empty() {
             assert!(case.flush, "original mutation escaped the fault controller");
-            drop(baseline_medium);
             let reopened =
                 LocalMedium::open(baseline_root.path(), LocalObjectsLimits::default(), None)
                     .await?;
@@ -287,7 +347,6 @@ fn check_sites(
                     .any(|call| call.operation == "namespace:rename")
             );
         }
-        drop(baseline_medium);
 
         let cut = (case.ordinal % baseline.writes.len() as u64) as usize;
         let cuts = if all_sites {

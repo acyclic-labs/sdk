@@ -3,13 +3,13 @@ use super::*;
 /// The record blob binding one file's volume, path, descriptor and display
 /// name to its content. Content blobs are account-wide, so a read serves a
 /// version only through this volume's record of it.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(super) struct ContentRecord {
-    pub(super) volume: String,
-    pub(super) path: String,
-    pub(super) descriptor: FileDescriptor,
-    pub(super) display_name: String,
-    pub(super) content: String,
+#[derive(serde::Serialize)]
+struct ContentRecord {
+    volume: String,
+    path: String,
+    descriptor: FileDescriptor,
+    display_name: String,
+    content: String,
 }
 
 impl ObjectContentStore {

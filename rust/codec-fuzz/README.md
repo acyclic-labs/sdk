@@ -116,6 +116,115 @@ check input consumption, typed EOF and finite producer loss; funded controls
 check refusal and allocation retirement. Private hooks use `test-support` and
 call the original parser rather than copying it into a model.
 
+The Objects persisted-codec oracle also derives typed values from the fuzz input,
+encodes them with the production writers, and requires exact decoded values.
+Refusing every input must not satisfy an acceptance-only round trip. The retained
+`negative-controls/object_persistence.patch` plants that defect in the production
+epoch decoder. In a clean checkout, apply it from the repository root, then run:
+
+```sh
+cargo test --locked -p acyclic-objects --no-default-features --features test-support --lib blob::codec_fuzz::tests::stored_writer_corpus_satisfies_the_fuzz_oracle -- --exact --nocapture
+```
+
+The mutation must fail at `persisted fuzz oracle`; a compilation error is not a
+negative-control result. The test readmits current and historical writer captures
+through the same `check` called by `object_persistence`. The libFuzzer target must
+also reject a retained corpus input with that mutation. Reverse the patch before
+running the positive check or other work. Corpus readmission does not establish
+branch coverage, an instrumented campaign, or physical storage recovery.
+
+The per-format `object_manifest_admission.patch`,
+`object_envelope_admission.patch`, `object_batch_admission.patch` and
+`object_incarnation_admission.patch` refuse valid inputs in their actual
+production decoders. Apply each separately: the same corpus control must fail
+its unchanged oracle, then pass after restoring the decoder. These controls
+qualify positive admission for each format, without a second test or parser.
+
+The same oracle calls `Digest::from_hex` on arbitrary UTF-8 inputs and requires
+the storage-key writer to preserve its original digest in lower and uppercase.
+Writer-derived truncation, excess width and nonhex spelling must refuse with
+`InvalidArgument`. `object_digest_hex_value.patch` replaces the actual decoded
+digest with zeroes; the same retained corpus assertion must fail. The existing
+writer corpus supplies generator inputs, rather than handwritten key fixtures.
+
+Objects and the shared Protobuf JSON boundary use one complete-input parser.
+Objects admits byte capacity before descriptor lookup, then calls
+`acyclic_protobuf_json::decode_admitted`; other callers can use the bounded
+`decode` entry point. The existing JSON targets reach this same implementation.
+`protobuf_json_trailing.patch` removes its actual end-of-input check. The kept
+`bytes_use_base64_and_each_refusal_stage_stays_distinct` control in
+`acyclic-protobuf-json` must fail at its original `Trailing` assertion.
+
+With `--features storage-schedules`, the same `object_persistence` target also
+reaches the native LocalMedium payload decoder beneath its shared checksum frame.
+It requires original PUT/REMOVE admission, exact key/value bytes, and refusal of
+short lengths, invalid UTF-8 keys, unknown operations and REMOVE records carrying
+a value. The `object_local_reject_all.patch` and `object_local_remove_value.patch`
+mutate that actual decoder. Each must fail the same corpus control above with
+`--features local,test-support`; reverse the patch before the positive check.
+The three `object_persistence/local-*` captures came from production
+`local::encode`, through the existing seed producer, at source
+`4042dd6d3213da1373a5293bdbb08b28f2ef34cc`, without redaction:
+
+```sh
+cargo run --locked --features storage-schedules --example capture -- --only-objects --extend-goldens
+cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_persistence
+```
+
+The same oracle also calls the production replay routine on original writer
+sequences: retain another key, replace the selected key, then remove it. Expected
+value offsets, frame sizes and live-byte totals come from the original frames,
+with values before the shared frame checksum, independently of the replay index.
+Checksummed unknown-operation frames must
+reach its `InvalidData` result. `object_local_replay_index.patch` leaves a removed
+key indexed; the unchanged corpus control must detect it. Memory input uses the
+same replay routine as the buffered file input, without file I/O in the fuzzer.
+These controls do not replace physical crash, restart or release qualification.
+
+The optional `object_revisions` target uses the Objects revision metadata writers,
+decoders and final-status admission used by both client entry points. It requires
+positive writer admission, explicit-minimum preservation and original failures
+despite malformed diagnostic metadata. Run it with `--features object-revisions`.
+The same oracle mutates the original writer's HTTP header to invalid base64 and
+combines original writer tokens with conflicting incarnations. Both must retain
+`InvalidArgument`; valid binary metadata constructors cannot reach the former.
+The retained `object_revisions/put-revision` input is the original binary metadata
+from `BlobsServer::put_blob`, with its command and source in `SOURCES.tsv`; capture
+preserves these bytes instead of minting a different authority. Replay this target
+with `--features object-revisions` (and `storage-schedules` for the physical corpus).
+The retained `negative-controls/object_revision_metadata.patch` makes the shipped
+reply decoder refuse valid revisions. After applying it from the repository root,
+the following control must fail at `check_revision_metadata`:
+
+```sh
+cargo test --locked -p acyclic-objects --lib grpc::tests::revision_transport::admission_preserves_authority_and_original_failure -- --exact --nocapture
+```
+
+The same control must fail with `object_revision_minimum.patch`, which makes the
+shipping minimum parser silently discard malformed values and lower the floor.
+The oracle also sends all six timeout scales through Tonic's original request
+writer and the server's `grpc_timeout` parser. Generated values, the writer's
+eight-digit boundary and malformed derivatives retain exact duration or refusal.
+Arbitrary bytes reach the parser only after the original HTTP ASCII boundary.
+The retained `object_timeout_unit.patch` changes hours into minutes; the same
+control must fail its original metadata oracle. This covers parser semantics,
+not deadline scheduling, remote cancellation or clock progression.
+The separate `object_revision_terminal.patch` restores premature success admission
+before final gRPC status. The original-server HTTP/2 control
+`grpc::tests::revision_transport::a_late_refusal_retains_its_original_status_instead_of_becoming_stale_success`
+must fail with that mutation. Reverse each patch before the positive check. A
+compiler failure is not a negative-control result. Local transport controls do
+not qualify remote membership, restart behavior or instrumented fuzz coverage.
+
+That same terminal control removes the original status or replaces the terminal
+with a body error carrying the original provider's refusal. Missing status must
+remain `Unknown`, and the body error must retain its code and details. The kept
+`object_revision_body_error.patch` flattens the production body error to its
+message; the unchanged terminal control must reject that loss.
+The `object_revision_owner.patch` replaces the caller's retained frontier with a
+new one. The existing generated GET/PUT/DELETE control must reject that mutation
+after opening a replacement connection through `RevisionChannel::with_revisions`.
+
 The ID oracle also calls the canonical prefix parser on arbitrary input. It
 requires exact identity bytes, an untouched borrowed suffix and strict whole-input
 admission only for an empty suffix. Every truncation of an admitted identity
@@ -177,3 +286,32 @@ accounting/cancellation targets in `../crates/filesystem/fuzz`, Harness transpor
 and JSON targets in `../crates/harness-fuzz`, and provider streaming/projection
 targets in `../crates/harness-providers/fuzz`. The shared inventory maps their
 distinct obligations.
+
+The shared JSON refusal property also keeps the original parser cause: unknown
+fields retain a data error, and writer-derived trailing input retains a syntax
+error in the same `protobuf_json` oracle. `protobuf_json_cause.patch` changes the
+production error adapter to an IO error while preserving the `Trailing` stage.
+The original stage-only property misses this defect; the cause assertion must
+reject it. Objects/shared correspondence covers wrapper mappings and quotas;
+it is not independent parser evidence after centralisation.
+
+The existing `object_schedule` oracle also reads the original root's `FORMAT`
+from the actual `LocalMedium::open` writer. After awaiting its original owned
+close, it derives empty, truncated and extended headers and supplies the
+arbitrary payload as another header. The same public native open must refuse
+foreign bytes and preserve both header and log; restoring the captured header
+must reopen the original value. These checks run once outside the measured
+mutation, retaining its existing physical counters. The original legacy-layout
+control keeps its distinct typed refusal obligation. `object_root_format.patch`
+removes the production foreign-format refusal; the unchanged root oracle must
+reject that acceptance. This adds no parser, test, target, polling or production
+IO, and does not establish a power-loss or full source-branch guarantee.
+
+`object_write_minimum.patch` restores the original server's read-only revision
+admission, including the mutation bypass. The existing generated HTTP/2
+GET/PUT/DELETE control must reject it at the unchanged physical-storage oracle:
+a foreign scope or incarnation cannot change any key through singleton, batch,
+manifest, delete, retain, release or collect routes. The same control ends an
+ahead-of-provider mutation through the original authority's close event. This
+qualifies server admission independently of the client's final-status check;
+it does not establish remote replica or full source-branch coverage.

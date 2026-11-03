@@ -1111,6 +1111,8 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "http-body",
+ "http-body-util",
  "hyper-util",
  "js-sys",
  "libc",
