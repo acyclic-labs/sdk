@@ -485,6 +485,32 @@ pub enum InboxRecord {
     Context(ContextRequest),
 }
 
+/// Derive the runtime's control discriminants from the canonical record writer.
+/// Only the encoded payload is removed; sender and intent never enter a filter.
+pub(super) fn interrupt_prefixes() -> Result<[Vec<u8>; 2], Error> {
+    let control = Control {
+        by: Sender::User {
+            principal: "interrupt".into(),
+        },
+        id: "interrupt".try_into()?,
+    };
+    let payload =
+        encode_payload(&control).map_err(|_| Error::Record("control payload is not encodable"))?;
+    let prefix = |record: InboxRecord| -> Result<Vec<u8>, Error> {
+        let mut bytes = record.encode()?;
+        let length = bytes
+            .strip_suffix(payload.as_slice())
+            .ok_or(Error::Record("control payload is not a canonical suffix"))?
+            .len();
+        bytes.truncate(length);
+        Ok(bytes)
+    };
+    Ok([
+        prefix(InboxRecord::Cancel(control.clone()))?,
+        prefix(InboxRecord::Archive(control))?,
+    ])
+}
+
 /// Current phase of an agent, appended to its status stream on change and on
 /// the step that creates its conversation stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
