@@ -50,7 +50,7 @@ impl Flights {
             Error = crate::FsError,
             Allocation = RetainedAllocation,
         >,
-    ) -> Result<ReadPlan, ObjectStoreError> {
+    ) -> Result<(bool, RetainedArc<Flight>), ObjectStoreError> {
         let next = self.len.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         let mut inserted = false;
         let flight = self
@@ -63,10 +63,8 @@ impl Flights {
             .clone();
         if inserted {
             self.len = next;
-            Ok(ReadPlan::Leader(flight))
-        } else {
-            Ok(ReadPlan::Follower(flight))
         }
+        Ok((inserted, flight))
     }
 
     // Serialized retained cleanup cannot admit work, refund backing, or lose a
@@ -212,7 +210,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
                 };
                 assert!(matches!(
                     index.install((namespace, object), &owner, &mut measured)?,
-                    ReadPlan::Leader(_)
+                    (true, _)
                 ));
                 Ok(measured.visits)
             })?;
@@ -276,7 +274,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
             insertion_work(&mut accounting, |work, _| {
                 index.install((7, id), &owner, work)
             })?,
-            ReadPlan::Leader(_)
+            (true, _)
         ));
     }
     let retired = index
@@ -286,7 +284,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         insertion_work(&mut accounting, |work, _| {
             index.install((7, object), &replacement, work)
         })?,
-        ReadPlan::Leader(_)
+        (true, _)
     ));
     cancel.cancel();
     let mut entered = false;
@@ -366,7 +364,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
             visits = measured.visits;
             result
         })?,
-        ReadPlan::Leader(_)
+        (true, _)
     ));
     assert_eq!(
         ordinary.standalone_parts().unwrap().1.items_examined - before,

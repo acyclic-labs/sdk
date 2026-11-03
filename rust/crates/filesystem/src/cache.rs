@@ -174,9 +174,9 @@ impl<S> Drop for ActiveFlightGuard<'_, S> {
     }
 }
 
-enum ReadPlan {
+enum ReadPlan<'a, S> {
     Hit(OwnedBytes),
-    Leader(RetainedArc<Flight>),
+    Leader(ActiveFlightGuard<'a, S>),
     Follower(RetainedArc<Flight>),
 }
 
@@ -322,7 +322,7 @@ impl<S> CachedObjectStore<S> {
         &self,
         object_id: ObjectId,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<ReadPlan, ObjectStoreError> {
+    ) -> Result<ReadPlan<'_, S>, ObjectStoreError> {
         let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
         if let Some(bytes) = cached_read(&mut state, object_id)? {
@@ -343,16 +343,35 @@ impl<S> CachedObjectStore<S> {
         // Funding and its possible callbacks precede the owner lock. A racing
         // installer is joined once, without a retry or another producer.
         flights::insertion_work(accounting, |insertion, accounting| {
-            let flight = RetainedArc::new(Flight::new(self.shared.fill_epoch()), accounting)
-                .map_err(crate::async_storage::object_error)?;
-            let mut state = self.lock_state()?;
-            if let Some(bytes) = cached_read(&mut state, object_id)? {
-                return Ok(ReadPlan::Hit(bytes));
-            }
-            let misses = increment(state.misses)?;
-            let plan = state.flights.install(object_id, &flight, insertion)?;
-            state.misses = misses;
-            Ok(plan)
+            self.install_read_plan(object_id, insertion, accounting)
+        })
+    }
+
+    fn install_read_plan(
+        &self,
+        object_id: (u64, ObjectId),
+        insertion: &mut crate::kernel::allocation::fixed_index::PreparedIndexWork,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<ReadPlan<'_, S>, ObjectStoreError> {
+        let flight = RetainedArc::new(Flight::new(self.shared.fill_epoch()), accounting)
+            .map_err(crate::async_storage::object_error)?;
+        let mut state = self.lock_state()?;
+        if let Some(bytes) = cached_read(&mut state, object_id)? {
+            return Ok(ReadPlan::Hit(bytes));
+        }
+        let misses = increment(state.misses)?;
+        let (installed, flight) = state.flights.install(object_id, &flight, insertion)?;
+        state.misses = misses;
+        // The original producer guard crosses accounting settlement as well as
+        // backend execution. A refused settlement drops it after unlocking.
+        Ok(if installed {
+            ReadPlan::Leader(ActiveFlightGuard {
+                store: self,
+                object_id: object_id.1,
+                flight: Some(flight),
+            })
+        } else {
+            ReadPlan::Follower(flight)
         })
     }
 
