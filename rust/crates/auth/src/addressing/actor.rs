@@ -6,7 +6,7 @@ pub const DEFAULT_ACTOR_NAMESPACE: &str = "__default";
 
 // Actor and resource domains are disjoint. The tag identifies this grammar
 // and the byte version permits rejecting future forms.
-const HEADER: &[u8] = b"\0\0\0\0\0\0\0\0acyclic.actor\x01";
+pub(super) const HEADER: &[u8] = b"\0\0\0\0\0\0\0\0acyclic.actor\x01";
 
 fn valid_name(bytes: &[u8]) -> bool {
     (1..=128).contains(&bytes.len())
@@ -151,25 +151,5 @@ pub fn validate_location_hint(value: &str) -> Result<(), IdentityError> {
         Ok(())
     } else {
         Err(IdentityError::InvalidLocationHint)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_refusal_precedes_identity_fields() -> Result<(), Box<dyn std::error::Error>> {
-        let encoded = ActorReference::new(b"account", b"namespace", b"actor")?.encode();
-        for version in [0, 2, u8::MAX] {
-            let mut bytes = encoded.get(..HEADER.len()).ok_or("header")?.to_vec();
-            *bytes.last_mut().ok_or("version")? = version;
-            assert_eq!(
-                ActorReference::decode(&bytes),
-                Err(IdentityError::UnsupportedVersion)
-            );
-        }
-        assert_eq!(ActorReference::decode(&encoded)?.encode(), encoded);
-        Ok(())
     }
 }
