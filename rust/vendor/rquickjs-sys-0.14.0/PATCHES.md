@@ -13,3 +13,8 @@ The existing `code_mode` fuzz target checks actual temporary-allocation
 refusals and original native-ledger conservation through engine destruction.
 `code_mode_leak_utf8_source.patch` removes this release as a retained negative
 control. Its generated Unicode inputs are identified in `corpus/SOURCES.tsv`.
+
+The build script tracks every copied C source, header and bundled binding
+at its original path. Tracking only the output copies let Cargo reuse a
+native library after an input changed. The existing copy loops also emit
+the input dependencies; no additional copies or runtime work are needed.

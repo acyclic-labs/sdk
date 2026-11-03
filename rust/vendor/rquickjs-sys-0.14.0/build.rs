@@ -220,9 +220,11 @@ fn main() {
     }
 
     for file in source_files.iter().chain(header_files.iter()) {
+        println!("cargo:rerun-if-changed={}", src_dir.join(file).display());
         fs::copy(src_dir.join(file), out_dir.join(file))
             .expect("Unable to copy source; try 'git submodule update --init'");
     }
+    println!("cargo:rerun-if-changed=quickjs.bind.h");
     fs::copy("quickjs.bind.h", out_dir.join("quickjs.bind.h")).expect("Unable to copy source");
 
     if target_os == "wasi" && !matches!(env::var("RQUICKJS_SYS_NO_WASI_SDK").as_deref(), Ok("1")) {
@@ -353,6 +355,7 @@ where
             .join("bindings")
             .join(format!("{}.rs", target));
         if bundled.exists() {
+            println!("cargo:rerun-if-changed={}", bundled.display());
             println!(
                 "cargo:warning=using bundled bindings for host target `{}` instead of running bindgen (enable the `update-bindings` feature to regenerate)",
                 target
