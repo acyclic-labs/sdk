@@ -63,9 +63,9 @@ pub(super) fn write_buffer<const N: usize>(
     }
 }
 
-// A checked component contract proves every identity and prior output byte. The
-// complete formatter can then use that verified write effect, rather than
-// expanding the same fixed-width hex iterator in each caller and control.
+// The component harness checks canonical bytes. Its modifies-only contract
+// supplies the write effect to the caller's buffer-safety proofs; those stubs
+// do not establish the resulting path's byte semantics.
 #[cfg_attr(kani, kani::modifies(text))]
 #[inline]
 pub(super) fn write_identity(identity: [u8; 16], text: &mut [u8; 32], workspace: bool) {

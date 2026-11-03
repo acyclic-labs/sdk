@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
+--- a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
++++ b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
+@@ -69,7 +69,7 @@
+ #[cfg_attr(kani, kani::modifies(text))]
+ #[inline]
+ pub(super) fn write_identity(identity: [u8; 16], text: &mut [u8; 32], workspace: bool) {
+-    let result = hex::encode_to_slice(identity, text);
++    let result = hex::encode_to_slice([0_u8; 16], text);
+     if workspace {
+         result.expect("fixed-width workspace lease path has its exact hex capacity");
+     } else {
