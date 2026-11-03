@@ -403,16 +403,7 @@ impl Executor {
                     future.as_mut().poll(cx)
                 })) {
                     Ok(poll) => poll.map(Ok),
-                    Err(cause) => {
-                        let message = cause
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| cause.downcast_ref::<String>().map(String::as_str))
-                            .unwrap_or("non-string panic");
-                        Poll::Ready(Err(io::Error::other(format!(
-                            "owned task panicked: {message}"
-                        ))))
-                    }
+                    Err(cause) => Poll::Ready(Err(crate::task::panic_error(cause))),
                 }
             })
             .await;
@@ -531,12 +522,7 @@ impl<T> Future for TaskHandle<T> {
             }),
             Handle::Simulated { receiver, .. } => Pin::new(receiver).poll(cx).map(|result| {
                 result
-                    .unwrap_or_else(|_| {
-                        Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "owned task cancelled",
-                        ))
-                    })
+                    .unwrap_or_else(|error| Err(crate::task::cancelled_error(error)))
                     .map(|output| output.value)
             }),
         }

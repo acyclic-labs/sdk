@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn unjoined_original_output_keeps_its_task_accounted_through_release() {
+    struct Output(Schedule);
+    impl Drop for Output {
+        fn drop(&mut self) {
+            let mut drained = std::pin::pin!(self.0.drained());
+            assert!(
+                drained
+                    .as_mut()
+                    .poll(&mut PollContext::from_waker(Waker::noop()))
+                    .is_pending(),
+                "task accounting retired before its original output"
+            );
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (schedule, _events) = Schedule::seeded(83);
+    let executor = schedule.0.executor.as_ref().unwrap();
+    let task = runtime.block_on(schedule.scope(async {
+        let active = Context::current().unwrap().accept("task");
+        executor.spawn_owned(Some(active), std::future::ready(Output(schedule.clone())))
+    }));
+    // One original executor transition completes the ready producer. Its output
+    // stays in the original result channel until its observer disappears.
+    executor.poll_owned(&PollContext::from_waker(Waker::noop()));
+    assert!(executor.trace().iter().any(|(_, phase)| *phase == "ready"));
+    drop(task);
+    runtime.block_on(schedule.drained());
+}
+
 fn reentrant_waker_cleanup(entry: u8) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Reenter {
