@@ -140,6 +140,12 @@ export function qualifyNativeProgressLoom(run = runCommand) {
   });
 }
 
+export function qualifyNativeSignalLoom(run = runCommand) {
+  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
+    suites: [["", 2]],
+  });
+}
+
 export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
@@ -246,6 +252,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
+  "--native-signal": qualifyNativeSignalLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
