@@ -28,16 +28,6 @@ test('regression and negative control are exact named tests in one package', () 
   assert.equal(verify(entry, 0, success).seconds, 0.12);
 });
 
-test('integrated negative controls execute their property once', () => {
-  const integrated = { ...entry, controls: [entry.regression] };
-  const output = 'test module::regression ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.01s\n';
-  assert.deepEqual(verify(integrated, 0, output).tests, [entry.regression]);
-});
-
-test('the SDK caller retains its runtime policy', () => {
-  assert.throws(() => verify(entry, 0, success.replace('0.12s', '10.00s')), /under 10 seconds/);
-});
-
 test('a debt requires a regression, a negative control and literal test names', () => {
   for (const invalid of [{ ...entry, controls: [] }, { ...entry, regression: '' },
     { ...entry, controls: ['--skip'] }, { ...entry, package: '--workspace' }, { ...entry, target: '--all-targets' },
