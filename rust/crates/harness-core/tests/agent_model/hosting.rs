@@ -746,18 +746,16 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
                 .follow(acyclic_stream::FollowRequest::new(store.path(&actor)?, 1))
                 .await?,
         );
-        let record = changes
-            .try_filter_map(|record| {
-                futures::future::ready(
-                    acyclic_actors::local::State::decode(&record.value)
-                        .map(|state| state.checkpoint().map(|_| record)),
-                )
-            })
-            .try_next()
-            .await?
-            .ok_or("actor state producer ended")?;
-        let state = acyclic_actors::local::State::decode(&record.value)?;
-        assert!(state.checkpoint().is_some(), "adoption did not checkpoint");
+        loop {
+            let record = changes
+                .try_next()
+                .await?
+                .ok_or("actor state producer ended")?;
+            let state = acyclic_actors::local::State::decode(&record.value)?;
+            if state.checkpoint().is_some() {
+                break;
+            }
+        }
         Ok(())
     };
     let (failed, failure) = tokio::sync::oneshot::channel();
