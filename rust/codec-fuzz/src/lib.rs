@@ -482,6 +482,13 @@ pub fn actor_seeds()
         invocation_bytes,
         "Invocation::record and wire_codec::record_wire",
     )];
+    for (name, bytes) in futures::executor::block_on(acyclic_actors::call::model::codec_seeds())? {
+        seeds.push((
+            name,
+            bytes,
+            "CallPath builders, MemoryStream commit/follow and wire_codec::record_wire",
+        ));
+    }
     for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
         seeds.push((
             name,
@@ -762,6 +769,8 @@ pub fn actor_codecs(bytes: &[u8]) {
         actor_seeds().expect("Actors decoders must admit their production writers");
     });
     std::sync::LazyLock::force(&WRITERS);
+    futures::executor::block_on(acyclic_actors::call::model::check(bytes))
+        .expect("original call protocol must conserve its committed receipts");
     use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
@@ -824,8 +833,18 @@ pub fn actor_codecs(bytes: &[u8]) {
     }
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
-        && let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record)
     {
+        // Both readers consume this same committed Stream wire envelope.
+        let _ = acyclic_actors::call::Entry::decode(&record);
+        let _ = acyclic_actors::call::fence(&record);
+        let mut journal = acyclic_actors::call::Journal::default();
+        let before = journal.clone();
+        if journal.apply(&record).is_err() {
+            assert_eq!(journal, before, "refusal must preserve the call reader");
+        }
+        let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record) else {
+            return;
+        };
         let encoded = invocation
             .record(&acyclic_stream::StreamPath::new("codec/state").unwrap())
             .unwrap();

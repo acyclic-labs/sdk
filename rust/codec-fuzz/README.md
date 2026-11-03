@@ -37,6 +37,16 @@ also demonstrates that conditional round trips alone miss that mutation and
 restores both source files on exit. Corpus replay does not establish instrumented
 fuzz coverage or distributed recovery guarantees.
 
+The same Actors target drives `call::model::check` through the original commit
+builders, provider and journal, and feeds committed Stream wire envelopes to
+`Entry::decode`, `fence` and `Journal::apply`. Its positive records are captured
+from actual commits with a fixed provider clock and stable retry identities.
+Admission distinguishes cancellation before acceptance from the indeterminate
+outcome after acceptance. `python3 actor-negative-control.py --call-records`
+requires the unchanged oracle to reject production decoder refusal and loss of
+that acceptance context. This finite provider model does not establish physical
+recovery, distributed ownership or complete branch coverage.
+
 `python3 actor-negative-control.py --alarms` checks the original guest transition
 decoder with independent mutations that lose `Set` or `Clear`. It first shows
 that the earlier `Keep`-only producer/corpus misses lost `Set`, requires the same

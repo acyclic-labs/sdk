@@ -36,8 +36,10 @@ def main():
         return reservation_book()
     if sys.argv[1:] == ["--persisted-alarms"]:
         return persisted_alarms()
+    if sys.argv[1:] == ["--call-records"]:
+        return call_records()
     if sys.argv[1:]:
-        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--capture]")
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms|--persisted-alarms|--reservation-book|--call-records|--capture]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -180,14 +182,51 @@ def reservation_book():
             path.write_bytes(value)
 
 
+def call_records():
+    production = ROOT.parent / "crates/actors/src/call.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    decoder = b'        let kind = attribute(record, KIND).ok_or(Error::Malformed("record is no call record"))?;'
+    cancellation = b"Outcome::Cancelled(reason) if self.accepted.is_some() => {"
+    start = oracle.index(b"    for (name, bytes) in futures::executor::block_on(acyclic_actors::call::model::codec_seeds())?")
+    end = oracle.index(b"    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()?", start)
+    schedule = (b"    futures::executor::block_on(acyclic_actors::call::model::check(bytes))\n"
+                b'        .expect("original call protocol must conserve its committed receipts");\n')
+    if b"\r\n" in oracle:
+        schedule = schedule.replace(b"\n", b"\r\n")
+    if source.count(decoder) != 1 or source.count(cancellation) != 1 or oracle.count(schedule) != 1:
+        raise RuntimeError("call mutation anchor changed; recovery: inspect Entry::decode, "
+                           "Journal::apply and actor_codecs before running "
+                           "python3 actor-negative-control.py --call-records")
+    mutant = source.replace(decoder, decoder.replace(b"attribute(record, KIND)",
+                                                   b"attribute(record, KIND).filter(|_| false)"))
+    try:
+        for label, value in (("call production", source), ("call oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(mutant)
+        ORACLE.write_bytes((oracle[:start] + oracle[end:]).replace(schedule, b""))
+        run("unbound call oracle misses production refusal", "accepted")
+        ORACLE.write_bytes(oracle)
+        run("same oracle detects production call refusal", "rejected",
+            'Malformed("record is no call record")')
+        production.write_bytes(source.replace(cancellation, b"Outcome::Cancelled(reason) if false => {"))
+        run("same oracle detects lost accepted cancellation context", "rejected",
+            "call reader must retain its acceptance context")
+        production.write_bytes(source)
+        capture()
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
 def capture():
     command = ["cargo", "run", "--locked", "--example", "capture", "--",
                "--only-actors", "--extend-goldens"]
     result = subprocess.run(command, cwd=ROOT)
     if result.returncode:
-        raise RuntimeError("original alarm writer capture failed; recovery after "
+        raise RuntimeError("original Actors writer capture failed; recovery after "
                            "correcting the reported failure: python3 actor-negative-control.py --capture")
-    run("original production and captured alarm branches", "accepted")
+    run("original production and captured Actors branches", "accepted")
 
 
 if __name__ == "__main__":
