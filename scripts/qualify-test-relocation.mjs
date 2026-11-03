@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Run in a disposable checkout. Keep the original CLI oracle and native owner.
+// Run with exclusive Cargo artifact custody in a disposable checkout.
+// Keep the original CLI oracle and native owner.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -58,7 +59,8 @@ async function main() {
       const log = (result.stdout ?? '') + (result.stderr ?? '');
       await writeFile(join(directory, `${mode}.log`), log);
       process.stdout.write(log);
-      report.steps.push({ name, mode, exit: result.status, log_sha256: digest(log), artifact });
+      report.steps.push({ name, mode, exit: result.status, log_sha256: digest(log),
+        test_executable: executable, cargo_json_sha256: digest(build.stdout), artifact });
       await writeFile(join(output, 'receipt.json'), JSON.stringify(report, null, 2) + '\n');
       if (negative) {
         assert.notEqual(result.status, 0, 'omitting runtime metadata must fail the original CLI test');
@@ -93,6 +95,8 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(`STEP_FAILED test relocation: ${error.stack ?? error}; recovery command: node scripts/qualify-test-relocation.mjs FRESH_EVIDENCE_DIRECTORY`);
+  const recovery = [process.execPath, fileURLToPath(import.meta.url),
+    resolve(`${process.argv[2] ?? 'test-relocation'}-corrected`)];
+  console.error(`STEP_FAILED test relocation: ${error.stack ?? error}; correct the failing source or command, then recovery command: ${recovery.map(JSON.stringify).join(' ')}`);
   process.exitCode = 1;
 });
