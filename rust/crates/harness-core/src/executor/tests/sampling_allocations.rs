@@ -42,11 +42,20 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
     // Exact allocation equality detects copying even one extra schema; 64
     // selected names already make the deliberate full-copy control distinct.
     for count in [10, 128] {
-        let model = Arc::new(ScriptedModelProvider::new([
-            ScriptedTurn::Text("answer".into()),
-            ScriptedTurn::Text("answer".into()),
-            ScriptedTurn::Text("answer".into()),
-        ]));
+        let admitted_allocations = Arc::new(Mutex::new(None));
+        let observed = admitted_allocations.clone();
+        let model = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text("answer".into()),
+                ScriptedTurn::Text("answer".into()),
+                ScriptedTurn::Text("answer".into()),
+            ])
+            .with_dispatch_observer(move |_| {
+                // Request admission is complete. Response journaling serializes
+                // wall-clock latency, whose decimal width is nondeterministic.
+                *observed.lock().unwrap() = acyclic_test_support::current_allocations();
+            }),
+        );
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::from_bytes([1; 16]);
@@ -74,7 +83,7 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
         for (index, id) in ["sample", "broken"].into_iter().enumerate() {
             let request = request(parent, id);
             let mut result = None;
-            let allocations = acyclic_test_support::measure(|| {
+            acyclic_test_support::measure(|| {
                 result = Some(futures::executor::block_on(async {
                     if index == 1 {
                         // Deliberately restore the former request-assembly bug:
@@ -89,6 +98,11 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
                 reply.pointer("/result/content/text"),
                 Some(&json!("answer"))
             );
+            let allocations = admitted_allocations
+                .lock()
+                .unwrap()
+                .take()
+                .expect("sampling reached provider dispatch inside measurement");
             observations[index].push((allocations.count_total, allocations.bytes_total));
         }
         assert!(
