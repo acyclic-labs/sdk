@@ -154,3 +154,5 @@ process-local acceleration. It has no persisted or wire backend and is excluded
 from persisted-format version claims. Git's `acyclic-fs-manifest-v2` archive is
 an output format with no corresponding SDK input decoder; its writer still
 must preserve the complete generation identity (G96).
+
+| Native host reply JSONL | `harness::local::host_process::children::answer::NativeAnswer` | External Codex/Claude Code/Pi event formats; recorded host versions in original fixture README | `harness-fuzz/native_answer` includes the shipping reducer and checks terminal/preview, replay, loss, reset, UTF-8 prefix and unknown-event semantics; process retirement and line framing are separate | Three original host captures plus derived field/sequence mutations; provenance and digests in `harness-fuzz/NATIVE-ANSWER-SOURCES.tsv`. Coverage and planted production mutation require source-bound execution |
