@@ -179,35 +179,3 @@ pub async fn prompt_settled(
         serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;
     Ok(PromptOutcome::Settled(entry, output))
 }
-
-#[cfg(all(
-    test,
-    feature = "filesystem-local",
-    any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
-))]
-mod tests {
-    // The local test composition must select the isolated settings snapshot,
-    // never the user's settings (see `native_settings` isolation properties).
-    #[test]
-    fn local_test_config_selects_isolated_settings() {
-        let workspace = std::path::PathBuf::from("workspace");
-        let config = super::local_harness_config(
-            workspace,
-            (
-                crate::model::Model::new("test".into(), "settings".into(), "1".into()).unwrap(),
-                std::sync::Arc::new(super::ScriptedModelProvider::new([])),
-            ),
-        )
-        .unwrap();
-        assert!(
-            config.settings.is_some(),
-            "test configuration must select settings"
-        );
-        #[cfg(any(test, feature = "native-execution"))]
-        assert!(matches!(
-            config.environment_platform,
-            crate::native_environment::PlatformPolicy::Fixture { shell, .. }
-                if shell == crate::native_environment::PlatformPolicy::Native.facts().1
-        ));
-    }
-}

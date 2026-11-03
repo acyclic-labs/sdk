@@ -26,6 +26,7 @@ mod scenario;
 mod scenario_data;
 #[path = "../support/scenario_matchers.rs"]
 mod scenario_matchers;
+mod scenario_tests;
 use acyclic_harness::context::CompactionPolicy;
 use drivers::run;
 use futures::{StreamExt as _, stream};
