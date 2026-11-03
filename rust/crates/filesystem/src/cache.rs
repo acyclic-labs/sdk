@@ -329,27 +329,31 @@ impl<S> CachedObjectStore<S> {
             return Ok(ReadPlan::Hit(bytes));
         }
         drop(state);
-        let mut lookup = flights::read_work(accounting)?;
-        {
+        let existing = flights::read_work(accounting, |lookup, _| {
             let mut state = self.lock_state()?;
-            if let Some(flight) = state.flights.get(object_id, &mut lookup)? {
+            let flight = state.flights.get(object_id, lookup)?;
+            if flight.is_some() {
                 state.misses = increment(state.misses)?;
-                return Ok(ReadPlan::Follower(flight));
             }
+            Ok(flight)
+        })?;
+        if let Some(flight) = existing {
+            return Ok(ReadPlan::Follower(flight));
         }
         // Funding and its possible callbacks precede the owner lock. A racing
         // installer is joined once, without a retry or another producer.
-        let mut insertion = flights::insertion_work(accounting)?;
-        let flight = RetainedArc::new(Flight::new(self.shared.fill_epoch()), accounting)
-            .map_err(crate::async_storage::object_error)?;
-        let mut state = self.lock_state()?;
-        if let Some(bytes) = cached_read(&mut state, object_id)? {
-            return Ok(ReadPlan::Hit(bytes));
-        }
-        let misses = increment(state.misses)?;
-        let plan = state.flights.install(object_id, &flight, &mut insertion)?;
-        state.misses = misses;
-        Ok(plan)
+        flights::insertion_work(accounting, |insertion, accounting| {
+            let flight = RetainedArc::new(Flight::new(self.shared.fill_epoch()), accounting)
+                .map_err(crate::async_storage::object_error)?;
+            let mut state = self.lock_state()?;
+            if let Some(bytes) = cached_read(&mut state, object_id)? {
+                return Ok(ReadPlan::Hit(bytes));
+            }
+            let misses = increment(state.misses)?;
+            let plan = state.flights.install(object_id, &flight, insertion)?;
+            state.misses = misses;
+            Ok(plan)
+        })
     }
 
     fn cached_contains(&self, object_id: ObjectId) -> Result<bool, ObjectStoreError> {

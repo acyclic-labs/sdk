@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/fixed_index/prepared.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/fixed_index/prepared.rs
+@@ -69,7 +69,7 @@
+         };
+         let output = operation(&mut work, accounting);
+         let actual = crate::WorkCounters {
+-            items_examined: items - work.items,
++            items_examined: items,
+             ..crate::WorkCounters::UNCHARGED
+         };
+         drop(work);
