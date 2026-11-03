@@ -8,6 +8,11 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-metric-mean": (
+        "experiments/analysis.rs", "Some(self.stats.estimate()?)",
+        "Some(Estimate { difference: 0.0, ..self.stats.estimate()? })", "decision",
+        "independent streamed analysis invariant: metric mean",
+    ),
     "analysis-score-coverage": (
         "experiments/analysis.rs", "score.push(pair.score()?)?;",
         "score.push(None)?;", "assignment",
@@ -286,9 +291,10 @@ def oracle_rejected(returncode, output, invariant):
 
 def fail(step, detail, case=None):
     selected = case or " ".join(args.cases)
+    comparison = f" --previous-oracle {args.previous_oracle}" if args.previous_oracle else ""
     raise SystemExit(
         f"{step}: {detail}; recovery: correct the reported failure, then run "
-        f"python3 rust/fuzz/experiment-negative-control.py {selected}"
+        f"python3 rust/fuzz/experiment-negative-control.py{comparison} {selected}"
     )
 
 
@@ -301,12 +307,26 @@ def run(inputs):
 
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--previous-oracle", help="full commit whose unchanged oracle must miss the same defect")
 parser.add_argument("cases", choices=CASES, nargs="+")
 args = parser.parse_args()
 oracle = FUZZ / "fuzz_targets/experiment_files.rs"
 corpus = FUZZ / "corpus/experiment_files"
 try:
-    oracle_hash = hashlib.sha256(oracle.read_bytes()).hexdigest()
+    repaired = oracle.read_bytes()
+    oracle_hash = hashlib.sha256(repaired).hexdigest()
+    previous = None
+    if args.previous_oracle:
+        if re.fullmatch(r"[0-9a-f]{40}", args.previous_oracle) is None:
+            fail("previous oracle identity", "expected a full commit SHA")
+        captured = subprocess.run(
+            ["git", "show", f"{args.previous_oracle}:rust/fuzz/fuzz_targets/experiment_files.rs"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if captured.returncode != 0:
+            fail("read previous oracle", captured.stderr.decode(errors="replace"))
+        previous = captured.stdout
+        print(f"Previous oracle SHA256 {hashlib.sha256(previous).hexdigest()}", flush=True)
     # Original production must replay the retained corpus without an oracle panic.
     positive = run(sorted(corpus.iterdir()))
     print(positive.stdout, flush=True)
@@ -324,6 +344,16 @@ try:
             mutated = original.replace(old, replacement.encode())
             source.write_bytes(mutated)
             print(f"{case} production mutant SHA256 {hashlib.sha256(mutated).hexdigest()}", flush=True)
+            if previous is not None:
+                try:
+                    oracle.write_bytes(previous)
+                    missed = run([corpus / seed])
+                    print(missed.stdout, flush=True)
+                    if missed.returncode != 0:
+                        fail("previous oracle comparison", f"cargo returned {missed.returncode}; expected missed defect", case)
+                    print(f"RED confirmed {case}: previous unchanged oracle missed the same production defect", flush=True)
+                finally:
+                    oracle.write_bytes(repaired)
             negative = run([corpus / seed])
             print(negative.stdout, flush=True)
             if not oracle_rejected(negative.returncode, negative.stdout, invariant):

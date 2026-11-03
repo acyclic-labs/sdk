@@ -263,3 +263,17 @@ completion or wrongly exclude either arm's unmatched costs. They reuse the
 original assignment input. These bounded integer references do not establish
 arbitrary floating-point accuracy; the separate statistics precision controls
 and source-coverage obligation remain.
+
+Short inputs give the streamed baseline and treatment distinct integer values,
+so zeroing the shared metric mean cannot hide behind zero differences in the
+retained corpus. The integer-reference precision budget scales with operand
+magnitude, including cancellation. `analysis-metric-mean` zeros only the actual
+streamed report projection; the standalone statistics implementation is unchanged.
+To compare both unchanged oracles against that same defect in one invocation:
+
+```sh
+python3 rust/fuzz/experiment-negative-control.py --previous-oracle d0ecdc60266374b4981f71194fce72b813c1e6db analysis-metric-mean
+```
+
+The runner restores both production and oracle bytes, and accepts only a runtime
+panic at the named metric-mean assertion as the repaired negative control.

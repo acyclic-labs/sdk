@@ -604,7 +604,12 @@ fn declared_stream(bytes: &[u8]) {
                 ((phase << pair) | (phase >> (4 - pair))) & 15
             };
             for (arm, row) in members.iter_mut().enumerate() {
-                let value = i64::from(bytes.get(32 + pair * 2 + arm).copied().unwrap_or(1));
+                let value = i64::from(
+                    bytes
+                        .get(32 + pair * 2 + arm)
+                        .copied()
+                        .unwrap_or(arm as u8 + 1),
+                );
                 row["score"] = if mask & (1 << arm) != 0 {
                     json!(value - 128)
                 } else {
@@ -637,8 +642,16 @@ fn declared_stream(bytes: &[u8]) {
             );
             if let Some(estimate) = &actual.estimate {
                 let mean = differences.iter().flatten().sum::<i64>() as f64 / count as f64;
+                // Integer reference sums are exact. Scale the rounding budget
+                // by the three input operands, including near cancellation.
+                let magnitude = differences
+                    .iter()
+                    .flatten()
+                    .map(|value| value.unsigned_abs())
+                    .max()
+                    .unwrap_or(0) as f64;
                 assert!(
-                    (estimate.difference - mean).abs() <= 64.0 * f64::EPSILON * mean.abs().max(1.0),
+                    (estimate.difference - mean).abs() <= 64.0 * f64::EPSILON * magnitude.max(1.0),
                     "independent streamed analysis invariant: metric mean"
                 );
             }
