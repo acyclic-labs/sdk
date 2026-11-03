@@ -91,6 +91,9 @@ fn copy_model_impl<const BROKEN: bool, const CHECK_LIMIT: bool>(
         let completed = actual.load(Ordering::Relaxed) as u64;
         if CHECK_LIMIT {
             assert!(completed <= maximum, "a rejected copy must not execute");
+            if !cancel {
+                assert_eq!(completed, maximum, "available copy work must complete");
+            }
         }
         assert_eq!(
             original.receipt().bytes_copied,
