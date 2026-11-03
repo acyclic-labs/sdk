@@ -1,6 +1,7 @@
-"""Check the production Signal model and require its unchanged oracle to reject defects.
+"""Check production signal/wake models against their actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
+Select the retained wake-token model with a final --wake argument.
 """
 import hashlib
 import json
@@ -11,18 +12,20 @@ import sys
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise RuntimeError("arguments: expected evidence directory; recovery: pass /tmp/native-signal-control")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--wake"):
+        raise RuntimeError("arguments: expected evidence directory and optional --wake; recovery: pass /tmp/native-signal-control [--wake]")
+    wake_mode = len(sys.argv) == 3
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
     signal = root / "rust/crates/native-runtime/src/process_tree/events/signal.rs"
     outcome = signal.with_name("outcome.rs")
-    oracle = root / "rust/crates/native-runtime/tests/process_signal_loom.rs"
+    wake = root / "rust/crates/native-runtime/src/wake.rs"
+    oracle = root / "rust/crates/native-runtime/tests" / ("wake_loom.rs" if wake_mode else "process_signal_loom.rs")
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
-    originals = {path: path.read_bytes() for path in (signal, outcome, oracle, qualifier)}
+    originals = {path: path.read_bytes() for path in (*((wake,) if wake_mode else (signal, outcome)), oracle, qualifier)}
     digest = lambda data: hashlib.sha256(data).hexdigest()
-    command = ["node", "scripts/qualify-mcp-loom.mjs", "--native-signal"]
+    command = ["node", "scripts/qualify-mcp-loom.mjs", "--native-wake" if wake_mode else "--native-signal"]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
     def run(label, failure=None):
@@ -41,6 +44,12 @@ def main():
         ("registration", signal, b"state.waker = Some(context.waker().clone());", b"state.waker = None;", "deadlock; threads ="),
         ("failure-cause", outcome, b"Self::ServiceFailed(error) => Err(io::Error::new(error.kind(), error)),", b'Self::ServiceFailed(error) => Err(io::Error::new(error.kind(), "replacement cause")),', "service failure cause changed"),
     ]
+    if wake_mode:
+        mutations = [
+            ("retained-token", wake, b"PoisonError::into_inner) = true;", b"PoisonError::into_inner) = false;", "deadlock; threads ="),
+            ("notification", wake, b"self.changed.notify_one();", b"if false { self.changed.notify_one(); }", "deadlock; threads ="),
+            ("consumption", wake, b"*notified = false;", b"*notified = true;", "wake returned without its producer"),
+        ]
     try:
         run("positive")
         for label, path, before, after, failure in mutations:
