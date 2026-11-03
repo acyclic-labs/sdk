@@ -42,15 +42,17 @@ let mutation;
 let artifactsCustody;
 let reused;
 try {
-  if ((bytes || metadata || array || number) && red) {
+  if ((bytes || metadata || array || number || retirement) && red) {
     try { original = readFileSync(production, "utf8"); }
     catch (error) { fail("read production admission source", String(error)); }
-    const entrance = number ? "        if !crate::conversation::is_exact_js_number(number) {"
+    const entrance = retirement ? "        for key in object_keys(value)?.iter() {"
+      : number ? "        if !crate::conversation::is_exact_js_number(number) {"
       : array ? "        let items = js_sys::Array::from_iterable(value.unchecked_ref::<js_sys::Array>())?;"
       : metadata ? "        let mut entries = Vec::new();"
       : quoted ? "        if quoted {" : "    reject_out_of_range_integer_tokens(bytes)?;";
     if (original.split(entrance).length !== 2) fail("admission mutation", "expected exactly one production entrance");
-    const replacement = number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
+    const replacement = retirement ? "        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {"
+      : number ? "        if false && !crate::conversation::is_exact_js_number(number) {"
       : array ? "        let items = value.unchecked_ref::<js_sys::Array>();"
       : metadata ? `        let size = js_sys::Reflect::get(value, &JsValue::from_str("size"))?
             .as_f64()
