@@ -62,7 +62,9 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   const first = observed(spool.next(() => true));
   const firstKey = reference.index.keys().next();
   const keyed = firstKey.done ? undefined : observed(spool.keyed(firstKey.value));
-  const terminal = spool.next(() => false).then(() => assert.fail("a false predicate cannot resolve"), error => error);
+  let comparisons = 0;
+  const terminal = spool.next(() => { comparisons++; return false; })
+    .then(() => assert.fail("a false predicate cannot resolve"), error => error);
   const missing = spool.keyed(Symbol("absent")).then(() => assert.fail("absent key cannot resolve"), error => error);
   const drained = finished(source);
   if (closedFirst) close(captured);
@@ -80,6 +82,7 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   assert.equal(spool.ended, cause);
   assert.equal(spool.sequence, reference.sequence);
   assert.deepEqual(events, reference.events, "no event may follow the first malformed or duplicate terminal");
+  assert.equal(comparisons, reference.events.length, "each admitted event compares once per pending waiter");
   if (reference.events.length) assert.deepEqual((await first).value, reference.events[0]);
   else assert.equal((await first).error, cause);
   if (keyed) assert.deepEqual((await keyed).value, reference.index.get(firstKey.value));
