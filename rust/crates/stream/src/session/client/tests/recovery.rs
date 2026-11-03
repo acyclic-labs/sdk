@@ -1,5 +1,61 @@
 use super::*;
 
+/// Observes the first backoff at the production scheduler boundary. A refused
+/// socket must finish the request before scheduling a retry, without a timeout.
+struct BackoffEvent(std::sync::Mutex<Option<futures::channel::oneshot::Sender<u32>>>);
+
+impl crate::runtime::Executor for BackoffEvent {
+    fn spawn(&self, future: crate::BoxProviderFuture<'static, ()>) {
+        crate::runtime::Executor::spawn(&crate::runtime::PlatformExecutor, future);
+    }
+
+    fn sleep(&self, milliseconds: u32) -> crate::BoxProviderFuture<'static, ()> {
+        if let Some(event) = self.0.lock().unwrap().take() {
+            let _ = event.send(milliseconds);
+        }
+        Box::pin(futures::future::pending())
+    }
+}
+
+#[tokio::test]
+async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    drop(listener);
+    let channel =
+        tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy();
+    let (send, backoff) = futures::channel::oneshot::channel();
+    let client = Client::with_transport(
+        native::endpoint(channel, Some("Bearer fixture".parse()?), None),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(BackoffEvent(std::sync::Mutex::new(Some(send)))),
+    );
+    client.register_credential(0, crate::session::testing::credential())?;
+    let request = client.heads(
+        crate::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: [StreamPath::new("refused/test")?].into_iter().collect(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        },
+        0,
+    );
+    futures::pin_mut!(request, backoff);
+    match future::select(request, backoff).await {
+        future::Either::Left((result, _)) => {
+            assert_eq!(result.err(), Some(StreamError::Unavailable))
+        }
+        future::Either::Right((event, _)) => panic!(
+            "a definite refused endpoint must finish without backoff: {:?}",
+            event?
+        ),
+    }
+    Ok(())
+}
+
 struct Outage {
     endpoint: super::super::transport::Endpoint,
     calls: std::sync::Arc<AtomicUsize>,
