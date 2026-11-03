@@ -19,13 +19,17 @@ def require(condition, step):
 
 
 def run(seed):
-    result = subprocess.run(
+    child = subprocess.Popen(
         [*command, seed, "--", "-runs=0", "-print_final_stats=1"],
         cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
-    sys.stdout.buffer.write(result.stdout)
-    sys.stdout.flush()
-    return result
+    found = False
+    with child:
+        for line in child.stdout:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+            found |= b"JSONL requires an operation identity" in line
+    return child.returncode, found
 
 
 def main():
@@ -34,18 +38,17 @@ def main():
     require(original.count(guard) == 1, "locate original operation admission")
     try:
         source.write_bytes(original.replace(guard, b"if false {"))
-        defect = run(f"{corpus}/exec-missing-operation")
+        code, found = run(f"{corpus}/exec-missing-operation")
         require(
-            defect.returncode != 0
-            and b"JSONL requires an operation identity" in defect.stdout,
+            code != 0 and found,
             "unchanged oracle must detect removed production operation admission",
         )
         print("planted defect: original operation admission omission detected", flush=True)
     finally:
         source.write_bytes(original)
     require(source.read_bytes() == original, "restore production source")
-    replay = run(corpus)
-    require(replay.returncode == 0, "replay production argv corpus")
+    code, _ = run(corpus)
+    require(code == 0, "replay production argv corpus")
     print("production argv corpus passed; planted-defect oracle passed", flush=True)
 
 
