@@ -161,3 +161,10 @@ input (`04`) supplies known cost without a score. The kept `pair-unscored-cost`
 mutation wrongly drops known costs when both scores are missing. This subsumes
 the fixed zero-valued availability examples, while nonzero-baseline subtraction
 and maximum-cost controls remain distinct. No additional corpus file is needed.
+
+Every decoded observation used by the generated pairing property first projects
+its original population, replicate and arm through the same identity comparison
+as standalone observation input. Identity corruption must fail that comparison
+before pair projections can fail. The retained `observation-identity` mutation
+still requires the original arm-field assertion, keeping source identity and
+pair admission controls distinct without accepting an unrelated earlier panic.

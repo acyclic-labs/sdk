@@ -28,6 +28,8 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         Observation::decode(&wire).expect("independent admission invariant: valid observation");
     // Compare with the original wire numbers, including JSON decimal rounding.
     let measurements: Value = serde_json::from_slice(&wire).expect("generated JSON parses");
+    let encoded = serde_json::to_value(&row).expect("admitted observation projects");
+    identities(&encoded, &measurements);
     pairs(
         &row,
         population,
@@ -50,6 +52,15 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
         Scorer::decode(&wire).expect("independent admission invariant: valid scorer"),
         expected,
     )
+}
+
+fn identities(encoded: &Value, original: &Value) {
+    for field in ["population", "replicate", "arm"] {
+        assert_eq!(
+            encoded[field], original[field],
+            "independent observation invariant: identity field {field}"
+        );
+    }
 }
 
 fn pairs(
@@ -499,12 +510,7 @@ fuzz_target!(|bytes: &[u8]| {
         );
         let canonical = serde_json::to_vec(&row).expect("admitted observation encodes");
         let encoded: Value = serde_json::from_slice(&canonical).expect("observation encodes JSON");
-        for field in ["population", "replicate", "arm"] {
-            assert_eq!(
-                encoded[field], value[field],
-                "independent observation invariant: identity field {field}"
-            );
-        }
+        identities(&encoded, &value);
         for field in ["score", "cost_usd"] {
             assert_eq!(
                 encoded[field].as_f64(),
