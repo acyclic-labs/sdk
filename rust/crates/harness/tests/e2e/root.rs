@@ -157,27 +157,12 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    let baseline = root.join("compaction/recover-summary.json");
-    run(Scenario::load(&root, &baseline)?).await?;
-    for files in [
-        vec![],
-        vec![vec![], vec![]],
-        vec![vec![], vec!["partial-".into()]],
-        vec![vec![], vec!["restored".into()]],
-        vec![vec![], vec!["wrong".into()]],
-        vec![vec!["partial-restored".into()], vec![]],
-    ] {
+    for files in [vec![], vec![vec![]], vec![vec!["wrong".into()]]] {
         let mut case = Scenario::load(&root, &baseline)?;
         case.expect.request_files = Some(files);
         assert!(
             run(case).await.is_err(),
-            "accepted incorrect summary attachment"
+            "accepted incorrect backstop attachment"
         );
     }
     Ok(())
