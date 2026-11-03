@@ -188,13 +188,24 @@ pub fn check(bytes: &[u8]) -> bool {
     // Mutate the complete writer body: presence byte, 16-byte nonce, u64 epoch.
     // Truncating it first would let a missing-byte refusal hide a bad tag.
     let truncated = Envelope::decode(&encoded[..width - 8]);
+    let kind = encoded[ENVELOPE_MAGIC.len()];
+    encoded[ENVELOPE_MAGIC.len()] = 0;
+    let unknown_kind = Envelope::decode(&encoded);
+    encoded[ENVELOPE_MAGIC.len()] = kind;
     encoded[width - 25] = 2;
-    if ![truncated, Envelope::decode(&encoded)]
-        .into_iter()
-        .all(|result| {
-            result.is_err_and(|error| error.code == ErrorCode::Corrupt && error.stopped.is_none())
-        })
-    {
+    let unknown_presence = Envelope::decode(&encoded);
+    encoded[width - 25] = 0;
+    encoded[width - 24] = 1;
+    if ![
+        truncated,
+        unknown_kind,
+        unknown_presence,
+        Envelope::decode(&encoded),
+    ]
+    .into_iter()
+    .all(|result| {
+        result.is_err_and(|error| error.code == ErrorCode::Corrupt && error.stopped.is_none())
+    }) {
         return false;
     }
     check_codec(
