@@ -95,7 +95,7 @@ fn decode<const PLANTED: bool>(
                 );
             }
             let value = decoded?;
-            let (kind, items) = match &value {
+            let (kind, count) = match &value {
                 ExtentPage::Leaf(items) => (DecodedPageKind::Leaf, items.len()),
                 ExtentPage::Internal(items) => (DecodedPageKind::Internal, items.len()),
             };
@@ -103,7 +103,7 @@ fn decode<const PLANTED: bool>(
                 shape,
                 Ok(DecodedPageShape {
                     kind,
-                    items,
+                    items: count,
                     nested_bytes: 0,
                 }),
                 "extent shape differs from the fully validated page"
@@ -163,12 +163,14 @@ pub fn check(input: &[u8]) {
     let _ = check_inner::<false, false>(input);
 }
 
-fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -> bool {
+fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(
+    input: &[u8],
+) -> Result<(), FsError> {
     let Some((&kind, input)) = input.split_first() else {
-        return false;
+        return Err(CanonicalDecodeError::Truncated.into());
     };
     let Some(controls) = input.get(..5) else {
-        return false;
+        return Err(CanonicalDecodeError::Truncated.into());
     };
     let bytes = &input[5..];
     let maximum = u64::from(u16::from_le_bytes([controls[0], controls[1]]));
@@ -287,8 +289,7 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
             "all canonical body bytes must have completion callbacks"
         );
     }
-    let succeeded = decoded.is_ok();
-    drop(decoded);
+    let result = decoded.map(|_| ());
     observed.release_failed().unwrap();
     let receipt = accounting.spent();
     assert_eq!(
@@ -312,7 +313,7 @@ fn check_inner<const OMIT_COMPLETION: bool, const PLANTED: bool>(input: &[u8]) -
     if OMIT_COMPLETION {
         assert!(omitted, "negative control did not reach a completion")
     }
-    succeeded
+    result
 }
 
 #[cfg(test)]
@@ -457,7 +458,8 @@ mod tests {
             ] {
                 let mut input = vec![kind, 255, 255, mode, 0, 0];
                 input.extend_from_slice(&bytes);
-                prop_assert!(check_inner::<false, false>(&input));
+                let result = check_inner::<false, false>(&input);
+                prop_assert!(result.is_ok(), "{result:?}");
                 input[1..3].copy_from_slice(&maximum.to_le_bytes());
                 input[4] = fault; input[5] = index;
                 check(&input);
@@ -471,7 +473,7 @@ mod tests {
 
     #[test]
     fn canonical_writer_corpus_reaches_the_shared_differential_oracles() {
-        for bytes in [
+        for (index, bytes) in [
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-empty-leaf").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-plain-internal").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/file-table-sealed-internal").as_slice(),
@@ -480,10 +482,19 @@ mod tests {
             include_bytes!("../../fuzz/corpus/decoder_work/extents-empty").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/extents-populated").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/extents-populated-sealed").as_slice(),
-            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal").as_slice(),
-            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-sealed").as_slice(),
-        ] {
-            assert!(check_inner::<false>(bytes), "original writer seed refused");
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-lower-bounds")
+                .as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-lower-bounds-sealed")
+                .as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = check_inner::<false, false>(bytes);
+            assert!(
+                result.is_ok(),
+                "writer-derived seed {index} refused: {result:?}"
+            );
         }
         // Preserve old producer bytes as rejected inputs after format changes.
         // Positive seeds above reuse the registered canonical writer captures.
@@ -497,8 +508,13 @@ mod tests {
             include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-page-kind").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/extents-unknown-extent-kind").as_slice(),
             include_bytes!("../../fuzz/corpus/decoder_work/extents-wrong-blob-kind").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal").as_slice(),
+            include_bytes!("../../fuzz/corpus/decoder_work/extents-internal-sealed").as_slice(),
         ] {
-            assert!(!check_inner::<false>(bytes), "malformed seed admitted");
+            assert!(
+                check_inner::<false, false>(bytes).is_err(),
+                "malformed seed admitted"
+            );
         }
     }
 
@@ -535,7 +551,7 @@ mod tests {
                 name.as_ref(),
                 "binding-leaf" | "binding-internal" | "binding-sealed-internal"
             ) {
-                assert!(admitted, "{name}");
+                assert!(admitted.is_ok(), "{name}: {admitted:?}");
             }
         }
     }
@@ -546,7 +562,7 @@ mod tests {
             for number in [0, 1] {
                 let mut input = vec![kind, 255, 255, 0, 0, 0];
                 input.extend_from_slice(&fixture(kind, b"a", number));
-                assert!(check_inner::<false, false>(&input));
+                assert!(check_inner::<false, false>(&input).is_ok());
                 let panic =
                     std::panic::catch_unwind(|| check_inner::<false, true>(&input)).unwrap_err();
                 let message = panic
