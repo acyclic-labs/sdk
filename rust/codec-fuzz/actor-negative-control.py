@@ -11,22 +11,27 @@ ORACLE = ROOT / "src/lib.rs"
 COMMAND = ["cargo", "run", "--locked", "--example", "replay", "--", "actor_codecs"]
 
 
-def run(step, expected):
+def run(step, expected, diagnostic="invocation writer must be admitted"):
     result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True)
     output = result.stdout + result.stderr
     print(f"STEP {step}\n{output}", flush=True)
     if expected == "rejected":
         valid = (result.returncode != 0
-                 and "invocation writer must be admitted" in output
+                 and diagnostic in output
                  and "decoder oracle actor_codecs/" in output)
     else:
         valid = result.returncode == 0 and "replayed " in output and " captured inputs" in output
     if not valid:
         raise RuntimeError(f"{step}: expected {expected}; recovery after correcting the "
-                           "reported source or oracle: python3 actor-negative-control.py")
+                           f"reported source or oracle: python3 actor-negative-control.py"
+                           f"{' --alarms' if sys.argv[1:] == ['--alarms'] else ''}")
 
 
 def main():
+    if sys.argv[1:] == ["--alarms"]:
+        return alarms()
+    if sys.argv[1:]:
+        raise RuntimeError("unknown control; recovery: python3 actor-negative-control.py [--alarms]")
     original = {path: path.read_bytes() for path in (PRODUCTION, ORACLE)}
     needle = b"Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))"
     source = original[PRODUCTION]
@@ -58,10 +63,61 @@ def main():
             path.write_bytes(value)
 
 
+def alarms():
+    production = ROOT.parent / "crates/actors/src/guest/wire.rs"
+    original = {path: path.read_bytes() for path in (production, ORACLE)}
+    source, oracle = original[production], original[ORACLE]
+    plants = (
+        (b"AlarmWire::Set(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },",
+         b"AlarmWire::Set(_) => AlarmChange::Keep,"),
+        (b"AlarmWire::Clear(true) => AlarmChange::Clear,",
+         b"AlarmWire::Clear(true) => AlarmChange::Keep,"),
+    )
+    for needle, _ in plants:
+        if source.count(needle) != 1:
+            raise RuntimeError("alarm production anchor changed; recovery: inspect "
+                               "decode_transition and update actor-negative-control.py --alarms")
+    start = oracle.index(b"    for (name, alarm) in [")
+    end = oracle.index(b"] {", start) + len(b"] {")
+    keep_only = (oracle[:start]
+                 + b'    for (name, alarm) in [("transition", guest::AlarmChange::Keep)] {'
+                 + oracle[end:])
+    try:
+        for label, value in (("alarm production", source), ("alarm oracle", oracle)):
+            print(f"{label} sha256={hashlib.sha256(value).hexdigest()}", flush=True)
+        production.write_bytes(source.replace(*plants[0]))
+        ORACLE.write_bytes(keep_only)
+        manifest = ROOT / "corpus/SOURCES.tsv"
+        saved = manifest.read_bytes()
+        try:
+            manifest.write_bytes(b"".join(row for row in saved.splitlines(keepends=True)
+                                         if not row.startswith(b"actor_codecs/transition-")))
+            run("Keep-only corpus misses lost Set", "accepted")
+        finally:
+            manifest.write_bytes(saved)
+        ORACLE.write_bytes(oracle)
+        diagnostic = "transition writer must retain its alarm"
+        run("same oracle detects production lost Set", "rejected", diagnostic)
+        production.write_bytes(source.replace(*plants[1]))
+        run("same oracle detects production lost Clear", "rejected", diagnostic)
+        production.write_bytes(source)
+        capture = ["cargo", "run", "--locked", "--example", "capture", "--",
+                   "--only-actors", "--extend-goldens"]
+        result = subprocess.run(capture, cwd=ROOT)
+        if result.returncode:
+            raise RuntimeError("original alarm writer capture failed; recovery after "
+                               "correcting the reported failure: python3 actor-negative-control.py --alarms")
+        run("original production and captured alarm branches", "accepted")
+    finally:
+        for path, value in original.items():
+            path.write_bytes(value)
+
+
 if __name__ == "__main__":
     try:
         main()
     except Exception as error:
         print(f"STEP Actors negative control failed: {error}; recovery after correcting "
-              "the reported failure: python3 actor-negative-control.py", file=sys.stderr)
+              "the reported failure: python3 actor-negative-control.py"
+              f"{' --alarms' if sys.argv[1:] == ['--alarms'] else ''}", file=sys.stderr)
         sys.exit(1)

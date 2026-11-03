@@ -184,6 +184,16 @@ fn capture() -> Result<(), Box<dyn Error>> {
         capture_agent_controls(&mut manifest)?;
         return finish(&manifest, prefix);
     }
+    if std::env::args().any(|arg| arg == "--only-actors") {
+        let prefix = "actor_codecs/";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        capture_actors(&mut manifest)?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -883,9 +893,7 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "ResourceIdentity::encode",
         manifest,
     )?;
-    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
-        save("actor_codecs", name, &bytes, producer, manifest)?;
-    }
+    capture_actors(manifest)?;
     use acyclic_fs::{
         Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence,
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
@@ -929,6 +937,13 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "workspace_context_wire::encode_discard",
         manifest,
     )?;
+    Ok(())
+}
+
+fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
+        save("actor_codecs", name, &bytes, producer, manifest)?;
+    }
     Ok(())
 }
 

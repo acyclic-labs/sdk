@@ -565,16 +565,44 @@ pub fn actor_seeds()
         (delivery, Some(checkpoint.clone()))
     );
     seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
-    let transition = guest::Transition {
+    let mut transition = guest::Transition {
         response: None,
         checkpoint,
         alarm: guest::AlarmChange::Keep,
         effects: effects.into(),
         participant: None,
     };
-    let bytes = wire::encode_transition(&transition)?;
-    assert_eq!(wire::decode_transition(&bytes)?, transition);
-    seeds.push(("transition", bytes, "guest::wire::encode_transition"));
+    for (name, alarm) in [
+        ("transition", guest::AlarmChange::Keep),
+        (
+            "transition-set-zero",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: 0,
+            },
+        ),
+        (
+            "transition-set",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: 42,
+            },
+        ),
+        (
+            "transition-set-max",
+            guest::AlarmChange::Set {
+                deadline_unix_ms: u64::MAX,
+            },
+        ),
+        ("transition-clear", guest::AlarmChange::Clear),
+    ] {
+        transition.alarm = alarm;
+        let bytes = wire::encode_transition(&transition)?;
+        assert_eq!(
+            wire::decode_transition(&bytes)?,
+            transition,
+            "transition writer must retain its alarm"
+        );
+        seeds.push((name, bytes, "guest::wire::encode_transition"));
+    }
     Ok(seeds)
 }
 

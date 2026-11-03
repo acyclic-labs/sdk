@@ -37,6 +37,14 @@ also demonstrates that conditional round trips alone miss that mutation and
 restores both source files on exit. Corpus replay does not establish instrumented
 fuzz coverage or distributed recovery guarantees.
 
+`python3 actor-negative-control.py --alarms` checks the original guest transition
+decoder with independent mutations that lose `Set` or `Clear`. It first shows
+that the earlier `Keep`-only producer/corpus misses lost `Set`, requires the same
+expanded oracle to reject both mutations, then captures and replays the original
+writers. Captures include zero, ordinary and maximum unsigned deadlines through
+the shared transition encoder. Refresh only these Actors captures with
+`cargo run --locked --example capture -- --only-actors --extend-goldens`.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh
