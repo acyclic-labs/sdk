@@ -71,6 +71,10 @@ impl ModelProvider for ContinuingModel {
 
 #[tokio::test]
 async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Result<()> {
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let journal = journal.as_ref();
     // Exercise both sides of the message-vector growth boundary and each step
     // limit outcome here. The shared continuation properties measure encoding,
     // validation and buffer growth through 1,000 messages independently.
@@ -105,21 +109,7 @@ async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() ->
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
             };
-            let issuer = crate::core::AuthorityRoot::new(
-                "continuation",
-                [89; 32],
-                crate::core::Authority {
-                    kind: crate::core::AggregateKind::Conversation,
-                    id: crate::ConversationId::from_bytes([89; 16]).to_string(),
-                },
-            );
-            let journal = Journal {
-                8: Some(issuer.verifier(&mut None)?),
-                ..Default::default()
-            };
-            let result = StockExecution::ordinary(&executor)
-                .execute_progress(&input, &journal)
-                .await;
+            let result = executor.execute_progress(input.clone(), journal).await;
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
                 assert!(
                     matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
@@ -139,10 +129,32 @@ async fn one_stock_turn_preserves_admitted_continuations_across_step_limits() ->
             assert_eq!(output.text, "done");
             assert_eq!(output.steps, turns + 1);
             #[cfg(feature = "research")]
-            assert!(
-                output.journal_cut.is_none(),
-                "unsupported receipts cannot certify closure"
-            );
+            {
+                let cut = output
+                    .journal_cut
+                    .expect("persisted terminal append receipt");
+                assert_eq!(cut.version, 1);
+                assert_eq!(cut.operation, input.operation_id);
+                let (_, records) = StockExecution::ordinary(&executor)
+                    .model_records(journal, input.operation_id, turns, ModelPurpose::Response)
+                    .await?;
+                let terminal = records
+                    .iter()
+                    .find(|record| {
+                        matches!(
+                            &record.event,
+                            ExecutionEvent::Model { usage: Some(_), .. }
+                                | ExecutionEvent::ModelInline { usage: Some(_), .. }
+                        )
+                    })
+                    .expect("original terminal usage");
+                assert_eq!(cut.sequence, terminal.sequence);
+            }
+            let replayed = executor.execute(input.clone(), journal).await?;
+            assert_eq!(replayed.text, output.text);
+            assert_eq!(replayed.steps, output.steps);
+            #[cfg(feature = "research")]
+            assert_eq!(replayed.journal_cut, output.journal_cut);
             assert_eq!(tool.0.load(Ordering::SeqCst), turns as usize);
             assert_eq!(provider.seen.load(Ordering::SeqCst), turns as usize + 1);
         }
