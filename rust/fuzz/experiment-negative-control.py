@@ -8,6 +8,32 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-score-coverage": (
+        "experiments/analysis.rs", "score.push(pair.score()?)?;",
+        "score.push(None)?;", "assignment",
+        "independent streamed analysis invariant: metric coverage",
+    ),
+    "analysis-cost-coverage": (
+        "experiments/analysis.rs", "cost.push(pair.cost())?;",
+        "cost.push(None)?;", "assignment",
+        "independent streamed analysis invariant: metric coverage",
+    ),
+    "analysis-final-cluster": (
+        "experiments/analysis.rs",
+        "        score.finish_cluster()?;\n        cost.finish_cluster()?;\n        Ok(AnalysisReport {",
+        "        Ok(AnalysisReport {", "assignment",
+        "independent streamed analysis invariant: metric coverage",
+    ),
+    "analysis-baseline-cost": (
+        "experiments/analysis.rs", "baseline_cost.push_admitted(baseline.0.cost_usd)?;",
+        "baseline_cost.push_admitted(baseline.0.cost_usd.filter(|_| treatment.0.cost_usd.is_some()))?;",
+        "assignment", "independent streamed analysis invariant: arm cost coverage",
+    ),
+    "analysis-treatment-cost": (
+        "experiments/analysis.rs", "treatment_cost.push_admitted(treatment.0.cost_usd)?;",
+        "treatment_cost.push_admitted(treatment.0.cost_usd.filter(|_| baseline.0.cost_usd.is_some()))?;",
+        "assignment", "independent streamed analysis invariant: arm cost coverage",
+    ),
     "analysis-baseline-arm": (
         "experiments/analysis.rs", "baseline.0.arm != baseline_arm",
         "false", "assignment",

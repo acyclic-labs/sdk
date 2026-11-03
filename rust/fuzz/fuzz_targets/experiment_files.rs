@@ -592,6 +592,98 @@ fn declared_stream(bytes: &[u8]) {
         (3, 2),
         "independent streamed analysis invariant: assigned coverage"
     );
+    // Check streamed coverage and arm costs with an integer batch reference.
+    // All sixteen availability masks are rotated across the three pairs; the
+    // final history also takes independent masks directly from the input.
+    for phase in 0u8..=16 {
+        let mut measured = rows.clone();
+        for (pair, members) in measured.chunks_mut(2).enumerate() {
+            let mask = if phase == 16 {
+                bytes.get(pair).copied().unwrap_or_default() & 15
+            } else {
+                ((phase << pair) | (phase >> (4 - pair))) & 15
+            };
+            for (arm, row) in members.iter_mut().enumerate() {
+                let value = i64::from(bytes.get(32 + pair * 2 + arm).copied().unwrap_or(1));
+                row["score"] = if mask & (1 << arm) != 0 {
+                    json!(value - 128)
+                } else {
+                    Value::Null
+                };
+                row["cost_usd"] = if mask & (4 << arm) != 0 {
+                    json!(value + 1)
+                } else {
+                    Value::Null
+                };
+            }
+        }
+        let report = streamed(&encode(&measured), &expected)
+            .expect("independent streamed analysis invariant: measured history admits");
+        assert_eq!((report.assigned_pairs, report.assigned_clusters), (3, 2));
+        for (actual, field) in [(&report.score, "score"), (&report.cost_usd, "cost_usd")] {
+            let differences: [Option<i64>; 3] = std::array::from_fn(|pair| {
+                measured[pair * 2 + 1][field]
+                    .as_i64()
+                    .zip(measured[pair * 2][field].as_i64())
+                    .map(|(treatment, baseline)| treatment - baseline)
+            });
+            let count = differences.iter().flatten().count() as u64;
+            let clusters = u64::from(differences[..2].iter().any(Option::is_some))
+                + u64::from(differences[2].is_some());
+            assert_eq!(
+                (actual.pairs, actual.clusters, actual.estimate.is_some()),
+                (count, clusters, clusters >= 2),
+                "independent streamed analysis invariant: metric coverage"
+            );
+            if let Some(estimate) = &actual.estimate {
+                let mean = differences.iter().flatten().sum::<i64>() as f64 / count as f64;
+                assert!(
+                    (estimate.difference - mean).abs() <= 64.0 * f64::EPSILON * mean.abs().max(1.0),
+                    "independent streamed analysis invariant: metric mean"
+                );
+            }
+        }
+        for (arm, actual) in [&report.baseline_cost, &report.treatment_cost]
+            .into_iter()
+            .enumerate()
+        {
+            let values = || {
+                measured
+                    .iter()
+                    .skip(arm)
+                    .step_by(2)
+                    .filter_map(|row| row["cost_usd"].as_i64())
+            };
+            let priced = values().count() as u64;
+            let known = values().sum::<i64>() as f64;
+            let total = (priced == 3).then_some(known);
+            assert_eq!(
+                (
+                    actual.assigned,
+                    actual.priced_trials,
+                    actual.known_cost_usd,
+                    actual.total_cost_usd,
+                    actual.cost_per_assigned_usd
+                ),
+                (3, priced, known, total, total.map(|cost| cost / 3.0)),
+                "independent streamed analysis invariant: arm cost coverage"
+            );
+        }
+    }
+    let empty = streamed(&[], &[]).expect("empty declared streams admit");
+    for actual in [&empty.baseline_cost, &empty.treatment_cost] {
+        assert_eq!(
+            (
+                actual.assigned,
+                actual.priced_trials,
+                actual.known_cost_usd,
+                actual.total_cost_usd,
+                actual.cost_per_assigned_usd
+            ),
+            (0, 0, 0.0, Some(0.0), None),
+            "independent streamed analysis invariant: arm cost coverage"
+        );
+    }
     // A foreign arm remains a valid observation and a distinct pair arm, so
     // pairing alone cannot enforce the caller's declared orientation.
     for index in 0..rows.len() {

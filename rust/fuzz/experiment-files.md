@@ -248,3 +248,18 @@ after all complete rows; the original typed source error must survive every vali
 prefix. These properties replace the fixed orientation/observation-error examples;
 the prior streamed declaration property also subsumes the fixed count examples.
 No external-provider fixture or alternate parser is introduced.
+
+Streamed metric reports use an independent integer batch reference over the same
+three assigned pairs. All sixteen score/cost availability masks are rotated
+across pairs, followed by one history with independent input-derived masks.
+Matched pair counts, contributing population counts, estimate availability and
+means are checked separately for scores and costs. Each arm's known-cost sum,
+priced count, complete total and per-assignment mean include known costs even
+when its partner is unpriced or both scores are missing. Empty streams retain
+zero complete cost and no mean. This subsumes the two fixed streamed coverage
+and arm-cost examples; maximum-cost overflow and allocation controls remain.
+Five retained actual-source controls omit either metric, omit final cluster
+completion or wrongly exclude either arm's unmatched costs. They reuse the
+original assignment input. These bounded integer references do not establish
+arbitrary floating-point accuracy; the separate statistics precision controls
+and source-coverage obligation remain.
