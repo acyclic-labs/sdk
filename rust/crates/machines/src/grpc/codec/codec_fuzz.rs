@@ -164,17 +164,17 @@ pub fn check(name: &str, bytes: &[u8]) {
                 project::<wire::MachineContract, _>(bytes, |value| decode_contract(Some(&value)));
         }
         "acyclic.machines.v1.MachineState" => {
-            if project::<wire::MachineState, _>(bytes, |value| {
-                decode_machine_observation(value, machine)
-            })
-            .is_some()
+            if let Some(original) =
+                project::<wire::MachineState, _>(bytes, MachineObservation::try_from)
             {
+                let foreign = if original.id == MachineId::from_digest([9; 32]) {
+                    machine
+                } else {
+                    MachineId::from_digest([9; 32])
+                };
                 assert!(
-                    decode_machine_observation(
-                        wire::MachineState::decode(bytes).unwrap(),
-                        MachineId::from_digest([9; 32])
-                    )
-                    .is_err()
+                    decode_machine_observation(wire::MachineState::decode(bytes).unwrap(), foreign)
+                        .is_err()
                 );
             }
         }
@@ -238,6 +238,20 @@ pub fn check(name: &str, bytes: &[u8]) {
         }
         _ => {}
     }
+}
+
+/// The public observation writer and reader must retain the original producer's
+/// result before its wire bytes become a corpus input.
+pub fn capture_machine(original: &MachineObservation) -> Result<Vec<u8>, ProviderError> {
+    let value = wire::MachineState::try_from(original.clone())?;
+    assert_eq!(
+        MachineObservation::try_from(value.clone()),
+        Ok(original.clone()),
+        "original machine response must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    check("acyclic.machines.v1.MachineState", &bytes);
+    Ok(bytes)
 }
 
 /// Capture the existing request-side codec writers. Service response producers

@@ -858,3 +858,19 @@ The unchanged property must reject the planted production nil acceptance at
 After exact source restoration, require the same property to pass. Compiler
 failures do not qualify the control. Source coverage, instrumented campaigns and
 physical service/platform qualification remain separate obligations.
+
+The existing Machine result-page RPC property also supplies the simulator's
+original observations to the same `MachineState` semantic oracle. The public
+writer/reader must preserve every original field; arbitrary admitted packets
+must retain their own identity and reject a foreign caller identity.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_and_credit_without_inspections -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-observation-state.patch
+```
+
+The planted Running-to-Suspended decoder change must fail at `original machine
+response must retain its producer observation`. Require the same property to
+pass after exact restoration. This binds the existing codec oracle to the
+original producer value; physical provider qualification remains separate.

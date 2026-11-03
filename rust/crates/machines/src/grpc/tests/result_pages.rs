@@ -86,6 +86,10 @@ async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspect
     };
     let credit = NonZeroU32::new(3).unwrap_or(NonZeroU32::MIN);
     let page = original.read_results(cursor, credit).await?;
+    #[cfg(feature = "test-support")]
+    for observation in &page.machines {
+        codec_fuzz::capture_machine(observation)?;
+    }
     original
         .destroy_machine(
             page.machines.first().ok_or("original child missing")?.id,
