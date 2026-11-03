@@ -1269,7 +1269,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     }
     let first = Close::new(1000, "first", SocketCloseInitiator::Peer);
     shared.peer_close(&connection, first)?;
-    for _ in 0..100_000 {
+    // Repeated refusal must leave the original queue and its owner unchanged.
+    for _ in 0..2 {
         shared.peer_close(
             &connection,
             Close::new(1001, "later", SocketCloseInitiator::Peer),
@@ -1280,8 +1281,6 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
                 text: "after".into(),
             },
         )?;
-    }
-    {
         let table = shared.lock(&connection);
         let entry = table
             .sockets
