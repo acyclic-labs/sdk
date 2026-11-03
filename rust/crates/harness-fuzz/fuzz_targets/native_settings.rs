@@ -67,13 +67,15 @@ impl Files {
     ) -> acyclic_harness_core::Result<NativeSettings> {
         // Use the shipped entry and its original native IO completion channel.
         // No test-only constructor or ambient user configuration is selected.
-        futures::executor::block_on(NativeSettings::load(
-            SettingsConfig::new(&self.workspace, &self.home)
-                .codex_home(&self.codex)
-                .trust_project_hooks(hooks)
-                .trust_project_mcp(mcp)
-                .maximum_file_bytes(maximum),
-        ))
+        futures::executor::block_on(NativeSettings::load(self.config(hooks, mcp, maximum)))
+    }
+
+    fn config(&self, hooks: bool, mcp: bool, maximum: u64) -> SettingsConfig {
+        SettingsConfig::new(&self.workspace, &self.home)
+            .codex_home(&self.codex)
+            .trust_project_hooks(hooks)
+            .trust_project_mcp(mcp)
+            .maximum_file_bytes(maximum)
     }
 }
 
@@ -101,6 +103,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     mcp::check(bytes);
     model::check(bytes);
     selection::inactive(bytes);
+    selection::partial(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();
     let role = role % 9;
