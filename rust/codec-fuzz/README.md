@@ -857,3 +857,12 @@ refusal. `object_envelope_width.patch` plants a paired variable-width writer and
 decoder; `object_envelope_tag.patch` admits the invalid tag. The unchanged corpus
 property must reject both. These checks do not establish deletion progress,
 physical reclamation, full format-branch coverage or distributed durability.
+
+The same envelope property derives an unknown kind and a definitely nonzero
+nonce for an absent deleter from the complete writer body. It checks typed
+`Corrupt` without an attached stopped cause. `object_envelope_kind.patch` and
+`object_envelope_padding.patch` omit those production guards; qualify each by
+showing the parent oracle misses it and the unchanged refined oracle fails.
+The existing golden test remains: exact bytes and every truncated prefix are
+distinct guarantees. These checks do not establish full branch coverage, crash
+frontiers, physical release or remote topology.
