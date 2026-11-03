@@ -1429,7 +1429,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             let settled = deliver(&host, &path, wake).await?;
             assert_eq!(settled.phase, Phase::Idle);
             assert_eq!(settled.conversation_tail, n + 1);
-            let entries = super::values(&stream, path.conversation()?).await?;
+            let entries = super::values(stream.as_ref(), path.conversation()?).await?;
             let entry = ConversationEntry::decode(entries.last().ok_or("turn did not settle")?)?;
             announced.push(entry.targets.is_some());
             if roster_file.is_none() {
