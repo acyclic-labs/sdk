@@ -21,10 +21,13 @@ def lock_contents(data):
 
 
 def main():
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("claim", "owner-envelope") or (len(sys.argv) == 4 and sys.argv[3] != "--routine"):
-        raise RuntimeError("arguments: expected codec, evidence directory and optional --routine; recovery: python3 rust/fuzz/native-codec-control.py <claim|owner-envelope> /tmp/native-codec-control [--routine]")
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("claim", "owner-envelope") or (len(sys.argv) == 4 and sys.argv[3] not in ("--routine", "--coverage-only")):
+        raise RuntimeError("arguments: expected codec, evidence directory and optional mode; recovery: python3 rust/fuzz/native-codec-control.py <claim|owner-envelope> /tmp/native-codec-control [--routine|--coverage-only]")
     owner = sys.argv[1] == "owner-envelope"
-    routine = len(sys.argv) == 4
+    mode = sys.argv[3] if len(sys.argv) == 4 else "fuzz"
+    routine = mode == "--routine"
+    coverage_only = mode == "--coverage-only"
+    toolchain = "+nightly-2026-07-01"
     target_name = "native_owner_record" if owner else "native_claim_record"
     subdirectory = "owner_codec" if owner else "claim_codec"
     failure = "corrupt record decoded" if owner else "claim checksum bypassed"
@@ -41,7 +44,7 @@ def main():
     oracle_hash = digest(oracle.read_bytes())
     lock = root / "Cargo.lock"
     original_lock = lock.read_bytes()
-    report = {"codec": sys.argv[1], "mode": "routine" if routine else "fuzz", "codec_sha256": digest(original), "oracle_sha256": oracle_hash, "commands": []}
+    report = {"codec": sys.argv[1], "mode": mode.removeprefix("--"), "codec_sha256": digest(original), "oracle_sha256": oracle_hash, "commands": []}
 
     def run(step, command, negative=False):
         log = output / (step + ".log")
@@ -69,7 +72,7 @@ def main():
 
     ordinary = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", target_name, "--", "--nocapture"]
     try:
-        if routine:
+        if routine or coverage_only:
             corpus = root / "rust/crates/native-runtime/tests" / subdirectory / "corpus"
             command = ordinary
         else:
@@ -80,31 +83,37 @@ def main():
                 capture = output / ("capture-native-claim.exe" if os.name == "nt" else "capture-native-claim")
                 run("compile-capture", ["rustc", "--edition=2024", "rust/fuzz/examples/capture_native_claim.rs", "-o", str(capture)])
                 run("capture", [str(capture), str(corpus)])
-            toolchain = "+nightly-2026-07-01"
             command = ["cargo", toolchain, "fuzz", "run", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", *features, target_name, str(corpus), "--", "-runs=" + ("1000" if owner else "10000"), "-seed=1", "-max_len=8192", "-artifact_prefix=" + str(artifacts) + os.sep]
         report["corpus"] = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p.read_bytes()), "producer": "owner_record::encode_with" if owner else "claim::record::Record::encode"} for p in sorted(corpus.iterdir())}
         if owner and not routine:
             for path in sorted(corpus.iterdir()):
                 print("OWNER_CORPUS " + json.dumps({"name": path.name, **report["corpus"][path.name], "bytes_hex": path.read_bytes().hex()}), flush=True)
-        needle = b"if magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes())) {" if owner else b"if checksum(body) != sum {"
-        replacement = b"if false && (magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes()))) {" if owner else b"if false && checksum(body) != sum {"
-        if original.count(needle) != 1:
-            raise RuntimeError("plant-integrity: expected one original guard; recovery: inspect the selected codec and update the exact mutation")
-        mutant = original.replace(needle, replacement)
-        (output / "integrity-mutant.rs").write_bytes(mutant)
-        report["mutant_sha256"] = digest(mutant)
-        codec.write_bytes(mutant)
-        run("integrity-negative", command, negative=True)
-        codec.write_bytes(original)
-        result = run("positive", command)
-        if routine and "test result: ok. 1 passed;" not in result:
-            raise RuntimeError("routine-count: expected one ordinary corpus test; recovery: inspect positive.log and restore test discovery")
+        if not coverage_only:
+            needle = b"if magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes())) {" if owner else b"if checksum(body) != sum {"
+            replacement = b"if false && (magic != MAGIC || !bool::from(expected.ct_eq(digest(protected, meter)?.as_bytes()))) {" if owner else b"if false && checksum(body) != sum {"
+            if original.count(needle) != 1:
+                raise RuntimeError("plant-integrity: expected one original guard; recovery: inspect the selected codec and update the exact mutation")
+            mutant = original.replace(needle, replacement)
+            (output / "integrity-mutant.rs").write_bytes(mutant)
+            report["mutant_sha256"] = digest(mutant)
+            codec.write_bytes(mutant)
+            run("integrity-negative", command, negative=True)
+            codec.write_bytes(original)
+            result = run("positive", command)
+            if routine and "test result: ok. 1 passed;" not in result:
+                raise RuntimeError("routine-count: expected one ordinary corpus test; recovery: inspect positive.log and restore test discovery")
         if not routine:
-            if owner:
+            if owner and not coverage_only:
                 result = run("routine-positive", ordinary)
                 if "test result: ok. 1 passed;" not in result:
                     raise RuntimeError("routine-count: expected one ordinary corpus test; recovery: inspect routine-positive.log and restore test discovery")
-            target = output / "coverage-build"
+            target = Path(os.environ.get("CARGO_TARGET_DIR", root / "target")) / "native-codec-coverage" / target_name
+            if owner:
+                report["coverage_corpus"] = {}
+                for path in sorted(corpus.iterdir()):
+                    row = {"name": path.name, "sha256": digest(path.read_bytes()), "bytes_hex": path.read_bytes().hex()}
+                    report["coverage_corpus"][path.name] = row["sha256"]
+                    print("OWNER_COVERAGE_INPUT " + json.dumps(row), flush=True)
             run("coverage", ["cargo", toolchain, "fuzz", "coverage", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", *features, "--target-dir", str(target), target_name, str(corpus)])
             binaries = list(target.rglob(target_name))
             if len(binaries) != 1:
@@ -118,12 +127,6 @@ def main():
             if len(rows) != len(suffixes):
                 raise RuntimeError("coverage-codec: expected original codec rows; recovery: inspect coverage-export.log and correct source selection")
             report["codec_coverage"] = {row["filename"]: row["summary"] for row in rows}
-            if owner:
-                report["coverage_corpus"] = {}
-                for path in sorted(corpus.iterdir()):
-                    row = {"name": path.name, "sha256": digest(path.read_bytes()), "bytes_hex": path.read_bytes().hex()}
-                    report["coverage_corpus"][path.name] = row["sha256"]
-                    print("OWNER_COVERAGE_INPUT " + json.dumps(row), flush=True)
     finally:
         codec.write_bytes(original)
         rewritten_lock = lock.read_bytes()

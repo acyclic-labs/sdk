@@ -23,6 +23,9 @@ The existing nightly-2026-07-01 toolchain, llvm-tools component and cargo-fuzz
 must be installed. Coverage export currently selects Linux x86_64 tools.
 Append `--routine` to qualify only the ordinary retained-corpus test with the
 same production defect, without repeating the campaign.
+Append `--coverage-only` to measure the retained corpus without repeating a
+qualified campaign or mutation. Coverage builds stay below `CARGO_TARGET_DIR`
+(or the workspace's `target` directory when that variable is absent).
 
 The oracle checks arbitrary wire bytes, current-owner writer round trips,
 corruption, partial records, caller bounds and the original copy refusal.
