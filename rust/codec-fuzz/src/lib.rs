@@ -218,10 +218,16 @@ pub fn protobuf_json(bytes: &[u8]) {
         }
         let mut trailing = payload.to_vec();
         trailing.extend_from_slice(b" false");
-        assert!(matches!(
-            acyclic_protobuf_json::decode(descriptor, &trailing, usize::MAX),
-            Err(acyclic_protobuf_json::Error::Trailing)
-        ));
+        let (stage, cause) =
+            acyclic_protobuf_json::decode_admitted(descriptor, &trailing, |stage, cause| {
+                (stage, cause)
+            })
+            .expect_err("derived trailing input refuses");
+        assert_eq!(stage, acyclic_protobuf_json::Error::Trailing);
+        assert!(
+            cause.is_syntax(),
+            "original trailing refusal retains its syntax cause"
+        );
     }
 }
 

@@ -286,3 +286,11 @@ accounting/cancellation targets in `../crates/filesystem/fuzz`, Harness transpor
 and JSON targets in `../crates/harness-fuzz`, and provider streaming/projection
 targets in `../crates/harness-providers/fuzz`. The shared inventory maps their
 distinct obligations.
+
+The shared JSON refusal property also keeps the original parser cause: unknown
+fields retain a data error, and writer-derived trailing input retains a syntax
+error in the same `protobuf_json` oracle. `protobuf_json_cause.patch` changes the
+production error adapter to an IO error while preserving the `Trailing` stage.
+The original stage-only property misses this defect; the cause assertion must
+reject it. Objects/shared correspondence covers wrapper mappings and quotas;
+it is not independent parser evidence after centralisation.
