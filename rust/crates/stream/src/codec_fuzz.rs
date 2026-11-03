@@ -301,3 +301,12 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     ));
     Ok(seeds)
 }
+
+#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
+    for (name, bytes) in seeds().await? {
+        assert!(check(&bytes), "shared persistence oracle rejected {name}");
+    }
+    Ok(())
+}
