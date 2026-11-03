@@ -51,6 +51,47 @@ if (mode === 'echo') {
   assert.equal(normal.failures.length, 0);
   assert.ok(unfinishedInput.destroyed, 'original exit must close an input producer that has no terminal');
 
+  // The same real native close must preserve synchronous status failures and
+  // both terminal failure paths, including work accepted after root exit.
+  for (const closeThrows of [false, true]) for (const terminalAsync of [false, true]) {
+    const statusFailure = new Error('original status observer failure');
+    const terminalFailure = new Error('original terminal observer failure');
+    let entered, release, settled = false, closeCalls = 0, terminalCalls = 0;
+    const terminalSeen = new Promise(resolve => { entered = resolve; });
+    const terminalReleased = new Promise(resolve => { release = resolve; });
+    const completed = commandProcess(process.execPath, [script, 'exit'], {
+      ...options,
+      onClose(result) {
+        closeCalls++;
+        assert.equal(result.code, 17);
+        if (closeThrows) throw statusFailure;
+      },
+      onTerminal({exitCode}) {
+        terminalCalls++;
+        assert.equal(exitCode, 17);
+        entered();
+        if (!terminalAsync) throw terminalFailure;
+        return terminalReleased.then(() => { throw terminalFailure; });
+      },
+    }).then(result => { settled = true; return result; });
+    try {
+      const reached = await Promise.race([
+        terminalSeen.then(() => true), completed.then(() => false),
+      ]);
+      assert.ok(reached, 'the original native exit must report its terminal');
+      if (terminalAsync) assert.equal(settled, false, 'accepted terminal work owns completion');
+    } finally { release(); await completed; }
+    const result = await completed;
+    assert.equal(closeCalls, 1);
+    assert.equal(terminalCalls, 1);
+    assert.equal(result.code, 17);
+    assert.ok(result.completion.process_tree_retired);
+    assert.equal(result.failures.length, closeThrows ? 2 : 1);
+    assert.equal(result.failures.find(({phase}) => phase === 'terminal')?.error, terminalFailure);
+    assert.equal(result.failures.find(({phase}) => phase === 'status')?.error,
+      closeThrows ? statusFailure : undefined);
+  }
+
   // Capture original wire bytes from the shipped producer for the retained
   // decoder fuzzer. No fixture response or codec model is handwritten.
   const wireDirectory = await mkdtemp(join(tmpdir(), 'process-wire-control-'));
