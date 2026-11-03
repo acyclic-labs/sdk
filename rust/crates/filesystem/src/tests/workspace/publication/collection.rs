@@ -427,6 +427,8 @@ async fn a_crash_at_every_epoch_step_loses_nothing_and_is_reclaimed_after()
 -> Result<(), Box<dyn Error>> {
     use crate::logical_objects::epoch::Step;
     use acyclic_objects::Blobs as _;
+    // One stored chunk exercises the same reclamation path as a larger file.
+    let dead_content = "d".repeat(crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1);
     for step in [
         Step::Persisted,
         Step::Switched,
@@ -446,9 +448,7 @@ async fn a_crash_at_every_epoch_step_loses_nothing_and_is_reclaimed_after()
                 ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
             )
             .await?;
-            agent
-                .write_text("/dead.txt", &"only the agent ".repeat(8_192))
-                .await?;
+            agent.write_text("/dead.txt", &dead_content).await?;
             agent.delete(IdempotencyKey::new()).await?;
             *fs.local_epoch()
                 .hooks
