@@ -639,3 +639,12 @@ another target or corpus. `negative-controls/object_range_empty.patch` removes
 its production empty-selection refusal; the unchanged writer-corpus property
 must reject that defect. These are component checks, with no range-transport,
 complete branch-coverage or physical-storage qualification implied.
+
+The same persisted writer oracle compares envelope widths across marking and
+restamping, admits the rewritten value, and refuses an unknown presence tag in
+a complete actual writer body. This subsumes the separate envelope example;
+truncating before changing the tag could hide its admission behind a short-read
+refusal. `object_envelope_width.patch` plants a paired variable-width writer and
+decoder; `object_envelope_tag.patch` admits the invalid tag. The unchanged corpus
+property must reject both. These checks do not establish deletion progress,
+physical reclamation, full format-branch coverage or distributed durability.

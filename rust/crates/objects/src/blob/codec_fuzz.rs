@@ -159,7 +159,7 @@ pub fn check(bytes: &[u8]) -> bool {
             .collect(),
         edges: references.clone(),
     };
-    let envelope = Envelope {
+    let mut envelope = Envelope {
         kind: if fields[56] & 1 == 0 {
             Kind::Blob
         } else {
@@ -172,6 +172,31 @@ pub fn check(bytes: &[u8]) -> bool {
         dying: (fields[57] & 1 != 0).then(|| fields[32..48].try_into().expect("generator deleter")),
         condemned: word(48),
     };
+    let mut encoded = envelope.encode();
+    let width = encoded.len();
+    envelope.dying = match envelope.dying {
+        Some(_) => None,
+        None => Some(fields[32..48].try_into().expect("generator deleter")),
+    };
+    envelope.condemned = !envelope.condemned;
+    let restamped = envelope.encode();
+    if restamped.len() != width
+        || !Envelope::decode(&restamped).is_ok_and(|decoded| decoded == envelope)
+    {
+        return false;
+    }
+    // Mutate the complete writer body: presence byte, 16-byte nonce, u64 epoch.
+    // Truncating it first would let a missing-byte refusal hide a bad tag.
+    let truncated = Envelope::decode(&encoded[..width - 8]);
+    encoded[width - 25] = 2;
+    if ![truncated, Envelope::decode(&encoded)]
+        .into_iter()
+        .all(|result| {
+            result.is_err_and(|error| error.code == ErrorCode::Corrupt && error.stopped.is_none())
+        })
+    {
+        return false;
+    }
     check_codec(
         bytes,
         MANIFEST_MAGIC,
