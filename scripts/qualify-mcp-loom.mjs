@@ -14,7 +14,7 @@ export const gateQualifications = [
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
-  { args: ["--guest"] },
+  { args: ["--stream-retry"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
@@ -81,6 +81,14 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
     ],
     env: loomEnvironment(), targetCfg: [],
+  });
+}
+
+export function qualifyStreamRetryLoom(run = runCommand) {
+  return qualifyLoom("acyclic-stream", "main", [
+    "--no-default-features", "--features", "local",
+  ], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["retry_recovery_loom::", 2]],
   });
 }
 
@@ -237,7 +245,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
-  "--native-progress": qualifyNativeProgressLoom,
+  "--native-progress": qualifyNativeProgressLoom, "--stream-retry": qualifyStreamRetryLoom,
   "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,

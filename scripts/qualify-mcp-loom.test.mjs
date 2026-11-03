@@ -104,7 +104,7 @@ test("skill materializer qualification requires the production owner model and i
 });
 
 test("gate rejects every trailing argument before starting a build", () => {
-  for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--timer"], ["--gate"], ["x"]]) {
+  for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--stream-retry"], ["--gate"], ["x"]]) {
     let builds = 0;
     const run = () => { builds++; throw new Error("unexpected build"); };
     assert.throws(() => qualificationMain(["--gate", ...trailing], run), /unknown qualification argument/);
@@ -244,6 +244,7 @@ test("qualification opts into the crate cfg only for the model build and execute
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   assertGateStep(["--all-features"]);
+  assertGateStep(["--stream-retry"]);
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
   assert.ok(policy, "the original qualification must retain its policy branch");
