@@ -70,13 +70,20 @@ pub(super) fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     });
     histogram(&slo, &[(0, 0), (1, 1), (bucket, 2)])?;
 
-    if slo.latency.is_some() {
-        let mut unknown: serde_json::Value = serde_json::from_slice(&canonical)?;
-        unknown["latency"]["unknown"] = true.into();
-        assert!(serde_json::from_value::<Slo>(unknown).is_err());
-    }
     let mut unknown: serde_json::Value = serde_json::from_slice(&canonical)?;
-    unknown["unknown"] = true.into();
+    if slo.latency.is_some() {
+        let mut nested = unknown.clone();
+        nested
+            .get_mut("latency")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("original SLO writer omitted its latency object")?
+            .insert("unknown".into(), true.into());
+        assert!(serde_json::from_value::<Slo>(nested).is_err());
+    }
+    unknown
+        .as_object_mut()
+        .ok_or("original SLO writer omitted its file object")?
+        .insert("unknown".into(), true.into());
     assert!(serde_json::from_value::<Slo>(unknown).is_err());
     Ok(())
 }
@@ -102,7 +109,7 @@ pub(super) fn evidence(slo: &Slo, counts: [u64; 3]) -> Result<(), SloError> {
             vec![0, counts.iter().sum()]
         };
         let latency = slo.latency.as_ref().and_then(|objective| {
-            (total != 0).then(|| duration <= objective.maximum_ns || objective.target_ppm == 0)
+            (total != 0).then_some(duration <= objective.maximum_ns || objective.target_ppm == 0)
         });
         assert_eq!(
             slo.evaluate(&snapshot)?,
