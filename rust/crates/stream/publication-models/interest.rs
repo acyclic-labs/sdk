@@ -80,7 +80,7 @@ fn lock_order_negative_control_subscribes_under_the_registry_lock() {
         let _interest = registry.subscribe(0).unwrap();
         let entries = registry.entries.lock().unwrap();
         let violation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            entries.get(&0).unwrap().0.subscribe().unwrap();
+            entries.get(&0).unwrap().changed.subscribe().unwrap();
         }));
         drop(entries);
         if let Err(violation) = violation {
@@ -159,7 +159,7 @@ proptest::proptest! {
                 registry.notify(&key).unwrap();
                 let mut expected = BTreeMap::<u8, usize>::new();
                 for entry in live.iter().flatten() { *expected.entry(entry.key).or_default() += 1; }
-                let actual = registry.entries.lock().unwrap().iter().map(|(key, (_, count))| (*key, *count)).collect::<BTreeMap<_, _>>();
+                let actual = registry.entries.lock().unwrap().iter().map(|(key, entry)| (*key, entry.count)).collect::<BTreeMap<_, _>>();
                 assert_eq!(actual, expected);
             }
             drop(live);
