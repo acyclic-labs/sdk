@@ -5,7 +5,7 @@ use acyclic_harness_core::experiments::{
     Observation,
     probes::{Decision, Scorer},
     reports::AssignedTrials,
-    stats::{Cluster, PairedStats},
+    stats::{Cluster, PairedStats, required_clusters},
 };
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
@@ -305,6 +305,38 @@ fn statistics(bytes: &[u8]) {
     }
 }
 
+fn planning(bytes: &[u8]) {
+    let word = |index| u128::from(bytes.get(index).copied().unwrap_or_default());
+    let sd = word(0);
+    let effect = word(1) + 1;
+    let alpha = word(2) + 1;
+    let power = word(3) + 1;
+    // Exact rational ceiling; no floating-point planning algorithm is copied.
+    let numerator = ((alpha + power) * sd).pow(2);
+    let denominator = effect.pow(2);
+    let expected = numerator.div_ceil(denominator).max(2) as u64;
+    let inputs = [sd as f64, effect as f64, alpha as f64, power as f64];
+    assert_eq!(
+        required_clusters(inputs[0], inputs[1], inputs[2], inputs[3])
+            .expect("bounded planning inputs admit"),
+        expected,
+        "independent planning invariant: rational ceiling"
+    );
+    for index in 0..4 {
+        for invalid in [f64::NAN, f64::INFINITY, -1.0]
+            .into_iter()
+            .chain((index != 0).then_some(0.0))
+        {
+            let mut refused = inputs;
+            refused[index] = invalid;
+            assert!(
+                required_clusters(refused[0], refused[1], refused[2], refused[3]).is_err(),
+                "independent planning invariant: invalid input refusal"
+            );
+        }
+    }
+}
+
 fn rejects(admits: Admits, value: &Value) {
     assert!(
         !admits(&serde_json::to_vec(value).expect("JSON value encodes")),
@@ -490,4 +522,5 @@ fuzz_target!(|bytes: &[u8]| {
     }
     trials(bytes, &valid_scorer, expected);
     statistics(bytes);
+    planning(bytes);
 });

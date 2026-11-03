@@ -99,6 +99,10 @@ CASES = {
         "experiments/mod.rs", "row.arm == baseline.arm", "false",
         "trials-priced", "independent pairing invariant: foreign identity refusal",
     ),
+    "planning-ceiling": (
+        "experiments/stats.rs", ".powi(2)).ceil();", ".powi(2)).floor();",
+        "decision", "independent planning invariant: rational ceiling",
+    ),
 }
 
 

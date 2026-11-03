@@ -53,6 +53,17 @@ This bounded numerical domain does not replace large-offset, overflow or
 arbitrary floating-point input controls. Comparisons use a numerical precision
 budget scaled by input length; it is not a formal rounding-error proof.
 
+The public `required_clusters` planning entry also receives bounded integer
+parameters derived from the first four input bytes. An exact u128 rational
+ceiling checks its result without repeating the floating-point implementation.
+Each argument separately receives nonfinite and negative inputs, which must be
+refused. The retained `planning-ceiling` mutation rounds down instead of up in
+the actual production calculation. No new corpus is needed: `decision` already
+selects a nonintegral result. General overflow and the nonzero-baseline score
+example remain separate; zero-baseline pairing does not subsume subtraction
+between two nonzero scores. The planning oracle covers these bounded integer
+parameters, not arbitrary floating-point planning inputs or statistical design.
+
 Run a campaign with an explicit budget using cargo-fuzz's supported toolchain:
 
 ```sh
