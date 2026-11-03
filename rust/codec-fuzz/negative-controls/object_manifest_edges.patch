@@ -1,0 +1,10 @@
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -185,7 +185,6 @@
+         self.parts
+             .iter()
+             .map(|part| part.digest)
+-            .chain(self.edges.iter().copied())
+             .filter(|digest| seen.insert(*digest))
+             .collect()
+     }
