@@ -4,6 +4,8 @@ use acyclic_harness_core::native_settings::{NativeSettings, SettingsConfig};
 use std::path::{Path, PathBuf};
 #[path = "native_settings/mcp.rs"]
 mod mcp;
+#[path = "native_settings/selection.rs"]
+mod selection;
 
 struct Files {
     _root: tempfile::TempDir,
@@ -100,6 +102,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
 
     static ADMISSION: std::sync::Once = std::sync::Once::new();
     ADMISSION.call_once(|| {
+        selection::check();
         // Caller-authored settings, through the original file loader and policy.
         // No hook command is executed by these admission checks.
         for role in 0..7 {

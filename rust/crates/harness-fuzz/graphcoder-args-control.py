@@ -88,6 +88,20 @@ additional_controls = {
     ],
     "native_settings": [
         (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"Entry::Occupied(mut entry) if entry.get().0 <= order => {",
+            b"Entry::Occupied(mut entry) if entry.get().0 >= order => {",
+            "project-server",
+            b"winning scope must replace lower invalid declarations",
+        ),
+        (
+            "rust/crates/harness-core/src/native_settings.rs",
+            b"if source.local\n",
+            b"if false\n",
+            "project-server",
+            b"selected workspace entries must retain their winning declaration",
+        ),
+        (
             "rust/crates/harness-core/src/mcp/config.rs",
             b"#[serde(default, deny_unknown_fields)]",
             b"#[serde(default)]",
