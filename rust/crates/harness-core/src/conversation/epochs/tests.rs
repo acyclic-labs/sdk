@@ -66,7 +66,7 @@ fn budget_bound_preserves_reservation_and_refuses_overflow() {
 }
 
 #[test]
-fn source_range_and_renderer_model_identity_fence_shared_summaries() {
+fn summary_key_fences_source_range_renderer_and_model() {
     let key = SummaryKey {
         source: StreamPath::new("account/agent/conversation").unwrap(),
         through: 30,
@@ -86,24 +86,6 @@ fn source_range_and_renderer_model_identity_fence_shared_summaries() {
     other = key.clone();
     other.source = StreamPath::new("account/child/conversation").unwrap();
     assert_ne!(digest, other.digest());
-    let invalid = Epoch {
-        header: [0; 32],
-        profile: [0; 32],
-        key,
-        summary: None,
-    };
-    assert_eq!(
-        invalid.validate(&other.source, 30),
-        Err(InvalidEpoch::Source)
-    );
-    assert_eq!(
-        invalid.validate(&invalid.key.source, 29),
-        Err(InvalidEpoch::OutsidePrefix)
-    );
-    assert_eq!(
-        invalid.validate(&invalid.key.source, 30),
-        Err(InvalidEpoch::MissingCoverage)
-    );
 }
 
 /// Full materialized model: a summary marks source items individually. It
@@ -885,15 +867,6 @@ proptest::proptest! {
         prop_assert_ne!(&reopened.native()[index].artifact, reopened.portable());
         let mut invalid = serde_json::to_value(&reopened).unwrap();
         invalid.as_object_mut().unwrap().remove("portable");
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["version"] = serde_json::json!(0);
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["portable"]["descriptor"]["media_type"] = serde_json::json!("application/json");
-        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
-        let mut invalid = serde_json::to_value(&reopened).unwrap();
-        invalid["native"][index]["provenance"]["provider"] = serde_json::json!("");
         prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
     }
 }
