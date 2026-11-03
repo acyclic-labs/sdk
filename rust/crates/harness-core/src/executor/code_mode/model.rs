@@ -144,13 +144,22 @@ async fn check_replies(
         "let result; try {{ result = {{ok:true,value:await tools[{tool_name}]({{}})}}; }} \
          catch (error) {{ result = {{ok:false,value:String(error.message)}}; }} result"
     );
+    let success = serde_json::from_slice(input).unwrap_or_else(|_| {
+        serde_json::json!([
+            null, false, true, i64::MIN, u64::MAX, -0.0, 1.25, text,
+            [], {}, {"nested": [text]}
+        ])
+    });
+    let encoded = serde_json::to_string(&success).unwrap();
+    let expected = canonical_reply_value(definitions, &encoded).await;
+    let refusal = serde_json::Value::String(text.to_string());
     for kind in 0..3 {
         let work = native_work(false);
         let baseline = work.live_allocation_bytes();
         let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
-        let value = serde_json::Value::String(text.to_string());
+        let value = if kind == 0 { &success } else { &refusal };
         let reply = if kind < 2 {
-            super::encode_reply(kind == 0, &value, Some(&io))
+            super::encode_reply(kind == 0, value, Some(&io))
         } else {
             // Arbitrary malformed frames retain their input credit through the
             // same OwnedBytes entrance as the encoder's valid frames.
@@ -179,7 +188,7 @@ async fn check_replies(
             definitions.clone(),
             send,
             tokio_util::sync::CancellationToken::new(),
-            literal.len().saturating_add(4096),
+            encoded.len().max(literal.len()).saturating_add(4096),
             allocator,
             16,
         );
@@ -197,13 +206,36 @@ async fn check_replies(
         if !failed && kind < 2 {
             assert_eq!(
                 result.unwrap(),
-                serde_json::json!({"ok": kind == 0, "value": value}),
+                serde_json::json!({"ok": kind == 0, "value": if kind == 0 { &expected } else { &refusal }}),
                 "the original host reply must preserve its value and refusal"
             );
         } else if !failed && std::str::from_utf8(input).is_err() {
             assert_eq!(result.unwrap()["ok"], false, "invalid UTF-8 must refuse");
         }
     }
+}
+
+async fn canonical_reply_value(definitions: &OwnedBytes, encoded: &str) -> serde_json::Value {
+    // Use the original engine's JSON semantics for numbers and Unicode. Rust
+    // neither predicts JS number rounding nor implements another reply decoder.
+    let source = format!("JSON.parse({})", serde_json::to_string(encoded).unwrap());
+    let work = native_work(false);
+    let baseline = work.live_allocation_bytes();
+    let allocator = EngineAllocator::new(Some(&work));
+    let (send, receive) = tokio::sync::mpsc::channel(1);
+    drop(receive);
+    let result = interpreter::run(
+        source,
+        definitions.clone(),
+        send,
+        tokio_util::sync::CancellationToken::new(),
+        encoded.len().saturating_add(4096),
+        allocator,
+        16,
+    )
+    .await;
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    result.expect("serializer-produced JSON must complete through the original engine")
 }
 
 async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &str) {

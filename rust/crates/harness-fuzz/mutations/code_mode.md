@@ -20,10 +20,10 @@ the mutation out of product changes and collect coverage from the unmodified
 source only.
 
 The same target now also sends production-encoded success and refusal replies
-through the original channel and UTF-8/JSON decoder. Each captured input seeds
-the reply's string value; the production encoder produces its framing and
-escaping at runtime. The independent oracle checks the returned value or caught
-refusal message exactly, including empty strings, Unicode and escaped text.
+through the original channel and UTF-8/JSON decoder. Input text seeds the refusal string; the production encoder produces framing
+and escaping at runtime. The oracle checks the caught refusal message exactly,
+including empty strings, Unicode and escaped text. Successful JSON values use the
+same-engine differential described below.
 Arbitrary input bytes also enter the same decoder as malformed frames. Both
 encoder and engine use the original native ledger, which must return to its
 baseline after retirement. The channel's sole sender belongs to the interpreter;
@@ -104,3 +104,21 @@ Apply `mutations/code_mode_ignore_interrupt_budget.patch` to prevent the origina
 remaining-budget condition from firing. The unchanged oracle must fail at
 `finite CPU work must reach its protective interrupt` when the loop finishes
 without interruption. Restore the mutation before collecting original coverage.
+
+Successful host replies also carry arbitrary JSON values. Valid JSON inputs seed
+the original reply encoder directly; other inputs generate a composite value with
+every JSON kind, nested containers, extreme integers, negative zero and the input
+text. These are generated properties, not captured host-reply fixtures. Refusals
+retain the production producer's string shape. The differential oracle evaluates
+the serializer's JSON through the same production engine without a tool reply,
+then compares its completion to the value delivered through the original reply
+channel. This retains JavaScript number and Unicode semantics without another
+decoder or a Rust model of coercion. Both executions retire their native credit.
+
+Apply `mutations/code_mode_nonstring_reply_null.patch` to preserve strings but
+replace other successful reply values with null. The earlier string-only oracle
+passes this mutation; the value-complete differential must reject it at
+`the original host reply must preserve its value and refusal`. Restore the patch
+before collecting original coverage. Arbitrary malformed UTF-8/JSON frames still
+exercise retirement, but complete malformed-JSON semantics and embedded engine
+source coverage remain separate qualification obligations.
