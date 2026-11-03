@@ -22,6 +22,62 @@ fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
     }
 }
 
+fn envelope(value: &acyclic_actors::guest::Checkpoint) {
+    fn refuses_before_payload(mut foreign: acyclic_actors::guest::Checkpoint) {
+        for clear_payload in [false, true] {
+            if clear_payload {
+                foreign.bytes = Vec::new().into();
+            }
+            assert!(
+                matches!(
+                    checkpoint::checkpoint_state(&foreign),
+                    Err(super::Error::IncompatibleCheckpointCodec)
+                ),
+                "checkpoint codec refusal did not precede payload decoding"
+            );
+        }
+    }
+    let decoded = checkpoint::checkpoint_state(value);
+    if value.codec != checkpoint::codec() {
+        assert!(
+            matches!(decoded, Err(super::Error::IncompatibleCheckpointCodec)),
+            "checkpoint admitted a foreign codec identity"
+        );
+    } else if let Ok(state) = decoded {
+        let encoded = acyclic_actors::guest::Checkpoint {
+            codec: checkpoint::codec(),
+            bytes: checkpoint::encode(&state)
+                .expect("admitted state encodes")
+                .into(),
+        };
+        assert_eq!(
+            checkpoint::checkpoint_state(&encoded).expect("checkpoint identity admits"),
+            state
+        );
+        // Exercise refusal with both decodable and malformed payloads. A
+        // payload error cannot stand in for refusing the selected identity.
+        for version in (0..super::records::RECORD_VERSION)
+            .map(|version| version.to_string())
+            .chain(std::iter::once("unknown".to_owned()))
+        {
+            let mut foreign = value.clone();
+            foreign.codec.version = version;
+            refuses_before_payload(foreign);
+        }
+        let mut foreign = value.clone();
+        foreign.codec.name.push_str(".other");
+        refuses_before_payload(foreign);
+        let malformed = acyclic_actors::guest::Checkpoint {
+            codec: checkpoint::codec(),
+            bytes: Vec::new().into(),
+        };
+        assert!(matches!(
+            checkpoint::checkpoint_state(&malformed),
+            Err(super::Error::Record(_))
+        ));
+    }
+}
+
 /// Every accepted record or checkpoint must preserve its typed value.
 /// Parsers are synchronous; completion requires no producer or event.
 pub fn check(bytes: &[u8]) {
@@ -55,18 +111,7 @@ pub fn check(bytes: &[u8]) {
         );
     }
     if let Ok(value) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
-        if let Ok(state) = checkpoint::checkpoint_state(&value) {
-            let encoded = acyclic_actors::guest::Checkpoint {
-                codec: checkpoint::codec(),
-                bytes: checkpoint::encode(&state)
-                    .expect("admitted state encodes")
-                    .into(),
-            };
-            assert_eq!(
-                checkpoint::checkpoint_state(&encoded).expect("checkpoint identity admits"),
-                state
-            );
-        }
+        envelope(&value);
     }
 }
 
@@ -244,4 +289,14 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         ]);
     }
     Ok(seeds)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn writer_corpus_satisfies_the_shared_agent_oracle() {
+        for (_, bytes) in super::seeds().expect("production agent writers") {
+            super::check(&bytes);
+        }
+    }
 }

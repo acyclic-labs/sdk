@@ -157,6 +157,20 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
+The shared agent oracle also checks checkpoint codec refusal before payload
+decoding. Its ordinary writer replay runs without a fuzzing toolchain:
+
+```sh
+cargo test --locked --manifest-path ../Cargo.toml -p acyclic-harness-core --lib agent::codec_fuzz::tests::writer_corpus_satisfies_the_shared_agent_oracle -- --exact
+```
+
+From the repository root, apply
+`git apply rust/codec-fuzz/mutations/agent-checkpoint-identity.patch` and run the
+same test to plant a production identity-admission defect. The unchanged oracle
+must fail with `checkpoint codec refusal did not precede payload decoding`;
+a compilation failure does not qualify it. Restore with
+`git apply -R rust/codec-fuzz/mutations/agent-checkpoint-identity.patch`.
+
 After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 

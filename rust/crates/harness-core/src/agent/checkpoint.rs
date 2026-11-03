@@ -683,52 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_codec_refusal_precedes_payload_decode() {
-        let adopted = adoption();
-        let path = adopted
-            .parent
-            .as_ref()
-            .unwrap()
-            .child(&adopted.agent)
-            .unwrap();
-        let bytes = encode(&AgentState::adopted(path, &adopted).unwrap()).unwrap();
-        let valid = Checkpoint {
-            codec: codec(),
-            bytes: bytes.into(),
-        };
-        assert!(checkpoint_state(&valid).is_ok());
-        for version in (0..crate::agent::records::RECORD_VERSION)
-            .map(|version| version.to_string())
-            .chain(std::iter::once("unknown".to_owned()))
-        {
-            for bytes in [valid.bytes.clone(), Vec::new().into()] {
-                let mut checkpoint = valid.clone();
-                checkpoint.codec.version.clone_from(&version);
-                checkpoint.bytes = bytes;
-                assert!(matches!(
-                    checkpoint_state(&checkpoint),
-                    Err(Error::IncompatibleCheckpointCodec)
-                ));
-            }
-        }
-        let mut another = valid.clone();
-        another.codec.name.push_str(".other");
-        another.bytes = Vec::new().into();
-        assert!(matches!(
-            checkpoint_state(&another),
-            Err(Error::IncompatibleCheckpointCodec)
-        ));
-        let malformed = Checkpoint {
-            codec: codec(),
-            bytes: Vec::new().into(),
-        };
-        assert!(matches!(
-            checkpoint_state(&malformed),
-            Err(Error::Record(_))
-        ));
-    }
-
-    #[test]
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
