@@ -6,8 +6,8 @@ use crate::{
 };
 use prost::Message;
 
-const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";
-const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
+pub(crate) const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";
+pub(crate) const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
 
 /// Admit a binary format's domain and version before interpreting its payload.
 ///
