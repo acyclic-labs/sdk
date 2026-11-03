@@ -195,7 +195,13 @@ test("observed producer frame asserts captured content with one screen projectio
     return write.call(this, bytes);
   };
   try {
-    for (const rejects of [false, true]) {
+    const raw = queryCapture.stdout.slice(-32);
+    for (const [rejects, assertion] of [
+      [false, { contains: ["workspace diff query is u"] }],
+      [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
+      [false, { raw: [raw] }],
+      [true, { raw: [raw + "\0"] }],
+    ]) {
       const processes = new TerminalProcess();
       let capture;
       try {
@@ -204,7 +210,7 @@ test("observed producer frame asserts captured content with one screen projectio
           args: ["-e", "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
           onRequest() { return () => {}; },
         }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
-          assert: { contains: [rejects ? "INTENTIONALLY_ABSENT_DIFF_CONTENT" : "workspace diff query is u"] }, send: "finish\n" }] },
+          assert: assertion, send: "finish\n" }] },
         result => { capture = result; });
         if (rejects) await assert.rejects(running, /step=assert observed terminal frame/);
         else assert.equal((await running).code, 0);
