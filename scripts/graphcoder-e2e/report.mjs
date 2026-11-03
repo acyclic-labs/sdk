@@ -5,11 +5,15 @@ import { inspect } from "node:util";
 const operandFormat = { depth: null, maxArrayLength: null, maxStringLength: null,
   customInspect: false, getters: false };
 
+function failureText(error) {
+  return error instanceof Error ? error.stack : inspect(error, operandFormat);
+}
+
 // Assertion stacks abbreviate operands. Retain their complete diagnostic
 // representation, including cycles, BigInts and undefined, without invoking
 // custom inspectors or getters. Work follows only the selected failure's bytes.
 export function failureReport(error) {
-  const report = { error: error instanceof Error ? error.stack : inspect(error, operandFormat) };
+  const report = { error: failureText(error) };
   if (error instanceof AssertionError) {
     report.assertion = { operator: error.operator,
       actual: inspect(error.actual, operandFormat), expected: inspect(error.expected, operandFormat) };
@@ -84,7 +88,7 @@ export async function publishReport(path, report, io = {
   const cancel = () => {
     if (!signal?.aborted) return false;
     report.pass = false;
-    report.cancellation = failureReport(signal.reason).error;
+    report.cancellation = failureText(signal.reason);
     return true;
   };
   const publish = async () => {
