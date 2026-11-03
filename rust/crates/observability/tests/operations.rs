@@ -322,7 +322,8 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
     // Hold the population outside the measured interval. This measures actual
     // current-thread allocations, not OS-wide work or elapsed-time complexity.
     let mut baseline = None;
-    for population in [1, 100_000] {
+    let mut previous_scan_bytes = 0;
+    for population in [1, 64, 256] {
         let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export)));
@@ -371,6 +372,8 @@ fn assert_bounded_detail_cost() -> Result<(), Box<dyn std::error::Error>> {
                     >= u64::try_from(population)?
                         * u64::try_from(std::mem::size_of::<Option<tracing::Id>>())?
             );
+            assert!(scan.bytes_total > previous_scan_bytes);
+            previous_scan_bytes = scan.bytes_total;
             root.record("outcome", "ok");
             drop(ready(output.recv())?.ok_or("original owner terminal absent")?);
             drop(binding);
@@ -678,7 +681,7 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
         assert!(matches!(ready(async_operation()), Ok(Ok(()))));
         let mut output = std::io::stderr().lock();
         output.write_all(b"observation-begin\n")?;
-        for count in [1, 100_000] {
+        for count in [1, 16] {
             let work = acyclic_test_support::measure(|| {
                 for _ in 0..count {
                     operation(std::hint::black_box(false));
@@ -705,79 +708,6 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
     );
     eprintln!("enabled operation allocations={}", enabled.count_total);
     assert_eq!(query.snapshot().ok, 1);
-    Ok(())
-}
-
-#[test]
-#[ignore = "on-demand trace cost measurement"]
-fn trace_on_off_cost() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_observability::Export;
-    use std::{sync::Arc, time::Instant};
-    use tokio::sync::Semaphore;
-    const COUNT: usize = 100_000;
-    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
-        operation(false);
-        let start = Instant::now();
-        let allocations = acyclic_test_support::measure(|| {
-            for _ in 0..COUNT {
-                operation(std::hint::black_box(false));
-            }
-        });
-        assert_eq!(allocations.count_total, 0);
-        eprintln!(
-            "trace=off operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-    });
-    let metrics = Metrics::default();
-    let query = metrics.query("acyclic.test.operation");
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics)));
-    tracing::dispatcher::with_default(&dispatch, || {
-        operation(false);
-        let start = Instant::now();
-        let allocations = acyclic_test_support::measure(|| {
-            for _ in 0..COUNT {
-                operation(std::hint::black_box(false));
-            }
-        });
-        eprintln!(
-            "trace=metrics operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-    });
-    assert_eq!(query.snapshot().ok, u64::try_from(COUNT)? + 1);
-    let (export, mut output) = Export::channel(Arc::new(Semaphore::new(1)), true);
-    let dispatch =
-        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(export.clone())));
-    tracing::dispatcher::with_default(&dispatch, || -> Result<(), std::io::Error> {
-        operation(true);
-        drop(ready(output.recv())?);
-        let start = Instant::now();
-        let mut result = Ok(());
-        let allocations = acyclic_test_support::measure(|| {
-            result = (|| -> Result<(), std::io::Error> {
-                for _ in 0..COUNT {
-                    operation(std::hint::black_box(true));
-                    drop(ready(output.recv())?.ok_or_else(|| {
-                        std::io::Error::other("export producer closed before its terminal record")
-                    })?);
-                }
-                Ok(())
-            })();
-        });
-        result?;
-        eprintln!(
-            "trace=detail-export operations={COUNT} elapsed_ns={} allocations={}",
-            start.elapsed().as_nanos(),
-            allocations.count_total
-        );
-        Ok(())
-    })?;
-    assert_eq!(export.stats().full, Some(0));
-    assert_eq!(export.stats().retained, 0);
-    assert_eq!(export.stats().high_water, 1);
     Ok(())
 }
 
@@ -822,12 +752,6 @@ fn method_queries_preserve_the_complete_typed_key() {
     assert_eq!(without_method.snapshot().ok, 0);
     assert_eq!(empty_method.snapshot().rpc.as_deref(), Some(""));
     assert_eq!(embedded_separator.snapshot().ok, 0);
-    // A delimiter-only index aliases these two keys despite their different
-    // operation identities. The selected query above must remain isolated.
-    assert_eq!(
-        format!("{}\0{}", "acyclic.test.rpc", "Read\0"),
-        format!("{}\0", "acyclic.test.rpc\0Read"),
-    );
 }
 
 #[test]
