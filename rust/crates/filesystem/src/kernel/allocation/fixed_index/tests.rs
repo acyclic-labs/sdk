@@ -173,15 +173,37 @@ fn fixed_index_value_retires_before_its_original_node_funding()
     Ok(())
 }
 
+fn assert_only_ledger_control(
+    accounting: &mut KernelAccounting<'_>,
+    promoted: bool,
+) -> Result<(), FsError> {
+    use crate::kernel::allocation::{LedgerState, SharedAllocationBytes};
+    use std::sync::{Arc, Mutex};
+
+    let (ledger, _, _, _) = accounting.standalone_parts().ok_or(FsError::InvalidDiff)?;
+    if let LedgerState::Shared(control) = &ledger.state {
+        assert!(promoted);
+        assert_eq!(
+            Arc::strong_count(control),
+            1,
+            "index funding still retained"
+        );
+        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+            Mutex<SharedAllocationBytes>,
+        >())
+        .map_err(|_| crate::performance::WorkError::Overflow)? as u64;
+        assert_eq!(ledger.live_bytes(), bytes, "only the live ledger is funded");
+    } else {
+        assert!(!promoted, "the original promoted ledger must remain owned");
+        assert_eq!(ledger.live_bytes(), 0);
+    }
+    Ok(())
+}
+
 fn every_bit<const N: usize>() -> Result<(), FsError> {
     let cancel = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
     let mut index = FixedIndex::default();
-    let baseline = accounting
-        .standalone_parts()
-        .ok_or(FsError::InvalidDiff)?
-        .0
-        .live_bytes();
     index.get_or_try_insert_with([0; N], &mut accounting, |_| Ok(0))?;
     for byte in 0..N {
         for offset in 0..8 {
@@ -201,8 +223,14 @@ fn every_bit<const N: usize>() -> Result<(), FsError> {
     );
     assert_eq!(before.allocation_operations, after.allocation_operations);
     drop(index);
-    let (allocations, _, _, _) = accounting.standalone_parts().ok_or(FsError::InvalidDiff)?;
-    assert_eq!(allocations.live_bytes(), baseline);
+    assert_only_ledger_control(&mut accounting, true)?;
+    // A second index reuses that same control; only its leaf needs admission.
+    let before = accounting.spent().allocation_operations;
+    let mut next = FixedIndex::default();
+    next.get_or_try_insert_with([0; N], &mut accounting, |_| Ok(7))?;
+    assert_eq!(accounting.spent().allocation_operations - before, 1);
+    drop(next);
+    assert_only_ledger_control(&mut accounting, true)?;
     Ok(())
 }
 
@@ -246,7 +274,6 @@ proptest! {
         let drops = std::cell::Cell::new(0);
         let mut index = FixedIndex::default();
         let mut expected = BTreeMap::new();
-        let baseline = accounting.standalone_parts().ok_or(FsError::InvalidDiff)?.0.live_bytes();
         for (value, key) in keys.into_iter().enumerate() {
             let entry = index.get_or_try_insert_with(key, &mut accounting, |_| Ok(Observed { value, drops: &drops }))?;
             prop_assert_eq!(entry.value, *expected.entry(key).or_insert(value));
@@ -260,8 +287,7 @@ proptest! {
         prop_assert_eq!(drops.get(), 0);
         drop(index);
         prop_assert_eq!(drops.get(), expected.len());
-        let (allocations, _, _, _) = accounting.standalone_parts().ok_or(FsError::InvalidDiff)?;
-        prop_assert_eq!(allocations.live_bytes(), baseline);
+        assert_only_ledger_control(&mut accounting, !expected.is_empty())?;
     }
 }
 
