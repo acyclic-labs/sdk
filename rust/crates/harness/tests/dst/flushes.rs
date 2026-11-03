@@ -106,13 +106,6 @@ fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
         schedule.drained().await;
         releaser.abort();
         let writes = schedule.durable_writes();
-        eprintln!("settled reply writes: {:?}", &writes[cuts[0]..cuts[1]]);
-        eprintln!(
-            "settled reply flushes: {:?}",
-            std::array::from_fn::<_, 5, _>(|index| {
-                flushes(&writes[cuts[index]..cuts[index + 1]])
-            })
-        );
         Ok(std::array::from_fn(|index| {
             flushes(&writes[cuts[index]..cuts[index + 1]])
         }))
@@ -144,24 +137,20 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         }));
         ScriptedTurn::Events(events)
     };
-    let [second, third, short, long, extra] = measure([
+    let observed = measure([
         text("one"),
         text("two"),
         text("three"),
         streamed(2),
         streamed(32),
     ])?;
-    assert_eq!(second, third, "reply-turn flushes grew with history");
+    // Includes input publication through committed actor settlement. This
+    // absolute budget also rejects uniform added or missing reply drains.
+    // Thirty extra content parts need thirty extra ordering barriers.
     assert_eq!(
-        extra,
-        (0, 1),
-        "the oracle missed an independent commit's drain"
-    );
-    assert_eq!(short.1, long.1, "each streamed event paid its own drain");
-    assert_eq!(
-        short.0 + 30,
-        long.0,
-        "each additional private payload needs one publication ordering barrier"
+        observed,
+        [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
+        "settled reply publication budget changed"
     );
     Ok(())
 }

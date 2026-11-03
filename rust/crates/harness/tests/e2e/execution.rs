@@ -19,7 +19,7 @@ use acyclic_harness::{
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
-use acyclic_stream::{MemoryStream, StreamProvider};
+use acyclic_stream::MemoryStream;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -120,21 +120,6 @@ pub(super) async fn run_with_filesystem<
     check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect.files, &storage).await?;
     Ok(Outcome { storage, operation })
-}
-
-pub(super) async fn workspace(
-    seed: &std::collections::BTreeMap<String, String>,
-) -> TestResult<MemoryHarnessStorage> {
-    workspace_on(seed, Arc::new(MemoryStream::default())).await
-}
-
-async fn workspace_on<P: acyclic_harness::store::JournalProvider>(
-    seed: &std::collections::BTreeMap<String, String>,
-    stream: Arc<P>,
-) -> TestResult<MemoryHarnessStorage<P>> {
-    let storage = MemoryHarnessStorage::with_stream(AgentId::new(), 1_048_576, stream).await?;
-    publish(&storage, seed).await?;
-    Ok(storage)
 }
 
 pub(super) async fn publish<
