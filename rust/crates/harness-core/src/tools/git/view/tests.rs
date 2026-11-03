@@ -409,117 +409,123 @@ async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestRes
             true,
         ),
     ];
-    for (main, ours_deleted, delete_resolution) in cases {
-        let repository = main.id();
-        main.write_text("/note", "base\n").await?;
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["commit", "-m", "base"],
-        )
-        .await?;
-        let child = execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["checkout", "-b", "topic"],
-        )
-        .await?
-        .switched
-        .ok_or("missing child")?;
-        if ours_deleted {
-            child.workspace().write_text("/note", "child\n").await?;
-        } else {
-            child.workspace().remove("/note").await?;
-        }
-        child
-            .workspace()
-            .write_text("/clean", "nonconflicting source\n")
+    let filesystem = &filesystem;
+    let store = &store;
+    futures::future::try_join_all(cases.into_iter().map(
+        |(main, ours_deleted, delete_resolution)| async move {
+            let repository = main.id();
+            main.write_text("/note", "base\n").await?;
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["commit", "-m", "base"],
+            )
             .await?;
-        execute(
-            &filesystem,
-            &store,
-            child.view(),
-            repository,
-            &["commit", "-m", "child"],
-        )
-        .await?;
-        execute(
-            &filesystem,
-            &store,
-            child.view(),
-            repository,
-            &["checkout", "main"],
-        )
-        .await?;
-        if ours_deleted {
-            main.remove("/note").await?;
-        } else {
-            main.write_text("/note", "parent\n").await?;
-        }
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["commit", "-m", "parent"],
-        )
-        .await?;
-        let merge = execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["merge", "topic"],
-        )
-        .await;
-        assert!(
-            matches!(merge, Err(Error::Conflict(_))),
-            "merge: {:?}",
-            merge.err()
-        );
-        assert_eq!(
-            View::Volume(&main).read("/note", 64).await?.as_ref(),
+            let child = execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["checkout", "-b", "topic"],
+            )
+            .await?
+            .switched
+            .ok_or("missing child")?;
             if ours_deleted {
-                b"child\n".as_slice()
+                child.workspace().write_text("/note", "child\n").await?;
             } else {
-                b"parent\n".as_slice()
+                child.workspace().remove("/note").await?;
             }
-        );
-        if delete_resolution {
-            main.remove("/note").await?;
-        } else {
-            main.write_text("/note", "resolved\n").await?;
-        }
-        execute(
-            &filesystem,
-            &store,
-            (&main).into(),
-            repository,
-            &["merge", "--continue"],
-        )
-        .await?;
-        assert_eq!(
-            View::Volume(&main).read("/clean", 64).await?.as_ref(),
-            b"nonconflicting source\n"
-        );
-        if !delete_resolution {
+            child
+                .workspace()
+                .write_text("/clean", "nonconflicting source\n")
+                .await?;
+            execute(
+                filesystem,
+                store,
+                child.view(),
+                repository,
+                &["commit", "-m", "child"],
+            )
+            .await?;
+            execute(
+                filesystem,
+                store,
+                child.view(),
+                repository,
+                &["checkout", "main"],
+            )
+            .await?;
+            if ours_deleted {
+                main.remove("/note").await?;
+            } else {
+                main.write_text("/note", "parent\n").await?;
+            }
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["commit", "-m", "parent"],
+            )
+            .await?;
+            let merge = execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["merge", "topic"],
+            )
+            .await;
+            assert!(
+                matches!(merge, Err(Error::Conflict(_))),
+                "merge: {:?}",
+                merge.err()
+            );
             assert_eq!(
                 View::Volume(&main).read("/note", 64).await?.as_ref(),
-                b"resolved\n"
+                if ours_deleted {
+                    b"child\n".as_slice()
+                } else {
+                    b"parent\n".as_slice()
+                }
             );
-        } else {
-            assert!(
-                !GitCompatRepository::new(repository, store.clone())
-                    .tracked_paths()
-                    .await?
-                    .contains("note")
+            if delete_resolution {
+                main.remove("/note").await?;
+            } else {
+                main.write_text("/note", "resolved\n").await?;
+            }
+            execute(
+                filesystem,
+                store,
+                (&main).into(),
+                repository,
+                &["merge", "--continue"],
+            )
+            .await?;
+            assert_eq!(
+                View::Volume(&main).read("/clean", 64).await?.as_ref(),
+                b"nonconflicting source\n"
             );
-        }
-    }
+            if !delete_resolution {
+                assert_eq!(
+                    View::Volume(&main).read("/note", 64).await?.as_ref(),
+                    b"resolved\n"
+                );
+            } else {
+                assert!(
+                    !GitCompatRepository::new(repository, store.clone())
+                        .tracked_paths()
+                        .await?
+                        .contains("note")
+                );
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        },
+    ))
+    .await?;
     Ok(())
 }
 
