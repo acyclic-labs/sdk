@@ -1,0 +1,26 @@
+{
+  "source": "16934fe1b5",
+  "platform": "Linux x86_64",
+  "producer": "graphcoder::view::session::tests::session_files_resume_reopen_and_version_refusal",
+  "entrypoints": [
+    "LocalHarness::open",
+    "LocalHarness::connect",
+    "Connection::execute",
+    "PreparedCommand::new",
+    "encode_agent_reply",
+    "ContentPublisher::stage_changes"
+  ],
+  "origin": "Actual local session publication and query; public encoder output retained after decoding the real command result. The configured model is not invoked by this storage journey.",
+  "derivations": {
+    "unsupported-layout-version": "version changed from 1 to 2 in captured layout",
+    "duplicate-request-path": "first actual requested path appended to captured request",
+    "mismatched-reply-path": "one same-length file path substitution in the original encoded reply"
+  },
+  "sha256": {
+    "committed-snapshot": "6c9a064d354ec81eaf3bd55603815f063b47c98c23081f4bdc0b9e1798f3f04a",
+    "layout-v1": "a0caa01df556b29a87bed995a8939e526f46cb3d40bd5a00333272e84b051e4f",
+    "duplicate-request-path": "ece1ae5f0ed25ac07a00a7f2e9ce5ec207c93460cd4aea9b9deb50b10901415e",
+    "unsupported-layout-version": "3f66813f4df2d42634b5030bfb88ffe3ed5e9bfaa8c7575dd9e7aab0a2ab2af0",
+    "mismatched-reply-path": "647b70914365c4c33e4062cba76c53fcb870d9d195de2c06bc0262c3d8a15fa1"
+  }
+}
