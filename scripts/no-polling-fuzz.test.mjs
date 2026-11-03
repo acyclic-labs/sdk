@@ -78,6 +78,12 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   const admission = await mutant('./source-policy/' + file, 'validateDispositions(dispositions, policy);', '');
   assert.throws(() => targets.fuzzProject(Buffer.from([0]), admission), {name: 'AssertionError', message});
  }
+ for (const file of ['project.mjs', 'index.mjs']) {
+  const scope = await mutant('./source-policy/' + file, 'validateDispositions(dispositions, policy);',
+   'validateDispositions(dispositions);');
+  assert.throws(() => targets.fuzzProject(Buffer.from([0]), scope),
+   {name: 'AssertionError', message: /caller scope/});
+ }
  const manifest = await mutant('./source-policy/project.mjs',
   'throw new SourceSyntaxError(`${file}: ${error.message}`);', 'throw new Error(`${file}: ${error.message}`);');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), manifest),

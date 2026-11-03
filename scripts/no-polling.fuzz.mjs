@@ -266,7 +266,16 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
     'invalid source disposition field: ' + field);
   }
  }
- assert.throws(() => validate([accepted[0], accepted[0]]), /duplicate/);
+ for (const admit of [
+  (values, policy) => validate(values, policy),
+  (values, policy) => newProjectPollingSites(new Map(), after, values, policy),
+  (values, policy) => newPollingSites(caller, '', localSource, values, policy),
+ ]) {
+  assert.doesNotThrow(() => admit(localAccepted, {inScope: file => file === caller}));
+  assert.throws(() => admit(localAccepted, {inScope: file => file !== caller}), /invalid exact/, 'lost caller scope');
+  assert.throws(() => admit({ignore: ['scripts/**']}), /must be an array/);
+  assert.throws(() => admit([accepted[0], accepted[0]]), /duplicate/);
+ }
  const source = 'async function operation() { await Bun.sleep(1); }\n';
  const repeated = source.repeat(variant + 2);
  assert.deepEqual(newPollingSites(caller, source, source), []);

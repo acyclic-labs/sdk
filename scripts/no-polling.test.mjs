@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {checkNoPolling} from './check-no-polling.mjs';
-import {newPollingSites, pollingSites, validateDispositions} from './source-policy/index.mjs';
+import {newPollingSites, pollingSites} from './source-policy/index.mjs';
 import {sourceInScope} from './no-polling-scope.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
 
@@ -426,15 +426,12 @@ test('event and finite-work loops have no file or helper exemption', () => {
  const distant = 'loop { let values = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]; receiver.recv()?; }';
  assert.ok(newPollingSites(rust, distant, distant.replace('receiver.recv()?', 'ready()')).length);
  assert.throws(() => newPollingSites(rust, '', source, [{...accepted[0], file: 'rust/crates/*', fingerprint: '*'}]), /invalid exact/);
- assert.throws(() => newPollingSites(rust, '', source, [{...accepted[0], terminal: ''}]), /invalid exact/);
- assert.throws(() => newPollingSites(rust, '', source, [...accepted, ...accepted]), /duplicate/);
 });
 
 test('scope covers native adapters, plugins and scripts as well as both language packages', () => {
  for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json', 'plugin/identity/src/lib.rs', 'plugin/tests/hosts/readiness.py', 'plugin/tests/hosts/wait.mjs', 'plugin/package.json']) assert.ok(sourceInScope(file));
  assert.equal(sourceInScope('docs/no-polling.md'), false);
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
- assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);
  assert.ok(pollingSites('typescript/packages/client/settings.json', '{"poll_interval": 10}').length);
 });
 
@@ -462,7 +459,6 @@ test('shared policy covers consumer paths and configured temporal dependencies',
   const accepted = sites.map(site => disposition(site, 'caller-deadline',
    'original caller policy', 'original caller terminal', 'change original policy'));
   assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
-  assert.throws(() => newProjectPollingSites(before, after, accepted, {inScope: sourceInScope}), /invalid exact/);
   assert.ok(newProjectPollingSites(before, new Map([[file, source + source]]), accepted).length);
  }
  const source = 'printf value#fragment; sl\\eep 1';
