@@ -314,29 +314,6 @@ async fn compaction_targets_never_refuse_an_atomic_append() -> Result<(), Box<dy
     Ok(())
 }
 
-/// Appends one record to `path` and returns the journal's length after.
-async fn append_one(
-    provider: &LocalStream,
-    path: &str,
-    journal: &Path,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new(path)?,
-            records: vec![(Bytes::from_static(b"body")).into()],
-            if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
-        })
-        .await?;
-    Ok(std::fs::metadata(journal)?.len())
-}
-
-/// The tail of `path` in the journal reopened, if the path exists.
-async fn tail_of(directory: &Path, path: &str) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let provider = LocalStream::open(directory, LocalStreamLimits::default()).await?;
-    Ok(provider.tail(StreamPath::new(path)?).await.ok())
-}
-
 /// A damaged frame with an intact one after it was committed, so the
 #[tokio::test]
 async fn a_damaged_frame_before_an_intact_one_fails_closed()
@@ -344,8 +321,8 @@ async fn a_damaged_frame_before_an_intact_one_fails_closed()
     let directory = tempfile::tempdir()?;
     let journal = directory.path().join("stream.journal");
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    append_one(&provider, "first", &journal).await?;
-    append_one(&provider, "second", &journal).await?;
+    provider.append(keyed_append("first", 0)?).await?;
+    provider.append(keyed_append("second", 0)?).await?;
     drop(provider);
 
     let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
@@ -381,8 +358,11 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         let directory = tempfile::tempdir()?;
         let journal = directory.path().join("stream.journal");
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let kept = append_one(&provider, "kept", &journal).await?;
-        let torn = append_one(&provider, "torn", &journal).await?;
+        provider.append(keyed_append("kept", 0)?).await?;
+        let prefix = std::fs::read(&journal)?;
+        let kept = u64::try_from(prefix.len())?;
+        provider.append(keyed_append("torn", 0)?).await?;
+        let torn = std::fs::metadata(&journal)?.len();
         drop(provider);
 
         let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
@@ -391,17 +371,23 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         file.sync_all()?;
         drop(file);
 
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(
-            tail_of(directory.path(), "kept").await?,
-            Some(1),
+            reopened.tail(StreamPath::new("kept")?).await?,
+            1,
             "{fill:#x}"
         );
         assert_eq!(
-            tail_of(directory.path(), "torn").await?.unwrap_or(0),
-            0,
-            "{fill:#x}"
+            reopened.tail(StreamPath::new("torn")?).await,
+            Err(StreamError::NotFound),
+            "torn final frame must be absent: {fill:#x}"
         );
-        assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
+        drop(reopened);
+        assert_eq!(
+            std::fs::read(&journal)?,
+            prefix,
+            "repaired prefix changed: {fill:#x}"
+        );
     }
     Ok(())
 }
