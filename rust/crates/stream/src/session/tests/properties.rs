@@ -1,3 +1,4 @@
+use crate::session::authority::Binding;
 use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;

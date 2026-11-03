@@ -610,12 +610,6 @@ mod tests {
                 "fixture-token",
                 1024,
             )?;
-            let server = async move {
-                let (connection, _) = listener.accept().await?;
-                // Closing before a response forces the request completion error path.
-                drop(connection);
-                Ok::<_, std::io::Error>(())
-            };
             let parent = tracing::info_span!(
                 "test.parent",
                 outcome = "sentinel",
@@ -631,8 +625,17 @@ mod tests {
                 if_tail: Some(0),
                 idempotency_key: IdempotencyKey::unique(),
             });
-            let (result, served) = tokio::join!(request.instrument(parent), server);
-            served?;
+            let request = request.instrument(parent);
+            tokio::pin!(request);
+            let (connection, _) = tokio::select! {
+                accepted = listener.accept() => accepted?,
+                result = &mut request => {
+                    return Err(format!("HTTP request ended before loopback acceptance: {result:?}").into());
+                }
+            };
+            // Closing this request's original socket produces its completion.
+            drop(connection);
+            let result = request.await;
             assert_eq!(result, Err(StreamError::Unavailable));
             Ok(())
         }
