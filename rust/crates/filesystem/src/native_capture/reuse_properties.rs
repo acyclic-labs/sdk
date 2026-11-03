@@ -78,6 +78,7 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
         &setup,
         &cancellation,
     ))?;
+    let sources: [_; 7] = std::array::from_fn(|_| tempfile::tempdir().unwrap());
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
@@ -95,8 +96,16 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
         ),
         |(body, attribute, owner_delta, initial_link)| {
             runtime.block_on(async {
-                for edit in 0..7 {
-                    let source = tempfile::tempdir().unwrap();
+                for (edit, source) in sources.iter().enumerate() {
+                    // Each edit keeps its directory across generated inputs;
+                    // every case still creates new files and native owners.
+                    for name in ["file", "oldlink", "zlink", "replacement"] {
+                        match std::fs::remove_file(source.path().join(name)) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => panic!("reset reuse capture fixture: {error}"),
+                        }
+                    }
                     let file = source.path().join("file");
                     let body = if edit == 6 { &[][..] } else { body.as_slice() };
                     std::fs::write(&file, body).unwrap();
