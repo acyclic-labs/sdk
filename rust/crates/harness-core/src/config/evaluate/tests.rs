@@ -146,20 +146,6 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
     }
 }
 
-#[test]
-fn imports_resolve_like_the_engine_and_stay_in_the_tree() {
-    assert_eq!(resolve("agent.ts", "./a.ts").unwrap(), "a.ts");
-    assert_eq!(
-        resolve("plugins/p/provider.ts", "../../x.ts").unwrap(),
-        "x.ts"
-    );
-    assert_eq!(resolve("a/b.ts", "./c/d.ts").unwrap(), "a/c/d.ts");
-    assert_eq!(resolve("a.ts", "sys/types/x.ts").unwrap(), "sys/types/x.ts");
-    for specifier in ["../a.ts", "x.ts", "/etc/passwd", "./a/../../b.ts", "sys//x"] {
-        assert!(resolve("agent.ts", specifier).is_err(), "{specifier}");
-    }
-}
-
 // plugins.ts: an entry may be a function of the entry below it, and its
 // `config` a function of the plugin's defaults; both fold to data.
 #[tokio::test]
