@@ -720,13 +720,15 @@ pub async fn serve_until(
     let directory = held
         .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
-    let _ownership = acyclic_native_runtime::FileLock::try_acquire(
-        directory
-            .open_file(Path::new("owner.lock"), true)
-            .map_err(storage)?,
-        acyclic_native_runtime::FileLockMode::Exclusive,
-    )
-    .map_err(storage)?;
+    let ownership = Arc::new(
+        acyclic_native_runtime::FileLock::try_acquire(
+            directory
+                .open_file(Path::new("owner.lock"), true)
+                .map_err(storage)?,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)?,
+    );
     directory
         .create_directories(Path::new("requests"), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
@@ -762,10 +764,13 @@ pub async fn serve_until(
     watcher
         .watch(&requests, RecursiveMode::NonRecursive)
         .map_err(storage)?;
-    let result = tokio::select! {
-        result = serve_requests(&owner, &status, session, &notices) => result,
-        result = shutdown => result,
+    let files = CarrierIo {
+        served: Served::default(),
+        requests,
+        status,
+        _ownership: Arc::clone(&ownership),
     };
+    let result = serve_requests(&owner, files, session, &notices, shutdown).await;
     drop(watcher);
     drop(local);
     owner.retire().await?;
@@ -851,6 +856,35 @@ struct Served {
     /// Request-directory scans, all of them overflow or startup rescans.
     #[cfg(test)]
     rescans: u64,
+}
+
+/// Only plain file state crosses the shared I/O worker boundary. The original
+/// owner lock fences every accepted write even if its observer disappears.
+struct CarrierIo {
+    served: Served,
+    requests: PathBuf,
+    status: acyclic_fs::HeldRoot,
+    _ownership: Arc<acyclic_native_runtime::FileLock>,
+}
+
+impl CarrierIo {
+    async fn apply(
+        mut self,
+        key: impl std::fmt::Display,
+        operation: impl FnOnce(&mut Self) -> Result<()> + Send + 'static,
+    ) -> Result<Self> {
+        let completion = acyclic_native_runtime::run_blocking_io(
+            move || {
+                operation(&mut self)?;
+                Ok(self)
+            },
+            None,
+        )
+        .map_err(storage)?;
+        acyclic_native_runtime::obs::waiting("native-workspace-files", key, completion.offloaded())
+            .await
+            .map_err(storage)?
+    }
 }
 
 impl Served {
@@ -1016,26 +1050,37 @@ impl Served {
 
 async fn serve_requests(
     owner: &HostWorkspaceOwner,
-    status: &acyclic_fs::HeldRoot,
+    mut files: CarrierIo,
     session: uuid::Uuid,
     notices: &Notices,
+    shutdown: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
-    let mut served = Served::default();
+    tokio::pin!(shutdown);
     // Every dispatch runs independently; a slow one delays no other reply.
     let mut running = futures::stream::FuturesUnordered::<
         acyclic_stream::BoxProviderFuture<'_, (OperationId, Result<Value>)>,
     >::new();
     loop {
-        served.touch(&notices.requests, session, notices.take())?;
-        for request in served.start() {
+        let touched = notices.take();
+        if touched.rescan || !touched.names.is_empty() || touched.failure.is_some() {
+            files = files
+                .apply(session, move |files| {
+                    files.served.touch(&files.requests, session, touched)
+                })
+                .await?;
+        }
+        for request in files.served.start() {
             let operation = request.operation;
             let dispatched = owner.dispatch(operation, request.action);
             running.push(Box::pin(async move { (operation, dispatched.await) }));
         }
         tokio::select! {
+            result = &mut shutdown => return result,
             () = notices.changed.notified() => {}
             Some((operation, outcome)) = running.next(), if !running.is_empty() => {
-                served.answer(status, operation, outcome)?;
+                files = files.apply(operation, move |files| {
+                    files.served.answer(&files.status, operation, outcome)
+                }).await?;
             }
         }
     }
