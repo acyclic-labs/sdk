@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { preserveWasmArtifacts } from "./archive-utils.mjs";
 
@@ -13,7 +13,8 @@ const bytes = args.includes("--bytes");
 const quoted = args.includes("--quoted");
 const metadata = args.includes("--metadata");
 const array = args.includes("--array");
-const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}`;
+const reuse = args.find(arg => arg.startsWith("--reuse="))?.slice("--reuse=".length);
+const recovery = `node scripts/qualify-js-json.mjs${retirement ? " --retirement" : bytes ? " --bytes" : metadata ? " --metadata" : array ? " --array" : ""}${red ? " --red" : ""}${quoted ? " --quoted" : ""}${reuse ? ` --reuse=${JSON.stringify(reuse)}` : ""}`;
 const test = bytes ? "external JSON bytes preserve engine tokens or refuse before rounding"
   : retirement ? "canonical admission releases JavaScript references after intrinsic failures"
   : "canonical admission selects entries before evaluating their values";
@@ -27,9 +28,10 @@ const run = (step, command, parameters, options = {}) => {
   if (result.error) fail(step, result.error.message);
   return result;
 };
-if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array"].includes(arg))
-  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) > 1 || quoted && !(bytes && red)) {
-  fail("arguments", "expected one control (--retirement, --bytes, --metadata or --array), optional --red, and --quoted only with --bytes --red");
+if (args.some(arg => !["--red", "--retirement", "--bytes", "--quoted", "--metadata", "--array"].includes(arg) && !arg.startsWith("--reuse="))
+  || new Set(args).size !== args.length || Number(retirement) + Number(bytes) + Number(metadata) + Number(array) > 1 || quoted && !(bytes && red)
+  || args.filter(arg => arg.startsWith("--reuse=")).length > 1 || args.includes("--reuse=") || reuse && red) {
+  fail("arguments", "expected one control (--retirement, --bytes, --metadata or --array), optional --red, --quoted only with --bytes --red, or --reuse=<receipt> without --red");
 }
 
 const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
@@ -37,6 +39,7 @@ const generated = "typescript/packages/harness/generated/wasm";
 let original;
 let mutation;
 let artifactsCustody;
+let reused;
 try {
   if ((bytes || metadata || array) && red) {
     try { original = readFileSync(production, "utf8"); }
@@ -71,10 +74,45 @@ try {
   // imports only its generated module and initialization, so other frontend
   // packages and their artifacts are not prerequisites.
   const build = ["scripts/build-wasm.mjs", "harness"];
-  const built = run("generated harness", process.execPath, build, {
-    env: { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" }, stdio: "inherit",
-  });
-  if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
+  if (reuse) {
+    try {
+      // A retained receipt's artifact paths are relative to its directory. Reuse
+      // proves the selected control against that exact module, not a fresh build.
+      const receiptPath = resolve(root, reuse);
+      const directory = dirname(receiptPath);
+      const receiptBytes = readFileSync(receiptPath);
+      const receipt = JSON.parse(receiptBytes);
+      if (receipt.result !== "pass" || !Array.isArray(receipt.artifacts)) fail("reuse receipt", "expected an original passing qualification");
+      const hashes = new Map();
+      for (const artifact of receipt.artifacts) {
+        const path = resolve(directory, artifact.path);
+        const offset = relative(directory, path);
+        if (isAbsolute(offset) || offset === ".." || offset.startsWith(`..${sep}`)) fail("reuse artifact", "path leaves the receipt directory");
+        const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+        if (sha256 !== artifact.sha256 || hashes.has(artifact.path)) fail("reuse artifact", `hash or uniqueness differs: ${artifact.path}`);
+        hashes.set(artifact.path, sha256);
+      }
+      for (const path of [`${generated}/acyclic_harness_wasm.js`, `${generated}/acyclic_harness_wasm_bg.wasm`]) {
+        if (!hashes.has(path)) fail("reuse module", `missing artifact: ${path}`);
+      }
+      const sourceHash = createHash("sha256").update(readFileSync(production)).digest("hex");
+      if (sourceHash !== hashes.get("rust/crates/harness/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
+      reused = { source: receipt.source, tree: receipt.tree,
+        receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
+        qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
+      artifactsCustody = preserveWasmArtifacts(join(root, generated), "node scripts/build-wasm.mjs harness");
+      for (const path of hashes.keys()) {
+        if (!path.startsWith(`${generated}/`)) continue;
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        cpSync(join(directory, path), join(root, path));
+      }
+    } catch (error) { fail("reuse retained module", String(error)); }
+  } else {
+    const built = run("generated harness", process.execPath, build, {
+      env: { ...process.env, ACYCLIC_WASM_GROUPS_PREPARED: "1" }, stdio: "inherit",
+    });
+    if (built.status !== 0) fail("generated harness", `exit ${built.status}; signal ${built.signal}`);
+  }
   const retirementFile = "typescript/packages/harness/test/json-retirement.test.ts";
   const restoredBoundary = (metadata || array) && !red;
   const parameters = ["test", `./${testFile}`, ...(restoredBoundary ? [`./${retirementFile}`] : []),
@@ -114,14 +152,14 @@ try {
     }
   } catch (error) { fail("generated module dependencies", String(error)); }
   const retainedPath = path => {
-    if (!artifactsCustody) return path;
+    if (!artifactsCustody || reused) return path;
     const retained = path === "rust/crates/harness/src/wasm/json.rs"
       ? join(artifactsCustody.directory, "json.rs")
       : path.startsWith(`${generated}/`) ? join(artifactsCustody.archive, path.slice(generated.length + 1)) : undefined;
     return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");
   };
   const receipt = `${JSON.stringify({
-    source: git("HEAD"), tree: git("HEAD^{tree}"), build, test: ["bun", ...parameters],
+    source: git("HEAD"), tree: git("HEAD^{tree}"), build: reused ? undefined : build, reused, test: ["bun", ...parameters],
     result: red ? "expected semantic red" : "pass", mutation,
     artifacts: artifacts.map(path => ({
       path: retainedPath(path),

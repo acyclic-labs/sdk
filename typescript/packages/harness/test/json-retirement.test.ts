@@ -45,7 +45,7 @@ test("canonical admission releases JavaScript references after intrinsic failure
   });
   expect(outcomes.map(({ originalReason }) => originalReason)).toEqual(inputs.map(() => true));
   assert.equal(outcomes.reduce((total, { retained }) => total + retained, 0), 0,
-    "JavaScript refusal retained an original input or selected child");
+    "JavaScript refusal retained original input or selected child");
   expect(contracts.decodeClientJson(contracts.encodeCanonicalJson({ valid: 7n })))
     .toEqual({ valid: 7n });
 });
