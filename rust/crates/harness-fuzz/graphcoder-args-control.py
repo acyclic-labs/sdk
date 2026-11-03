@@ -12,6 +12,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "command_result": (
+        "rust/crates/harness/src/client/command_result.rs",
+        b"wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Cancelled,",
+        b"wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Failed,",
+        "cancelled",
+        b"settled result must retain completion and payload",
+    ),
     "native_workspace": (
         "rust/crates/harness-core/src/native_settings/workspace.rs",
         b"if (left_unc, left_rooted, left.is_empty()) != (right_unc, right_rooted, right.is_empty()) {",
@@ -70,6 +77,15 @@ controls = {
     ),
 }
 additional_controls = {
+    "command_result": [
+        (
+            "rust/crates/harness/src/client/command_result.rs",
+            b".is_none_or(|n| n > self.maximum)",
+            b".is_none_or(|_| false)",
+            "escaped",
+            b"encoded command result must remain within the admitted byte bound",
+        ),
+    ],
     "native_settings": [
         (
             "rust/crates/harness-core/src/native_settings.rs",
@@ -89,6 +105,7 @@ def require(condition, step):
 
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
+        "command_result": ["--no-default-features", "--features", "core"],
         "native_workspace": ["--no-default-features"],
         "native_settings": ["--no-default-features", "--features", "native-settings"],
         "event_projection": ["--no-default-features", "--features", "client"],
@@ -173,10 +190,10 @@ def qualify(target, runs=0):
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
     if target == "native_marketplace":
         corpus = marketplace_corpus()
-    if target == "event_projection":
+    if target in {"event_projection", "command_result"}:
         _, _, _, seed, witness = controls[target]
         code, _ = run(target, corpus, witness, capture=True)
-        require(code == 0, "capture original serialized cursor corpus")
+        require(code == 0, f"capture original serialized {target} corpus")
         require((root / corpus / seed).is_file(), "retain original writer seed")
     for filename, guard, replacement, seed, witness in [
         controls[target], *additional_controls.get(target, []),

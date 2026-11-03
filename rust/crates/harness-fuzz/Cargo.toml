@@ -80,7 +80,7 @@ doc = false
 bench = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'cfg(feature, values("hooks"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'cfg(feature, values("hooks", "wasm"))'] }
 
 [features]
 default = ["runtime"]
