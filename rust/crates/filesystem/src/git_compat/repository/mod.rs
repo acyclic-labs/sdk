@@ -11,8 +11,13 @@ pub struct GitCompatRepository<S> {
     pub(super) request: Option<GitRequest>,
 }
 
-/// Whether a request still awaits its durable reply; its saved result is
-/// kept exactly as long, after which the reply answers any replay.
+/// Whether the original request still needs its saved result for replay.
+///
+/// Returning `false` permits a subsequent state publication to discard that
+/// result. The caller must first establish durable acknowledgement or another
+/// durable source of the same reply. Observing a missing native file or a
+/// removal notification does not establish that its removal is durable. An
+/// observation failure must retain the result by returning `true`.
 pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
 
 /// The request a command runs as.
@@ -20,7 +25,7 @@ pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Sen
 pub struct GitRequest {
     /// The request's operation, which keys its saved result.
     pub operation: OperationId,
-    /// Whether a request still awaits its durable reply.
+    /// The original request's replay-retention predicate.
     pub unanswered: GitRequestUnanswered,
 }
 

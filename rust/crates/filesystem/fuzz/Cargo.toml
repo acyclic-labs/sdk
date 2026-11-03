@@ -109,3 +109,11 @@ path = "fuzz_targets/workspace_name.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_device"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/native_device.rs"
+test = false
+doc = false
+bench = false

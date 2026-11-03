@@ -81,6 +81,12 @@ pub(crate) use macos_metadata::*;
 pub(crate) use metadata::set_posix_mode_held;
 mod stat;
 pub(crate) use stat::*;
+#[cfg(unix)]
+mod device;
+#[cfg(all(feature = "fuzzing", any(target_os = "linux", target_os = "macos")))]
+pub use device::check_device_codec;
+#[cfg(unix)]
+pub(crate) use device::*;
 #[cfg(test)]
 #[cfg(windows)]
 pub(crate) mod stat_probe;
