@@ -83,7 +83,7 @@ impl ModelStream {
         let writer = (self.cut == Some(call)).then(|| {
             let inner = self.inner.clone();
             let request = self.change_request.clone().unwrap();
-            loom::thread::spawn(move || ready(inner.commit(request)))
+            loom::thread::spawn(move || ready(|| inner.commit(request)))
         });
         let result = future.await;
         if let Some(writer) = writer {
@@ -97,8 +97,8 @@ impl ModelStream {
     }
 }
 
-fn ready<F: Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
+fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
+    loom::future::block_on(crate::heap_future::in_heap(create))
 }
 
 #[async_trait::async_trait]
@@ -315,7 +315,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
     loom::model(move || {
         let inner = MemoryStream::default();
         assert!(matches!(
-            ready(inner.commit(initial.clone())).unwrap(),
+            ready(|| inner.commit(initial.clone())).unwrap(),
             CommitOutcome::Committed(_)
         ));
         let cancellation = CancellationToken::new();
@@ -332,7 +332,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         });
         if cut == Some(0) {
             assert!(matches!(
-                ready(provider.commit(change_request.clone().unwrap())).unwrap(),
+                ready(|| provider.commit(change_request.clone().unwrap())).unwrap(),
                 CommitOutcome::Committed(_)
             ));
         }
@@ -361,14 +361,10 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             };
             let mut work = AuthorityWork::new(BUDGET, token);
             let result = if !broken || !matches!(change, Change::Retire) {
-                ready(crate::heap_future::in_heap(|| {
-                    store.head_payload(ID, 32, &mut work)
-                }))
+                ready(|| store.head_payload(ID, 32, &mut work))
             } else {
                 // Deliberate broken variant of the same production function.
-                ready(crate::heap_future::in_heap(|| {
-                    store.head_payload_checked::<false>(ID, 32, &mut work)
-                }))
+                ready(|| store.head_payload_checked::<false>(ID, 32, &mut work))
             };
             work.spent().verify(BUDGET).unwrap();
             (result, completed_at_entry)

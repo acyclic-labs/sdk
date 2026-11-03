@@ -5,13 +5,15 @@ use crate::{
 };
 use std::{
     future::Future,
-    pin::Pin,
     task::{Context, Poll, Waker},
 };
 
 // In-memory adapters finish in one poll. A TLS executor is incorrect here:
 // Loom's coroutines share the OS thread and may switch while a mutex blocks.
-fn ready<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
+// Keep construction and polling behind the existing non-inlined heap
+// boundaries instead of combining them with the scenario frame.
+fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
+    let mut future = crate::heap_future::in_heap(create);
     match future
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
@@ -44,12 +46,14 @@ fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Syn
         for (name, identity) in [("A", [1; 16]), ("B", [2; 16])] {
             let repository = repository.clone();
             writers.push(loom::thread::spawn(move || {
-                let result = ready(Box::pin(repository.register_branch_workspace(
-                    name,
-                    WorkspaceId::from_bytes(identity),
-                    None,
-                    false,
-                )));
+                let result = ready(|| {
+                    repository.register_branch_workspace(
+                        name,
+                        WorkspaceId::from_bytes(identity),
+                        None,
+                        false,
+                    )
+                });
                 (name, identity, result)
             }));
         }
@@ -69,11 +73,9 @@ fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Syn
             2,
             "conditional write was repeated"
         );
-        let state = ready(Box::pin(
-            repository.store.load(WorkspaceId::from_bytes([0; 16])),
-        ))
-        .unwrap()
-        .unwrap();
+        let state = ready(|| repository.store.load(WorkspaceId::from_bytes([0; 16])))
+            .unwrap()
+            .unwrap();
         assert!(
             !accepted.is_empty(),
             "neither conditional writer progressed"
@@ -114,21 +116,23 @@ fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sy
             super::model_store::CountedStore::new(store()),
         ));
         let workspace = WorkspaceId::from_bytes([0; 16]);
-        let lease = ready(Box::pin(coordinator.begin_with_lease_id(
-            workspace,
-            generation(1),
-            "owner",
-            1,
-            10,
-            OperationLeaseId::from_bytes([1; 16]),
-        )))
+        let lease = ready(|| {
+            coordinator.begin_with_lease_id(
+                workspace,
+                generation(1),
+                "owner",
+                1,
+                10,
+                OperationLeaseId::from_bytes([1; 16]),
+            )
+        })
         .unwrap();
         let mut renewals = Vec::new();
         for expiry in [20, 30] {
             let coordinator = coordinator.clone();
             let lease = lease.clone();
             renewals.push(loom::thread::spawn(move || {
-                ready(Box::pin(coordinator.renew(&lease, 5, expiry)))
+                ready(|| coordinator.renew(&lease, 5, expiry))
             }));
         }
         let mut successful = Vec::new();
@@ -144,7 +148,7 @@ fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sy
             coordinator.store().attempts() <= 3,
             "conditional write was repeated"
         );
-        let snapshot = ready(Box::pin(coordinator.snapshot(workspace))).unwrap();
+        let snapshot = ready(|| coordinator.snapshot(workspace)).unwrap();
         let OperationWindowPhase::Active {
             leases,
             pinned_parent,
@@ -160,7 +164,7 @@ fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sy
             successful[0].expires_at_millis
         );
         assert!(matches!(
-            ready(Box::pin(coordinator.renew(&lease, 5, 40))),
+            ready(|| coordinator.renew(&lease, 5, 40)),
             Err(OperationWindowError::StaleLease)
         ));
     });

@@ -16,6 +16,8 @@ fn check_case(name: &str, scenario: impl Fn() + Send + Sync + 'static) {
     }
 }
 
+// Keep independent model phases out of the caller's coroutine frame.
+#[inline(never)]
 fn remount(
     destination: &Path,
     kernel: &kernel::Kernel,
@@ -33,6 +35,7 @@ fn remount(
     guard.ok_or(NativeMountError::ControlPending)
 }
 
+#[inline(never)]
 fn scenario(
     destination: &Path,
     base: rustix::fs::Statx,
@@ -62,6 +65,7 @@ fn scenario(
     kernel.assert_safe();
 }
 
+#[inline(never)]
 fn remount_first(
     destination: &Path,
     base: rustix::fs::Statx,
