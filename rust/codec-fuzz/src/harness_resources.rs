@@ -21,7 +21,35 @@ fn roundtrip<T: Serialize + DeserializeOwned + PartialEq + Debug>(bytes: &[u8]) 
     Some(value)
 }
 
+// Field separation checks the original digest without reimplementing its format.
+fn summary_key(value: &e::SummaryKey) {
+    let digest = value.digest();
+    for (field, diagnostic) in [
+        (0, "summary key source identity changed"),
+        (1, "summary key range identity changed"),
+        (2, "summary key renderer identity changed"),
+        (3, "summary key model identity changed"),
+    ] {
+        let mut changed = value.clone();
+        match field {
+            0 => {
+                // StreamPath admits nonempty ASCII. Keep the byte length so
+                // the length prefix cannot conceal omitted source bytes.
+                let mut path = value.source.as_str().to_owned();
+                let first = if path.starts_with('a') { "b" } else { "a" };
+                path.replace_range(..1, first);
+                changed.source = StreamPath::new(path).unwrap();
+            }
+            1 => changed.through ^= 1,
+            2 => changed.renderer ^= 1,
+            _ => changed.model[0] ^= 1,
+        }
+        assert_ne!(digest, changed.digest(), "{diagnostic}");
+    }
+}
+
 fn epoch(value: &e::Epoch) {
+    summary_key(&value.key);
     let foreign = if value.key.source == source() {
         StreamPath::new("corpus/foreign/conversation").unwrap()
     } else {
@@ -831,7 +859,9 @@ pub(super) fn check(bytes: &[u8]) {
     if let Some(value) = roundtrip::<e::Epoch>(bytes) {
         epoch(&value);
     }
-    let _ = roundtrip::<e::SummaryKey>(bytes);
+    if let Some(value) = roundtrip::<e::SummaryKey>(bytes) {
+        summary_key(&value);
+    }
     let mut record = envelope().clone();
     record.value = bytes.to_vec().into();
     let Ok(snapshot) = e::Snapshot::decode(&record, &source(), u64::MAX) else {
