@@ -141,6 +141,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_input"
+path = "fuzz_targets/native_input.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "graphcoder_args"
 path = "fuzz_targets/graphcoder_args.rs"
 required-features = ["runtime"]
