@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {newPollingSites, pollingSites, SourceSyntaxError, supportedSource, validateDispositions} from './source-policy/index.mjs';
+import {newPollingSites, pollingSites, pollingUnit, SourceSyntaxError, supportedSource, validateDispositions} from './source-policy/index.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
 
 // Byte-oriented source mutations, not captured tool output. Exercise the real
@@ -74,6 +74,19 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
  const variant = (data[0] ?? 0) % 8;
  const word = 'value' + Buffer.from(data).toString('hex');
  const helper = 'lib/helper.ts', barrel = 'lib/barrel.ts', caller = 'svc/consumer.ts';
+ const raw = new TextDecoder().decode(new Uint8Array(data));
+ // Parser acceptance is determined by the same production unit boundary.
+ // Accepted bytes must also survive graph construction, independent of order.
+ let parsed = false;
+ try { pollingUnit(helper, raw); parsed = true; }
+ catch (error) { assert.ok(error instanceof SourceSyntaxError, String(error)); }
+ const rawSources = new Map([[helper, raw], [caller, "import * as original from '../lib/helper.js'; export const value = original;"]]);
+ if (parsed) {
+  const sites = project(rawSources);
+  const ordered = values => values.map(site => JSON.stringify(site)).sort();
+  assert.deepEqual(ordered(project(new Map([...rawSources].reverse()))), ordered(sites));
+  assert.deepEqual(newProjectPollingSites(rawSources, rawSources), []);
+ } else assert.throws(() => project(rawSources), SourceSyntaxError);
  const [binding, call, producer = 'export function settle() { return Bun.sleep(1); } export default settle;'] = [
   ["import {settle as invoke} from '../lib/helper.js';", 'invoke()'],
   ["import invoke from '../lib/helper.js';", 'invoke()'],
@@ -143,7 +156,6 @@ export function fuzzProject(data, {project = projectPollingSites, validate = val
   assert.throws(() => project(manifest), SourceSyntaxError);
   assert.deepEqual(newProjectPollingSites(manifest, new Map()), []);
   project(new Map([[packageFile, 'null']]));
-  const raw = new TextDecoder().decode(new Uint8Array(data));
   let valid = true;
   try { JSON.parse(raw); } catch { valid = false; }
   const untrusted = new Map([[packageFile, raw]]);

@@ -33,6 +33,11 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), {project: layout.projectPollingSites}),
   {name: 'AssertionError', message: /repository layout/});
+ const current = await mutant('./source-policy/project.mjs',
+  'if (historical && error instanceof SourceSyntaxError) continue;',
+  'if (error instanceof SourceSyntaxError) continue;');
+ assert.throws(() => targets.fuzzProject(Buffer.from('}'), {project: current.projectPollingSites}),
+  {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/});
 });
 
 test('raw source and project fuzz targets replay captured corpus and byte mutations', () => {
@@ -56,4 +61,12 @@ test('raw source and project fuzz targets replay captured corpus and byte mutati
  }
  for (let byte = 0; byte < 8; byte++) targets.fuzzProject(Uint8Array.of(byte, 255 - byte));
  for (const json of ['null', '[]', '{}', '"ordinary"', '{"name":"@original/package"}']) targets.fuzzProject(Buffer.from(json));
+ for (const source of [
+  'export class Original { constructor() { this.ready = 1; } get value() { return Bun.sleep(1); } set value(next) { this.ready = next; } }',
+  'export const Original = class Named { static value = Bun.sleep(1); };',
+  'export function first() { return second(); } function second() { return first(); }',
+  'export const {first: [value, ...rest]} = {first: [Bun.sleep(1)]}; export {value, rest};',
+  '/** @typedef {{ready: number}} Original */ export const value = 1;',
+  "export * from './helper.js'; export {default as original} from './helper.js';",
+ ]) targets.fuzzProject(Buffer.from(source));
 });
