@@ -700,6 +700,7 @@ impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
                 b"",
                 &http::HeaderMap::new(),
                 canonical,
+                None,
             )
             .expect("a non-canonical status is retained");
             Err(StreamError::Refused(refusal))

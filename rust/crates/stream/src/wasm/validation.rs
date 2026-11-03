@@ -14,11 +14,13 @@ pub fn js_error(error: StreamError) -> JsValue {
         &JsValue::from_str("code"),
         &JsValue::from_str(error.code()),
     );
-    if let StreamError::Refused(refusal) = &error {
+    if let StreamError::Refused(refusal) = &error
+        && let Some(original) = refusal.original()
+    {
         let _property_result = Reflect::set(
             value.as_ref(),
             &JsValue::from_str("refusal"),
-            &refusal_value(refusal.original()),
+            &refusal_value(original),
         );
     }
     value.into()

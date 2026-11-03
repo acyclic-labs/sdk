@@ -58,6 +58,7 @@ use crate::{
     wire::ErrorCode,
 };
 use crate::{Observation, Observed};
+use acyclic_auth::refusal::Cause;
 use acyclic_stream::{AppliedRevisions, OwnedBytes, Revision};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -475,9 +476,11 @@ impl Default for MemoryObjects {
 }
 
 fn medium(error: MediumError) -> Error {
-    match error {
-        MediumError::Ambiguous(_) | MediumError::Failed(_) => ErrorCode::Unavailable.into(),
-    }
+    let reason = match error {
+        MediumError::Ambiguous(_) => "outcome_unknown",
+        MediumError::Failed(_) => "failed",
+    };
+    Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason))
 }
 
 /// A fresh owner nonce.
@@ -488,7 +491,12 @@ fn nonce() -> Result<String, Error> {
 /// Fresh bytes unique to one write.
 fn version() -> Result<[u8; 16], Error> {
     let mut version = [0; 16];
-    getrandom::fill(&mut version).map_err(|_| Error::from(ErrorCode::Unavailable))?;
+    getrandom::fill(&mut version).map_err(|_| {
+        Error::caused(
+            ErrorCode::Unavailable,
+            Cause::new("objects.store", "entropy_unavailable"),
+        )
+    })?;
     Ok(version)
 }
 
