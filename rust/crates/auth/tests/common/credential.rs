@@ -29,12 +29,19 @@ fn resolve(value: &str) -> Result<ResolvedCredential, CredentialError> {
 
 fn capability_format(bytes: &[u8]) {
     let text = capability_text(bytes);
-    assert_eq!(capability_from_text(&text).unwrap(), bytes);
+    assert_eq!(
+        capability_from_text(&text).expect("canonical capability text must decode original bytes"),
+        bytes
+    );
     let mut json = Vec::new();
     capability_serde::serialize(bytes, &mut serde_json::Serializer::new(&mut json)).unwrap();
     assert_eq!(serde_json::from_slice::<String>(&json).unwrap(), text);
     let mut input = serde_json::Deserializer::from_slice(&json);
-    assert_eq!(capability_serde::deserialize(&mut input).unwrap(), bytes);
+    assert_eq!(
+        capability_serde::deserialize(&mut input).unwrap(),
+        bytes,
+        "capability JSON must retain original bytes"
+    );
     for suffix in ['=', '!', '\0'] {
         let mut invalid = text.clone();
         invalid.push(suffix);

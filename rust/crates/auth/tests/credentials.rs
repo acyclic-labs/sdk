@@ -18,6 +18,7 @@ proptest! {
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
     ]) {
         conformance::check(include_bytes!("../fuzz/corpus/credential/v2-opaque-bearer"));
+        conformance::check(include_bytes!("../fuzz/corpus/capability/v2-signed-capability"));
         conformance::check(value.as_bytes());
         // Keep byte-boundary cases deterministic within the same provider oracle.
         for length in [MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_BYTES + 1] {

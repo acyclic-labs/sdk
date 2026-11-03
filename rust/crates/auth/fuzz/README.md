@@ -31,12 +31,23 @@ owned by `rust/codec-fuzz/examples/capture.rs`. Its byte-for-byte copy in
 ordinary property validation exercises the retained real-writer input.
 
 With nightly Rust and cargo-fuzz installed, run `python3 negative-control.py`
-from this directory. It removes only the production delimiter-admission check,
-then requires the unchanged credential fuzzer to reject that defect using the
-captured bearer input. Compilation failures do not satisfy the control. The
-script restores the original source bytes and checks that the oracle did not
-change. A successful control qualifies this defect, not complete coverage of
-credential cache, source changes or transport implementations.
+from this directory. The default `delimiter` control removes only the
+production delimiter-admission check. `python3 negative-control.py text-decoder`
+substitutes the standard alphabet for the production base64url decoder;
+`python3 negative-control.py json-field` drops decoded bytes in the actual JSON
+field adapter. Each requires its specific unchanged semantic assertion to fail.
+Compilation failures do not satisfy the controls. The script restores the
+original source bytes and checks that the oracle did not change. These controls
+qualify those defects, not complete coverage of credential cache, source changes
+or transport implementations.
+
+The text and JSON controls use `credential/v2-signed-capability`, a byte-for-byte
+copy of the 451-byte `capability/v2-signed-capability` capture described above.
+The shared corpus manifest records SHA-256
+`ef98dfe0fbf265ffa36881f04905afede048060d91adf3731ba5979444143f6a` and
+`acyclic_auth::testing::root` as its original producer. Its signed bytes exercise
+the URL alphabet and decoded-byte preservation without introducing another
+writer or fixture.
 
 The same oracle also exercises the production capability text codec and its
 JSON field adapter. Binary inputs round-trip through the actual writers;
