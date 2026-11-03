@@ -6,7 +6,7 @@ pub(super) enum Staged {
     /// `decoded` holds its first decoded representation, which lives and
     /// leaves with the resident bytes.
     Resident {
-        bytes: OwnedBytes,
+        object: HashedObject,
         referenced: AtomicBool,
         order: u64,
         incarnation: u64,
@@ -21,7 +21,7 @@ pub(super) enum Staged {
 impl Staged {
     pub(super) fn length(&self) -> u64 {
         match self {
-            Self::Resident { bytes, .. } => byte_length(bytes),
+            Self::Resident { object, .. } => object.length(),
             Self::Spilled { length, .. } => *length,
         }
     }
@@ -85,25 +85,22 @@ pub(super) struct Index {
 }
 
 impl Index {
-    /// Holds `bytes` in memory as the newest object unless the identity is
+    /// Holds the original seal in memory unless the identity is
     /// already staged. Returns whether the object was admitted.
     pub(super) fn admit_resident(
         &mut self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
+        object: HashedObject,
     ) -> Result<bool, ObjectStoreError> {
+        let object_id = object.object_id();
         if self.objects.contains_key(&object_id) {
             return Ok(false);
         }
-        self.insert_resident(object_id, bytes)?;
+        self.insert_resident(object)?;
         Ok(true)
     }
 
-    pub(super) fn insert_resident(
-        &mut self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-    ) -> Result<(), ObjectStoreError> {
+    pub(super) fn insert_resident(&mut self, object: HashedObject) -> Result<(), ObjectStoreError> {
+        let object_id = object.object_id();
         let incarnation = self.next_incarnation;
         let next = incarnation
             .checked_add(1)
@@ -111,12 +108,12 @@ impl Index {
         self.next_incarnation = next;
         let order = self.next_order;
         self.next_order += 1;
-        self.resident_bytes = self.resident_bytes.saturating_add(byte_length(&bytes));
+        self.resident_bytes = self.resident_bytes.saturating_add(object.length());
         self.order.insert(order, object_id);
         if let Some(Staged::Spilled { .. }) = self.objects.insert(
             object_id,
             Staged::Resident {
-                bytes,
+                object,
                 referenced: AtomicBool::new(false),
                 order,
                 incarnation,
@@ -138,7 +135,7 @@ impl Index {
                 break;
             };
             let Some(Staged::Resident {
-                bytes,
+                object,
                 referenced,
                 order,
                 ..
@@ -152,8 +149,8 @@ impl Index {
                 self.order.insert(*order, object_id);
                 continue;
             }
-            spilled = spilled.saturating_add(byte_length(bytes));
-            victims.push((object_id, bytes.clone()));
+            spilled = spilled.saturating_add(object.length());
+            victims.push((object_id, object.bytes().clone()));
         }
         // The caller owns the preallocated vector and its native custody.
     }
@@ -187,9 +184,9 @@ impl Index {
     /// Forgets one staged object.
     pub(super) fn remove(&mut self, object_id: ObjectId) {
         match self.objects.remove(&object_id) {
-            Some(Staged::Resident { bytes, order, .. }) => {
+            Some(Staged::Resident { object, order, .. }) => {
                 self.order.remove(&order);
-                self.resident_bytes = self.resident_bytes.saturating_sub(byte_length(&bytes));
+                self.resident_bytes = self.resident_bytes.saturating_sub(object.length());
             }
             Some(Staged::Spilled { .. }) => self.spilled_objects -= 1,
             None => {}
@@ -201,18 +198,15 @@ impl Index {
 #[test]
 fn exhausted_resident_incarnation_refuses_without_reusing_a_retired_slot() {
     let bytes = OwnedBytes::from_static(b"resident incarnation");
-    let id = ObjectId {
-        storage: None,
-        kind: crate::ObjectKind::BlobChunk,
-        digest: crate::object_digest(&bytes),
-    };
+    let object = HashedObject::new(crate::ObjectKind::BlobChunk, bytes);
+    let id = object.object_id();
     let mut index = Index::default();
-    assert!(index.admit_resident(id, bytes.clone()).unwrap());
+    assert!(index.admit_resident(object.clone()).unwrap());
     let next_order = index.next_order;
     index.remove(id);
     index.next_incarnation = u64::MAX;
     assert!(matches!(
-        index.admit_resident(id, bytes),
+        index.admit_resident(object),
         Err(ObjectStoreError::Work(crate::WorkError::Overflow))
     ));
     assert!(index.objects.is_empty());
