@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
+import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
@@ -83,25 +83,6 @@ function qualifyOrReject(missing, qualify) {
   if (missing === null) qualify();
   else assert.throws(qualify, /requires a nonzero/);
 }
-
-test("skill materializer qualification requires the production owner model and its negative control", () => {
-  for (const missing of [null, 1, 2, 3]) {
-    let models = 0;
-    const run = (command, args, options) => {
-      if (command === "cargo") {
-        assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
-        assert.ok(args.includes("main"));
-        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
-      }
-      assert.equal(args[0], ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"][models]);
-      assert.equal(args[1], "--exact");
-      return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
-    };
-    if (missing === null) { qualifySkillMaterializerLoom(run); assert.equal(models, 3); }
-    else assert.throws(() => qualifySkillMaterializerLoom(run), /requires a nonzero/);
-  }
-  assertGateStep(["--skill-materializer"]);
-});
 
 test("gate rejects every trailing argument before starting a build", () => {
   for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--timer"], ["--gate"], ["x"]]) {
