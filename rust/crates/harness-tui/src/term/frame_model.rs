@@ -1,20 +1,56 @@
 use super::*;
 use crate::term::lifecycle::{self, Arc, Mutex, State};
-use loom::{
-    sync::atomic::{AtomicBool, Ordering},
-    thread,
+use alacritty_terminal::{
+    event::EventListener,
+    grid::Dimensions,
+    index::{Column, Line, Point},
+    term::{Config, Term, TermMode},
+    vte::ansi::Processor,
 };
+use loom::thread;
 
-struct Display(Arc<AtomicBool>);
-impl Write for Display {
+struct Grid;
+impl Dimensions for Grid {
+    fn total_lines(&self) -> usize {
+        2
+    }
+    fn screen_lines(&self) -> usize {
+        2
+    }
+    fn columns(&self) -> usize {
+        2
+    }
+}
+
+struct Events;
+impl EventListener for Events {}
+
+// Interpret the original production writes with the same independent terminal
+// used by the native frame controls. Both interpreter and device state belong
+// to the lifecycle lock; no second lock or parallel terminal model is needed.
+struct Screen {
+    term: Term<Events>,
+    parser: Processor,
+}
+impl Screen {
+    fn new() -> Self {
+        Self {
+            term: Term::new(Config::default(), &Grid, Events),
+            parser: Processor::new(),
+        }
+    }
+
+    fn first_cell(&self) -> &alacritty_terminal::term::cell::Cell {
+        &self.term.grid()[Point::new(Line(0), Column(0))]
+    }
+}
+impl Write for Screen {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for command in bytes.windows(6) {
-            if command == b"\x1b[?25h" {
-                self.0.store(true, Ordering::SeqCst);
-            }
-            if command == b"\x1b[?25l" {
-                self.0.store(false, Ordering::SeqCst);
-            }
+        // A device may split a control sequence at any byte. The interpreter
+        // retains framing across writes and the production frame is unchanged.
+        for byte in bytes {
+            self.parser
+                .advance(&mut self.term, std::slice::from_ref(byte));
         }
         Ok(bytes.len())
     }
@@ -59,18 +95,16 @@ impl<W: Write> Present for Output<W> {
     }
 }
 
-fn resume(state: &Mutex<State<Display>>) {
+fn resume(state: &Mutex<State<Screen>>) {
     lifecycle::restore(state, false, |_| Ok(())).unwrap();
     lifecycle::resume(state, |_| Ok(())).unwrap();
 }
 
 fn model(broken: bool, during_render: bool) {
     // State is the actual production lifecycle mutex through its loom shim.
-    // Lock order: state only; the emulated device uses atomics, never another
-    // lock. Rendering and worker joins happen outside that state lock.
+    // Rendering and worker joins happen outside that state lock.
     loom::model(move || {
-        let visible = Arc::new(AtomicBool::new(true));
-        let state = Arc::new(Mutex::new(State::new(Display(Arc::clone(&visible)))));
+        let state = Arc::new(Mutex::new(State::new(Screen::new())));
         let mut terminal = FrameTerminal::new(
             Output {
                 state: Arc::clone(&state),
@@ -82,7 +116,16 @@ fn model(broken: bool, during_render: bool) {
         )
         .unwrap();
         terminal.draw(Size::new(2, 2), |_| {}).unwrap();
-        assert!(!visible.load(Ordering::SeqCst));
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .guard
+                .writer()
+                .term
+                .mode()
+                .contains(TermMode::SHOW_CURSOR)
+        );
         if during_render {
             let resuming = Arc::clone(&state);
             terminal
@@ -105,7 +148,14 @@ fn model(broken: bool, during_render: bool) {
             terminal.draw(Size::new(2, 2), |_| {}).unwrap();
         }
         assert!(
-            !visible.load(Ordering::SeqCst),
+            !state
+                .lock()
+                .unwrap()
+                .guard
+                .writer()
+                .term
+                .mode()
+                .contains(TermMode::SHOW_CURSOR),
             "resume before commit must not leave the cursor shown"
         );
         let mut guard = state.lock().unwrap();
@@ -136,51 +186,17 @@ fn resume_after_the_render_snapshot_is_repaired() {
     model(false, true);
 }
 #[test]
+#[should_panic(expected = "resume before commit must not leave the cursor shown")]
 fn negative_control_empty_frames_cannot_skip_the_lifecycle_boundary() {
-    assert!(std::panic::catch_unwind(|| model(true, true)).is_err());
-}
-
-struct Colours {
-    red: bool,
-    painted_red: Arc<AtomicBool>,
-}
-impl Write for Colours {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let mut at = 0;
-        while at < bytes.len() {
-            if bytes[at..].starts_with(b"\x1b[31m") {
-                self.red = true;
-                at += 5;
-            } else if bytes[at..].starts_with(b"\x1b[0m") {
-                self.red = false;
-                at += 4;
-            } else if bytes[at..].starts_with(b"\x1b[39m") {
-                self.red = false;
-                at += 5;
-            } else {
-                if bytes[at] == b'b' {
-                    self.painted_red.store(self.red, Ordering::SeqCst);
-                }
-                at += 1;
-            }
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    model(true, true);
 }
 
 fn attributes_model(broken: bool) {
     // The production state lock serializes the actual outside write and frame
-    // presentation. Device state is private to that lock; only the observer is
-    // atomic. No secondary lock is taken by the device or while joining workers.
+    // presentation. Device state is private to that lock. No secondary lock is
+    // taken by the device or while joining workers.
     loom::model(move || {
-        let painted_red = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(Mutex::new(State::new(Colours {
-            red: false,
-            painted_red: Arc::clone(&painted_red),
-        })));
+        let state = Arc::new(Mutex::new(State::new(Screen::new())));
         let size = Size::new(2, 2);
         let mut terminal = FrameTerminal::new(
             Output {
@@ -209,8 +225,14 @@ fn attributes_model(broken: bool) {
                 .unwrap();
             })
             .unwrap();
-        assert!(
-            !painted_red.load(Ordering::SeqCst),
+        let mut state = state.lock().unwrap();
+        let cell = state.guard.writer().first_cell();
+        assert_eq!(cell.c, 'b');
+        assert_eq!(
+            cell.fg,
+            alacritty_terminal::vte::ansi::Color::Named(
+                alacritty_terminal::vte::ansi::NamedColor::Foreground
+            ),
             "checked recovery must reset attributes before cells"
         );
     });
@@ -221,35 +243,16 @@ fn checked_presentation_recovers_attributes_under_the_real_lock() {
     attributes_model(false);
 }
 #[test]
+#[should_panic(expected = "checked recovery must reset attributes before cells")]
 fn negative_control_checked_recovery_cannot_omit_attributes() {
-    assert!(std::panic::catch_unwind(|| attributes_model(true)).is_err());
-}
-
-struct Contents(Arc<loom::sync::atomic::AtomicUsize>);
-impl Write for Contents {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for at in 0..bytes.len() {
-            if bytes[at..].starts_with(b"\x1b[2J") {
-                self.0.store(0, Ordering::SeqCst);
-            } else if bytes[at] == b'Z' {
-                self.0.store(1, Ordering::SeqCst);
-            } else if bytes[at] == b'X' {
-                self.0.store(2, Ordering::SeqCst);
-            }
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    attributes_model(true);
 }
 
 fn contents_model(broken: bool, during_render: bool) {
     // State is the real lifecycle mutex. Both writers use that same lock;
-    // the cell observer is atomic and worker joins occur outside the lock.
+    // worker joins occur outside the lock.
     loom::model(move || {
-        let cell = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
-        let state = Arc::new(Mutex::new(State::new(Contents(Arc::clone(&cell)))));
+        let state = Arc::new(Mutex::new(State::new(Screen::new())));
         let size = Size::new(2, 1);
         let mut terminal = FrameTerminal::new(
             Output {
@@ -265,7 +268,7 @@ fn contents_model(broken: bool, during_render: bool) {
             frame.render_widget(ratatui::widgets::Paragraph::new("Z"), frame.area());
         };
         terminal.draw(size, paint).unwrap();
-        let write_outside = |outside: Arc<Mutex<State<Contents>>>| {
+        let write_outside = |outside: Arc<Mutex<State<Screen>>>| {
             lifecycle::active(&outside, |guard| guard.writer().write_all(b"\x1b[HX")).unwrap();
         };
         if during_render {
@@ -288,8 +291,8 @@ fn contents_model(broken: bool, during_render: bool) {
         // Once that writer is joined, the next frame must restore its target.
         terminal.draw(size, paint).unwrap();
         assert_eq!(
-            cell.load(Ordering::SeqCst),
-            1,
+            state.lock().unwrap().guard.writer().first_cell().c,
+            'Z',
             "retained contents must follow lifecycle invalidation"
         );
     });
@@ -302,16 +305,7 @@ fn retained_cells_recover_under_the_real_lifecycle_lock() {
     }
 }
 #[test]
+#[should_panic(expected = "retained contents must follow lifecycle invalidation")]
 fn negative_control_checked_recovery_cannot_omit_retained_cells() {
-    let failure = std::panic::catch_unwind(|| contents_model(true, false))
-        .expect_err("omitted cell recovery must fail");
-    let text = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        text.contains("retained contents must follow lifecycle invalidation"),
-        "{text}"
-    );
+    contents_model(true, false);
 }
