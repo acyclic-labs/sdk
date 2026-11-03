@@ -61,4 +61,5 @@ with `GitBatchSyntaxError`. Revision selection and process I/O stay with callers
 Missing-object headers must carry a full revision ID and the requested file key.
 The decoder advances once through the supplied bytes, with no I/O or extra body
 copy. Run `node --test scripts/no-polling-git-fuzz.test.mjs` for the original Git
-capture, damaged-frame corpus and retained production mutation controls.
+captures for SHA-1 and SHA-256 (including empty blobs and paths with spaces),
+damaged-frame corpus and retained production mutation controls.
