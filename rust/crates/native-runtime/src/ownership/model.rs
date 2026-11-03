@@ -145,20 +145,33 @@ fn successful_initialization_retains_its_fence_for_existing_clones() {
 
 #[test]
 fn release_waits_for_the_actual_owner_and_retained_fence() {
-    loom::model(|| {
-        let owner_exists = Arc::new(AtomicBool::new(true));
-        let fence_exists = Arc::new(AtomicBool::new(true));
-        let owner = OwnershipAnchor::new(Cleanup(owner_exists.clone()));
-        let owner = OwnershipAnchor::fenced(owner, Cleanup(fence_exists.clone()));
-        let released = owner.release_barrier();
-        let waiter = loom::thread::spawn(move || {
-            released.wait();
-            assert!(
-                !owner_exists.load(Ordering::SeqCst) && !fence_exists.load(Ordering::SeqCst),
-                "release preceded physical owner or retained-fence cleanup"
-            );
+    for asynchronous in [false, true] {
+        loom::model(move || {
+            let owner_exists = Arc::new(AtomicBool::new(true));
+            let fence_exists = Arc::new(AtomicBool::new(true));
+            let owner = OwnershipAnchor::new(Cleanup(owner_exists.clone()));
+            let owner = OwnershipAnchor::fenced(owner, Cleanup(fence_exists.clone()));
+            let released = owner.release_barrier();
+            let waiter = loom::thread::spawn(move || {
+                if asynchronous {
+                    let wake = std::sync::Arc::new(crate::NativeWake::default());
+                    let waker = Waker::from(wake.clone());
+                    let mut cx = Context::from_waker(&waker);
+                    let mut released = std::pin::pin!(released.released());
+                    if released.as_mut().poll(&mut cx).is_pending() {
+                        wake.wait(None);
+                        assert!(released.as_mut().poll(&mut cx).is_ready());
+                    }
+                } else {
+                    released.wait();
+                }
+                assert!(
+                    !owner_exists.load(Ordering::SeqCst) && !fence_exists.load(Ordering::SeqCst),
+                    "release preceded physical owner or retained-fence cleanup"
+                );
+            });
+            drop(owner);
+            waiter.join().unwrap();
         });
-        drop(owner);
-        waiter.join().unwrap();
-    });
+    }
 }
