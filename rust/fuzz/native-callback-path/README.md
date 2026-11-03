@@ -8,12 +8,19 @@ would let both codecs reject every input.
 From the repository root, run the retained corpus and a finite campaign:
 
 ```sh
-cargo run --locked -p native-callback-path-fuzz --bin callback_path -- \
+target="$(rustc -vV | sed -n 's/^host: //p')"
+RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 \
+-Cllvm-args=-sanitizer-coverage-inline-8bit-counters \
+-Cllvm-args=-sanitizer-coverage-pc-table \
+-Cllvm-args=-sanitizer-coverage-trace-compares" \
+cargo run --locked --target "$target" \
+  -p native-callback-path-fuzz --bin callback_path -- \
   -seed=1 -runs=4096 rust/fuzz/native-callback-path/corpus/callback_path
 ```
 
-Use the normal sanitizer-coverage compiler flags for an instrumented campaign;
-libFuzzer feedback is not a source-branch coverage report.
+An explicit target keeps coverage instrumentation out of host build scripts,
+which do not link the libFuzzer runtime. LibFuzzer feedback is not a
+source-branch coverage report.
 
 The two `windows-enumerated-*` seeds were captured on Windows build 26200
 using `System.IO.Directory.EnumerateFiles` on actual temporary files. Their
