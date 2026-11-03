@@ -1,6 +1,9 @@
 # Native claim decoder validation
 
 The `native_claim_record` target includes the production claim codec directly.
+Its shared oracle and original writer corpus live under
+`rust/crates/native-runtime/tests/claim_codec`, inside the published crate.
+The fuzzer and capture example include this same oracle from there.
 It checks arbitrary bytes, writer round trips, bounded admission, torn writes,
 checksum rejection, domain separation, all five field lengths and trailing data.
 Checksum-valid short bodies and invalid PID/token widths exercise grammar refusal
@@ -44,6 +47,9 @@ corpus files through the same `check` function used by the fuzzer:
 ```sh
 cargo test --locked -p acyclic-native-runtime --test native_claim_record
 ```
+
+It also checks every truncated prefix of each retained writer seed, preserving
+the exhaustive routine coverage without adding quadratic work to fuzz inputs.
 
 The same source-defect control can qualify this routine test without repeating
 the fuzz campaign: append `--routine` to the Python command above. It first
