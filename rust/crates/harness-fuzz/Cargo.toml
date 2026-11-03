@@ -134,6 +134,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_marketplace"
+path = "fuzz_targets/native_marketplace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_model_selection"
 path = "fuzz_targets/native_model_selection.rs"
 test = false
