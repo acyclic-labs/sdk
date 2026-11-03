@@ -134,8 +134,10 @@ impl Host {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
-            // Parking is not readiness: only the original future's wake or
-            // physical terminal may enqueue the next seeded task poll.
+            // Parking does not make the callback ready.
+            // A driver that yielded before startup must now produce this
+            // callback's reply. Wake it once at the original parking event.
+            let parked_driver = state.waiting_start.then(|| state.driver.clone()).flatten();
             state.waiting_start = false;
             if state.detached && state.ready {
                 state.ready = false;
@@ -146,6 +148,9 @@ impl Host {
             drop(state);
             if saturated {
                 self.pool.changed();
+            }
+            if let Some(driver) = parked_driver {
+                driver.wake();
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {

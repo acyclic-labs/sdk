@@ -1,7 +1,7 @@
 """Check production signal/wake/owner models against actual source defects.
 
 Run in a disposable checkout: python3 rust/crates/native-runtime/tests/signal-control.py /tmp/native-signal-control
-Select the retained wake-token or final-owner model with --wake or --owners.
+Select the retained wake-token, final-owner or host model with --wake, --owners or --host.
 """
 import hashlib
 import json
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--wake", "--owners")):
-        raise RuntimeError("arguments: expected evidence directory and optional model; recovery: pass /tmp/native-signal-control [--wake|--owners]")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--wake", "--owners", "--host")):
+        raise RuntimeError("arguments: expected evidence directory and optional model; recovery: pass /tmp/native-signal-control [--wake|--owners|--host]")
     mode = sys.argv[2] if len(sys.argv) == 3 else "--signal"
     root = Path(__file__).resolve().parents[4]
     output = Path(sys.argv[1]).resolve()
@@ -22,10 +22,12 @@ def main():
     outcome = signal.with_name("outcome.rs")
     wake = root / "rust/crates/native-runtime/src/wake.rs"
     owners = root / "rust/crates/native-runtime/src/health/owners.rs"
+    host = root / "rust/crates/native-runtime/src/testing/host.rs"
     target, sources, selection = {
         "--signal": ("process_signal_loom.rs", (signal, outcome), "--native-signal"),
         "--wake": ("wake_loom.rs", (wake,), "--native-wake"),
         "--owners": ("owner_count_loom.rs", (owners, owners.parent / "owners/model.rs"), "--native-owner"),
+        "--host": ("../src/testing/host/models.rs", (host, host.parent / "host/pool.rs"), "--native-host"),
     }[mode]
     oracle = root / "rust/crates/native-runtime/tests" / target
     qualifier = root / "scripts/qualify-mcp-loom.mjs"
@@ -63,8 +65,14 @@ def main():
              b"let last = self.0.load(Ordering::Acquire) == 1; self.0.fetch_sub(1, Ordering::AcqRel); last",
              "last owners elected:"),
         ]
+    elif mode == "--host":
+        mutations = [
+            ("queued-callback-wake", host,
+             b"let parked_driver = state.waiting_start.then(|| state.driver.clone()).flatten();",
+             b"let parked_driver = None::<Waker>;",
+             "deadlock; threads ="),
+        ]
     try:
-        run("positive")
         for label, path, before, after, failure in mutations:
             original = originals[path]
             if original.count(before) != 1:
@@ -77,6 +85,7 @@ def main():
                 run(label, failure)
             finally:
                 path.write_bytes(original)
+        run("positive")
     finally:
         report["inputs_unchanged"] = all(path.read_bytes() == data for path, data in originals.items())
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")

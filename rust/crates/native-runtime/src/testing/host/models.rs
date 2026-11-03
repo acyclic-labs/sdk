@@ -158,16 +158,38 @@ fn negative_control_forgetting_io_readiness_deadlocks() {
 
 fn unscoped_occupant(forget_occupant: bool) {
     loom::model(move || {
+        struct DriverWake(Mutex<bool>, Condvar);
+        impl Wake for DriverWake {
+            fn wake(self: Arc<Self>) {
+                *lock(&self.0) = true;
+                self.1.notify_one();
+            }
+        }
         let host = Host::new(1);
         let worker = host.clone();
+        let reply = Arc::new(AtomicBool::new(false));
+        let callback = reply.clone();
         let (started, start) = loom::sync::mpsc::channel();
         let (release, released) = loom::sync::mpsc::channel();
+        let (callback_wake, callback_wait) = loom::sync::mpsc::channel();
         let thread = loom::thread::spawn(move || {
             let occupant = (!forget_occupant).then(|| worker.pool.unscoped());
             started.send(()).unwrap();
             released.recv().unwrap();
             drop(occupant);
-            worker.run(|| ());
+            worker.run(|| {
+                let mut callback_wake = Some(callback_wake);
+                worker.block(std::future::poll_fn(|cx| {
+                    if let Some(wake) = callback_wake.take() {
+                        wake.send(cx.waker().clone()).unwrap();
+                    }
+                    if callback.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }));
+            });
         });
         start.recv().unwrap();
         let mut drive = std::pin::pin!(host.drive(std::future::poll_fn(|_| {
@@ -177,9 +199,21 @@ fn unscoped_occupant(forget_occupant: bool) {
                 Poll::Pending
             }
         })));
-        let mut cx = PollContext::from_waker(Waker::noop());
+        let awakened = Arc::new(DriverWake(Mutex::new(false), Condvar::new()));
+        let waker = Waker::from(awakened.clone());
+        let mut cx = PollContext::from_waker(&waker);
         assert!(drive.as_mut().poll(&mut cx).is_pending());
         release.send(()).unwrap();
+        // The queued worker starts after its driver yielded to a different
+        // occupant, then needs that SAME driver to produce its callback reply.
+        // Observe the actual handoff before publishing any reply readiness.
+        let mut resumed = lock(&awakened.0);
+        while !*resumed {
+            resumed = awakened.1.wait(resumed).unwrap();
+        }
+        drop(resumed);
+        reply.store(true, Ordering::SeqCst);
+        callback_wait.recv().unwrap().wake();
         executor::complete_io(drive);
         thread.join().unwrap();
     });
