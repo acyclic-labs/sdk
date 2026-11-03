@@ -138,6 +138,20 @@ additional_controls = {
             "escaped",
             b"encoded command result must remain within the admitted byte bound",
         ),
+        (
+            "rust/crates/harness/src/client/command_result.rs",
+            b"if matches!(error, Error::GoalBlocked(_)) {",
+            b"if false {",
+            "goal-blocked",
+            b"settled result must retain completion and payload",
+        ),
+        (
+            "rust/crates/harness-core/src/contract_errors.rs",
+            b"Self::InteractionRejected(InteractionRejection::Cancelled) => {\n                ErrorCode::InteractionCancelled\n            }",
+            b"Self::InteractionRejected(InteractionRejection::Cancelled) => {\n                ErrorCode::Invalid\n            }",
+            "cancelled",
+            b"settled result must retain completion and payload",
+        ),
     ],
     "native_settings": [
         (
