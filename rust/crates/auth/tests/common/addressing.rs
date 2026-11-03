@@ -1,10 +1,24 @@
-//! Textual addresses must retain the identities and route decisions they carry.
+//! Addresses must retain the identities and route decisions they carry.
 use acyclic_auth::addressing::{
-    ActorReference, CanonicalHost, ResourceIdentity, RouteError, RoutePattern, WorkerRoute,
-    select_route, validate_dns_label,
+    ActorReference, CanonicalHost, IdentityError, ResourceIdentity, RouteError, RoutePattern,
+    WorkerRoute, select_route, validate_dns_label,
 };
 
 const DOMAIN: &str = "run.example.com";
+
+fn framing<T>(bytes: &[u8], decode: impl Fn(&[u8]) -> Result<T, IdentityError>) {
+    let mut alias = bytes.to_vec();
+    alias.push(0);
+    assert!(
+        matches!(decode(&alias), Err(IdentityError::Malformed)),
+        "identity framing must refuse trailing bytes"
+    );
+    alias.truncate(bytes.len() - 1);
+    assert!(
+        matches!(decode(&alias), Err(IdentityError::Malformed)),
+        "identity framing must refuse truncated fields"
+    );
+}
 
 fn label(bytes: &[u8]) {
     // Construct an LDH label; this is a generator, not another admission parser.
@@ -121,6 +135,7 @@ fn route(pattern: &str, url: &str) {
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
     if let Ok(value) = ResourceIdentity::decode(bytes) {
+        framing(bytes, ResourceIdentity::decode);
         identity(&value);
         assert_eq!(
             value.encode(),
@@ -130,6 +145,7 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
     }
     if let Ok(value) = ActorReference::decode(bytes) {
+        framing(bytes, ActorReference::decode);
         assert_eq!(value.encode(), bytes, "actor bytes must roundtrip exactly");
         assert_eq!(ActorReference::decode(&value.encode()), Ok(value));
         assert!(ResourceIdentity::decode(bytes).is_err());
