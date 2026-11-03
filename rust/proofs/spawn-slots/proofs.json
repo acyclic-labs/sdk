@@ -88,6 +88,22 @@
           "expected": "unchanged bounded host admission assertion fails"
         }
       ]
+    },
+    {
+      "id": "persisted_slot_inputs",
+      "production": "rust/crates/harness-core/src/agent/checkpoint.rs",
+      "proofs": [
+        "harness-core: agent_model::runtime::native_reopen_preserves_reserved_spawns_until_the_matching_approval"
+      ],
+      "controls": [
+        {
+          "file": "rust/crates/harness-core/src/agent/checkpoint.rs",
+          "before": "    Ok(state)\n}\n\n#[cfg(test)]",
+          "after": "    state.reserved_children = 0;\n    Ok(state)\n}\n\n#[cfg(test)]",
+          "expected": "The unchanged native reopen oracle rejects loss of the three reserved spawns; compilation failure does not qualify the control."
+        }
+      ],
+      "qualification": "Pending execution; actual LocalStream, original AgentHost and committed writer/reader; controlled turn driver, not native executor/provider wire or complete shell refinement."
     }
   ],
   "execution_receipts": [

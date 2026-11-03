@@ -417,6 +417,116 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
 }
 
 #[tokio::test]
+async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -> Result {
+    use acyclic_stream::LocalStream;
+
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let spawn = |name: &str| Out::Spawn {
+        profile: None,
+        history: None,
+        intent: intent(name),
+        brief: None,
+        volumes: Vec::new(),
+    };
+    let host = AgentHost::new(
+        provider.clone(),
+        super::script(vec![TurnStep {
+            reserved_children: 3,
+            checkpoint: Some(vec![7; 8]),
+            outs: vec![spawn("existing-a"), spawn("existing-b")],
+            wait: Wait::Approval {
+                id: intent("decision"),
+                binding: None,
+            },
+            drops: None,
+        }]),
+        within.clone(),
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    host.drain(&root).await?;
+    host.send(
+        &root,
+        &user(),
+        &InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: root.child(&id(2))?,
+            id: intent("question"),
+        }),
+    )
+    .await?;
+    host.drain(&root).await?;
+    let paused = host.state(&root).await?;
+    assert_eq!(paused.open_children.len(), 2);
+    assert_eq!(paused.reserved_children, 3);
+    assert_eq!(
+        paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
+        Some([7; 8].as_slice())
+    );
+    // Neither the runtime nor the native provider survives the reopen.
+    drop(host);
+    drop(provider);
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let host = AgentHost::new(
+        provider,
+        super::script(vec![
+            TurnStep {
+                reserved_children: 0,
+                checkpoint: None,
+                outs: vec![
+                    spawn("recorded-a"),
+                    spawn("recorded-b"),
+                    spawn("recorded-c"),
+                ],
+                wait: Wait::Input,
+                drops: None,
+            },
+            // Once that turn settles, the unrelated queued input can run.
+            TurnStep {
+                reserved_children: 0,
+                checkpoint: None,
+                outs: Vec::new(),
+                wait: Wait::Input,
+                drops: None,
+            },
+        ]),
+        within,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    assert_eq!(host.state(&root).await?, paused);
+    for decision in ["unrelated", "decision"] {
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::Approval(Approval {
+                id: intent(decision),
+            }),
+        )
+        .await?;
+        host.drain(&root).await?;
+        let state = host.state(&root).await?;
+        if decision == "unrelated" {
+            assert_eq!(state.turn, paused.turn);
+            assert_eq!(state.phase, paused.phase);
+            assert_eq!(state.reserved_children, 3);
+            assert_eq!(state.open_children, paused.open_children);
+        } else {
+            assert_eq!(state.phase, Phase::Idle);
+            assert_eq!(state.turn, None);
+            assert_eq!(state.reserved_children, 0);
+            assert_eq!(state.open_children.len(), 5);
+            for child in state.open_children {
+                assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     use acyclic_actors::guest::{CancellationToken, Delivery, Handler, SubscriptionCuts, Trigger};
     use acyclic_stream::{ReadRequest, StreamProvider, StreamProviderExt};
