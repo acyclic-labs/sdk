@@ -16,8 +16,6 @@ impl Tree for Files {
 }
 
 const TREE: Files = Files(&[
-    ("models.ts", "export const fast: string = 'p/fast';"),
-    ("sys/defaults.json", r#"{"temperature": 0.5}"#),
     ("loop/a.ts", "import './b.ts'; export default 1;"),
     ("loop/b.ts", "import './a.ts'; export default 2;"),
 ]);
@@ -27,54 +25,6 @@ async fn error(source: &str, surface: Surface) -> String {
         Err(Error::Invalid(message)) => message,
         other => panic!("{source}: {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn layers_fold_values_and_functions_with_static_imports() -> Result<()> {
-    let seed = "import type { AgentConfig } from 'sys/types/config';\n\
-                export default (base: AgentConfig): AgentConfig => base;";
-    let home = "import { fast } from './models.ts';\n\
-                import defaults from 'sys/defaults.json';\n\
-                interface Unused { x: number }\n\
-                export default (base: { model: string }) => ({ ...base, model: fast, sampling: defaults });";
-    let layers = [
-        Layer {
-            name: "seed",
-            generation: "s1",
-            bytes: Some(seed.as_bytes()),
-        },
-        Layer {
-            name: "home",
-            generation: "h1",
-            bytes: Some(home.as_bytes()),
-        },
-    ];
-    let (value, chain) = compose("agent.ts", &layers, &TREE, json!({"model": "p/base"})).await?;
-    assert_eq!(
-        value,
-        json!({"model": "p/fast", "sampling": {"temperature": 0.5}})
-    );
-    assert_eq!(
-        chain
-            .iter()
-            .map(|link| (link.layer.as_str(), link.form))
-            .collect::<Vec<_>>(),
-        [("seed", Form::Function), ("home", Form::Function)]
-    );
-    // A value export replaces whatever is below it.
-    let replaced = evaluate(
-        "agent.ts",
-        b"export default { model: 'p/x' } satisfies { model: string };",
-        &TREE,
-        &json!({"model": "p/base", "effort": "high"}),
-        Surface::Compose,
-    )
-    .await?;
-    assert_eq!(
-        (replaced.value, replaced.form),
-        (json!({"model": "p/x"}), Form::Value)
-    );
-    Ok(())
 }
 
 #[tokio::test]

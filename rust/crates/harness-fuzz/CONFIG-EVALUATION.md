@@ -24,12 +24,15 @@ cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
-Twelve retained patches alter the actual production source admission, walk, fold or cache. Apply each separately
+Fifteen retained patches alter the actual production source admission, walk, fold or cache. Apply each separately
 against an unchanged oracle, run that same named property, then restore the
 source:
 
 | Patch under `mutations/` | Required failure |
 | --- | --- |
+| `config-layer-value.patch` | Composition loses the preceding layer's value. |
+| `config-layer-generation.patch` | Provenance drops the original pinned generation. |
+| `config-layer-digest.patch` | Provenance no longer identifies the original module closure. |
 | `config-fold-default.patch` | Nested callbacks lose the original lower value. |
 | `config-fold-own-property.patch` | An inherited prototype property becomes a lower default. |
 | `config-fold-container.patch` | Object keys are incorrectly matched to array positions. |
@@ -108,3 +111,14 @@ surfaces and cold, warm and fresh evaluations use the same property. The three
 fold patches mutate the actual lower-value selection, own-property admission
 and container-kind check in the production finish function. No alternate fold
 or test-only fault field is used.
+
+The imported-value family also invokes public `compose` with a replacing lower
+module, absent layer, optional `off` marker and typed upper callback. The output
+must preserve the original lower data, or the original base above an `off` cut.
+Its complete provenance binds the held layer order, pinned generation, form
+and module digest, checked against actual original evaluator results. No second
+resolver or interpreter supplies that reference. This subsumes the former
+layer-fold example, including its named static and erased type imports. The
+upper callback imports the named JSON value through the existing shared graph,
+without introducing a separate reader. Three kept
+patches mutate actual composition data flow and generation/digest publication.

@@ -26,7 +26,7 @@ impl Tree for Files {
         Box::pin(async move {
             Ok(match path {
                 "sys/input.json" => Some(self.input.clone()),
-                "sys/a.ts" => Some(b"import b from './b.ts'; import input from './input.json'; export default [b, input];".to_vec()),
+                "sys/a.ts" => Some(b"import b from './b.ts'; import input from './input.json'; export default [b, input]; export {input};".to_vec()),
                 "sys/b.ts" => Some(if self.cycle {
                     b"import a from './a.ts'; export default a;".to_vec()
                 } else {
@@ -213,7 +213,7 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         for revision in 0..2 {
             // Change one cache-key dimension at a time. Otherwise a changed
             // base could hide a missing source or imported-content dependency.
-            let base_revision = if mode == 1 || mode == 2 { revision } else { 0 };
+            let base_revision = if mode == 1 { revision } else { 0 };
             let base = if mode == 2 {
                 json!({
                     "nested": {"config": {"base": revision}},
@@ -432,6 +432,68 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 return Err(format!(
                     "cache/fresh determinism: cold={cold:?}, warm={warm:?}, fresh={fresh:?}"
                 ));
+            }
+            if mode == 3 && surface == Surface::Compose {
+                // Compose through the public entry. A replacement import,
+                // optional off cut, absent layer and typed callback must
+                // preserve their original value and provenance together.
+                let upper = b"import type { AgentConfig } from 'sys/types/config';
+                    import { input } from 'sys/a.ts';
+                    interface Unused { x: number }
+                    export default (base: AgentConfig) => ({below: base, named: input});";
+                let cut = bytes.get(1).copied().unwrap_or_default() & 1 != 0;
+                let generation = format!("revision-{revision}");
+                let layers = [
+                    Layer {
+                        name: "seed",
+                        generation: &generation,
+                        bytes: Some(source.as_bytes()),
+                    },
+                    Layer {
+                        name: "absent",
+                        generation: "absent",
+                        bytes: None,
+                    },
+                    Layer {
+                        name: "cut",
+                        generation: "cut",
+                        bytes: cut.then_some(b"off: true".as_slice()),
+                    },
+                    Layer {
+                        name: "home",
+                        generation: &generation,
+                        bytes: Some(upper.as_slice()),
+                    },
+                ];
+                let below = if cut { &base } else { &value };
+                let upper_result = evaluate("agent.ts", upper, &tree, below, surface)
+                    .await
+                    .map_err(|error| format!("layer callback admission: {error}"))?;
+                let (composed, chain) = compose("agent.ts", &layers, &tree, base.clone())
+                    .await
+                    .map_err(|error| format!("layer composition admission: {error}"))?;
+                if composed != json!({"below": below, "named": value})
+                    || composed != upper_result.value
+                {
+                    return Err("layer composition lost its original lower value".into());
+                }
+                let expected = [
+                    ("seed", fresh.as_ref().map_err(Clone::clone)?),
+                    ("home", &upper_result),
+                ]
+                .into_iter()
+                .skip(usize::from(cut));
+                if chain.len() != expected.len()
+                    || chain.iter().zip(expected).any(|(link, (name, module))| {
+                        link.layer != name
+                            || link.generation != generation
+                            || link.form != module.form
+                            || link.module_digest
+                                != blake3::Hash::from_bytes(module.digest).to_hex().as_str()
+                    })
+                {
+                    return Err("layer provenance lost its original source binding".into());
+                }
             }
             if functions && surface == Surface::Compose {
                 // Keep source and base unchanged while changing only the
