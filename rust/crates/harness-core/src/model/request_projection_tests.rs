@@ -431,6 +431,8 @@ fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
         )
         .unwrap(),
     ];
+    let seeds =
+        acyclic_test_support::source_path("rust/crates/harness-fuzz").join("corpus/model_request");
     let mut corpus = Vec::new();
     for (name, request, admitted) in [
         ("pinned", pinned, true),
@@ -450,8 +452,14 @@ fn request_writer_corpus_preserves_admission_and_refuses_obsolete_fields() {
         ("project-instructions", instructions, true),
     ] {
         let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        let retained = std::fs::read(seeds.join(name)).unwrap();
         assert_eq!(
-            PreparedModelRequest::decode(&bytes, Limits::default(), None).is_ok(),
+            crate::contract::json_from_slice::<ModelRequest>(&retained).unwrap(),
+            request,
+            "retained writer corpus differs: {name}"
+        );
+        assert_eq!(
+            PreparedModelRequest::decode(&retained, Limits::default(), None).is_ok(),
             admitted,
             "{name}"
         );
