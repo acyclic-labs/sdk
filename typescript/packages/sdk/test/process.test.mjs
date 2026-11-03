@@ -254,6 +254,26 @@ if (mode === 'signal-owner') {
   assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test node_process');
   const options = {host};
   await processSignalControls();
+  // Capture the shipped argument boundary without installation or temporary
+  // paths. These original argv/output records can seed the parser corpus
+  // unchanged on another machine; no response or status is synthesized.
+  const argumentCorpus = [];
+  for (const args of [[], ['--'], ['--inherit-input', '--', 'node', '-e', 'process.exit(17)']]) {
+    const original = spawn(host, args, {stdio: ['ignore', 'pipe', 'pipe']});
+    const stdout = [], stderr = [];
+    original.stdout.on('data', bytes => stdout.push(bytes));
+    original.stderr.on('data', bytes => stderr.push(bytes));
+    const [code, signal] = await once(original, 'close');
+    const record = {arguments: args, code, signal,
+      stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8')};
+    assert.equal(signal, null);
+    assert.equal(code, args.length > 1 ? 17 : 125);
+    assert.equal(record.stdout, '');
+    if (code === 125) assert.match(record.stderr, /step=process-host-arguments;/);
+    else assert.equal(record.stderr, '');
+    argumentCorpus.push(record);
+  }
+  console.log(`PROCESS_HOST_PORTABLE_CORPUS_BASE64=${Buffer.from(JSON.stringify(argumentCorpus)).toString('base64')}`);
   const input = Buffer.from('stdin is independent of cancellation\nπ\n');
   const captured = await commandCapture(process.execPath, [script, 'echo'], {...options, input});
   assert.equal(captured.stdout, input.toString());
