@@ -833,3 +833,10 @@ supply derived kind/reference combinations, not new provider captures.
 `object_head_references.patch` change the actual shared production converter;
 the same writer property must catch each defect. Complete manifest producer
 coverage, reference framing, physical custody and remote topology remain open.
+
+Unary and batch PUT acknowledgements share the same explicit outcome check.
+The retained created response supplies derived true, false and absent unknown
+outcomes; these are adversarial inputs, not captured indeterminate operations.
+`object_put_unknown.patch` admits the actual production false discriminator;
+the unchanged writer property must detect that admission. Indeterminate
+execution, remote durability and complete outcome-branch coverage remain open.

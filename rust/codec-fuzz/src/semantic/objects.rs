@@ -115,7 +115,18 @@ fn compare<W: Message + Default, T: Debug + PartialEq>(
     );
 }
 
-fn publication(put: &acyclic_objects::Put, expected: (Digest, u64)) {
+fn publication(put: &acyclic_objects::Put, original: &wire::PutResponse, expected: (Digest, u64)) {
+    use acyclic_objects::Put;
+    use wire::put_response::Outcome;
+    assert!(
+        matches!(
+            (original.outcome.as_ref(), put),
+            (Some(Outcome::Created(_)), Put::Created { .. })
+                | (Some(Outcome::AlreadyExists(_)), Put::AlreadyExists { .. })
+                | (Some(Outcome::Unknown(true)), Put::Unknown)
+        ),
+        "put preserves the original explicit outcome"
+    );
     if let Some(value) = put.verified() {
         assert_eq!(
             value.digest, expected.0,
@@ -189,18 +200,7 @@ fn batch(bytes: &[u8]) {
                         assert_eq!(error.code as i32, code, "member refusal remains typed");
                     }
                     (Some(wire::put_result::Outcome::Put(reply)), Ok(put)) => {
-                        use acyclic_objects::Put;
-                        use wire::put_response::Outcome;
-                        assert!(
-                            matches!(
-                                (reply.outcome, put),
-                                (Some(Outcome::Created(_)), Put::Created { .. })
-                                    | (Some(Outcome::AlreadyExists(_)), Put::AlreadyExists { .. })
-                                    | (Some(Outcome::Unknown(true)), Put::Unknown)
-                            ),
-                            "member outcome remains original"
-                        );
-                        publication(put, expected);
+                        publication(put, &reply, expected);
                     }
                     _ => panic!("batch admission changed a member outcome"),
                 }
@@ -250,12 +250,21 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         "acyclic.objects.v1.PutBlobsResponse" => batch(bytes),
         "acyclic.objects.v1.PutResponse" => {
             compare::<wire::PutResponse, _>(bytes, "blobs/put", |client| {
-                ready(client.put(body(), Vec::new()))
-                    .inspect(|put| publication(put, (digest(), BODY.len() as u64)))
+                ready(client.put(body(), Vec::new())).inspect(|put| {
+                    let original = wire::PutResponse::decode(bytes)
+                        .expect("admitted original publication wire");
+                    publication(put, &original, (digest(), BODY.len() as u64));
+                })
             });
             compare::<wire::PutResponse, _>(bytes, "blobs/put-manifest", |client| {
                 ready(client.put_manifest(manifest())).inspect(|put| {
-                    publication(put, (Digest::of(&manifest().encode()), BODY.len() as u64));
+                    let original = wire::PutResponse::decode(bytes)
+                        .expect("admitted original manifest publication wire");
+                    publication(
+                        put,
+                        &original,
+                        (Digest::of(&manifest().encode()), BODY.len() as u64),
+                    );
                 })
             });
         }
@@ -592,6 +601,23 @@ mod tests {
                 }
                 super::check("acyclic.objects.v1.PutResponse", &wrong.encode_to_vec());
             }
+        }
+        let captured = acyclic_proto_build::golden::frame(
+            "corpus/protobuf/acyclic.objects.v1.PutResponse-created",
+        )
+        .expect("retained original service publication writer");
+        let original = super::wire::PutResponse::decode(&captured[8..])
+            .expect("original service publication wire");
+        // These discriminators are derived operands, not captures of an
+        // indeterminate or malformed provider publication.
+        for outcome in [
+            Some(super::wire::put_response::Outcome::Unknown(true)),
+            Some(super::wire::put_response::Outcome::Unknown(false)),
+            None,
+        ] {
+            let mut reply = original.clone();
+            reply.outcome = outcome;
+            super::check("acyclic.objects.v1.PutResponse", &reply.encode_to_vec());
         }
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse",
