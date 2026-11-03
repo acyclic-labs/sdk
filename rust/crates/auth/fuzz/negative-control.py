@@ -90,7 +90,7 @@ try:
         if original.count(check) != 1:
             raise RuntimeError("expected exactly one production mutation site")
         source.write_bytes(original.replace(check, replacement))
-        command = ["cargo", "+nightly", "fuzz", "run", "--dev"]
+        command = ["cargo", "+nightly", "fuzz", "run", "--dev", "--fuzz-dir", str(root)]
         if cargo_target := os.environ.get("CARGO_TARGET_DIR"):
             command += ["--target-dir", cargo_target]
         if choice.startswith("filesystem-"):
