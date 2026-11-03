@@ -327,7 +327,9 @@ async fn layer_skills<S: SkillReader>(
     }
     let (revision, entries) = match work.list_source(source, directory, revision).await {
         Ok(listed) => listed,
-        Err(Error::NotFound(_)) if optional_root => return Ok(Vec::new()),
+        Err(error) if optional_root && error.code() == crate::wire::ErrorCode::NotFound => {
+            return Ok(Vec::new());
+        }
         Err(error) => return Err(error),
     };
     let mut result = Vec::new();

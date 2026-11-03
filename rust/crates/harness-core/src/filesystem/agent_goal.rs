@@ -88,7 +88,7 @@ where
                 .await
             {
                 Ok(file) => file,
-                Err(Error::NotFound(_)) => return Ok(None),
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
                 Err(error) if error.code() == crate::wire::ErrorCode::Invalid => {
                     return Err(Error::Invalid(error.to_string()));
                 }

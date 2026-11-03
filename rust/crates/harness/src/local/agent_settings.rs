@@ -63,11 +63,7 @@ impl Tree<'_> {
             .await
         {
             Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes.to_vec()))),
-            Err(Error::NotFound(_))
-            | Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::NotFound,
-                ..
-            }) => Ok(None),
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }
