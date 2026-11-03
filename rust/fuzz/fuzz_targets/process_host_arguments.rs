@@ -15,6 +15,7 @@ fn check(input: Vec<OsString>) -> bool {
             return false;
         }
     };
+    assert!(!parsed.executable.is_empty(), "empty executable admitted");
     // Encode an admitted command through its literal boundary. This must
     // preserve every option and OS-string byte, including option-like args.
     let endpoints = [
