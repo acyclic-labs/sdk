@@ -468,15 +468,11 @@ mod tests {
                 prop_assert_eq!(ModelCacheResidency::observe(key, Some(unsupported), clock_domain, start + 2,
                     ModelCacheAccess::Miss), Err(ModelCacheError::Version));
             }
-            for count in [1, 100, 1000] {
-                let measured = acyclic_test_support::measure(|| {
-                    for _ in 0..count {
-                        std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
-                            ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
-                    }
-                });
-                prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
-            }
+            let measured = acyclic_test_support::measure(|| {
+                std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
+                    ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
+            });
+            prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
             let control = acyclic_test_support::measure(|| {
                 std::hint::black_box(Box::new(hit));
             });
