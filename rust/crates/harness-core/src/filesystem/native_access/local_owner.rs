@@ -84,7 +84,9 @@ fn host_owner_root(owner: &str) -> Result<crate::core::AuthorityRoot> {
     use crate::core::{AggregateKind, Authority, AuthorityRoot};
     let mut key = [0; 32];
     crate::identity::fill_random(&mut key).map_err(|error| Error::Invalid(error.to_string()))?;
-    let issuer = AuthorityRoot::new(
+    // The returned access and mount options outlive this root: their verifiers
+    // own its public trust.
+    let issuer = AuthorityRoot::host_owned(
         format!("host-managed:{owner}"),
         key,
         Authority {

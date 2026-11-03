@@ -142,6 +142,7 @@ impl AuthorityVerifier {
                 metadata_key: checkpoint_key,
                 workload: Default::default(),
                 clock: None,
+                _serving: None,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
