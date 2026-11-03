@@ -261,7 +261,7 @@ test("partitions preserve the complete ordered inventory without empty or overla
     assert.throws(() => partition(cases, value));
 });
 
-test("matrix command binds its intended executables and retains refused receipts", async () => {
+test("matrix command rejects stale receipts against its intended inputs", async () => {
   const root = await mkdtemp(join(tmpdir(), "matrix-identity-")), scope = new Processes();
   const directory = dirname(fileURLToPath(import.meta.url)), cases = inventory(), coverage = readCoverage(cases);
   const env = { ...process.env };
@@ -269,25 +269,21 @@ test("matrix command binds its intended executables and retains refused receipts
     && !["E2E_CODEX", "E2E_CLAUDE", "E2E_PI"].includes(name)) delete env[name];
   try {
     // Identity-only inputs use the actual Node executable. Collection launches
-    // no case; these generated internal refusals never claim native acceptance.
-    const binding = await acceptanceBinding(directory, process.execPath, process.execPath, cases, env);
-    const bundle = { index: 0, count: 1, platform: process.platform, binding, coverage,
-      inventory: cases.map(test => test.id), selected: cases.map(test => test.id), seconds: .1,
-      receipts: variants(cases, process.platform).map(test => ({ code: 1, report: {
-        platform: process.platform, selected: [test.id], qualification: false, coverage,
-        seconds: .1, limit_seconds: 10,
-        results: [{ case: test.id, platform: process.platform, status: "refused" }] } })) };
-    const input = join(root, "partition.json");
-    await writeFile(input, JSON.stringify(bundle));
-    const command = destination => scope.run(process.execPath,
-      [join(directory, "serial.mjs"), "--collect", process.execPath, process.execPath, destination, input], { env });
-    const destination = join(root, "collected"), result = await command(destination);
-    assert.equal(result.code, 1, result.stderr);
-    const report = JSON.parse(await readFile(join(destination, "matrix.json"), "utf8"));
-    assert.deepEqual(JSON.parse(result.stdout), report);
-    assert.deepEqual(report.binding, binding);
-    assert.equal(report.pass, false);
-    assert.deepEqual(report.results.map(row => row.status), bundle.receipts.map(() => "refused"));
+    // no case; this generated stale receipt cannot claim native acceptance.
+    const digest = "0".repeat(64), binding = { binary: digest, mock: digest,
+      cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex"),
+      executables: { NODE: digest }, source: { "serial.mjs": digest } };
+    const input = join(root, "partition.json"), destination = join(root, "stale");
+    await writeFile(input, JSON.stringify({ index: 0, count: 1, platform: process.platform,
+      binding, coverage }));
+    const args = [join(directory, "serial.mjs"), "--collect", process.execPath, process.execPath, destination, input];
+    const result = await scope.run(process.execPath, args, { env });
+    assert.equal(result.code, 1);
+    const failure = JSON.parse(result.stderr);
+    assert.match(failure.error, /expected acceptance identity/);
+    assert.equal(failure.step, "serial matrix admission or collection");
+    assert.deepEqual(failure.recovery.slice(1), args);
+    await assert.rejects(readFile(join(destination, "matrix.json")), { code: "ENOENT" });
   } finally {
     await scope.close();
     await rm(root, { recursive: true, force: true });
