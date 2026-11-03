@@ -1232,6 +1232,7 @@ name = "acyclic-sdk-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-grpc-observability",
  "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-native-runtime",
@@ -1239,10 +1240,12 @@ dependencies = [
  "acyclic-test-support",
  "arrayvec",
  "libfuzzer-sys",
+ "prettyplease",
  "proptest",
  "prost",
  "serde",
  "serde_json",
+ "syn",
  "tokio",
 ]
 

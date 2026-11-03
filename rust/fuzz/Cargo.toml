@@ -13,6 +13,7 @@ process-arguments = ["dep:serde_json"]
 local-hotpath-options = ["dep:acyclic-test-support"]
 local-hotpath-quantiles = ["dep:serde"]
 report-port = ["dep:acyclic-native-runtime", "dep:serde_json", "dep:tokio"]
+grpc-codegen = ["dep:acyclic-grpc-observability", "dep:prettyplease", "dep:syn"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 experiments = ["agent", "dep:serde_json"]
@@ -23,6 +24,9 @@ owner-record = ["dep:acyclic-native-runtime"]
 serde = { workspace = true, optional = true }
 acyclic-test-support = { path = "../crates/test-support", optional = true }
 acyclic-native-runtime = { path = "../crates/native-runtime", optional = true }
+acyclic-grpc-observability = { path = "../crates/grpc-observability", default-features = false, features = ["codegen"], optional = true }
+prettyplease = { version = "=0.3.0", optional = true }
+syn = { version = "=3.0.9", features = ["full", "visit"], optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
@@ -140,6 +144,14 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "grpc_codegen"
+required-features = ["grpc-codegen"]
+path = "fuzz_targets/grpc_codegen.rs"
+test = false
+doc = false
+bench = false
+
 [[test]]
 name = "local_hotpath_options"
 required-features = ["local-hotpath-options"]
@@ -152,3 +164,7 @@ path = "fuzz_targets/native_owner_record.rs"
 test = false
 doc = false
 bench = false
+
+[[test]]
+name = "grpc_codegen"
+required-features = ["grpc-codegen"]
