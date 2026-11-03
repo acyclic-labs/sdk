@@ -20,7 +20,7 @@ use acyclic_stream::{
     ProviderPlatform, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
-use futures::{FutureExt as _, StreamExt as _, TryFutureExt as _};
+use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -329,31 +329,14 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
 
     /// Follow the journal until it holds `count` events after creation.
     async fn journal(&self, count: usize) -> Result<Vec<String>, Failure> {
-        let clock = self.target.clock();
-        let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(BUDGET_MS));
-        let mut follow = self
-            .target
-            .store()
-            .provider()
-            .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 1))
-            .map_ok(acyclic_stream::records_only)
-            .await
-            .map_err(Error::from)?;
-        let mut lines = Vec::new();
-        while lines.len() < count {
-            futures::select_biased! {
-                record = follow.next().fuse() => match record {
-                    Some(Ok(record)) => lines.push(String::from_utf8_lossy(&record.value).into_owned()),
-                    Some(Err(error)) => return Err(Error::from(error).into()),
-                    None => break,
-                },
-                result = (&mut deadline).fuse() => {
-                    result.map_err(Error::from)?;
-                    break;
-                },
-            }
-        }
-        Ok(lines)
+        super::observe(
+            self.target.store().provider().as_ref(),
+            self.target.clock(),
+            acyclic_stream::FollowRequest::new(self.outbox.clone(), 1),
+            count,
+            BUDGET_MS,
+        )
+        .await
     }
 
     /// The journal reaches exactly `expected`, and a fresh mark lands right

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify the actual ready queue, activation path and retained oracles."""
+"""Qualify the actual ready queue, activation and shared observation oracles."""
 import hashlib
 import os
 from pathlib import Path
@@ -14,11 +14,11 @@ BASE = ["cargo", "test", "--locked", "-p", "acyclic-actors", "--features",
 RECOVERY = "inspect original diagnostics, correct source or command, then python3 scripts/qualify-actors-ready.py"
 
 
-def run(arguments, expected, diagnostic=None, *, model=True):
+def run(arguments, expected, diagnostic=None, *, model=True, recovery="--activation"):
     base = BASE if model else ["cargo", "test", "--locked", "--all-features",
                                "-p", "acyclic-actors", "--lib"]
     command = base + arguments + ["--"] + ([] if model else ["--exact"]) + ["--nocapture"]
-    print("STEP actual ready/activation oracle: " + repr(command), flush=True)
+    print("STEP actual Actor oracle: " + repr(command), flush=True)
     environment = dict(os.environ)
     if model:
         environment["RUSTC_WORKSPACE_WRAPPER"] = str(
@@ -33,10 +33,10 @@ def run(arguments, expected, diagnostic=None, *, model=True):
         valid = (result.returncode != 0 and "0 passed; 1 failed" in output
                  and arguments[0] in output and diagnostic in output)
     if not valid:
-        raise RuntimeError("ready/activation oracle did not establish " + expected
+        raise RuntimeError("Actor oracle did not establish " + expected
                            + "; recovery: inspect the original command and diagnostic, "
                            "correct source or command, then python3 scripts/qualify-actors-ready.py"
-                           + ("" if model else " --activation"))
+                           + ("" if model else " " + recovery))
 
 
 def activation():
@@ -68,7 +68,39 @@ def activation():
         oracle.write_bytes(original_oracle)
 
 
+def observation():
+    source = ROOT / "rust/crates/actors/src/conformance.rs"
+    original = source.read_bytes()
+    normalized = original.replace(b"\r\n", b"\n")
+    begin = normalized.index(b"async fn observe<P:")
+    end = normalized.index(b"\nimpl<'a, T: Backend", begin)
+    observer = normalized[begin:end]
+    cursor = b".map_ok(acyclic_stream::records_only)"
+    closed = b"None => return Err(Error::from(StreamError::Unavailable).into()),"
+    if observer.count(cursor) != 1 or observer.count(closed) != 1:
+        raise RuntimeError("shared observation source changed; recovery: " + RECOVERY + " --observation")
+    # End the original provider cursor early; keep its real opening and records.
+    truncated = observer.replace(cursor, b".map_ok(|follow| acyclic_stream::records_only(follow).take(0))")
+    name = "local::runtime::tests::conformance_suite_passes_on_memory_runtime"
+    print("Shared observation source sha256=" + hashlib.sha256(original).hexdigest(), flush=True)
+    try:
+        source.write_bytes(normalized[:begin] + truncated.replace(closed, b"None => break,")
+                           + normalized[end:])
+        run([name], "original closed-follow misclassification",
+            'Error: Violation { case: "ordered"', model=False, recovery="--observation")
+        source.write_bytes(normalized[:begin] + truncated + normalized[end:])
+        run([name], "typed closed-follow refusal", "Error: Target(Stream(Unavailable))",
+            model=False, recovery="--observation")
+        source.write_bytes(original)
+        run([name], "positive", model=False, recovery="--observation")
+    finally:
+        source.write_bytes(original)
+
+
 def main():
+    if sys.argv[1:] == ["--observation"]:
+        observation()
+        return
     if sys.argv[1:] == ["--activation"]:
         activation()
         return
