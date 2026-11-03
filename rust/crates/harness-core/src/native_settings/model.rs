@@ -52,14 +52,5 @@ mod tests {
                 prop_assert_eq!(config.configured_model().unwrap(), Some(format!("{provider}/{model}")));
             }
         }
-        #[test]
-        fn model_selection_round_trips_quoted_settings(model in ".{0,64}", provider in ".{0,24}") {
-            let document = BTreeMap::from([("model", model.as_str()), ("model_provider", provider.as_str())]);
-            let encoded = toml::to_string(&document).unwrap();
-            if let Ok(Some(selection)) = super::super::model_selection::parse(encoded.as_bytes()) {
-                let canonical = toml::to_string(&BTreeMap::from([("model", selection.as_str())])).unwrap();
-                prop_assert_eq!(super::super::model_selection::parse(canonical.as_bytes()).unwrap(), Some(selection));
-            }
-        }
     }
 }

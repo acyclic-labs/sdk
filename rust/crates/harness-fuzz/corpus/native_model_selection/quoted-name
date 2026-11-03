@@ -1,0 +1,2 @@
+model = "vendor/quoted \"model\"/line\nnext"
+model_provider = 'oracle'

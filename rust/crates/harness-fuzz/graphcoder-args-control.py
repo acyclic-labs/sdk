@@ -9,6 +9,13 @@ import sys
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
+    "native_model_selection": (
+        "rust/crates/harness-core/src/native_settings/model_selection.rs",
+        b"Some(provider) => (provider, model),",
+        b'Some(_) => ("openai", model),',
+        "opaque-name",
+        b"provider and opaque model stay paired",
+    ),
     "graphcoder_args": (
         "rust/crates/harness/src/bin/graphcoder/args.rs",
         b"if self.input_format == InputFormat::Jsonl && self.operation.is_none() {",
@@ -45,8 +52,11 @@ def require(condition, step):
         raise RuntimeError(f"step={step}; recovery: {recovery}")
 
 
-def run(target, seed, witness, *, capture=False):
-    options = ["--no-default-features", "--features", "client"] if target == "event_projection" else []
+def run(target, seed, witness, *, capture=False, runs=0):
+    options = {
+        "event_projection": ["--no-default-features", "--features", "client"],
+        "native_model_selection": ["--no-default-features"],
+    }.get(target, [])
     environment = os.environ.copy()
     environment.pop("ACYCLIC_FUZZ_CORPUS", None)
     if capture:
@@ -55,7 +65,7 @@ def run(target, seed, witness, *, capture=False):
         [
             "cargo", "+nightly-2026-07-01", "fuzz", "run", "--dev",
             "--fuzz-dir", "rust/crates/harness-fuzz", *options, target, seed,
-            "--", "-runs=0", "-print_final_stats=1",
+            "--", f"-runs={runs}", "-print_final_stats=1",
         ],
         cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
@@ -68,7 +78,7 @@ def run(target, seed, witness, *, capture=False):
     return child.returncode, found
 
 
-def qualify(target):
+def qualify(target, runs=0):
     filename, guard, replacement, seed, witness = controls[target]
     source = root / filename
     corpus = f"rust/crates/harness-fuzz/corpus/{target}"
@@ -89,7 +99,7 @@ def qualify(target):
     finally:
         source.write_bytes(original)
     require(source.read_bytes() == original, "restore production source")
-    code, _ = run(target, corpus, witness)
+    code, _ = run(target, corpus, witness, runs=runs)
     require(code == 0, f"replay production {target} corpus")
     print(f"{target}: production corpus and planted-defect oracle passed", flush=True)
 
@@ -133,14 +143,17 @@ if __name__ == "__main__":
 
     parser = Parser(description=__doc__)
     parser.add_argument("targets", nargs="*", choices=controls)
+    parser.add_argument("--runs", type=int, default=0, help="finite restored-source campaign units")
     target = "selection"
     try:
-        targets = parser.parse_args().targets or ["graphcoder_args"]
+        arguments = parser.parse_args()
+        require(arguments.runs >= 0, "admit finite nonnegative campaign units")
+        targets = arguments.targets or ["graphcoder_args"]
         for target in targets:
             recovery = f"python3 rust/crates/harness-fuzz/graphcoder-args-control.py {target}"
             if target == "graphcoder_input":
                 binding_oracle_regression()
-            qualify(target)
+            qualify(target, arguments.runs)
     except (OSError, RuntimeError) as error:
         print(f"step=qualify {target} fuzz oracle: {error}; recovery: {recovery}", file=sys.stderr)
         sys.exit(1)
