@@ -213,14 +213,20 @@ pub(super) mod linux {
     }
     // Runs inside the original emulator's PTY. A DSR reply proves the emulator
     // consumed all preceding frame bytes; process exit alone cannot prove that.
-    fn frame_child(root: &Path) -> io::Result<()> {
+    fn frame_child(root: &Path, tool: &str) -> io::Result<()> {
         use rustix::termios::{OptionalActions, tcgetattr, tcsetattr};
         let stdin = io::stdin();
         let mut raw = tcgetattr(&stdin)?;
         raw.make_raw();
         tcsetattr(&stdin, OptionalActions::Now, &raw)?;
         let mut control = UnixStream::connect(root.join("control"))?;
+        if tool == "screen" {
+            let mut resized = [0];
+            stdin.lock().read_exact(&mut resized)?;
+            assert_eq!(resized, *b"G", "screen resize command completed");
+        }
         let mut output = io::stdout().lock();
+        let mut reply = Vec::new();
         loop {
             let mut header = [0; 9];
             // The socket owns the session lifetime. EOF between frames ends it;
@@ -231,16 +237,11 @@ pub(super) mod linux {
             control.read_exact(&mut header[1..])?;
             let begin = header[0];
             let length = u64::from_le_bytes(header[1..].try_into().unwrap());
-            if begin == b'S' {
-                let mut resized = [0];
-                stdin.lock().read_exact(&mut resized)?;
-                assert_eq!(resized, *b"G", "screen resize command completed");
-            }
             // Each capture starts at the same blank/default baseline as a new
             // terminal, including margins left by a negative-control frame.
             output.write_all(b"\x1b[0m\x1b[r\x1b[2J\x1b[H")?;
             write_frame(&mut control, &mut output, length)?;
-            let mut reply = Vec::new();
+            reply.clear();
             stdin.lock().read_until(b'R', &mut reply)?;
             if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
                 return Err(io::Error::new(
@@ -369,6 +370,7 @@ pub(super) mod linux {
                     "-X",
                     "eval",
                     "width 24 8",
+                    "stuff G",
                 ]));
             }
             Self {
@@ -388,13 +390,6 @@ pub(super) mod linux {
             let session = &self.session;
             let control = &mut self.control;
             let deadline = Instant::now() + Duration::from_secs(2);
-            if tool == "screen" {
-                checked(
-                    Command::new(tool)
-                        .env("SCREENDIR", root)
-                        .args(["-S", name, "-X", "stuff", "G"]),
-                );
-            }
             let mut header = [0; 9];
             header[0] = if tool == "screen" { b'S' } else { b'G' };
             header[1..].copy_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
@@ -489,7 +484,7 @@ pub(super) mod linux {
     }
     fn oracle(tool: &str) {
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
-            frame_child(Path::new(&root)).unwrap();
+            frame_child(Path::new(&root), tool).unwrap();
             return;
         }
         let mut terminal = Capture::new(tool);
