@@ -81,3 +81,22 @@ The proxy response is not a model-server protocol response. The named recorded
 HTTP-refusal replay passed with equivalent escapes, chunking, producer loss and
 native funding/cancellation controls at its recorded revision. Sanitizer campaigns
 remain separate obligations.
+
+The retained `http_failure/gemini-signature` seed is status400 followed by the
+unchanged original Gemini tool-continuation refusal. Its source and hashes are
+in `SOURCES.tsv`; the original response headers were not retained. Replaying
+that body does not qualify socket delivery, restart or distributed recovery.
+The oracle compares valid UTF-8 raw diagnostic prefixes independently with the
+returned bounded, sanitized text, so equal chunked outputs cannot hide dropped
+refusal metadata. Invalid UTF-8 retains bounds and chunk-invariance checks;
+its exact lossy text is not independently qualified by this expectation.
+
+The kept `mutations/http-refusal-drop-diagnostic.patch` restores the original
+status-only400/413 branch in the production decoder. Apply it from the
+repository root and run the unchanged
+`recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking`
+control with `--features fuzzing`. It must fail with
+`HTTP refusal lost original diagnostic`; a compiler failure is not evidence.
+Equivalent JSON escapes preserve the class, while their raw diagnostic text
+may differ. Source-branch coverage and a sanitizer campaign remain separate
+from this finite corpus and source-mutation control.
