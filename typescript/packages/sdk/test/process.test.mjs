@@ -114,14 +114,16 @@ if (mode === 'echo') {
   const wireDirectory = await mkdtemp(join(tmpdir(), 'process-wire-control-'));
   try {
     const receipt = join(wireDirectory, 'completion');
-    const producer = spawn(host, ['--completion', receipt, '--invocation', 'original-wire-control',
-      '--inherit-input', '--', process.execPath, script, 'exit'], {stdio: 'ignore'});
+    const originalArguments = ['--completion', receipt, '--invocation', 'original-wire-control',
+      '--inherit-input', '--', process.execPath, script, 'exit'];
+    const producer = spawn(host, originalArguments, {stdio: 'ignore'});
     const [code] = await once(producer, 'close');
     assert.equal(code, 17);
     const originalWire = await readFile(receipt);
     fuzz(originalWire);
     // Preserve the producer's exact bytes for the decoder's retained corpus.
     console.log(`PROCESS_COMPLETION_CORPUS_BASE64=${originalWire.toString('base64')}`);
+    console.log(`PROCESS_HOST_ARGUMENTS_BASE64=${Buffer.from(JSON.stringify(originalArguments)).toString('base64')}`);
   } finally { await rm(wireDirectory, {recursive: true, force: true}); }
   const missing = await commandProcess(join(wireDirectory, 'missing-executable'), [], options);
   assert.equal(missing.completion.root_status, null);
