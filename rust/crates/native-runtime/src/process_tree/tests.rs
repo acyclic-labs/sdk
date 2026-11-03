@@ -85,7 +85,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     meter.blocked_write = Some(Box::new(move || {
         // SAFETY: the unreaped direct child reserves this pid.
         assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
-        super::platform::await_exiting_id(pid, None).expect("observe the killed child");
+        super::platform::await_exiting_id(pid, None, &mut None).expect("observe the killed child");
     }));
     let failure = tree
         .wait_with_output(
@@ -1253,7 +1253,10 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     assert!(failure.stdout.ends_with(b"stdout-before-stop"));
     assert_eq!(failure.stderr, b"stderr-before-stop");
     assert!(failure.cleanup_completed);
-    assert!(failure.status.is_none());
+    assert!(
+        failure.status.is_some(),
+        "cleanup observed the original exit"
+    );
     assert!(tree.is_reaped());
 }
 
@@ -1374,6 +1377,47 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
     assert!(output.status.success());
     ready(temporary.path(), "tree-ready", || true);
     assert_no_escape(temporary.path());
+}
+
+/// An admitted kernel wait still runs if its completion accounting fails.
+/// Capture must retain that original status while keeping cleanup ownership.
+#[test]
+fn cleanup_recording_failure_retains_the_observed_terminal() -> io::Result<()> {
+    use std::sync::atomic::Ordering;
+    for (denied, failed_recording) in [(true, false), (false, true), (false, false)] {
+        let root = tempfile::tempdir()?;
+        let mut tree = ProcessTree::spawn(&mut command("exit-code", root.path()))?;
+        assert_eq!(tree.wait_exit(None)?.code(), Some(7));
+        // Settle containment through the real producer, so the next original
+        // cleanup operation is exactly the retained child's terminal wait.
+        tree.terminate_descendants()?;
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.operation_denial = denied.then_some(crate::NativeOperationKind::Read);
+        meter.fail_recorded_operation = failed_recording.then_some(1);
+        let mut status = None;
+        let result = tree.capture_terminate(Some(&meter), &mut status);
+        if denied || failed_recording {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+            assert!(!tree.is_reaped(), "failed cleanup keeps its original owner");
+        } else {
+            result?;
+            assert!(tree.is_reaped());
+        }
+        assert_eq!(
+            status.map(|status| status.code()),
+            (!denied).then_some(Some(7)),
+            "an admitted wait retains its original status before recording failure"
+        );
+        if denied {
+            assert_eq!(meter.read_attempts.load(Ordering::Acquire), 0);
+        } else if failed_recording {
+            assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
+        }
+        // This is a distinct recovery admission; do not retry a failed ledger.
+        tree.terminate(None)?;
+        assert!(tree.is_reaped());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

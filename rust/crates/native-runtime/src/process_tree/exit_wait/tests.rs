@@ -84,7 +84,10 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
         use std::io::Write as _;
         input.write_all(&[1])?;
         input.flush()?;
-        assert_eq!(platform::await_exiting_id(id, None)?.code(), Some(37));
+        assert_eq!(
+            platform::await_exiting_id(id, None, &mut None)?.code(),
+            Some(37)
+        );
         Ok(())
     })?;
     let status = platform::observe_exit_id(id, None)?
