@@ -67,6 +67,11 @@ CASES = {
         "adopted_injection: decision.value == self.expected,",
         "scorer", "independent scoring invariant",
     ),
+    "report-denominator": (
+        "experiments/reports.rs", "let assigned = self.assigned as f64;",
+        "let assigned = self.valid as f64;", "trials-priced",
+        "independent report invariant: rates",
+    ),
 }
 
 
@@ -105,7 +110,7 @@ oracle = FUZZ / "fuzz_targets/experiment_files.rs"
 corpus = FUZZ / "corpus/experiment_files"
 try:
     oracle_hash = hashlib.sha256(oracle.read_bytes()).hexdigest()
-    # The original production binary must accept the entire retained corpus.
+    # Original production must replay the retained corpus without an oracle panic.
     positive = run(sorted(corpus.iterdir()))
     print(positive.stdout, flush=True)
     if positive.returncode != 0:

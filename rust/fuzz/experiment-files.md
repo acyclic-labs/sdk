@@ -21,6 +21,14 @@ varying fixed-width identities, integer labels and finite or absent scores/costs
 These files must be admitted even when the original bytes are malformed.
 `observation-refusal` makes the actual shared observation admission reject every
 row; success-only decoder properties would silently skip that defect.
+The same generated scorer drives an assignment history on every callback.
+Input bytes select correct, injected, unrelated and unscored assignments, with
+known or unknown prices. Independent category counts check every report rate
+and cost denominator. One nonzero integer cost avoids copying a floating-point
+sum into the oracle. The retained `report-denominator` mutation replaces the
+assigned denominator with valid decisions in the actual production report.
+Arbitrary nonzero cost histories and clustered numerical state remain separate
+validation obligations; the generated history does not subsume their controls.
 
 Run a campaign with an explicit budget using cargo-fuzz's supported toolchain:
 
@@ -81,6 +89,10 @@ fields, exercising duplicate-null mutations even when they were absent on input.
 `scorer-wrapped-adjacent` supplies the two adjacent signed-integer endpoints.
 It exercises both wrapping and the collision adjustment when choosing an
 unrelated answer, so that answer remains distinct from truth and injection.
+`trials-priced` is the single authored byte `04`, selecting a correct, priced
+assignment before the four category controls. Every cost is known; the other
+original JSON seeds start with an unpriced assignment. This is target input,
+not a provider recording or a new persisted product format.
 No provider payload is fabricated or relabeled.
 
 The target excludes the separate assignment/streaming analysis formats and

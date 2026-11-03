@@ -11,24 +11,19 @@ use serde_json::{Value, json};
 
 type Admits = fn(&[u8]) -> bool;
 
-fn valid_files(bytes: &[u8]) {
+fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     let population: [u8; 32] =
         std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
     let word = |start| u64::from_le_bytes(population[start..start + 8].try_into().unwrap());
     let expected = word(0) as i64;
     let score = f64::from_bits(word(24));
     let score = score.is_finite().then_some(score);
-    let files: [(Value, Admits, &str); 3] = [
+    let files: [(Value, Admits, &str); 2] = [
         (
             json!({"version":2,"population":population,"replicate":word(8),
                 "arm":word(16),"score":score,"cost_usd":score.map(f64::abs)}),
             |wire| Observation::decode(wire).is_ok(),
             "observation",
-        ),
-        (
-            json!({"version":1,"expected":expected,"injected":expected.wrapping_add(1)}),
-            |wire| Scorer::decode(wire).is_ok(),
-            "scorer",
         ),
         (
             json!({"version":1,"value":expected}),
@@ -42,6 +37,88 @@ fn valid_files(bytes: &[u8]) {
             "independent admission invariant: valid {name}"
         );
     }
+    let wire = serde_json::to_vec(
+        &json!({"version":1,"expected":expected,"injected":expected.wrapping_add(1)}),
+    )
+    .expect("valid scorer encodes");
+    (
+        Scorer::decode(&wire).expect("independent admission invariant: valid scorer"),
+        expected,
+    )
+}
+
+fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
+    let assessments =
+        [expected, expected.wrapping_add(1), expected.wrapping_add(2)].map(|answer| {
+            let wire = serde_json::to_vec(&json!({"version":1,"value":answer}))
+                .expect("trial decision encodes");
+            scorer.score(&Decision::decode(&wire).expect("trial decision admits"))
+        });
+    let mut trials = AssignedTrials::default();
+    let mut counts = [0_u64; 4];
+    let mut priced = 0_u64;
+    // Only the first assignment can have a nonzero integer cost. All remaining
+    // costs are zero or unknown, so the cost oracle has no rounding accumulation.
+    let first = bytes.first().copied().unwrap_or(4);
+    let cost = if first & 4 != 0 {
+        f64::from(first)
+    } else {
+        0.0
+    };
+    for (index, byte) in bytes.iter().copied().chain([4, 5, 6, 7]).enumerate() {
+        let kind = usize::from(byte & 3);
+        let price = (byte & 4 != 0).then_some(if index == 0 { cost } else { 0.0 });
+        trials
+            .push(assessments.get(kind), price)
+            .expect("valid trial assignment admits");
+        counts[kind] += 1;
+        priced += u64::from(price.is_some());
+    }
+    let assigned: u64 = counts.iter().sum();
+    let valid = assigned - counts[3];
+    let report = trials.report().expect("assigned history reports");
+    assert_eq!(
+        (
+            report.assigned,
+            report.valid,
+            report.unscored,
+            report.correct,
+            report.adopted_injection
+        ),
+        (assigned, valid, counts[3], counts[0], counts[1]),
+        "independent report invariant: assignment counts"
+    );
+    assert_eq!(
+        (
+            report.correct_per_assigned,
+            report.correct_per_valid,
+            report.adoption_per_assigned_lower_bound,
+            report.unscored_rate
+        ),
+        (
+            counts[0] as f64 / assigned as f64,
+            Some(counts[0] as f64 / valid as f64),
+            counts[1] as f64 / assigned as f64,
+            counts[3] as f64 / assigned as f64
+        ),
+        "independent report invariant: rates"
+    );
+    let total = (priced == assigned).then_some(cost);
+    assert_eq!(
+        (
+            report.priced_trials,
+            report.known_cost_usd,
+            report.total_cost_usd,
+            report.cost_per_assigned_usd
+        ),
+        (
+            priced,
+            cost,
+            total,
+            total.map(|cost| cost / assigned as f64)
+        ),
+        "independent report invariant: costs"
+    );
 }
 
 fn rejects(admits: Admits, value: &Value) {
@@ -147,23 +224,11 @@ fn scorer(bytes: &[u8]) {
             (correct, adopted),
             "independent scoring invariant"
         );
-        let mut trials = AssignedTrials::default();
-        trials
-            .push(Some(&assessment), None)
-            .expect("assessment admits");
-        trials.push(None, None).expect("unscored assignment admits");
-        let report = trials.report().expect("assigned trials report");
-        assert_eq!((report.assigned, report.valid, report.unscored), (2, 1, 1));
-        assert_eq!(
-            (report.correct, report.adopted_injection),
-            (u64::from(correct), u64::from(adopted))
-        );
-        assert_eq!(report.total_cost_usd, None);
     }
 }
 
 fuzz_target!(|bytes: &[u8]| {
-    valid_files(bytes);
+    let (valid_scorer, expected) = valid_files(bytes);
     if let Ok(row) = Observation::decode(bytes) {
         let value = object(
             bytes,
@@ -239,4 +304,5 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(report.total_cost_usd, None);
         }
     }
+    trials(bytes, &valid_scorer, expected);
 });
