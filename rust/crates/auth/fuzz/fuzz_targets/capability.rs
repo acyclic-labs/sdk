@@ -6,16 +6,51 @@ use acyclic_auth::{
     },
     component_matches,
     contract::{
-        BlockProto, CapabilityProto, CaveatProto, Limits, RecordAttributes, RecordAttributesProto,
-        SocketHostRule, SocketHostRuleProto,
+        BlockProto, CapabilityProto, CaveatProto, IssuanceReplyProto, IssuanceRequestProto, Limits,
+        RecordAttributes, RecordAttributesProto, SocketHostRule, SocketHostRuleProto,
     },
     decode_component, encode_component,
     socket::valid_dns_name,
+    trust::issuance::{Reply as IssuanceReply, Request as IssuanceRequest},
     valid_resource,
 };
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 fuzz_target!(|bytes: &[u8]| {
+    if let Ok(request) = IssuanceRequest::decode(bytes) {
+        assert_eq!(
+            request.wire(),
+            bytes,
+            "issuance request must retain canonical bytes"
+        );
+        let mut repeated = IssuanceRequestProto {
+            version: 1,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        repeated.extend_from_slice(bytes);
+        assert!(
+            IssuanceRequest::decode(&repeated).is_err(),
+            "duplicate issuance request version must refuse"
+        );
+    }
+    if let Ok(reply) = IssuanceReply::decode(bytes) {
+        assert_eq!(
+            reply.into_wire(),
+            bytes,
+            "issuance reply must retain canonical bytes"
+        );
+        let mut repeated = IssuanceReplyProto {
+            version: 1,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        repeated.extend_from_slice(bytes);
+        assert!(
+            IssuanceReply::decode(&repeated).is_err(),
+            "duplicate issuance reply version must refuse"
+        );
+    }
     if let Ok(value) = decode_caveat(bytes) {
         assert_eq!(CaveatProto::from(value).encode_to_vec(), bytes);
     }

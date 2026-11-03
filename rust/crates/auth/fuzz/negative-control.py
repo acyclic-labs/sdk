@@ -7,10 +7,18 @@ import sys
 
 root = Path(__file__).resolve().parent
 choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
-target = "trust_record" if choice == "trust-target" else "credential"
-source = root.parent / "src" / ("trust/follower.rs" if choice == "trust-target" else "credential.rs")
-oracle = (root / "fuzz_targets/trust_record.rs" if choice == "trust-target"
-          else root.parent / "tests/common/credential.rs")
+if choice.startswith("issuance-"):
+    target = "capability"
+    source = root.parent / "src/trust" / ("issuance/wire.rs" if choice == "issuance-reply" else "issuance.rs")
+    oracle = root / "fuzz_targets/capability.rs"
+elif choice == "trust-target":
+    target = "trust_record"
+    source = root.parent / "src/trust/follower.rs"
+    oracle = root / "fuzz_targets/trust_record.rs"
+else:
+    target = "credential"
+    source = root.parent / "src/credential.rs"
+    oracle = root.parent / "tests/common/credential.rs"
 step = "read original Auth source and oracle"
 try:
     original = source.read_bytes()
@@ -35,10 +43,18 @@ try:
             b"if !matches {", b"if false && !matches {",
             "trust record targets must be disjoint", "foreign-keyring",
         ),
+        "issuance-request": (
+            b"if request.wire() != bytes {", b"if false && request.wire() != bytes {",
+            "duplicate issuance request version must refuse", "issuance-request",
+        ),
+        "issuance-reply": (
+            b"if reply.encode_to_vec() != bytes {", b"if false && reply.encode_to_vec() != bytes {",
+            "duplicate issuance reply version must refuse", "issuance-unknown",
+        ),
     }
     step = "select production Auth mutation"
     if len(sys.argv) > 2 or choice not in mutations:
-        raise RuntimeError("select delimiter, text-decoder, json-field or trust-target")
+        raise RuntimeError("select delimiter, text-decoder, json-field, trust-target, issuance-request or issuance-reply")
     check, replacement, message, seed = mutations[choice]
     try:
         if original.count(check) != 1:

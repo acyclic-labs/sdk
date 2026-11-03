@@ -1,12 +1,10 @@
 //! Capture signed trust inputs from the original SDK custody implementation.
 use acyclic_auth::trust::{EnvironmentFrontier, Issuer};
 use ed25519_dalek::SigningKey;
-use sha2::{Digest, Sha256};
-use std::{error::Error, fmt::Write, fs, path::Path};
+use std::error::Error;
+mod corpus;
 
 fn capture() -> Result<(), Box<dyn Error>> {
-    let directory = Path::new("fuzz/corpus/trust_record");
-    fs::create_dir_all(directory)?;
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     // Retain a complete record that also reached the former separator-only
     // oracle. Every candidate is signed and validated by the real writer.
@@ -56,20 +54,11 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "Issuer::environment_keyring; key[9;32] -> original key[1;32]".into(),
         ),
     ];
-    let mut manifest = String::from(
-        "# SDK trust writer captures; public deterministic test keys, environment=test, time=100\n",
-    );
-    for (name, bytes, producer) in records {
-        let digest = Sha256::digest(&bytes);
-        fs::write(directory.join(name), &bytes)?;
-        write!(manifest, "{name}\t{}\t", bytes.len())?;
-        for byte in digest {
-            write!(manifest, "{byte:02x}")?;
-        }
-        writeln!(manifest, "\t{producer}")?;
-    }
-    fs::write("fuzz/corpus/trust-record-sources.tsv", manifest)?;
-    Ok(())
+    corpus::write(
+        "fuzz/corpus/trust_record",
+        "fuzz/corpus/trust-record-sources.tsv",
+        records,
+    )
 }
 
 fn main() {
