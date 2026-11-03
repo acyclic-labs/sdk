@@ -183,11 +183,17 @@ test("observed producer frame asserts captured content with one screen projectio
   let reads = 0;
   const projections = [];
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
-  TerminalFrames.prototype.write = function (bytes, frame) {
-    return write.call(this, bytes, () => {
-      const before = reads;
-      try { return frame(); } finally { projections.push(reads - before); }
-    });
+  const observed = new WeakSet();
+  TerminalFrames.prototype.write = function (bytes) {
+    if (!observed.has(this)) {
+      observed.add(this);
+      const frame = this.frame;
+      this.frame = () => {
+        const before = reads;
+        try { return frame(); } finally { projections.push(reads - before); }
+      };
+    }
+    return write.call(this, bytes);
   };
   try {
     for (const rejects of [false, true]) {
