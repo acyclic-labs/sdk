@@ -247,15 +247,17 @@ pub fn check(name: &str, bytes: &[u8]) {
             }
         }
         "acyclic.machines.v1.MachineEvent" => {
-            if project::<wire::MachineEvent, _>(bytes, |value| decode_event(&value, machine))
-                .is_some()
-            {
+            if let Some(original) = project::<wire::MachineEvent, _>(bytes, |value| {
+                decode_event(&value, decode_machine(value.machine.as_ref())?)
+            }) {
+                let foreign = if original.machine == MachineId::from_digest([9; 32]) {
+                    MachineId::from_digest([8; 32])
+                } else {
+                    MachineId::from_digest([9; 32])
+                };
                 assert!(
-                    decode_event(
-                        &wire::MachineEvent::decode(bytes).unwrap(),
-                        MachineId::from_digest([9; 32])
-                    )
-                    .is_err()
+                    decode_event(&wire::MachineEvent::decode(bytes).unwrap(), foreign).is_err(),
+                    "original machine event must refuse a substituted caller identity"
                 );
             }
         }
@@ -305,6 +307,22 @@ pub fn capture_machine(original: &MachineObservation) -> Result<Vec<u8>, Provide
     let bytes = value.encode_to_vec();
     check("acyclic.machines.v1.MachineState", &bytes);
     Ok(bytes)
+}
+
+/// Retain the actual event producer's identity, cursor, time and fact through the
+/// shared serving conversion before admitting its wire bytes to either target.
+pub fn capture_event(original: &MachineEvent) -> Vec<u8> {
+    let value = wire::MachineEvent::from(original.clone());
+    assert_eq!(
+        decode_event(&value, original.machine),
+        Ok(original.clone()),
+        "original machine event must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    for end in 0..=bytes.len() {
+        check("acyclic.machines.v1.MachineEvent", &bytes[..end]);
+    }
+    bytes
 }
 
 /// Capture an actual provider's list page through the shared serving writer and

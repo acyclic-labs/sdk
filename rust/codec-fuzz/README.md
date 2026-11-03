@@ -889,3 +889,11 @@ the public inspection client. The retained production decoder controls are
 `negative-controls/machines-observation-{offline,suspended,destroyed}.patch`.
 The literal Offline enum assertion is subsumed by these original-result checks;
 platform/lifecycle admission refusals and per-capability intent checks remain.
+
+Machine events now use one public serving conversion for both actual simulator
+stream output and semantic fuzzing. The retained
+`event_follow_retains_cursor_and_original_terminal_over_authenticated_rpc` check
+compares the client event with its original producer observation, including time
+and cursor, and retains terminal and dropped-producer progress checks. Production
+identity, sequence and timestamp defects are retained under
+`negative-controls/machines-event-{identity,sequence,time}.patch`.

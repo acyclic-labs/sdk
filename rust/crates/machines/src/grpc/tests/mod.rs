@@ -370,7 +370,7 @@ operation_service! {
         let events = events.lock().expect("original events").take()
             .ok_or_else(|| Status::failed_precondition("original events already taken"))?;
         Ok(Response::new(Box::pin(events.map(|event| {
-            event.map(event_follow::encode_event).map_err(|_| Status::unavailable("original event producer lost"))
+            event.map(wire::MachineEvent::from).map_err(|_| Status::unavailable("original event producer lost"))
         }))))
     }
 

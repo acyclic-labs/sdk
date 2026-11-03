@@ -1,0 +1,13 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -352,7 +352,7 @@
+     value: &wire::MachineEvent,
+-    expected: MachineId,
++    _expected: MachineId,
+ ) -> Result<MachineEvent, ProviderError> {
+     let machine = decode_machine(value.machine.as_ref())?;
+-    if machine != expected || value.sequence == 0 || value.observed_at_unix_ms == 0 {
++    if value.sequence == 0 || value.observed_at_unix_ms == 0 {
+         return Err(ProviderError::Rejected(
+             "event identity is malformed".into(),

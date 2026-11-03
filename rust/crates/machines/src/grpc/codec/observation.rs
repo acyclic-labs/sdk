@@ -1,5 +1,49 @@
 use super::*;
 
+impl From<MachineState> for wire::MachineStatus {
+    fn from(value: MachineState) -> Self {
+        match value {
+            MachineState::Starting => Self::Starting,
+            MachineState::Running => Self::Running,
+            MachineState::Suspending => Self::Suspending,
+            MachineState::Suspended => Self::Suspended,
+            MachineState::Waking => Self::Waking,
+            MachineState::Destroying => Self::Destroying,
+            MachineState::Destroyed => Self::Destroyed,
+            MachineState::Failed => Self::Failed,
+            MachineState::Indeterminate => Self::Indeterminate,
+            MachineState::Offline => Self::Offline,
+        }
+    }
+}
+
+impl From<MachineEvent> for wire::MachineEvent {
+    fn from(event: MachineEvent) -> Self {
+        let mut value = Self {
+            machine: Some(encode_machine(event.machine)),
+            sequence: event.sequence,
+            observed_at_unix_ms: event.observed_at_unix_ms,
+            ..Default::default()
+        };
+        match event.fact {
+            EventFact::State(state) => {
+                value.kind = wire::EventKind::State as i32;
+                value.state = wire::MachineStatus::from(state) as i32;
+            }
+            EventFact::Pressure(pressure) => {
+                value.kind = wire::EventKind::Pressure as i32;
+                value.pressure = match pressure {
+                    Pressure::CustomerBudget => wire::PressureKind::CustomerBudget,
+                    Pressure::MachineLimit => wire::PressureKind::MachineLimit,
+                    Pressure::ServiceSaturation => wire::PressureKind::ServiceSaturation,
+                } as i32;
+            }
+            EventFact::CapacityChanged => value.kind = wire::EventKind::Capacity as i32,
+        }
+        value
+    }
+}
+
 impl TryFrom<MachinePage> for wire::MachinePage {
     type Error = ProviderError;
 
@@ -65,18 +109,7 @@ impl TryFrom<MachineObservation> for wire::MachineState {
         let platform = contract.platform;
         Ok(Self {
             machine: Some(encode_machine(value.id)),
-            status: (match value.state {
-                MachineState::Starting => wire::MachineStatus::Starting,
-                MachineState::Running => wire::MachineStatus::Running,
-                MachineState::Suspending => wire::MachineStatus::Suspending,
-                MachineState::Suspended => wire::MachineStatus::Suspended,
-                MachineState::Waking => wire::MachineStatus::Waking,
-                MachineState::Destroying => wire::MachineStatus::Destroying,
-                MachineState::Destroyed => wire::MachineStatus::Destroyed,
-                MachineState::Failed => wire::MachineStatus::Failed,
-                MachineState::Indeterminate => wire::MachineStatus::Indeterminate,
-                MachineState::Offline => wire::MachineStatus::Offline,
-            }) as i32,
+            status: wire::MachineStatus::from(value.state) as i32,
             contract: Some(wire::MachineContract {
                 image: Some(encode_image(&contract.image)?),
                 selected_volume_ref: contract.selected_volume_ref,
