@@ -31,17 +31,13 @@ fn controlled(control: impl FnOnce() + std::panic::UnwindSafe, diagnostic: &str)
     );
 }
 
-fn concurrent_initializers(broken: bool) {
+fn concurrent_initializers() {
     let slot = StateArc::new(AsyncMutex::new(None));
     // A filesystem operation is a leaf; it never reacquires the projection.
     let count = StateArc::new(Mutex::new(0));
     let workers: Vec<_> = (0..2)
         .map(|_| {
-            let slot = if broken {
-                StateArc::new(AsyncMutex::new(None))
-            } else {
-                slot.clone()
-            };
+            let slot = slot.clone();
             let count = count.clone();
             thread::spawn(move || {
                 let value = complete(initialize(&slot, async || {
@@ -62,7 +58,7 @@ fn concurrent_initializers(broken: bool) {
 
 #[test]
 fn first_native_users_share_one_initialization() {
-    checked(concurrent_initializers, "projection initialized twice");
+    loom::model(concurrent_initializers);
 }
 
 fn logical_write(broken: bool) {

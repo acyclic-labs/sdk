@@ -99,6 +99,22 @@ export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
   }, run);
 }
 
+export function qualifyProjectionInitializationMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --projection-initialization-mutations";
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+    ["--all-features"], run, {
+      kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
+      filter: "local::workspace::projection::tests::first_native_users_share_one_initialization",
+    });
+  return qualifySourceMutationsLoom({
+    name: "Projection initialization", recovery,
+    source: "../rust/crates/harness/src/local/workspace/projection.rs",
+    model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
+    mutations: [["if slot.is_none() {", "if true {", "projection initialized twice"]],
+    qualify, restored: run => qualify(run),
+  }, run);
+}
+
 // Each control changes an exact entrance in the included production source;
 // the model and its semantic assertion stay byte-identical across the build.
 function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, restored, recovery }, run) {
@@ -334,6 +350,7 @@ const fixedModels = {
   "--provider-refresh": qualifyProviderRefreshLoom,
   "--provider-refresh-mutations": qualifyProviderRefreshMutationsLoom,
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
+  "--projection-initialization-mutations": qualifyProjectionInitializationMutationsLoom,
   "--fs-policy": qualifyFsPolicyLoom,
 };
 const selectableModels = {
