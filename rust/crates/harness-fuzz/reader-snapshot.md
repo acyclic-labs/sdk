@@ -2,9 +2,10 @@ The `reader_snapshot` target calls the public `RecordCache::restore` boundary.
 One oracle is shared with its property test. Rejection must preserve the
 original cache, charged backing and borrowed payload; accepted snapshots must
 stay within the admitted budget and produce a stable, restorable encoding.
-The property also checks every truncation of the writer corpus, inherited
-records, original commit anchors and stale restored listings. A destructive
-refusal negative control must fail the same oracle.
+Both entry points require the actual writer corpus to be admitted with its
+original records, inherited rows, commit anchors and stale restored listings.
+The property also checks every truncation of that corpus. Reject-all and
+destructive-refusal defects must fail the same oracle.
 
 Capture corpus bytes from the actual public writer, then run the property and
 an instrumented campaign:
