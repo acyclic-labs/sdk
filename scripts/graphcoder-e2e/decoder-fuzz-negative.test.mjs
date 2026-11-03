@@ -11,6 +11,10 @@ test("decoder fuzz oracles reject planted production defects", () => {
     ["lines.mjs", "this.#decoder.write(chunk)", "Buffer.from(chunk).toString('utf8')", "utf8"],
     ["process-report.fuzz.mjs", "Object.assign(report, selection);",
       'Object.assign(report, selection, JSON.parse(bytes.toString("utf8").split("\\n", 1)[0]));', "foreign"],
+    ["assertions.mjs", "if (Array.isArray(value.settled)) for (const child of value.settled)",
+      "if (Array.isArray(value.settled)) for (const child of value.settled.slice(0, 1))", "assertions"],
+    ["assertions.mjs", 'assert.equal(value.id, id, "reply names a different prompt");',
+      "void id;", "assertions"],
   ];
   for (const [file, before, after, oracle] of mutations) {
     // Mutate the actual imported implementation, never a parallel model. A
@@ -29,7 +33,10 @@ test("decoder fuzz oracles reject planted production defects", () => {
         return { ...loaded, source: source.replace(${JSON.stringify(before)}, ${JSON.stringify(after)}) };
       } });
       try {
-        ${oracle === "utf8" ? `
+        ${oracle === "assertions" ? `
+          const { fuzz } = await import('./assertions.fuzz.mjs');
+          fuzz(Buffer.alloc(0));
+        ` : oracle === "utf8" ? `
           const { fuzz } = await import('./lines.fuzz.mjs');
           const { captures } = JSON.parse(readFileSync('./fixtures/shipping-output.json'));
           fuzz(Buffer.from(captures['text-responses'].stdout));
