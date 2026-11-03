@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {fork, spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {subscribe, unsubscribe} from 'node:diagnostics_channel';
+import {readFileSync, writeFileSync} from 'node:fs';
 import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {createConnection, createServer} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -24,6 +25,46 @@ const signalMutations = new Map([
 async function processSource() {
   return (await readFile(new URL('../native/process.mjs', import.meta.url), 'utf8')).replace(
     "from './process-completion.mjs'", `from '${new URL('../native/process-completion.mjs', import.meta.url).href}'`);
+}
+
+async function statusBindingControl(run, host) {
+  let original, corrupted, originalStatus, spawns = 0;
+  const spawned = ({process: child}) => {
+    spawns++;
+    const at = child.spawnargs.indexOf('--completion');
+    assert.ok(at > 0);
+    const receipt = child.spawnargs[at + 1];
+    // This listener precedes the bridge's exit listener. The original native
+    // owner has retired its tree and closed its receipt before exit; corrupt
+    // only its actual status field before the original reader consumes it.
+    child.once('exit', (code, signal) => {
+      const bytes = readFileSync(receipt);
+      original = JSON.parse(bytes);
+      originalStatus = {code, signal};
+      assert.equal(code >>> 0, original.host_exit_code);
+      corrupted = {...original, host_exit_code: (original.host_exit_code + 1) >>> 0};
+      const changed = Buffer.from(JSON.stringify(corrupted));
+      writeFileSync(receipt, changed);
+      console.log(`PROCESS_STATUS_BINDING_CORPUS_BASE64=${Buffer.from(JSON.stringify({
+        original: bytes.toString('base64'), corrupted: changed.toString('base64'), originalStatus,
+      })).toString('base64')}`);
+    });
+  };
+  subscribe('child_process', spawned);
+  let result;
+  try { result = await run(process.execPath, [script, 'exit'], {host}); }
+  finally { unsubscribe('child_process', spawned); }
+  assert.equal(spawns, 1);
+  assert.ok(original.process_tree_retired);
+  assert.equal(original.root_status.code, 17);
+  assert.equal(result.code, null, 'a mismatched native receipt cannot certify root exit');
+  assert.deepEqual(result.hostStatus, originalStatus);
+  assert.equal(result.failures.length, 1);
+  const [{phase, error}] = result.failures;
+  assert.equal(phase, 'retirement');
+  assert.equal(error.code, 'PROCESS_HOST_STATUS_MISMATCH');
+  assert.deepEqual(error.hostStatus, originalStatus);
+  assert.deepEqual(error.completion, corrupted);
 }
 
 async function argumentControls(host) {
@@ -418,18 +459,21 @@ if (mode === 'signal-owner') {
   assert.ok(unfinishedInput.destroyed, 'original exit must close an input producer that has no terminal');
 
   await terminalControls(commandProcess, host);
+  await statusBindingControl(commandProcess, host);
   await exitBeforeOutputControl(commandProcess, host);
   // These are omissions in the actual shipped source. The identical public
-  // topology/oracle must reject both ways terminal failures can be lost.
+  // topology/oracles must reject lost terminal failures and receipt binding.
   const production = await processSource();
-  for (const [guard, replacement] of [
+  for (const [guard, replacement, control = terminalControls] of [
     [".catch(error => retain('terminal', error))", '.catch(() => {})'],
     ["} catch (error) { retain('terminal', error); }", '} catch (error) {}'],
+    ['hostStatus.signal !== null || hostStatus.code === null\n          || (hostStatus.code >>> 0) !== completion.host_exit_code',
+      'false', statusBindingControl],
   ]) {
     const planted = production.replace(guard, replacement);
-    assert.notEqual(planted, production, `production terminal guard missing: ${guard}`);
+    assert.notEqual(planted, production, `production process guard missing: ${guard}`);
     const {commandProcess: mutant} = await import(`data:text/javascript;base64,${Buffer.from(planted).toString('base64')}`);
-    await assert.rejects(() => terminalControls(mutant, host), {code: 'ERR_ASSERTION'}, guard);
+    await assert.rejects(() => control(mutant, host), {code: 'ERR_ASSERTION'}, guard);
   }
   // Capture original wire bytes from the shipped producer for the retained
   // decoder fuzzer. No fixture response or codec model is handwritten.
