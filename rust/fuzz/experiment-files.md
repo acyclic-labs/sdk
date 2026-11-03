@@ -238,3 +238,13 @@ replicates constructed before transformation. Two retained actual-source
 mutations admit repeated replicates or decreasing populations. They reuse the
 original assignment input and replace the fixed repeated/decreased-key loop.
 No history map or alternate ordering implementation is introduced.
+
+Declared arm orientation is checked independently at both members of all three
+pairs: each replaced arm stays individually valid and distinct from its partner.
+The shared pair check therefore cannot hide an omitted orientation guard. Three
+retained source controls remove either arm guard or discard a failed baseline
+row. Actual buffered observation JSON is truncated before every row position and
+after all complete rows; the original typed source error must survive every valid
+prefix. These properties replace the fixed orientation/observation-error examples;
+the prior streamed declaration property also subsumes the fixed count examples.
+No external-provider fixture or alternate parser is introduced.

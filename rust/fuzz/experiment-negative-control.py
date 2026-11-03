@@ -8,6 +8,21 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FUZZ = ROOT / "rust/fuzz"
 CASES = {
+    "analysis-baseline-arm": (
+        "experiments/analysis.rs", "baseline.0.arm != baseline_arm",
+        "false", "assignment",
+        "independent streamed analysis invariant: declared arms",
+    ),
+    "analysis-treatment-arm": (
+        "experiments/analysis.rs", "treatment.0.arm != treatment_arm",
+        "false", "assignment",
+        "independent streamed analysis invariant: declared arms",
+    ),
+    "analysis-row-source": (
+        "experiments/analysis.rs", "let baseline = baseline?;",
+        "let Ok(baseline) = baseline else { break };", "assignment",
+        "independent streamed analysis invariant: observation source error",
+    ),
     "analysis-repeated-key": (
         "experiments/analysis.rs", "if replicate <= *previous_replicate {",
         "if replicate < *previous_replicate {", "assignment",

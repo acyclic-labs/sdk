@@ -592,6 +592,31 @@ fn declared_stream(bytes: &[u8]) {
         (3, 2),
         "independent streamed analysis invariant: assigned coverage"
     );
+    // A foreign arm remains a valid observation and a distinct pair arm, so
+    // pairing alone cannot enforce the caller's declared orientation.
+    for index in 0..rows.len() {
+        let mut foreign = rows.clone();
+        foreign[index]["arm"] = json!(2 + index % 2);
+        assert!(
+            matches!(
+                streamed(&encode(&foreign), &expected),
+                Err(Error::Analysis(
+                    "input arms differ from declared orientation"
+                ))
+            ),
+            "independent streamed analysis invariant: declared arms"
+        );
+    }
+    // Fail before either member of every pair and after all complete outcomes.
+    // A typed source error must survive even if a valid prefix was consumed.
+    for end in 0..=rows.len() {
+        let mut failed = encode(&rows[..end]);
+        failed.extend_from_slice(b"{\"version\":");
+        assert!(
+            matches!(streamed(&failed, &expected), Err(Error::Json(_))),
+            "independent streamed analysis invariant: observation source error"
+        );
+    }
     // Keep declarations and outcomes matched while breaking only key order.
     // The constructed keys satisfy 0 < 1 < 2; counts alone cannot detect reuse.
     for (order, reason) in [

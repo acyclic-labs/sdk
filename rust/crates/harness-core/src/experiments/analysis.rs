@@ -374,19 +374,9 @@ mod tests {
     fn incomplete_or_failed_input_never_returns_a_partial_report() -> Result<(), Error> {
         let row = |cut, replicate, arm| Observation::new([cut; 32], replicate, arm, None, None);
         assert!(analyze([row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
-        assert!(analyze([row(1, 0, 1), row(1, 0, 0)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(2, 0, 1)], 0, 1, [(1, 0)]).is_err());
         assert!(analyze([row(1, 0, 0), row(1, 1, 1)], 0, 1, [(1, 0)]).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, [(1, 0), (2, 0)]).is_err());
-        assert!(analyze([row(1, 0, 0), row(1, 0, 1)], 0, 1, []).is_err());
         assert!(analyze([], 0, 0, []).is_err());
-        let baseline = row(1, 0, 0)?;
-        let mut bytes = serde_json::to_vec(&baseline)?;
-        bytes.extend_from_slice(b"\n{\"version\":");
-        let rows = serde_json::Deserializer::from_slice(&bytes)
-            .into_iter::<Observation>()
-            .map(|row| row.map_err(Error::Json));
-        assert!(matches!(analyze(rows, 0, 1, [(1, 0)]), Err(Error::Json(_))));
         let rows = (0..2).flat_map(|replicate| {
             (0..2).map(move |arm| Observation::new([1; 32], replicate, arm, None, Some(f64::MAX)))
         });
