@@ -1072,49 +1072,56 @@ async fn write_text(view: &Lazy, path: &str, text: &'static [u8]) -> Result<()> 
 
 /// `merge --continue` tracks what the conflicted join published, never what
 /// the source happens to hold when the resolution finishes, and never a
-/// target-only untracked file the resolution edits.
+/// target-only untracked file the resolution edits. Repeating the conflicted
+/// `merge <branch>` is the same continuation; merging any other branch is not.
 #[tokio::test]
 async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Result<()> {
-    let (_temp, _root, fs, store, main) = fixture().await?;
-    write_text(&main, "/base.txt", b"base\n").await?;
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
-    let repo = main.workspace().id();
-    run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
-    let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
-    let child = child.ok_or("missing child view")?;
-    write_text(&child, "/base.txt", b"kid\n").await?;
-    write_text(&child, "/newkid.txt", b"kid\n").await?;
-    run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
-    write_text(&main, "/base.txt", b"main\n").await?;
-    run(&fs, &store, &main, repo, &["commit", "-m", "main edit"]).await?;
-    write_text(&main, "/local.txt", b"untracked\n").await?;
-    assert!(
-        run(&fs, &store, &main, repo, &["merge", "agents/kid"])
-            .await
-            .is_err(),
-        "the text conflict leaves the merge pending"
-    );
+    for continuation in [["merge", "--continue"], ["merge", "agents/kid"]] {
+        let (_temp, _root, fs, store, main) = fixture().await?;
+        write_text(&main, "/base.txt", b"base\n").await?;
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace())
+            .await?;
+        let repo = main.workspace().id();
+        run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+        let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+        let child = child.ok_or("missing child view")?;
+        write_text(&child, "/base.txt", b"kid\n").await?;
+        write_text(&child, "/newkid.txt", b"kid\n").await?;
+        run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+        write_text(&main, "/base.txt", b"main\n").await?;
+        run(&fs, &store, &main, repo, &["commit", "-m", "main edit"]).await?;
+        write_text(&main, "/local.txt", b"untracked\n").await?;
+        assert!(
+            run(&fs, &store, &main, repo, &["merge", "agents/kid"])
+                .await
+                .is_err(),
+            "the text conflict leaves the merge pending"
+        );
 
-    // The child keeps working while the parent resolves: it deletes the file
-    // the join already published and authors one the parent also creates.
-    child.workspace().remove("/newkid.txt").await?;
-    write_text(&child, "/notes.txt", b"kid notes\n").await?;
-    write_text(&main, "/base.txt", b"resolved\n").await?;
-    write_text(&main, "/notes.txt", b"resolution notes\n").await?;
-    write_text(&main, "/local.txt", b"edited while resolving\n").await?;
-    let GitCommandOutput::Committed(merge) =
-        run(&fs, &store, &main, repo, &["merge", "--continue"])
-            .await?
-            .0
-    else {
-        return Err("expected the continued merge commit".into());
-    };
-    assert_eq!(
-        merge.tracked_paths,
-        std::collections::BTreeSet::from(["base.txt".to_owned(), "newkid.txt".to_owned()])
-    );
+        // The child keeps working while the parent resolves: it deletes the file
+        // the join already published and authors one the parent also creates.
+        child.workspace().remove("/newkid.txt").await?;
+        write_text(&child, "/notes.txt", b"kid notes\n").await?;
+        write_text(&main, "/base.txt", b"resolved\n").await?;
+        write_text(&main, "/notes.txt", b"resolution notes\n").await?;
+        write_text(&main, "/local.txt", b"edited while resolving\n").await?;
+        assert!(
+            run(&fs, &store, &main, repo, &["merge", "main"])
+                .await
+                .is_err(),
+            "only the conflicted branch continues its merge"
+        );
+        let GitCommandOutput::Committed(merge) =
+            run(&fs, &store, &main, repo, &continuation).await?.0
+        else {
+            return Err(format!("expected the continued merge commit for {continuation:?}").into());
+        };
+        assert_eq!(
+            merge.tracked_paths,
+            std::collections::BTreeSet::from(["base.txt".to_owned(), "newkid.txt".to_owned()])
+        );
+    }
     Ok(())
 }
 

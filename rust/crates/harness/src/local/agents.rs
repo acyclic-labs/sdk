@@ -99,6 +99,30 @@ impl crate::hosting::Platform for LocalUser {
         })
     }
 
+    /// The root's checkout diff, read under the tree owner's own signed
+    /// authority: the server admitted this session's credential, and the
+    /// shared producer checks that authority before disclosing any path.
+    #[cfg(any(test, feature = "native-execution"))]
+    fn diff<'a>(
+        &'a self,
+        _: &'a acyclic_stream::session::CallAuthorization,
+        agent: &'a AgentPath,
+        page: &'a acyclic_harness_client::AgentPageRequest,
+    ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
+        Box::pin(async move {
+            let local = self
+                .0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+            if local.agents.get().map(Hosted::root) != Some(agent) {
+                return Err(Error::Unsupported(
+                    "a child agent's fork diff is unavailable".into(),
+                ));
+            }
+            local.project_diff(page).await
+        })
+    }
+
     /// The local user is the tree's one human: it answers as the default
     /// human approver, the one a tool hook's escalation asks.
     fn approver(&self, _: &Principal) -> String {

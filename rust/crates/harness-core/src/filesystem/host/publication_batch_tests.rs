@@ -318,6 +318,83 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
     Ok(())
 }
 
+/// A queued prompt stages its body on the private volume while the running
+/// turn publishes there too. Whichever commits second is ordered after the
+/// first by the SDK's proved rebase; neither is refused as a conflict.
+#[tokio::test]
+async fn unrelated_publications_racing_one_volume_both_commit() -> Result<()> {
+    for adapter in 0..3 {
+        let provider = ProviderRef::new("race".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([39; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let access = crate::conversation::ContentAccess {
+            ceiling: None,
+            io: io.as_ref(),
+        };
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let racer = host.open(&workspace, None).await?;
+        // The racing turn commits between this publication's begin and its
+        // commit: exactly once, at the publication's own pause point.
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let arm = armed.clone();
+        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+            let fire = arm.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let racer = racer.clone();
+            Box::pin(async move {
+                if fire {
+                    racer.write_text("/turn/output", "turn").await.unwrap();
+                }
+            })
+        }));
+        let staged = host
+            .put_content(
+                &volume,
+                &write,
+                "inputs/second",
+                b"second",
+                "text/plain",
+                "second",
+                64,
+                &IdempotencyKey::new("second")?,
+                None,
+                access,
+            )
+            .await?;
+        assert!(!armed.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            host.read_content(&staged, &read, 64, io.as_ref())
+                .await?
+                .as_ref(),
+            b"second"
+        );
+        assert_eq!(
+            host.read(&workspace, None, "/turn/output", 64, None)
+                .await?
+                .as_ref(),
+            b"turn"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
     for native_adapter in [false, true] {

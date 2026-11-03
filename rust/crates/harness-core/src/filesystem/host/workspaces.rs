@@ -41,6 +41,20 @@ impl FilePublication<'_> {
             Self::Replace(_) => None,
         }
     }
+
+    /// Whether a head that moved under this publication may be absorbed by
+    /// the SDK's proved rebase. Only a pinned generation, or an authorization
+    /// that names one, requires the exact head it observed; any other writer
+    /// is serialized by rebasing over it, never reported as a conflict.
+    fn rebases(self) -> bool {
+        let unpinned = |fence: Option<acyclic_fs::access::PolicyFence>| {
+            fence.is_none_or(|fence| !fence.generation_sensitive())
+        };
+        match self {
+            Self::Replace(expected) => expected.is_none(),
+            Self::Authorized(fence, _, root) => unpinned(Some(fence)) && unpinned(root),
+        }
+    }
 }
 
 fn require_publication_time(
@@ -169,7 +183,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(page)
     }
 
-    pub(in crate::filesystem) fn generation_ref_id(
+    /// The canonical reference of one of this provider's generations.
+    pub fn generation_ref_id(
         &self,
         id: GenerationId,
         io: Option<&PreparationIo>,
@@ -283,10 +298,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                     TransactionCommit::Conflict { .. }
-                        if expected_generation.is_none()
-                            && publication
-                                .fence()
-                                .is_none_or(|fence| !fence.generation_sensitive()) =>
+                        if expected_generation.is_none() && publication.rebases() =>
                     {
                         // Reuse the original candidate only when the SDK proves its
                         // exact observations and mutation dependencies still hold.

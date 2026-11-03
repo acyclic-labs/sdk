@@ -44,9 +44,14 @@ test("request assertions reject omitted, duplicated, unmatched and fabricated re
   assert.throws(() => requests(fixture, [valid[0], { ...valid[1], status: 409 }]), /unmatched/);
   assert.throws(() => requests(fixture, [valid[0], record(1, [{ role: "user", content: "REAL_RESULT" }])]), /actual tool result missing/);
   assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: '{"error":"failed"}' }])]), /unexpected tool error/);
-  const rejected = record(1, [{ type: "function_call_output", output: "tool executor rejected the admitted call (conflict): workspace generation changed" }]);
-  assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], rejected]), /unexpected tool error/);
-  requests({ ...fixture, assert: { requests: 2, tool_errors: ["workspace generation changed"] } }, [valid[0], rejected]);
+  for (const output of ["tool execution failed: workspace generation changed",
+    "tool output violated its pinned schema (invalid): workspace generation changed"]) {
+    const rejected = record(1, [{ type: "function_call_output", output }]);
+    assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], rejected]), /unexpected tool error/);
+    requests({ ...fixture, assert: { requests: 2, tool_errors: ["workspace generation changed"] } }, [valid[0], rejected]);
+  }
+  // A result that merely mentions a failure is not one.
+  requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: "the tool execution failed: before" }])]);
   const gemini = [{ path: "models/tiny:streamGenerateContent", step: 0, status: 200,
     body: { contents: [{ role: "user", parts: [{ functionResponse: { name: "bash", response: { text: "REAL_RESULT" } } }] }] } }];
   requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["REAL_RESULT"] } }, gemini);

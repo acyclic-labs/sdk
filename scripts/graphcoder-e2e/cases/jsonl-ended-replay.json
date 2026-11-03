@@ -38,7 +38,7 @@
         "jsonl"
       ],
       "stdin": "{\"prompt\":\"first\",\"id\":\"a\"}\n{\"prompt\":\"second\",\"id\":\"b\"}\n",
-      "exit": 0,
+      "exit": 1,
       "stdout_contains": [
         "FIRST_ANSWER",
         "\"id\":\"b\""
@@ -53,7 +53,7 @@
         "jsonl"
       ],
       "stdin": "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n{\"prompt\":\"first\",\"id\":\"a\"}\n{\"prompt\":\"third\",\"id\":\"c\"}\n",
-      "exit": 0,
+      "exit": 1,
       "stdout_contains": [
         "FIRST_ANSWER",
         "\"id\":\"c\"",

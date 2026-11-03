@@ -135,3 +135,39 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         WorkspaceError::Engine(value) => Error::Storage(value),
     }
 }
+
+/// The canonical content path of a namespace path, or `None` for a path no
+/// content reference can name (non-Unicode, or not a valid content path).
+pub(crate) fn content_path(
+    path: &acyclic_fs::kernel::NamespacePath,
+    io: &PreparationIo,
+) -> Result<Option<String>> {
+    let mut result = String::new();
+    for name in path.components() {
+        let (text, recorded) = name.unicode_text(io, io.cancellation());
+        recorded?;
+        let text = match text {
+            Ok(text) => text,
+            Err(acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
+                acyclic_fs::kernel::NamespacePathError::NonUnicodeProjection,
+            ))) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if crate::conversation::validate_content_path(&text, &mut None).is_err()
+            || text.contains('/')
+        {
+            return Ok(None);
+        }
+        for part in [if result.is_empty() { "" } else { "/" }, &text] {
+            crate::executor::stock_string_push(
+                &mut result,
+                part,
+                u64::MAX,
+                "context path size overflow",
+                Some(io),
+            )?;
+        }
+        io.release(text.capacity() as u64)?;
+    }
+    Ok(Some(result))
+}

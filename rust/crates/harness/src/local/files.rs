@@ -8,25 +8,73 @@ impl LocalHarness {
     }
     /// Authenticated reader shared by file-backed client input and documents.
     pub fn client_reader(&self) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
-        Ok(FilesystemContentVerifier::new(
+        Ok(self.signed_reader()?)
+    }
+
+    fn signed_reader(
+        &self,
+    ) -> Result<Arc<FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>>> {
+        FilesystemContentVerifier::new(
             Arc::clone(&self.files),
             &self.verifier,
             &self.signed,
             self.limits.file_bytes,
             None,
-        )?)
+        )
     }
 
-    /// Selected identity read from the existing persisted checkout state.
-    #[cfg(feature = "native-execution")]
-    pub async fn project_selection(&self) -> Result<acyclic_fs::WorkspaceId> {
+    /// One page of the selected checkout's changes since its first complete
+    /// import, the fork base every agent edit is measured from. Before that
+    /// baseline is recorded nothing has changed. Projection, disclosure
+    /// authority and paging are the shared [`crate::hosting::diff_page`].
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) async fn project_diff(
+        &self,
+        page: &acyclic_harness_client::AgentPageRequest,
+    ) -> Result<Vec<crate::context::DiffFilePage>> {
         let workspace = self
             .workspace
             .as_ref()
             .ok_or_else(|| Error::Unsupported("project diff requires a checkout".into()))?;
-        let (selected, _) = workspace.selected_view().await?;
-        let selected = selected.as_ref().unwrap_or_else(|| workspace.view());
-        Ok(selected.workspace().id())
+        let (selected, pending) = workspace.selected_view().await?;
+        if let Some((operation, _)) = pending {
+            return Err(Error::Indeterminate(OperationId::from_bytes(
+                operation.into_bytes(),
+            )));
+        }
+        let selected = selected
+            .as_ref()
+            .unwrap_or_else(|| workspace.view())
+            .workspace();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let current = selected
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
+        let base = selected
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    super::checkout_tools::capture::baseline_operation(selected.id()).into_bytes(),
+                ),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .map_or(current, |baseline| baseline.id());
+        crate::hosting::diff_page(
+            &*self.signed_reader()?,
+            &self.project,
+            (
+                &self.files.generation_ref_id(base, None)?,
+                &self.files.generation_ref_id(current, None)?,
+            ),
+            page,
+        )
+        .await
     }
 
     /// Publisher of this harness's prompt inputs on its private journal volume.

@@ -211,9 +211,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )>,
     ) -> Result<Generation<A, O>> {
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
-            let commit = 'commit: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
+            // The native authority check is admitted once; every commit
+            // attempt of this one publication reuses it.
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut native = match io.original_native_work() {
+                Some(work) => {
                     let fence = publication.fence();
                     let root_fence = match publication {
                         FilePublication::Authorized(_, _, root) => root,
@@ -236,7 +238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     } else {
                         None
                     };
-                    let mut native_before = move |work: &acyclic_fs::NativeMaterializationWork| {
+                    let native_before = move |work: &acyclic_fs::NativeMaterializationWork| {
                         let work = work.clone();
                         let authority = authority.clone();
                         async move {
@@ -254,36 +256,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             check()
                         }
                     };
-                    break 'commit transaction
-                        .commit_with_native_work(
-                            context,
-                            acyclic_fs::PublicationPermit::Unrestricted,
-                            work,
-                            io.cancellation(),
-                            &mut native_before,
-                        )
-                        .await?;
+                    Some((work, native_before))
                 }
-                break 'commit io.receive(
-                    transaction
-                        .commit(
-                            context,
-                            acyclic_fs::PublicationPermit::Unrestricted,
-                            io.remaining()?,
-                            io.cancellation(),
-                            &mut |_| async move {
-                                require_publication_time(publication, Some(io))
-                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                Ok(acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::default(),
-                                })
-                            },
-                        )
-                        .await,
-                )?;
+                None => None,
             };
-            Ok(commit)
+            loop {
+                let commit = 'commit: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some((work, native_before)) = native.as_mut() {
+                        break 'commit transaction
+                            .commit_with_native_work(
+                                context.clone(),
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                *work,
+                                io.cancellation(),
+                                native_before,
+                            )
+                            .await?;
+                    }
+                    break 'commit io.receive(
+                        transaction
+                            .commit(
+                                context.clone(),
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io.remaining()?,
+                                io.cancellation(),
+                                &mut |_| async move {
+                                    require_publication_time(publication, Some(io))
+                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                    Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    })
+                                },
+                            )
+                            .await,
+                    )?;
+                };
+                // Another writer advanced the head first. The SDK reuses this
+                // candidate only when it proves every observation and mutated
+                // region still holds, so concurrent publications to one volume
+                // are ordered by the primitive instead of failing.
+                if !matches!(commit, TransactionCommit::Conflict { .. }) || !publication.rebases() {
+                    return Ok(commit);
+                }
+                match io.receive(
+                    transaction
+                        .rebase(1, io.remaining()?, io.cancellation())
+                        .await,
+                )? {
+                    acyclic_fs::TransactionRebase::Rebased(_) => {}
+                    acyclic_fs::TransactionRebase::Conflicted { .. } => return Ok(commit),
+                }
+            }
         })?
         .await?;
         match commit {

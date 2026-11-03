@@ -46,6 +46,14 @@ pub(crate) async fn run_git_command<S: CommandStore, E: GitFilesystemExecutor<Er
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
+    let continued;
+    let argv = match continues_join(repository, argv).await? {
+        true => {
+            continued = [argv[0].clone(), "--continue".to_owned()];
+            &continued[..]
+        }
+        false => argv,
+    };
     if !git_transition_command(argv)
         && repository
             .resume(executor)
@@ -75,6 +83,36 @@ pub(crate) async fn run_git_command<S: CommandStore, E: GitFilesystemExecutor<Er
             .await
     };
     output.map(Some).map_err(super::errors::run_error::<S>)
+}
+
+/// Whether `merge <branch>` repeats the merge whose conflicts are awaiting
+/// resolution. Repeating it finishes that merge from the edited paths, so the
+/// one model-visible verb both starts and completes a join.
+async fn continues_join<S: CommandStore>(
+    repository: &GitCompatRepository<S>,
+    argv: &[String],
+) -> Result<bool, Error> {
+    let [command, branch] = argv else {
+        return Ok(false);
+    };
+    if command != "merge" || branch.starts_with('-') {
+        return Ok(false);
+    }
+    Ok(matches!(
+        repository
+            .pending_transition()
+            .await
+            .map_err(super::errors::compat_error::<S>)?,
+        Some(acyclic_fs::GitPendingTransition {
+            mutation: acyclic_fs::GitPendingMutation::Join {
+                conflicts: Some(_),
+                rebase: false,
+                ref source_branch,
+                ..
+            },
+            ..
+        }) if source_branch == branch
+    ))
 }
 
 /// Reads a patch file from the managed workspace.

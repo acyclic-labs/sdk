@@ -157,24 +157,10 @@
         },
         "tools": [
           {
-            "id": "resolved-add",
+            "id": "repeat-merge",
             "name": "fs",
             "arguments": {
-              "command": "add seed.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
-        "tools": [
-          {
-            "id": "continue",
-            "name": "fs",
-            "arguments": {
-              "command": "merge --continue"
+              "command": "merge agents/worker"
             }
           }
         ]
@@ -197,7 +183,7 @@
     }
   ],
   "assert": {
-    "requests": 13,
+    "requests": 12,
     "files": {
       "seed.txt": "resolved\n"
     },
