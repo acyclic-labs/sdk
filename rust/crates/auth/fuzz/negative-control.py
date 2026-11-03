@@ -20,6 +20,7 @@ elif choice.startswith("addressing-"):
         "addressing-account-empty": "addressing.rs",
         "addressing-id-empty": "addressing.rs",
         "addressing-field-endian": "addressing.rs",
+        "addressing-resource-framing": "addressing.rs",
         "addressing-resource-tail": "addressing.rs",
         "addressing-resource-version": "format.rs",
         "addressing-resource-domain": "format.rs",
@@ -58,6 +59,10 @@ try:
     oracle_hashes = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     mutations = {
+        "addressing-resource-framing": (
+            b"            output.extend_from_slice(&(field.len() as u64).to_be_bytes());", b"",
+            "resource writer output must admit", "resource",
+        ),
         "addressing-host-url": (
             b"url::Host::parse(host).map_err(|_| DnsError::InvalidCharacter)?",
             b"url::Host::Domain(host.to_owned())",
